@@ -5,7 +5,9 @@
 // shows and asks.
 import { invoke } from "@tauri-apps/api/core";
 
-type Check = { kind: "pass" | "fail" | "skip" | "warn"; text: string; hint: string | null };
+/** crew-reclaim's kinds, and "info": a note that reassures (nothing to
+ *  act on), drawn with an i rather than a bang. */
+type Check = { kind: "pass" | "fail" | "skip" | "warn" | "info"; text: string; hint: string | null };
 type Report = {
   worktree: string;
   branch: string | null;
@@ -21,7 +23,7 @@ type Report = {
 type Step = { kind: "done" | "note" | "error"; text: string };
 
 const SVG = "http://www.w3.org/2000/svg";
-/** Small marks, drawn: a tick, a cross, a dot, a bang. */
+/** Small marks, drawn: a tick, a cross, a dot, a bang, an i in a ring. */
 const MARKS: Record<string, string> = {
   pass: "M2.5 5.3 4.3 7.1 7.6 3",
   done: "M2.5 5.3 4.3 7.1 7.6 3",
@@ -29,6 +31,7 @@ const MARKS: Record<string, string> = {
   error: "M3 3l4 4M7 3 3 7",
   warn: "M5 2.4v3.4M5 7.4v.2",
   skip: "M4.6 5h.8",
+  info: "M5 1.2a3.8 3.8 0 1 1 0 7.6a3.8 3.8 0 1 1 0-7.6M5 4.7v2.2M5 3.2v.05",
   note: "M3 5h3.4M5.2 3.6 6.6 5 5.2 6.4",
 };
 function mark(kind: string): SVGSVGElement {
@@ -123,16 +126,10 @@ export class ReclaimWizard {
 
   private frame(stage: Stage, title: string): HTMLElement {
     this.stage = stage;
+    // No stepper: the flow is one screen, and while it checks or runs the
+    // busy line under the title says what it is doing.
     const head = el("div", "rc-head");
     head.append(el("b", "", title));
-    const steps = el("ol", "rc-steps");
-    const order: Stage[] = ["check", "review", "done"];
-    const at = stage === "run" ? 2 : order.indexOf(stage);
-    ["Check", "Review", "Done"].forEach((label, i) => {
-      const li = el("li", i < at ? "past" : i === at ? "now" : "", label);
-      steps.append(li);
-    });
-    head.append(steps);
     const body = el("div", "rc-body");
     this.card.replaceChildren(head, body);
     this.card.setAttribute("aria-label", title);
@@ -176,10 +173,11 @@ export class ReclaimWizard {
   }
 
   /** What would go first: it is the decision. One table of facts (what
-   *  would be removed, then the plan and sandbox), a line each; then what
-   *  needs reading (blockers, warnings); then every check that passed,
-   *  folded. With a blocker there is nothing to remove, so the blockers
-   *  lead. */
+   *  would be removed), a line each, and under it a dim Keeps line for what
+   *  reclaim leaves (the plan, and anything else that stays); then what
+   *  needs reading (blockers, warnings, notes); then every check that
+   *  passed, folded. With a blocker there is nothing to remove, so the
+   *  blockers lead and every fact is one table. */
   private review(r: Report): void {
     const body = this.frame("review", `Reclaim ${r.branch ?? this.name}`);
     const ok = r.blockers === 0;
@@ -187,13 +185,17 @@ export class ReclaimWizard {
     // One line a fact: the value, then its note muted beside it. A long
     // value (a path) ellipsizes; its full text is the tooltip.
     const facts = el("dl", "rc-facts");
+    // What stays, under "Would remove": "plan search-index (done 3/3)".
+    const keeps: { k: string; v: string; full: string }[] = [];
     const fact = (k: string, v: string | null | undefined, note = "", mono = false, full = v, stays = false) => {
       if (!v) return;
+      if (stays) {
+        keeps.push({ k, v: v.replace(REF, "").trim() || v, full: (full ?? v).trim() });
+        return;
+      }
       // "search-index (done 3/3)": the parenthesis is the note.
       const m = !note && !mono && v.replace(REF, "") === v ? /^(.+?)\s*\(([^()]+)\)$/.exec(v) : null;
       if (m) [v, note] = [m[1], m[2]];
-      // Under "Would remove", a fact that is not removed says so.
-      if (stays) note = note ? `${note} · stays` : "stays";
       facts.append(el("dt", "", k));
       const dd = el("dd");
       const val = said(mono ? "rc-val mono" : "rc-val", v);
@@ -216,7 +218,7 @@ export class ReclaimWizard {
     }
     // The facts "Would remove" has not said already.
     const told = ok ? r.remove.map((x) => `${x.target} ${x.note}`).join(" ") : "";
-    // Under "Would remove", a fact reclaim leaves alone says "stays".
+    // Under "Would remove", a fact reclaim leaves alone goes on the Keeps line.
     if (!named.has("worktree")) fact("worktree", tidy(r.worktree, this.home), "", true, r.worktree, ok);
     if (!named.has("branch")) fact("branch", r.branch, "", true, r.branch, ok);
     if (r.size && !told.includes(r.size)) fact("size", r.size);
@@ -237,7 +239,18 @@ export class ReclaimWizard {
     const loud = r.checks.filter((c) => c.kind === "fail" || c.kind === "warn").sort((a, b) => (a.kind === "fail" ? 0 : 1) - (b.kind === "fail" ? 0 : 1));
     const list = el("ul", "rc-checks");
     list.append(...loud.map(row));
-    const parts = ok ? [facts, list] : [list, facts];
+    // Notes that reassure come after them, quieter.
+    list.append(...r.checks.filter((c) => c.kind === "info").map(row));
+    const kept = el("p", "rc-keeps");
+    if (keeps.length) {
+      kept.append(el("span", "rc-keeps-k", "Keeps"));
+      keeps.forEach((x, i) => {
+        const s = el("span", "rc-keeps-v", `${i ? " · " : ""}${x.k} ${x.v}`);
+        s.title = x.full;
+        kept.append(s);
+      });
+    }
+    const parts = ok ? [facts, kept, list] : [list, facts];
     for (const x of parts) if (x.childElementCount) body.append(x);
 
     // Every check that passed (or had nothing to check) folds into one line.

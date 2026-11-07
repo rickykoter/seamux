@@ -12,7 +12,8 @@ const untilOf = (r: Row): string =>
   r.level === "mute" || r.level === "snooze" || r.level === "tuck" ? untilSaid(r.level as Level, r.until || undefined) : "";
 
 /** A hidden row's until, for the row's narrow right column: "until needed",
- *  "kept hidden", or a snooze's "until 3 PM" (its :00 dropped). The full
+ *  a snooze's "until 3 PM" (its :00 dropped), or nothing for a plain hide
+ *  (the section above says hidden). The full
  *  words (untilOf) are in the row's tooltip. */
 const untilShort = (r: Row): string =>
   r.level === "snooze" ? (r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : "for now") : r.level === "mute" || r.level === "tuck" ? UNTIL_SHORT[r.level] : "";
@@ -267,13 +268,14 @@ export class Palette {
   }
 
   /** The keys that do something now: ⌘↵ only on a hidden row, ⇧⌘↵ only
-   *  while some row is muted. ⇧⌘↵ (tuck_unmute_all) brings back the muted
-   *  ones alone, never a snoozed or tucked one, and its hint says just that. */
+   *  while some row is hidden until needed. ⇧⌘↵ (tuck_unmute_all) brings
+   *  back those alone, never a snoozed or tucked one, and its hint says just
+   *  that, in the words the rows use (never "muted"). */
   private drawFoot(sel: Row | undefined): void {
     const keys = ["↵ jump"];
     if (sel?.level) keys.push("⌘↵ show again");
     const muted = this.rows.filter((r) => r.level === "mute").length;
-    if (muted) keys.push("⇧⌘↵ bring back the muted ones");
+    if (muted) keys.push("⇧⌘↵ show the ones hidden until needed");
     keys.push("esc");
     this.foot.textContent = keys.join(" · ");
   }

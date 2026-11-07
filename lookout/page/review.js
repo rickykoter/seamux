@@ -20,7 +20,9 @@
   const narrow = () => window.matchMedia("(max-width: 760px)").matches;
   // A file's status letter, spelled out in its tooltip.
   const ST_NAMES = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", T: "type changed" };
-  const stLetter = f => el("span", { class: "st st-" + f.status, title: ST_NAMES[f.status] || f.status }, f.status);
+  // In the side list it is one of a row's extras (class "x", review.css): out
+  // of sight at rest, shown on the selected or hovered row.
+  const stLetter = (f, cls = "") => el("span", { class: "st st-" + f.status + (cls ? " " + cls : ""), title: ST_NAMES[f.status] || f.status }, f.status);
   // Split needs room: with the diff column under SPLIT_MIN px the page draws
   // unified, whatever the saved choice (which it keeps), and draws split
   // again once the column is wide enough. The column, not the window: the
@@ -145,11 +147,10 @@
         const name = f.path.slice(f.path.lastIndexOf("/") + 1);
         ul.append(el("li", null, el("div", {
           class: "row file" + (f.path === current ? " sel" : "") + (f.collapsed ? " collapsed-file" : ""),
-          title: f.path + (f.oldPath ? " (from " + f.oldPath + ")" : ""),
-          "data-path": f.path, onclick: () => select(f.path),
+          title: rowTitle(f), "data-path": f.path, onclick: () => select(f.path),
         }, el("span", { class: "chev" }), el("span", { class: "name" }, name),
-           badge(f.path), el("span", { class: "counts" }, countsText(f)),
-           stLetter(f))));
+           badge(f.path), el("span", { class: "counts x" }, countsText(f)),
+           stLetter(f, "x"))));
       }
       return ul;
     };
@@ -168,18 +169,27 @@
   const bandOf = r => BANDS.find(([, min]) => (r || 0) >= min)[0];
   const byPath = () => new Map((R.files || []).map(f => [f.path, f]));
 
-  function fileRow(f, { dir = false } = {}) {
+  // A file row is quiet: its risk dot, its name and its findings badge. The
+  // folder, the +/- counts and the status letter are extras (class "x"):
+  // review.css shows them on the selected or hovered row and keeps them in
+  // the DOM otherwise. The tooltip says all of it, and why the file sits in
+  // its group (`why`), which is not a row of its own.
+  function rowTitle(f, why = []) {
+    const risk = typeof f.risk === "number" ? riskLine(f) : "";
+    return [f.path + (f.oldPath ? " (from " + f.oldPath + ")" : ""),
+      countsText(f) + " · " + (ST_NAMES[f.status] || f.status),
+      risk, why.length ? "Grouped: " + why.join("; ") : ""].filter(Boolean).join("\n");
+  }
+  function fileRow(f, { dir = false, why = [] } = {}) {
     const cut = f.path.lastIndexOf("/");
     return el("div", {
       class: "row file" + (f.path === current ? " sel" : "") + (f.collapsed ? " collapsed-file" : ""),
-      title: f.path + (f.oldPath ? " (from " + f.oldPath + ")" : "") +
-        (f.reasons && f.reasons.length ? "\nrisk " + Math.round((f.risk || 0) * 100) + "%: " + f.reasons.join(", ") : ""),
-      "data-path": f.path, onclick: () => select(f.path),
+      title: rowTitle(f, why), "data-path": f.path, onclick: () => select(f.path),
     }, el("span", { class: "dot band-" + (f.band || "low") }),
        el("span", { class: "name" }, f.path.slice(cut + 1),
-         dir && cut >= 0 ? el("span", { class: "in" }, " " + f.path.slice(0, cut)) : null),
-       badge(f.path), el("span", { class: "counts" }, countsText(f)),
-       stLetter(f));
+         dir && cut >= 0 ? el("span", { class: "in x" }, " " + f.path.slice(0, cut)) : null),
+       badge(f.path), el("span", { class: "counts x" }, countsText(f)),
+       stLetter(f, "x"));
   }
 
   function drawRisk() {
@@ -194,11 +204,11 @@
         const files = g.files.map(p => byPath().get(p)).filter(Boolean);
         for (const f of files) ORDER.push(f.path);
         if (files.length < 2) { box.append(fileRow(files[0], { dir: true })); continue; }
-        const why = (g.edges || []).map(e => e.why);
-        box.append(el("div", { class: "group", "data-group": g.id },
-          files.map(f => fileRow(f, { dir: true })),
-          why.length ? el("div", { class: "why", title: why.join("\n") },
-            why.slice(0, 2).join(" · ") + (why.length > 2 ? ` · +${why.length - 2} more` : "")) : null));
+        // Why they belong together is the group's tooltip and each row's, and
+        // the Overview's line under the group: never a line between rows.
+        const why = [...new Set((g.edges || []).map(e => e.why))];
+        box.append(el("div", { class: "group", "data-group": g.id, title: why.length ? why.join("\n") : null },
+          files.map(f => fileRow(f, { dir: true, why }))));
       }
     }
     $("tree").replaceChildren(box);
@@ -234,9 +244,9 @@
     $("tree").append(el("div", { class: "band-head ghost-head" }, el("span", null, "no longer in the diff"), el("span", null, String(g.length))),
       ...g.map(p => {
         ORDER.push(p);
-        return el("div", { class: "row file ghost" + (p === current ? " sel" : ""), "data-path": p, title: p, onclick: () => select(p) },
+        return el("div", { class: "row file ghost" + (p === current ? " sel" : ""), "data-path": p, title: p + "\nno longer in the diff", onclick: () => select(p) },
           el("span", { class: "chev" }), el("span", { class: "name" }, p.slice(p.lastIndexOf("/") + 1),
-            el("span", { class: "in" }, " " + p.slice(0, Math.max(0, p.lastIndexOf("/"))))), badge(p));
+            el("span", { class: "in x" }, " " + p.slice(0, Math.max(0, p.lastIndexOf("/"))))), badge(p));
       }));
   }
   for (const b of document.querySelectorAll("#view button"))
@@ -308,12 +318,31 @@
 
   // One finding or comment thread, drawn under its line.
   const expandedClosed = new Set();
+  // A finding's category and verdict in plain words, for its tooltip and the
+  // current card's head; its id only in the tooltip.
+  const verdictWords = x => x.verdict === "CONFIRMED" ? "confirmed" : "plausible, not confirmed";
+  const metaWords = x => x.id.startsWith("f") ? `${x.category} · ${verdictWords(x)}` : "";
+  // A closed card (resolved or dismissed) is its own look: one row, its
+  // severity chip dimmed, a muted status chip, no Resolve. A click or Enter
+  // opens it to its thread and Reopen; its head folds it again.
+  const foldedClosed = x => !isOpen(x) && !expandedClosed.has(x.id);
   function card(x) {
     const finding = x.id.startsWith("f");
     const closed = !isOpen(x);
     const body = !closed || expandedClosed.has(x.id);
     const sev = finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment");
     const mark = picked.has(x.id) ? checkIcon() : null;
+    const closedChip = closed ? el("span", { class: "status st-" + x.status }, x.status) : null;
+    if (foldedClosed(x)) {
+      const title = finding ? x.short_summary || x.summary : ((x.messages || [])[0] || {}).text || "";
+      const open = () => { expandedClosed.add(x.id); openCard(x.id); };
+      return el("div", { class: "card folded closed" + (finding ? "" : " comment") + (mark ? " picked" : ""), "data-item": x.id,
+        tabindex: "0", role: "button", "aria-expanded": "false",
+        title: `${x.id} (${x.status}): open it to read its thread` + (finding ? "\n" + metaWords(x) : ""),
+        onclick: e => { if (!e.target.closest("button, a, textarea, input") && !String(getSelection() || "")) open(); },
+        onkeydown: e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); expandedClosed.add(x.id); openCard(x.id, true); } } },
+        el("div", { class: "card-head" }, mark, sev, el("span", { class: "title" }, title), closedChip));
+    }
     if (foldedCard(x)) {
       const title = finding ? x.short_summary || x.summary : ((x.messages || [])[0] || {}).text || "";
       return el("div", { class: "card folded" + (finding ? "" : " comment") + (mark ? " picked" : ""), "data-item": x.id,
@@ -322,16 +351,17 @@
         onkeydown: e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); openCard(x.id, true); } } },
         el("div", { class: "card-head" }, mark, sev, el("span", { class: "title" }, title)));
     }
-    const head = el("div", { class: "card-head", onclick: closed ? () => { expandedClosed.has(x.id) ? expandedClosed.delete(x.id) : expandedClosed.add(x.id); drawFile(); } : null },
+    // An opened closed card's head folds it back, in place.
+    const head = el("div", { class: "card-head", title: closed ? "Fold it to one row" : null,
+      onclick: closed ? e => { if (e.target.closest("button, a")) return; e.stopPropagation(); expandedClosed.delete(x.id); redrawCards([x.id]); } : null },
       mark, sev,
       // Title first; folded, a finding shows its short summary, open, the full one, once.
       // Hovered, the title's tooltip names the id, category and verdict.
-      el("span", { class: "title", title: x.id + (finding ? " · " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible") : "") }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
-      // The id, category and verdict sit out of the row (review.css .card-head
-      // .meta), so the title has the full width until the card is focused
-      // or current.
-      el("span", { class: "meta" }, el("span", { class: "fid" }, x.id),
-        finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null),
+      el("span", { class: "title", title: x.id + (finding ? " · " + metaWords(x) : "") }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
+      // The category and verdict, in plain words, sit out of the row
+      // (review.css .card-head .meta), so the title has the full width until
+      // the card is focused or current. The id stays in the tooltip.
+      finding ? el("span", { class: "meta" }, el("span", { class: "cat" }, metaWords(x))) : null,
       // Open is the usual state: only the others get a pill. An addressed
       // blocker or major still blocks the gate, and its pill says so.
       (x.status || "open") !== "open" ? (stillBlocks(x)
@@ -732,8 +762,14 @@
 
   // The file's header line: status, path, counts and risk. Not the language,
   // and not a risk reason that only repeats an open finding ("open blocker
-  // finding"): the gate pill and the cards already say that.
-  const headReasons = f => (f.reasons || []).filter(r => !/^open \w+ finding$/.test(r));
+  // finding"): the gate pill and the cards already say that. Nor "Jev 100%",
+  // which means nothing at a glance: the risk reads "high risk" in plain
+  // words, and its tooltip (riskLine) gives the score and Jev's part in it.
+  const headReasons = f => (f.reasons || []).filter(r => !/^open \w+ finding$/.test(r) && !/^Jev \d+%$/.test(r));
+  const riskLine = f => `${f.band || bandOf(f.risk)} risk, ${Math.round((f.risk || 0) * 100)} of 100` +
+    (headReasons(f).length ? ": " + headReasons(f).join(", ") : "") +
+    (typeof f.jev === "number" ? `. Jev (TypeSafe's model) read the change as ${Math.round(f.jev * 100)}% risky.`
+      : R.scoring && !R.scoring.ok ? ". Ranked on signals alone (path and size)." : ".");
   function fileHead(f) {
     const cut = f.path.lastIndexOf("/");
     const reasons = headReasons(f);
@@ -745,7 +781,7 @@
       el("span", { class: "counts" }, el("span", { class: "plus" }, "+" + f.adds), " ",
         el("span", { class: "minus" }, "−" + f.dels)),
       typeof f.risk === "number" ? el("span", { class: "risk band-" + (f.band || "low"),
-        title: (f.reasons || []).join(", ") }, `${f.band} risk`,
+        title: riskLine(f) }, `${f.band} risk`,
         reasons.length ? el("span", { class: "reasons" }, " · " + reasons.join(", ")) : null) : null,
     ];
   }

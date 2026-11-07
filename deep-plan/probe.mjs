@@ -1194,23 +1194,26 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
     status: (b.match(/data-status="([a-z]+)"/) || [])[1],
     acts: [...b.split("</div>")[0].matchAll(/class="dp-act" data-a="([a-z]+)"/g)].map(m => m[1]).join(","),
   }));
-  ok("working surface: each increment's buttons are the ones its status allows",
-    incs.length > 0 && incs.every(i => VALID[i.status] === i.acts), JSON.stringify(incs));
+  // In review the go is never drawn: applyTransition refuses it until the
+  // grade. Each card keeps only block and reset (see "go / working / done"
+  // for the full table once the gate can open).
+  ok("working surface: in review every card offers only block and reset",
+    incs.length > 0 && incs.every(i => i.acts === "block,reset"), JSON.stringify(incs));
   // One primary: the first allowed move of the lowest increment not done.
   // block and reset are quiet on every increment.
   const blocks = working.split('<div class="inc" id="inc-').slice(1).map(b => b.split("</div>")[0]);
   const nextI = incs.findIndex(i => i.status !== "done");
-  // While the plan is in review, no go can work: the next step is drawn
-  // held, with the reason in its title, and the gate's fix link is the one
-  // primary. After the grade, the go is primary again (see "go / working / done").
+  // While the plan is in review no go can work: no card draws one, held or
+  // otherwise, and the gate's fix link is the one primary. The next card
+  // says quietly when its go opens. After the grade, the go is primary
+  // again (see "go / working / done").
   const prim = [...working.matchAll(/data-a="([a-z]+)" data-n="(\d+)" data-kind="primary"/g)];
-  const held = [...working.matchAll(/data-a="([a-z]+)" data-n="(\d+)" data-kind="held" disabled title="([^"]*)"/g)];
-  ok("working surface: in review, the next step is held, not primary, and says why",
-    nextI >= 0 && prim.length === 0 && held.length > 0 && Number(held[0][2]) === nextI + 1 &&
-    held[0][1] === incs[nextI].acts.split(",").find(a => a !== "block" && a !== "reset") &&
-    held.every(m => m[3] === "The gate is shut: take the alignment check first — available when served") &&
+  const waits = blocks.map(b => b.includes('<span class="dim dp-go-wait">go opens after the alignment check</span>'));
+  ok("working surface: in review no card draws a go; the next card says when it opens",
+    nextI >= 0 && prim.length === 0 && !/data-a="go"/.test(working) && !working.includes('data-kind="held"') &&
+    waits.filter(Boolean).length === 1 && waits[nextI] &&
     working.includes('<a class="dp-gate-fix" href=') && working.includes(".dp-gate-fix{display:inline-block;background:var(--fg);color:var(--bg)"),
-    JSON.stringify({ prim: prim.map(m => m.slice(1)), held: held.map(m => m.slice(1)) }));
+    JSON.stringify({ prim: prim.map(m => m.slice(1)), waits }));
   ok("working surface: block and reset are quiet on every increment",
     blocks.every(b => [...b.matchAll(/data-a="(block|reset)" data-n="\d+"( data-kind="quiet")?/g)].every(m => m[2])));
   // A check that has not passed folds its recipe and run lines under its
@@ -1229,7 +1232,7 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("working surface: an outstanding check is one row, its recipe and run in the card's one fold",
     pend.length > 0 && pend.every(li => !/<br>(recipe|run —) /.test(li) && !li.includes("<details")) &&
     wCards.every(c => (c.match(/<details class="dp-run">/g) || []).length <= 1 && foldOk(c)) &&
-    /<details class="dp-run"><summary>how (it|they) runs?<\/summary><span class="dp-run-c" data-id="test-retry-sweep-spec"><b>retry sweep spec<\/b><br>run: <code>bundle exec rspec/.test(card1),
+    /<details class="dp-run"><summary>how (it|they) runs?<\/summary><span class="dp-run-c" data-id="test-retry-sweep-spec" title="[^"]*"><b>retry sweep spec<\/b><code class="dp-run-cmd">bundle exec rspec/.test(card1),
     card1);
   ok("working surface: a card is one row per check, then one fold row",
     (card1.match(/<li title="check /g) || []).length >= 2 && (card1.match(/<summary>/g) || []).length === 1, card1);
@@ -1240,9 +1243,14 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("working surface: a check not yet run shows no state word and no id beside its name",
     pend.every(li => !/pending/.test(lead(li).replace(/<[^>]+>/g, "")) && !/<code>/.test(lead(li)) && !/\[(test|manual)/.test(li)),
     pend.slice(0, 1).join(""));
-  ok("working surface: the check id sits in the title and closes its part of the fold",
+  // The fold is each check's name and its commands; the internals (recipe,
+  // cost tier, cwd, hash, check id) sit in the part's title.
+  ok("working surface: the fold shows name and command; the check id and internals sit in its title",
     pend.some(li => { const id = (li.match(/^ title="check ([^"]+)"/) || [])[1];
-      return id && w2.includes(`<span class="dp-run-c" data-id="${id}">`) && new RegExp(`data-id="${id}"><b>[^<]+</b><br>[\\s\\S]*?<br>check id <code>${id}</code></span>`).test(w2); }),
+      const part = (w2.match(new RegExp(`<span class="dp-run-c" data-id="${id}" title="([^"]*)">([\\s\\S]*?</code>)</span>`)) || []);
+      return id && part[1] && part[1].endsWith(`check id ${id}`) && /^<b>[^<]+<\/b>(<span class="dp-run-w">[^<]+<\/span>)?<code class="dp-run-cmd">/.test(part[2]) &&
+        !/check id|recipe |cheap|expensive| in <code>|#[0-9a-f]{12}/.test(part[2].replace(/<code class="dp-run-cmd">[\s\S]*?<\/code>/g, "")); }) &&
+    w2.includes(".dp-run-cmd{display:block;") && /\.dp-run-cmd\{[^}]*white-space:pre-wrap;overflow-wrap:anywhere/.test(w2),
     pend.slice(0, 1).join(""));
   ok("working surface: kinds read as words",
     /<span class="dp-kind">· test<\/span>/.test(w2) && /<span class="dp-kind">· check by hand<\/span>/.test(w2));
@@ -1258,7 +1266,7 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   const rvChecks = review.split("<li").map(x => x.split("</li>")[0]).filter(x => /^ title="check [^"]+"><svg class="dp-mark"/.test(x));
   ok("review surface: a card's run lines fold under one how they run",
     rvChecks.length > 0 && rvChecks.every(li => !/<br>(recipe |run — |run: )/.test(li) && !li.includes("<details")) &&
-    /<\/ul><details class="dp-run"><summary>how (it|they) runs?<\/summary><span class="dp-run-c" data-id="[^"]+"><b>[^<]+<\/b><br>run: /.test(review),
+    /<\/ul><details class="dp-run"><summary>how (it|they) runs?<\/summary><span class="dp-run-c" data-id="[^"]+" title="[^"]*"><b>[^<]+<\/b><code class="dp-run-cmd">/.test(review),
     rvChecks.slice(0, 1).join(""));
   ok("review surface: a check reads as its name and kind, the id only in its title and fold",
     rvChecks.every(li => !/<code>/.test(li.replace(/<details[\s\S]*$/, "")) && !/\[(test|manual|e2e)/.test(li)) &&
@@ -1284,6 +1292,22 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
     review.includes('go.classList.toggle("dp-primary", n < all.length);') &&
     review.includes('copy.classList.toggle("dp-primary", n === all.length);') &&
     review.includes("#dp-foot .dp-tbtn.dp-primary{background:var(--fg)") && !review.includes("#dp-foot .dp-foot-copy{background"));
+  // Go to quiz leaves once every question has an answer, and while the quiz
+  // is in view; Copy, once primary, says where the copy goes.
+  ok("review surface: Go to quiz hides once answered or while the quiz is in view; primary Copy carries its hint",
+    review.includes('go.hidden = n === all.length || seen > 0;') && review.includes("new IntersectionObserver(") &&
+    /<span class="dp-foot-hint" hidden>paste it into the Claude session<\/span>\n<button type="button" class="dp-tbtn dp-foot-copy"/.test(review) &&
+    review.includes("if (hint) hint.hidden = n < all.length;") && review.includes("#dp-foot [hidden]{display:none}"));
+  // The rail marks a section at the very top too: the first one, not nothing.
+  ok("surfaces: above the first section the rail marks it current",
+    working.includes('if (!cur) cur = navLinks.filter(function (l) { return l.target.classList.contains("dp-sec")') &&
+    review.includes('if (!cur) cur = navLinks.filter('));
+  // One filled button style: the page's text colour with the ground as its
+  // text. Amber and green are for status, never a button fill.
+  ok("surfaces: every filled button is the neutral fg-on-bg primary",
+    working.includes("#dp-amend-copy{background:var(--fg);color:var(--bg);") &&
+    review.includes("#dp-hl-add{position:absolute;z-index:40;background:var(--fg);color:var(--bg);") &&
+    !/button[^{]*\{[^}]*background:var\(--(accent|good|warn)[,)]/.test(working + review));
   // Send it back is one line and the general box; the foot bar is the only
   // Copy. With every question answered, the foot's go lands on the box.
   const send = (review.match(/<h2>Send it back<\/h2>[\s\S]*?<script>/) || [""])[0];
@@ -1310,9 +1334,8 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("working surface: block and reset fold under ⋯ on every card, the next one's included",
     blocks.length > 0 && blocks.every(b => !/data-a="(block|reset)"/.test(lead2(b)) && /<details class="dp-more"><summary[^>]*>⋯<\/summary>/.test(b)),
     JSON.stringify(blocks.map(lead2).map(b => b.slice(-300))));
-  ok("working surface: each card shows at most one move in the open, and the next card shows its first",
-    blocks.every(b => (lead2(b).match(/class="dp-act"/g) || []).length <= 1) &&
-    new RegExp(`data-a="${incs[nextI].acts.split(",")[0]}" data-n="${nextI + 1}"`).test(lead2(blocks[nextI])),
+  ok("working surface: in review no card shows a move in the open",
+    blocks.every(b => (lead2(b).match(/class="dp-act"/g) || []).length === 0),
     JSON.stringify(blocks.map(lead2).map(b => b.slice(-300))));
   ok("working surface: the primary is text colour on the page ground, and stays full contrast disabled",
     working.includes('.dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg)') &&
@@ -1609,9 +1632,24 @@ const gateLine = () => (fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.
 {
   const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
   const prim = [...wk.matchAll(/data-a="([a-z]+)" data-n="(\d+)" data-kind="primary"/g)];
-  ok("working: once the gate can open, go is the one primary again and nothing is held",
-    prim.length === 1 && prim[0][1] === "go" && !wk.includes('data-kind="held" disabled') && !wk.includes('class="dp-gate-fix"'),
+  ok("working: once the gate can open, go is the one primary again and nothing waits on the check",
+    prim.length === 1 && prim[0][1] === "go" && !wk.includes('data-kind="held"') && !wk.includes('class="dim dp-go-wait"') && !wk.includes('class="dp-gate-fix"'),
     JSON.stringify(prim.map(m => m.slice(1))));
+  // After the grade each card draws what its status allows again, at most
+  // one move in the open, the next card's first.
+  const VALID = { pending: "go,block,reset", blocked: "go,block,reset", authorized: "start,done,block,reset",
+    working: "done,block,reset", done: "block,reset" };
+  const bl = wk.split('<div class="inc" id="inc-').slice(1).map(b => b.split("</div>")[0]);
+  const incs = bl.map(b => ({ status: (b.match(/data-status="([a-z]+)"/) || [])[1],
+    acts: [...b.matchAll(/class="dp-act" data-a="([a-z]+)"/g)].map(m => m[1]).join(",") }));
+  const lead2 = b => b.replace(/<details class="dp-more">[\s\S]*?<\/details>/, "");
+  const nextI = incs.findIndex(i => i.status !== "done");
+  ok("working: after the grade each increment's buttons are the ones its status allows",
+    incs.length > 0 && incs.every(i => VALID[i.status] === i.acts), JSON.stringify(incs));
+  ok("working: after the grade each card shows at most one move in the open, the next card its first",
+    bl.every(b => (lead2(b).match(/class="dp-act"/g) || []).length <= 1) &&
+    new RegExp(`data-a="${incs[nextI].acts.split(",")[0]}" data-n="${nextI + 1}"`).test(lead2(bl[nextI])),
+    JSON.stringify(bl.map(lead2).map(b => b.slice(-300))));
 }
 ok("working: between increments, with nothing blocked, the gate line says the plan is ready for the next go",
   /data-allow="0" data-ready="1"[^>]*><svg[^>]*>.*var\(--accent\).*<\/svg> <b>Ready<\/b>: <a href="#inc-1">give increment 1 its go<\/a><\/p>$/.test(gateLine()) &&
@@ -2691,6 +2729,54 @@ if (want("render infers checks and refuses gaps")) {
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
+}
+
+// -------------------------------------------------- shared checks: said once
+//
+// A recipe every increment carries (a default that matches the whole repo)
+// is drawn once under the Increments heading, and each card counts it in
+// one line. Display only: state keeps one check per increment.
+if (want("shared checks: said once")) {
+  const SR = path.join(TMP, "shared-root");
+  fs.mkdirSync(path.join(SR, ".seamux"), { recursive: true });
+  execSync("git init -q && git -c user.email=probe@deep-plan -c user.name=probe commit -q --allow-empty -m init", { cwd: SR });
+  fs.writeFileSync(path.join(SR, ".seamux", "verify.json"), JSON.stringify({ recipes: [
+    { id: "scrub", kind: "test", run: "python3 tools/scrub_check.py", match: ["**"], default: true },
+    { id: "app-rust", kind: "test", run: "cargo fmt --check && cargo test -q 2>&1 | tail -n 40", match: ["**"], default: true },
+    { id: "unit", kind: "test", run: "npm test", match: ["app/**"], default: true },
+  ] }));
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "shared-checks";
+  s.deliverables[0] = { title: "Retry sweep", body: "A timer job.", files: ["app/workers/retry_sweep.rb"] };
+  s.deliverables[1] = { title: "Migration", body: "Columns.", files: ["db/migrate/add.rb"] };
+  const r = cli("render", tmpSpec(s), "--root", SR);
+  const rd = sfx => fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, `shared-checks.${sfx}`), "utf8");
+  const stS = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "shared-checks.json"), "utf8"));
+  ok("shared checks: state still keeps every shared check on every increment",
+    r.status === 0 && stS.increments.every(i => i.checks.scrub && i.checks["app-rust"]) && stS.increments[0].checks.unit && !stS.increments[1].checks.unit,
+    r.stderr);
+  for (const [name, page] of [["working", rd("working.html")], ["review", rd("review.html")]]) {
+    const cards = page.split('<div class="inc" id="inc-').slice(1).map(c => c.split(/<div class="dp-acts">|<button type="button" class="dp-note-open"/)[0]);
+    const line = (page.match(/<h2>Increments<\/h2><p class="dim dp-shared"[^>]*>Every increment also runs: ([\s\S]*?)<\/p>/) || [])[1] || "";
+    ok(`shared checks: ${name}: said once under the heading, with one fold of their commands`,
+      /> scrub<\/span>, <span class="dp-shared-c"[^>]*><svg[\s\S]*?<\/svg> app-rust<\/span>$/.test(line) &&
+      /<\/p><details class="dp-run"><summary>how they run<\/summary><span class="dp-run-c" data-id="scrub"/.test(page) &&
+      page.includes("cargo fmt --check &amp;&amp;\ncargo test -q 2&gt;&amp;1 |\ntail -n 40</code>"), line);
+    ok(`shared checks: ${name}: each card lists only its own checks and counts the shared ones`,
+      cards.length === 2 && cards.every(c => !/title="check (scrub|app-rust)"/.test(c) && !/data-id="(scrub|app-rust)"/.test(c) &&
+        /<p class="dim dp-shared-sum" title="scrub: pending\napp-rust: pending"><svg[\s\S]*?<\/svg> \+2 shared checks<\/p>/.test(c)) &&
+      /title="check unit"/.test(cards[0]), cards[1]);
+  }
+  // A shared check that failed on one increment is a full row on that card
+  // again, with its note; the count keeps the quiet one.
+  cli("check", "fail", "shared-checks", "2", "scrub", "a token in a fixture", "--" + "force");
+  cli("rehydrate", "shared-checks");
+  const c2 = rd("working.html").split('<div class="inc" id="inc-')[2] || "";
+  ok("shared checks: a shared check that failed is its card's own row again, with its note",
+    /<li title="check scrub">[\s\S]*?scrub <span class="dp-kind">· test<\/span> — a token in a fixture/.test(c2) &&
+    /<p class="dim dp-shared-sum" title="app-rust: pending"><svg[\s\S]*?<\/svg> \+1 shared check<\/p>/.test(c2), c2.slice(0, 1500));
+  cli("close", "shared-checks");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "shared-checks.json"), { force: true });
 }
 
 // -------------------------------------------------- check run: inline, detached, from wait

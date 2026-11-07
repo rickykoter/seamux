@@ -60,10 +60,10 @@ actually last said. It costs a socket call per row, which is why it is opt-in.
 ▾ ◔ checkout-flow                  NEEDS YOU        header = jump · ▾ = fold · ◔ = progress
   Gate shut: Coupon at capture needs your go-ahead. the reason, then what was said, 2 lines
   [ go 3 ] ( diff ) ( jump ) ( ● CI )               28px buttons; the first is filled
-  dev/checkout-flow ○ #142 ✓ approved 1/4 increments   footer: links in mono, words in sans
+  dev/checkout-flow ○ uncommitted #142 ✓ approved 1/4 increments   footer: links in mono, words in sans
 ```
 
-No edge stripe. The tier is on the badge, the dial and the filled button, and the
+No edge stripe. The tier is on the badge, the dial and the card's frame, and the
 card that needs you keeps a tinted ground, the board's one loud thing. The
 worktree's own colour, the hex Peacock paints its VS Code window with, is the dot
 before the branch in the footer and the ring round the row you stand in: beside
@@ -81,18 +81,27 @@ name gives it the room by its ellipsis.
 
 The **button row** is everything you can do. The first chip is the verb that
 resolves the row (the collector orders them that way), and on the tiers that ask
-something of you (attend, wilt, done) it is filled. A working card asks nothing,
+something of you (attend, wilt, done) it is filled, in the app's one primary style:
+the neutral text colour as its ground and the page's ground as its words, the same
+on every card and in both modes. It never wears the tier's colour: the card that
+needs you already says amber on its tally, ring, badge and frame, and a fifth amber
+thing, the button, left the colour nothing to mean. A working card asks nothing,
 so its buttons stay ghosts: filling every card's first button made the board a
 wall of colour. Actionable signals (`● CI`, `allow`, `deny`, a Jira key, the
-sandbox) follow as ghosts in their own colour. Every button is at least 28px tall.
+sandbox) follow as ghosts in their own colour, except amber: a signal the collector
+sends in amber (`● CI` running, a Jira ticket in review) wears the link colour, since
+it is not asking you anything. Every button is at least 28px tall.
 
-The **footer** is what you recognise the row by: branch, the uncommitted ring, PR,
+The **footer** is what you recognise the row by: branch, uncommitted work, PR,
 issue, status signals (`✓ approved`, `draft`, `⚠ conflicts`) and progress, in one
 line that wraps only when it must. Branch, PR and issue are code tokens in mono and
 links, at least 24px tall; the signals and the increments count are words in the
-UI's sans. Uncommitted work is a small hollow ring in the neutral text colour, not
-an amber dot: amber is "needs you". A status signal reads as its word in its colour,
-with no dot before it (the collector's `● lookout` shows as `lookout`). The footer
+UI's sans. Uncommitted work is a small hollow ring in the neutral text colour and the
+word `uncommitted`, not an amber dot: amber is "needs you". The ring alone was a
+glyph you had to hover to read; a footer that carries the word may wrap, so it never
+clips the branch. A status signal reads as its word in its colour, with no dot
+before it (the collector's `● lookout` shows as `lookout`), and an amber one in the
+link colour instead. The footer
 shows only on an open card, the expanded view, and shows all of it at rest, in the
 card's flow: nothing waits for hover, so hovering moves no row and covers none. A
 folded card shows no footer; its header's tooltip carries the branch, progress and
@@ -227,8 +236,7 @@ inventing one.
   That is the dark palette. The board also has a light one, for when the app or the
   OS is set to light (`prefers-color-scheme`, or `data-theme="light"` on the root).
   There each tier takes a darker shade (ochre `#8a5d00`, teal `#296a8d`, red `#ae3b39`,
-  sage `#5d6a01`), dark enough to read as words on a card and to carry light text as a
-  filled button. Every colour lives in a token in `board.html`'s `:root` blocks;
+  sage `#5d6a01`), dark enough to read as words on a card. No tier fills a button. Every colour lives in a token in `board.html`'s `:root` blocks;
   render.js and intent.js name tokens, never a hex, and the probe fails on a dark-only
   literal or on text under 4.5:1 in either mode.
 - **The four row states are whimsy's shader events.** `EV_ATTEND` is the ochre attention
@@ -290,7 +298,9 @@ means something happened; motion on the shelf means the board is alive.**
 **The sky** (`#shelf` `data-sky`): render.js reads the local hour at each push
 and picks dawn (5-8), day (8-18), dusk (18-21) or night, and four layers inside
 the shelf cross-fade over a minute -- except on a page's first push, which
-shows its sky at once. A low sun, a high sun, and at night a moon with a
+shows its sky at once. A low sun, a high sun (a round, pale disc with a soft glow,
+never the amber of "needs you": a square amber one read as a status dot), and at
+night a moon with a
 handful of pixel stars twinkling on a slow cycle. In dark every sky is dark: the
 cat's charcoal was chosen against a near-black ground. In light the skies are pale
 and the charcoal is what carries the cat. The sky only changes when a
@@ -319,7 +329,11 @@ caption is a sentence set like one, 11.5px at full strength; it used to be 9px a
 55% opacity, crammed onto the headline's line.
 
 **The tally** (`#tally`) counts `broken`, `working` and `to close`, in the
-ranking's own order, on the headline's line. The headline already counts the
+ranking's own order, on the headline's line. It counts the cards you see: a
+family's children sit inside their parent's card, so counting them printed
+"2 working" over one working card. A tier whose cards hold children of it says so
+in its tooltip ("1 more working inside coupons-api"); a tier only a child wears
+still shows, at the child's count. The headline already counts the
 attend tier and the `quiet · N` divider counts the quiet one, so neither repeats
 there. Empty tiers are omitted: a row of zeroes is noise, and the absence of
 "broken" reads faster than "0 broken".
@@ -409,7 +423,7 @@ Rows that sink get no accent: losing urgency is not news. A row seen for the fir
 time fades in from slightly above, never from below, which would read as demotion.
 
 **Pending** things breathe. On a row that is waiting on a human, the filled button
-that would resolve it breathes a halo — exactly one moving element per row, and the
+that would resolve it breathes a neutral halo — exactly one moving element per row, and the
 button itself never fades, so its label stays at full contrast. A mid-turn row with no
 measurable progress gets an indeterminate sweep on its dial; a dial that *has* a
 percentage never spins, because it has already answered the question, and a row that

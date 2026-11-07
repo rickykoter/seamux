@@ -210,6 +210,9 @@ body{max-width:none;margin:0;padding:0}
 #dp-foot .dp-tbtn{flex:none;font:500 var(--fs-2)/1 system-ui;white-space:nowrap}
 #dp-foot .dp-tbtn.dp-primary{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
 #dp-foot .dp-tbtn.dp-primary:hover{color:var(--bg);opacity:.9}
+#dp-foot [hidden]{display:none}
+#dp-foot .dp-foot-hint{flex:none;white-space:nowrap;font-weight:400}
+@media (max-width:599px){#dp-foot .dp-foot-hint{display:none}}
 @media (max-width:479px){#dp-foot{padding-left:12px}#dp-foot .dp-foot-long{display:none}}
 @media (min-width:980px){#dp-foot{grid-column:2}}
 @media (min-width:1300px){#dp-foot{margin:0}}
@@ -247,7 +250,7 @@ body{max-width:none;margin:0;padding:0}
 .dp-q-sum .where{font:500 var(--fs-2)/1.3 var(--mono);color:var(--faint);flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dp-q-sum .what{flex:1;min-width:0}
 .dp-q-sum q{color:var(--dim);font-style:italic}
-#dp-hl-add{position:absolute;z-index:40;background:var(--good);color:var(--bg);border:0;border-radius:999px;
+#dp-hl-add{position:absolute;z-index:40;background:var(--fg);color:var(--bg);border:0;border-radius:999px;
   padding:5px 12px 5px 10px;font:600 var(--fs-3)/1.2 system-ui;cursor:pointer;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,.35)}
 #dp-hl-add svg{vertical-align:-3px;margin-right:5px}
 #dp-hl-add:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -608,6 +611,9 @@ export const SURFACE_JS = String.raw`<script>
         else if (!isSec && r.top <= line && r.bottom > line - 40) curSub = l;
       });
       if (curSub && (!cur || curSub.target.closest(".dp-sec") !== cur.target)) curSub = null;
+      // Above the first section (the title, the family strip) the reader is
+      // about to read it, so the rail marks it rather than nothing.
+      if (!cur) cur = navLinks.filter(function (l) { return l.target.classList.contains("dp-sec") && l.target.getBoundingClientRect().height > 0; })[0] || null;
     }
     var one = curSub || cur;
     navLinks.forEach(function (l) {

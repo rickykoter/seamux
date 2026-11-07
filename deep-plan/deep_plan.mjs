@@ -924,12 +924,27 @@ function mdInline(s) {
 // check's own row.
 const CHECK_HOW = /^(recipe |run — |run: |wait — |browser — |scripts: |query: )/;
 const checkShownHtml = lines => lines.filter(l => !CHECK_HOW.test(l)).map(l => `<br>${mdInline(l)}`).join("");
-// One check's part of the card's fold, or "" when nothing about it runs.
-function checkHowPart(name, lines, id) {
-  const how = lines.filter(l => CHECK_HOW.test(l));
-  if (!how.length) return "";
-  return `<span class="dp-run-c" data-id="${esc(id)}"><b>${esc(name || id)}</b><br>` +
-    how.map(l => mdInline(l)).join("<br>") + `<br>check id <code>${esc(id)}</code></span>`;
+// One check's part of the card's fold, or "" when nothing about it runs: its
+// name, then each command it runs, in mono. How the engine runs it (the
+// recipe, its cost tier, the folder it runs in, its hash, the check id) is
+// for whoever debugs a recipe, so it sits in the part's title. A long shell
+// line breaks after each && and | so it reads one step a line.
+const cmdHtml = cmd => esc(String(cmd)).replace(/ (&amp;&amp;|\|\||\|) /g, " $1\n");
+function checkHowPart(c) {
+  const cmds = [];
+  for (const s of (c.exec && c.exec.steps) || []) {
+    if (!s.command || s.kind === "acquire" || s.kind === "claim") continue;
+    const wait = s.kind === "wait" ? `polls, up to ${s.timeout}s${s.export ? `, sets $${s.export}` : ""}` : "";
+    cmds.push([wait || (s.kind === "browser" ? "browser script" : ""), s.command]);
+  }
+  for (const f of (c.exec && c.exec.scripts) || []) cmds.push(["script", f]);
+  if (c.run) cmds.push(["", c.run]);
+  if (c.query) cmds.push(["query", c.query]);
+  if (!cmds.length) return "";
+  const tip = [c.recipe ? `recipe ${c.recipe}` : "", c.exec && c.exec.tier, c.exec && c.exec.cwd ? `runs in ${c.exec.cwd}` : "",
+    c.hash ? `#${c.hash}` : "", `check id ${c.id}`].filter(Boolean).join(" · ");
+  return `<span class="dp-run-c" data-id="${esc(c.id)}" title="${esc(tip)}"><b>${esc(c.name || c.id)}</b>` +
+    cmds.map(([w, cmd]) => `${w ? `<span class="dp-run-w">${esc(w)}</span>` : ""}<code class="dp-run-cmd">${cmdHtml(cmd)}</code>`).join("") + `</span>`;
 }
 function checksHowHtml(parts) {
   parts = parts.filter(Boolean);
@@ -937,22 +952,63 @@ function checksHowHtml(parts) {
   return `<details class="dp-run"><summary>how ${parts.length === 1 ? "it runs" : "they run"}</summary>${parts.join("")}</details>`;
 }
 
+// A check every increment carries, the same recipe on each (a default recipe
+// that matches the whole repo, say), is said once under the Increments
+// heading instead of on every card, where it buried the card's own checks.
+// Display only: state still keeps one per increment and the gate reads that.
+// `lists` is each increment's checks as [{id, recipe, ...}]; a plan of one
+// increment shares nothing.
+function sharedRecipes(lists) {
+  if (lists.length < 2) return new Set();
+  const [first, ...rest] = lists.map(l => new Set(l.filter(c => c.recipe).map(c => c.recipe)));
+  return new Set([...first].filter(k => rest.every(r => r.has(k))));
+}
+const isShared = (shared, c) => !!c.recipe && shared.has(c.recipe);
+// The line under the Increments heading: each shared check with its mark on
+// the increment the plan is on (`curN`; none at review, where nothing has
+// run), then one fold with their commands.
+function sharedLineHtml(list, curN) {
+  if (!list.length) return "";
+  const items = list.map(c => `<span class="dp-shared-c" title="check ${esc(c.id)}">${CHECK_GLYPH[c.status || "pending"] || CHECK_GLYPH.pending} ${esc(c.name || c.id)}</span>`);
+  const tip = curN ? ` title="The marks show increment ${curN}. Each card counts its own."` : "";
+  return `<p class="dim dp-shared"${tip}>Every increment also runs: ${items.join(", ")}</p>` +
+    checksHowHtml(list.map(c => checkHowPart(c)));
+}
+// A card's own count of the shared checks it folds away: one line, its mark
+// the worst of them, each one's status in the title.
+function sharedSumHtml(list) {
+  if (!list.length) return "";
+  const agg = checksAggregate({ checks: Object.fromEntries(list.map(c => [c.id, c])) });
+  const tip = list.map(c => `${c.name || c.id}: ${c.status || "pending"}`).join("\n");
+  return `<p class="dim dp-shared-sum" title="${esc(tip)}">${CHECK_GLYPH[agg] || CHECK_GLYPH.pending} ` +
+    `+${list.length} shared check${list.length === 1 ? "" : "s"}</p>`;
+}
+// On a working card a shared check folds into that count only while it is
+// quiet: passed or not yet run, and with nothing the served page acts on (a
+// browser run, a claim that asks). One that failed, runs or waits on
+// someone stays a full row, with its note and its controls, so a card
+// never hides what it owes.
+const foldsAway = (shared, c) => isShared(shared, c) && ["pass", "pending"].includes(c.status || "pending") &&
+  !((c.exec && c.exec.steps) || []).some(s => s.kind === "browser" || (s.kind === "claim" && s.ask));
+
 // The review page's checks, in the working page's row shape: glyph, name,
 // kind in words, the id in the title and the fold. Nothing has run at review,
 // so every glyph is the pending ring. checkLinesMd's head is the markdown plan's.
 // A waived increment says so in the same place, on one muted line.
 const waiverHtml = waiver => `<p class="dim dp-checks-none">No checks: ${esc(waiver)}</p>`;
-function checksHtml(list, waiver) {
-  if (!list.length) return waiver ? waiverHtml(waiver) : "";
+function checksHtml(all, waiver, shared = new Set()) {
+  if (!all.length) return waiver ? waiverHtml(waiver) : "";
+  const list = all.filter(c => !isShared(shared, c)), sum = sharedSumHtml(all.filter(c => isShared(shared, c)));
+  if (!list.length) return `<p class="dim dp-checks-h">Done when these pass:</p>${sum}`;
   const parts = [];
   return `<p class="dim dp-checks-h">Done when these pass:</p><ul class="dim dp-checks dp-checks-st">` +
     list.map(c => {
       const { lines } = checkLinesMd(c);
-      parts.push(checkHowPart(c.name, lines, c.id));
+      parts.push(checkHowPart(c));
       const inferred = c.inferred ? ` — inferred: a default recipe in <code>${esc(c.source)}</code> covers this increment's files` : "";
       return `<li title="check ${esc(c.id)}">${CHECK_GLYPH.pending} ${esc(c.name || "")} <span class="dp-kind">· ${esc(checkKindWords(c))}</span>${inferred}` +
         `${checkShownHtml(lines)}</li>`;
-    }).join("") + "</ul>" + checksHowHtml(parts);
+    }).join("") + "</ul>" + sum + checksHowHtml(parts);
 }
 
 // ---------------------------------------------------------------- render
@@ -1352,7 +1408,10 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:var(--fs-3) v
 .st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--warn-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-checks-st{list-style:none;padding-left:0;margin-bottom:4px}
-.dp-run-c{display:block;margin:6px 0 0}.dp-run-c>b{font-weight:600;color:var(--fg)}
+.dp-run-c{display:block;margin:8px 0 0}.dp-run-c>b{display:block;font-weight:600;color:var(--fg)}
+.dp-run-w{display:block;margin:2px 0 0;font-size:var(--fs-2)}
+.dp-run-cmd{display:block;width:fit-content;max-width:100%;box-sizing:border-box;margin:2px 0 0;padding:3px 8px 3px calc(8px + 2ch);text-indent:-2ch;
+white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg)}
 .dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
@@ -1360,10 +1419,13 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
    cannot act, but it stays full contrast: it names the next step. */
 .dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
 .dp-act[data-kind="primary"][disabled]{opacity:1}
-/* A go the gate would refuse (the plan is still in review): drawn quiet and
-   dashed, so it reads as waiting; the gate line's fix link is the primary. */
-.dp-act[data-kind="held"]{background:none;border-style:dashed;color:var(--dim)}
-.dp-act[data-kind="held"][disabled]{opacity:.8;cursor:not-allowed}
+/* In review no card draws a go; the next one says when it opens. */
+.dp-go-wait{font-size:var(--fs-3);margin-right:10px}
+/* Checks every increment shares: one line under the Increments heading, and
+   one count on each card. */
+.dp-shared{margin:4px 0 2px}.dp-shared-c{white-space:nowrap}
+.dp-shared+details.dp-run{margin-bottom:10px}
+.dp-shared-sum{margin:2px 0 4px}
 .dp-gate-fix{display:inline-block;background:var(--fg);color:var(--bg);font-weight:600;text-decoration:none;
 border-radius:6px;padding:3px 12px;margin-left:2px}
 .dp-gate-fix:hover{opacity:.9}
@@ -1982,23 +2044,37 @@ function reviewFoot(nq) {
     : `<span class="dp-foot-n" role="status" aria-live="polite"><span id="dp-foot-msg"></span></span>`;
   return `<div id="dp-foot" aria-label="send it back">${count}
 <button type="button" class="dp-tbtn${nq ? " dp-primary" : ""}" id="dp-foot-go">${nq ? "Go to quiz" : "Go to send it back"}</button>
+<span class="dp-foot-hint"${nq ? " hidden" : ""}>paste it into the Claude session</span>
 <button type="button" class="dp-tbtn dp-foot-copy${nq ? "" : " dp-primary"}" id="dp-foot-copy">Copy<span class="dp-foot-long">&nbsp;for session</span></button>
 <script>
 (function () {
   var a = document.getElementById("dp-foot-a"), msg = document.getElementById("dp-foot-msg");
   var go = document.getElementById("dp-foot-go"), copy = document.getElementById("dp-foot-copy");
+  var hint = document.querySelector("#dp-foot .dp-foot-hint"), seen = 0;
   function qs() { return Array.prototype.slice.call(document.querySelectorAll(".q[data-qid]")); }
   // One filled button: the quiz jump until every question has an answer,
-  // then Copy for session. With no quiz, Copy is primary from the start.
+  // then Copy for session, with a word on where the copy goes. The jump
+  // leaves once every question has an answer, and while the quiz is in view,
+  // where it has nowhere to go. With no quiz, Copy is primary from the start.
   function count() {
     if (!a) return;
     var all = qs(), n = all.filter(function (q) { return q.querySelector("input:checked"); }).length;
     a.textContent = n;
     a.parentNode.classList.toggle("dp-foot-all", n === all.length);
     go.classList.toggle("dp-primary", n < all.length);
+    go.hidden = n === all.length || seen > 0;
     copy.classList.toggle("dp-primary", n === all.length);
+    if (hint) hint.hidden = n < all.length;
   }
   document.addEventListener("change", function (e) { if (e.target.closest && e.target.closest(".q")) count(); });
+  if (a && window.IntersectionObserver) {
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { e.target.__dpIn = e.isIntersecting; });
+      seen = qs().filter(function (q) { return q.__dpIn; }).length;
+      count();
+    });
+    qs().forEach(function (q) { io.observe(q); });
+  }
   count();
   function show(node) {
     var sec = node && node.closest(".dp-sec");
@@ -2118,10 +2194,13 @@ function reviewHtml(spec, b64, adrs = [], map = null) {
 <b id="dp-p-${esc(q.id)}">${qi + 1}. ${esc(q.prompt)}</b>${opts}</div>`;
   }).join("\n");
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
+  const lists = (spec.deliverables || []).map((d, i) => planChecks(spec, i));
+  const shared = sharedRecipes(lists);
+  const sharedLine = sharedLineHtml((lists[0] || []).filter(c => isShared(shared, c)));
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
 ${fileTreeHtml(planPaths(d))}
-${checksHtml(planChecks(spec, i), d.waiver)}
+${checksHtml(lists[i], d.waiver, shared)}
 ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).join("")}</ul>` : ""}
 <button type="button" class="dp-note-open" aria-expanded="false" aria-controls="dp-note-inc-${i + 1}">Comment</button>
 <textarea class="dp-note" id="dp-note-inc-${i + 1}" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment" aria-label="comment on increment ${i + 1}" hidden></textarea></div>`).join("\n");
@@ -2207,7 +2286,7 @@ ${DP_RISK_CSS}
 </style>` + commonBody(spec, adrs, true,
     endStateHtml(map, (spec.deliverables || []).map((d, i) => ({ n: i + 1, title: d.title }))),
     reviewSummaryHtml(spec, adrs, (spec.quiz || []).length)) + `
-<h2>Increments</h2>${incs}
+<h2>Increments</h2>${sharedLine}${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
 <p class="dim">Answer each question. A miss means the plan and your reading of it disagree.</p>
@@ -2324,10 +2403,15 @@ function checkKindWords(c) {
   return (CHECK_KIND_WORDS[c.kind] || c.kind || "check") + (c.system ? ` (${c.system})` : "");
 }
 
-function checksRow(inc, slug = "") {
-  const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
-  if (!all.length) return "";
-  const agg = checksAggregate(inc);
+function checksRow(inc, slug = "", shared = new Set()) {
+  const every = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
+  if (!every.length) return "";
+  // The checks every increment shares are drawn once above the cards; the
+  // card keeps its own, and counts the shared ones in one line.
+  const all = every.filter(([id, v]) => !foldsAway(shared, { id, ...v }));
+  const shSum = sharedSumHtml(every.filter(([id, v]) => foldsAway(shared, { id, ...v })).map(([id, v]) => ({ id, ...v })));
+  if (!all.length) return shSum;
+  const agg = checksAggregate({ checks: Object.fromEntries(all) });
   const parts = [];
   const items = all.map(([id, v]) => {
     const st = v.status || "pending";
@@ -2336,7 +2420,7 @@ function checksRow(inc, slug = "") {
     // "how they run" fold (checkHowPart).
     const lines = st === "pass" ? [] : checkLinesMd({ id, ...v }).lines;
     const detail = checkShownHtml(lines);
-    parts.push(checkHowPart(v.name, lines, id));
+    if (st !== "pass") parts.push(checkHowPart({ id, ...v }));
     // A check the Dock can act on (a browser run, a claim that asks) carries
     // its address; the served page's plan.js adds run, open tab, the live
     // filmstrip and the picker. On disk the row is just text.
@@ -2369,7 +2453,7 @@ function checksRow(inc, slug = "") {
   const failed = all.filter(([, v]) => v.status === "fail").length;
   const sum = states.size > 1
     ? `<p class="dim dp-checks-sum">checks: ${CHECK_GLYPH[agg] || ""} ${passed} of ${all.length} passed${failed ? `, ${failed} failed` : ""}</p>` : "";
-  return `${sum}<ul class="dim dp-checks dp-checks-st">${items}</ul>${checksHowHtml(parts)}${tick}`;
+  return `${sum}<ul class="dim dp-checks dp-checks-st">${items}</ul>${shSum}${checksHowHtml(parts)}${tick}`;
 }
 
 // The family this plan belongs to, under the title: the parent and every
@@ -2559,13 +2643,20 @@ function workingHtml(spec, st, b64) {
   // quiet and folded, so five equal buttons no longer hide which one matters.
   const next = (st.increments || []).find(i => i.status !== "done");
   const nextAct = next && incActions(next.status).find(a => !ALWAYS.includes(a));
-  // Until the alignment check passes, applyTransition refuses every go. So a
-  // go is drawn held (quiet, kept disabled even when served, its title saying
-  // why) and the gate line's fix link is the page's one primary. The grade
-  // that passes rewrites this page, and the served page reloads on that.
-  const held = st.phase === "review";
-  const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : held ? "held" : inc === next && a === nextAct ? "primary" : "";
-  const HELD_TIP = "The gate is shut: take the alignment check first";
+  // Until the alignment check passes, applyTransition refuses every go, so
+  // in review no card draws one: the gate line's "take the alignment check"
+  // is the page's one primary, and the next card says, quietly, when its go
+  // opens. block and reset still work, behind ⋯. The grade that passes
+  // rewrites this page, and the served page reloads on that.
+  const inReview = st.phase === "review";
+  const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : inc === next && a === nextAct ? "primary" : "";
+  // Checks every increment carries are said once, under the heading, with
+  // the marks of the increment the plan is on (the next not done, else the last).
+  const lists = (st.increments || []).map(inc => Object.entries(checksOf(inc)).filter(([, v]) => !v.retired).map(([id, v]) => ({ id, ...v })));
+  const shared = sharedRecipes(lists);
+  const curI = Math.max(0, next ? (st.increments || []).indexOf(next) : lists.length - 1);
+  const cur = (st.increments || [])[curI];
+  const sharedLine = sharedLineHtml((lists[curI] || []).filter(c => isShared(shared, c)), cur && cur.n);
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
     const files = fileTreeHtml(planPaths(d));
@@ -2575,22 +2666,23 @@ function workingHtml(spec, st, b64) {
     // blocked), so it says so; data-a stays go, which is what the server runs.
     const label = a => a === "go" && inc.status === "blocked" ? "unblock" : a;
     const btn = a => `<button class="dp-act" data-a="${a}" data-n="${inc.n}"${kindOf(inc, a) ? ` data-kind="${kindOf(inc, a)}"` : ""} disabled ` +
-      `title="${kindOf(inc, a) === "held" ? HELD_TIP : label(a) === "unblock" ? `unblock increment ${inc.n}: give it its go again` : `${a} increment ${inc.n}`} — available when served">${label(a)}</button>`;
+      `title="${label(a) === "unblock" ? `unblock increment ${inc.n}: give it its go again` : `${a} increment ${inc.n}`} — available when served">${label(a)}</button>`;
     // Every card shows at most one move in the open: the next increment's
     // go, start or done, a blocked one's unblock, or the start or done an
     // increment that has its go still owes. The rest (a go out of order, the
     // second of start and done, block, reset) wait behind a small ⋯ on every
     // card alike.
-    const all = incActions(inc.status);
+    const all = inReview ? incActions(inc.status).filter(a => ALWAYS.includes(a)) : incActions(inc.status);
     const moves = all.filter(a => !ALWAYS.includes(a));
     const open1 = inc === next || inc.status === "blocked" || inc.status === "authorized" || inc.status === "working";
     const shown = open1 ? moves.slice(0, 1) : [], more = all.filter(a => !shown.includes(a));
-    const acts = shown.map(btn).join("") + (more.length
+    const wait = inReview && inc === next ? `<span class="dim dp-go-wait">go opens after the alignment check</span>` : "";
+    const acts = wait + shown.map(btn).join("") + (more.length
       ? `<details class="dp-more"><summary aria-label="more for increment ${inc.n}" title="more for increment ${inc.n}">⋯</summary><span class="dp-more-acts">${more.map(btn).join("")}</span></details>` : "");
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
-    const checks = checksRow(inc, st.slug) || (d.waiver ? waiverHtml(d.waiver) : "");
+    const checks = checksRow(inc, st.slug, shared) || (d.waiver ? waiverHtml(d.waiver) : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
     // Edits the gate let through outside this increment's files (decide.mjs).
@@ -2618,7 +2710,7 @@ ${acts ? `<div class="dp-acts">${acts}</div>` : ""}</div>`;
       drift ? ' · <span class="dp-drift">changed since you approved it</span>' : ""}</p>\n` : "";
   const work = familyStripHtml(spec.slug) + "\n" + approved +
     `<h2>Gate</h2>${gateLineHtml(st, g, next, nextAct, drift)}
-<h2>Increments</h2>${rows}
+<h2>Increments</h2>${sharedLine}${rows}
 `;
   const body = commonBody(spec, st.adrs || [], true,
     endStateHtml(st.map, (st.increments || []).map(i => ({ n: i.n, title: i.title, status: i.status }))), work);
@@ -2632,7 +2724,7 @@ ${acts ? `<div class="dp-acts">${acts}</div>` : ""}</div>`;
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
 ${DP_RISK_CSS}
-#dp-amend-copy{background:var(--accent,#46f);color:var(--bg);border:0;border-radius:6px;font-weight:600;
+#dp-amend-copy{background:var(--fg);color:var(--bg);border:0;border-radius:6px;font-weight:600;
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
@@ -3275,7 +3367,7 @@ code{background:color-mix(in srgb,var(--ink) 8%,transparent);border-radius:4px;p
 .annot input[type=text]{background:var(--bg);color:var(--ink);border:1px solid var(--line);
 border-radius:6px;padding:7px 10px;font:var(--fs-4) system-ui;width:55%}
 .annot select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px}
-.annot button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 14px;
+.annot button{background:var(--ink);color:var(--bg);border:0;border-radius:6px;padding:7px 14px;
 font:600 var(--fs-3) system-ui;cursor:pointer}
 .annot button:focus-visible,.annot input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 ul.alist{padding-left:0;list-style:none}

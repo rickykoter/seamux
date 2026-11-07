@@ -1764,7 +1764,7 @@ if (want("page script")) {
      tpl.includes('<button type="button" id="gate" class="gate">') && js.includes('$("gate").addEventListener("click", firstBlocking);') &&
      /function firstBlocking\(\) \{[\s\S]{0,400}x\.severity === "blocker" \|\| x\.severity === "major"[\s\S]{0,200}goTo\(list\[0\]\.id\);\s*else stepFinding\(1\);/.test(js));
   ok("page: a card puts its title first and shows a status pill only when it is not open",
-     /el\("span", \{ class: "title", title: x\.id[^\n]*\n(\s*\/\/[^\n]*\n)*\s*el\("span", \{ class: "meta" \}, el\("span", \{ class: "fid" \}/.test(js) &&
+     /el\("span", \{ class: "title", title: x\.id[^\n]*\n(\s*\/\/[^\n]*\n)*\s*finding \? el\("span", \{ class: "meta" \}, el\("span", \{ class: "cat" \}, metaWords\(x\)\)\) : null,/.test(js) &&
      js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.status)) : null);'));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
@@ -1775,20 +1775,28 @@ if (want("page script")) {
      js.includes('const detail = open.length ? `${counts} open.` : "";') &&
      js.includes('return { go, title: (g.detail ? g.detail + " " : "") +') && !js.includes("`blocked · ${counts} open`") &&
      js.includes("gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go }") && app.includes("gate.title = p.gate.title;"));
-  ok("app: the Findings button carries no count; the gate pill counts what is open and the Act button what is picked",
-     app.includes('const toggle = btn(short ? (open ? "▾" : "▸") : `Findings ${open ? "▾" : "▸"}`') && !app.includes("` · ${n} picked`") &&
+  ok("app: one findings control, \"N findings ▾\" or \"N findings · M picked ▾\": no Findings ▸ beside an Act ▾, and the gate pill keeps the counts by severity",
+     app.includes('const words = total ? `${total} finding${total === 1 ? "" : "s"}${n ? ` · ${n} picked` : ""}` : "No open findings";') &&
+     app.includes('} else toggle.textContent = `${words} ▾`;') &&
+     !app.includes("`Findings ${open ? \"▾\" : \"▸\"}`") && !app.includes("r-act-btn") && !app.includes("Act on ${n} picked") &&
      !app.includes("btn(`Findings · ${openSummary(j.open)}"));
-  ok("app: picked, Edit, Fix with commits, Post comments (and Push) sit in one \"Act on n picked ▾\" menu, so the header row keeps one button for them",
-     /bar\.push\(toggle\);[\s\S]{0,300}const menu: HTMLButtonElement\[\] = \[\];\s*if \(n\) \{[\s\S]{0,900}menu\.push\(edit, fix, post\);\s*\}/.test(app) &&
-     app.includes("if (n) menu.push(push);\n      else bar.push(push);") &&
-     app.includes('const act = el("button", "r-btn primary r-act-btn", this.folds("act") ? `Act (${n}) ▾` : `Act on ${n} picked ▾`);') &&
-     app.includes('bar.push(this.menu(`act:${j.id}`, act, [this.changePicks(j), el("div", "r-menu-sep"), ...menu], "", [this.pickedList(rows, picked)]));') && !app.includes("bar.push(edit, fix, post)") &&
-     app.includes('private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = []): HTMLElement {') &&
-     app.includes("return this.menu(key, b, items, meta, name ? [") &&
-     app.includes('.r-menu [role^=menuitem]:not(:disabled):not(.r-change)")?.focus()') &&
-     app.includes("if (this.moreOpen === id || this.moreOpen === `act:${id}`) this.moreOpen = null;") &&
+  ok("app: the findings button opens one panel: the picker on top (Pick all, Blockers and majors, Clear, then the list), Edit, Fix with commits, Post comments and Push below, acting on the picks",
+     app.includes('const bar = [this.menu(`find:${j.id}`, toggle, acts, "", top, { role: "dialog", cls: "r-find-panel", label: "Findings" })];') &&
+     app.includes('top.push(this.picker(j, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));') &&
+     app.includes("if (total) acts.push(edit, fix, post);") && app.includes("acts.push(push);") &&
+     app.includes("edit.disabled = fix.disabled = busy || !n;") && app.includes("post.disabled = busy || !j.pr || !n;") &&
+     ['q("Pick all", "all"', 'q("Blockers and majors", "bm"', 'q("Clear", "none"'].every(k => app.includes(k)) &&
+     !app.includes("pickerOpen") && !app.includes("changePicks") && !app.includes("pickedList") && !app.includes("out.push(this.picker(") &&
+     app.includes('private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = [], opts: { role?: "menu" | "dialog"; cls?: string; label?: string } = {}): HTMLElement {') &&
+     app.includes('if (!it.getAttribute("role") && role === "menu") it.setAttribute("role", "menuitem");') &&
+     app.includes('this.head.querySelector<HTMLElement>(".r-menu :is(button, input, a):not(:disabled)")?.focus();') &&
+     app.includes("if (this.moreOpen === id || this.moreOpen === `find:${id}`) this.moreOpen = null;") &&
      app.includes('btn("Edit", ') && app.includes('btn("Fix with commits", ') && app.includes('btn("Post comments", ') &&
-     !app.includes("suffix") && app.includes('if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));'));
+     app.includes('if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));') &&
+     appCss.includes(".r-menu.r-find-panel {"));
+  ok("app: a pick in the panel keeps it open and gives the focus back to the box or quick pick clicked",
+     app.includes('refocus(`input[data-fid="${CSS.escape(f.id)}"]`);') && app.includes('refocus(`[data-quick="${which}"]`);') &&
+     app.includes("const refocus = (sel: string) => this.head.querySelector<HTMLElement>(`.r-find-panel ${sel}`)?.focus();"));
   ok("app: framed, the header leaves the verdict to the page's gate pill; unframed or down, its chip says it with the same counts",
      app.includes('const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;') &&
      app.includes('(framed ? null : el("span", `r-chip ${state}`, `${state} · ${openCount(j.open)}`))') &&
@@ -1802,27 +1810,28 @@ if (want("page script")) {
      !app.includes("`log (${j.log.length})`") && !app.includes('el("details", "r-log")'));
   ok("app: a fix or post underway says what it is doing on the header row, not a row under it",
      app.includes('status = el("span", "r-now r-busy", j.activity || "starting");') && app.includes("this.headOf(this.title(j), chip, meta, link, acts.buttons, more, status);"));
-  ok("app: the Act menu names what it acts on: the picked findings by severity, at most five then \"+N more\", and Change picks opens the picker",
-     app.includes("const PICKS_SHOWN = 5;") && /private pickedList\(rows: Finding\[\], picked: string\[\]\): HTMLElement \{[\s\S]{0,700}\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);[\s\S]{0,200}`Acts on \$\{fs\.length\} picked`[\s\S]{0,200}fs\.slice\(0, PICKS_SHOWN\)[\s\S]{0,300}el\("span", `r-sev \$\{f\.severity\}`, f\.severity\), el\("span", "r-sum", f\.summary\)[\s\S]{0,200}`\+\$\{fs\.length - PICKS_SHOWN\} more`/.test(app) &&
-     /private changePicks\(j: Job\): HTMLButtonElement \{\s*const b = btn\("Change picks", \(\) => \{\s*this\.pickerOpen\.add\(j\.id\);\s*this\.render\(true\);/.test(app) &&
-     app.includes("m.append(...top);") && appCss.includes(".r-menu-pick .r-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"));
-  ok("app: the header is one row at any width: GitHub folds, the View menu's items join ⋯, then Findings and Act shorten, before the title goes under 12ch; the gate pill and Act button stay",
-     app.includes('const FOLDS = ["github", "view", "findings", "act"] as const;') && app.includes("const TITLE_MIN = 160;") &&
+  ok("app: the findings button is the header's one filled primary only while something is picked, outlined otherwise",
+     app.includes('const toggle = el("button", `r-btn pickbtn${n ? " primary" : ""}${short ? " short" : ""}`);') &&
+     appCss.includes(".r-btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }") &&
+     !/\.r-btn\.primary\.[\w-]+ \{[^}]*background/.test(appCss));
+  ok("app: the header is one row at any width: GitHub folds, the View menu's items join ⋯, then the findings button shortens, before the title goes under 12ch; the gate pill and the findings button stay",
+     app.includes('const FOLDS = ["github", "view", "findings"] as const;') && app.includes("const TITLE_MIN = 160;") &&
      /this\.fold = 0;\s*draw\(\);\s*while \(this\.fold < FOLDS\.length && this\.overflows\(\)\) \{\s*this\.fold\+\+;\s*draw\(\);\s*\}/.test(app) &&
      app.includes("return row.scrollWidth > row.clientWidth + 1 || squeezed;") &&
      app.includes("name.scrollWidth > name.clientWidth && name.clientWidth < TITLE_MIN") &&
      /new ResizeObserver\(\(\) => \{\s*if \(fitFrame\) return;\s*fitFrame = requestAnimationFrame\(\(\) => \{\s*fitFrame = 0;\s*const w = this\.head\.clientWidth;\s*if \(w && w !== this\.fitWidth\) this\.render\(true\);\s*\}\);\s*\}\)\.observe\(this\.head\);/.test(app) &&
-     app.includes('if (tools.view.length && folds.has("view")) folded.push(...tools.view);') &&
+     app.includes('if (tools.view.length && viewInMore) folded.push(...tools.view);') &&
      app.includes('folds.has("github") ? "Open on GitHub" : "GitHub"') &&
      appCss.includes(".r-mhead-row { display: flex; align-items: center; gap: 8px 10px; min-width: 0; flex-wrap: nowrap; }") &&
      appCss.includes(".r-acts { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; margin-left: auto; flex: none; }") &&
      !/\.r-(mhead-row|acts) \{[^}]*flex-wrap: wrap/.test(appCss));
-  ok("app: Overview, Map, Split or Unified and ? sit in one View ▾ menu at every width, each item showing its key, a check while on; o, m, v and ? work from the header as in the page",
+  ok("app: a View menu that would hold one item (under 900px, only Keyboard shortcuts) is no menu: the item goes in ⋯",
+     app.includes('const viewInMore = tools.view.length === 1 || folds.has("view");') &&
+     app.includes('if (tools.view.length && !viewInMore) acts.append(this.viewMenu(tools.view));'));
+  ok("app: Overview, Map, Split or Unified and ? sit in one View ▾ menu, each item showing its key, a check while on; o, m, v and ? work from the header as in the page",
      ['"o", () => this.tell("overview"), p.overview', '"m", () => this.tell("map"), p.map', '"v", () => this.tell("layout", { layout: v }), p.layout === v, "menuitemradio"', '"?", () => this.tell("keys"), p.keys'].every(k => app.includes(k)) &&
      app.includes('b.append(mark, el("span", "r-tool-name", text), el("kbd", "r-kbd", key));') && app.includes('b.setAttribute("aria-checked", String(on));') &&
      app.includes('const b = el("button", "r-btn quiet r-view-btn", "View ▾");') && app.includes('return this.menu("view", b, items);') &&
-     app.includes('if (tools.view.length && !folds.has("view")) acts.append(this.viewMenu(tools.view));') &&
-     app.includes('if (!it.getAttribute("role")) it.setAttribute("role", "menuitem");') &&
      !app.includes('"r-btn quiet r-tool"') && !app.includes('el("div", "r-seg")') && !app.includes('"r-btn quiet r-keys"') && !app.includes('el("span", "r-sep")') &&
      !/\.r-(sep|seg|seg-btn|keys|tool) \{/.test(appCss) && appCss.includes(".r-check svg {") && appCss.includes(".r-menu:not(:has(.r-check svg)) .r-check { display: none; }") &&
      app.includes('const op = ({ o: "overview", m: "map", v: "layout", "?": "keys" } as Record<string, string>)[e.key];') &&
@@ -1860,9 +1869,12 @@ if (want("page script")) {
      app.includes('this.listShown = localStorage.getItem(LIST_KEY) === "shown";') &&
      app.includes('btn(shown ? "◂ Reviews" : "Reviews ▸"') && app.includes('list.setAttribute("aria-expanded", String(shown));') &&
      appCss.includes(".review.folded { grid-template-columns: minmax(0, 1fr); }") && appCss.includes(".r-side[hidden] { display: none; }"));
-  ok("page: a card's id, category and verdict take no width from the title: out of the row (hovered, the title's tooltip names them, so nothing covers the card), back in it when focused or picked, and always in the DOM",
+  ok("page: a card's category and verdict, in plain words, take no width from the title: out of the row (hovered, the title's tooltip names them with the id, so nothing covers the card), back in it when focused or current, and always in the DOM",
      /\.card-head \.meta \{ position: absolute;[^}]*opacity: 0; pointer-events: none;/.test(css) &&
-     !/\.card:hover \.card-head \.meta/.test(css) && js.includes('title: x.id + (finding ? " · " + x.category') &&
+     !/\.card:hover \.card-head \.meta/.test(css) && js.includes('title: x.id + (finding ? " · " + metaWords(x) : "")') &&
+     js.includes('const verdictWords = x => x.verdict === "CONFIRMED" ? "confirmed" : "plausible, not confirmed";') &&
+     js.includes('const metaWords = x => x.id.startsWith("f") ? `${x.category} · ${verdictWords(x)}` : "";') &&
+     !js.includes('el("span", { class: "fid" }, x.id)') &&
      /\.card:focus-within \.card-head \.meta, \.card\.flash \.card-head \.meta, \.card\.cur \.card-head \.meta \{\s*position: static; opacity: 1;/.test(css) &&
      css.includes("@media (hover: none) { .card-head .meta { position: static; opacity: 1;") &&
      css.includes(".card { position: relative; }") &&
@@ -1880,12 +1892,12 @@ if (want("page script")) {
      js.includes('$("layout").classList.toggle("auto", cramped());') && css.includes("#layout.auto { display: none; }") &&
      js.includes("layout, auto: cramped(), overview,") && !js.includes("wasNarrow") &&
      app.includes("auto?: boolean;") && /if \(!p\.auto\) \{\s*for \(const \[v, label\] of \[\["split", "Split diff"\], \["unified", "Unified diff"\]\]\)/.test(app));
-  ok("app: live (or disconnected) is only its dot at every width (words in its tooltip); short of width Findings is an icon (its name the label), Act on N picked \"Act (N)\"",
+  ok("app: live (or disconnected) is only its dot at every width (words in its tooltip); short of width the findings button is an icon and \"M/N ▾\" (its words the label)",
      app.includes('const dot = p.mode.cls === "live" || p.mode.cls === "down";') && !app.includes('this.folds("live")') &&
      !appCss.includes('.r-mode.live::before { content: "● "; }') &&
      app.includes('mode.title = dot ? `${p.mode.text}. ${p.mode.title}` : p.mode.title;') && app.includes('mode.setAttribute("aria-label", p.mode.text);') &&
      appCss.includes('.r-mode.live.only::before { content: "●"; }') &&
-     app.includes('const short = this.folds("findings");') && app.includes('toggle.prepend(listIcon());') && app.includes('toggle.setAttribute("aria-label", "Findings");') &&
+     app.includes('const short = this.folds("findings");') && app.includes('toggle.append(listIcon(), `${n ? `${n}/${total}` : total} ▾`);') && app.includes('toggle.setAttribute("aria-label", words);') &&
      app.includes("private folds(f: Fold): boolean {\n    return FOLDS.indexOf(f) < this.fold;"));
   ok("app: the title keeps 12ch until every step is taken, and a cut title is the ⋯ menu's first line",
      appCss.includes("text-overflow: ellipsis; min-width: 12ch; flex: 0 1 auto; }") && appCss.includes(".r-mhead-row.tight .r-name { min-width: 3ch; }") &&
@@ -1963,16 +1975,38 @@ if (want("page script")) {
      css.includes(".gdot.sev-minor { box-shadow: inset 0 0 0 1px var(--gdot-edge-minor, transparent), 0 0 0 1.5px var(--bg); }"));
   ok("page: a file's status letter spells itself out in its tooltip (modified, added, deleted, renamed), in the tree, the risk list and the file header",
      js.includes('const ST_NAMES = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", T: "type changed" };') &&
-     js.includes('const stLetter = f => el("span", { class: "st st-" + f.status, title: ST_NAMES[f.status] || f.status }, f.status);') &&
-     (js.match(/stLetter\(f\)/g) || []).length === 3 && !js.includes('el("span", { class: "st st-" + f.status }, f.status)'));
-  ok("page: the file header leaves out the language and a risk reason that only repeats an open finding",
-     js.includes('const headReasons = f => (f.reasons || []).filter(r => !/^open \\w+ finding$/.test(r));') &&
+     js.includes('const stLetter = (f, cls = "") => el("span", { class: "st st-" + f.status + (cls ? " " + cls : ""), title: ST_NAMES[f.status] || f.status }, f.status);') &&
+     (js.match(/stLetter\(f, "x"\)/g) || []).length === 2 && (js.match(/stLetter\(f\)/g) || []).length === 1 && !js.includes('el("span", { class: "st st-" + f.status }, f.status)'));
+  ok("page: a file row is quiet: risk dot, name and findings badge; its folder, +/- counts and status letter (.x) show on the selected or hovered row, clipped (not removed) otherwise, and named in its tooltip",
+     /\.row\.file:not\(\.sel\):not\(:hover\):not\(:focus-within\) \.x \{\s*position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset\(50%\);/.test(css) &&
+     (js.match(/el\("span", \{ class: "counts x" \}, countsText\(f\)\)/g) || []).length === 2 &&
+     (js.match(/el\("span", \{ class: "in x" \}/g) || []).length === 2 && !js.includes('el("span", { class: "in" }') &&
+     js.includes('countsText(f) + " · " + (ST_NAMES[f.status] || f.status),') &&
+     (js.match(/title: rowTitle\(f/g) || []).length === 2 && !/\.x \{[^}]*display: none/.test(css));
+  ok("page: a group's why is its tooltip, each row's (\"Grouped: …\") and the Overview's line, never a line between rows",
+     !js.includes('el("div", { class: "why"') && !/^\.why \{/m.test(css) &&
+     js.includes('box.append(el("div", { class: "group", "data-group": g.id, title: why.length ? why.join("\\n") : null },') &&
+     js.includes('files.map(f => fileRow(f, { dir: true, why }))));') && js.includes('why.length ? "Grouped: " + why.join("; ") : ""') &&
+     js.includes('why.length ? el("div", { class: "ov-why" }, why.join(" · ")) : null,'));
+  ok("page: the file header says \"high risk\" in plain words: no language, no \"Jev 100%\", no reason that only repeats an open finding; its tooltip gives the score and Jev's part",
+     js.includes('const headReasons = f => (f.reasons || []).filter(r => !/^open \\w+ finding$/.test(r) && !/^Jev \\d+%$/.test(r));') &&
+     js.includes("`. Jev (TypeSafe's model) read the change as ${Math.round(f.jev * 100)}% risky.`") &&
+     js.includes("title: riskLine(f) }, `${f.band} risk`,") &&
      !js.includes('el("span", { class: "lang" }, f.lang)') && !css.includes("#file-head .lang") &&
      js.includes('reasons.length ? el("span", { class: "reasons" }, " · " + reasons.join(", ")) : null) : null,'));
-  ok("page+app: amber is kept for \"needs you\": a minor chip is neutral grey on the page and in the Act menu, and the Act button a neutral grey fill",
+  ok("page: a closed finding has its own look: one row by default (opened by a click or Enter, folded again by its head), its severity chip and title muted, a muted resolved or dismissed chip, Reopen and no Resolve",
+     js.includes("const foldedClosed = x => !isOpen(x) && !expandedClosed.has(x.id);") &&
+     /if \(foldedClosed\(x\)\) \{[\s\S]{0,400}class: "card folded closed"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false",[\s\S]{0,700}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\), closedChip\)\);/.test(js) &&
+     js.includes("e.stopPropagation(); expandedClosed.delete(x.id); redrawCards([x.id]);") &&
+     js.includes('open ? el("button", { type: "button", onclick: go("resolve") }, "Resolve") : null,') &&
+     js.includes('!open ? el("button", { type: "button", onclick: go("reopen") }, "Reopen") : null,') &&
+     css.includes(".card.closed .sev { --sev: var(--muted); }") &&
+     css.includes(".card.closed .status { color: var(--muted);") && !css.includes(".card .status.st-resolved {") &&
+     !/\.card\.closed[^{]*\{[^}]*opacity/.test(css));
+  ok("page+app: amber is for status only: a minor chip is neutral grey on the page and in the findings panel, and the one filled primary is Everforest's fg with ink words in both",
      css.includes("--sev-minor: var(--ef-text-dim);") && !css.includes("--sev-minor: var(--ef-text-yellow)") &&
      appCss.includes(".r-sev.minor { color: var(--ef-text-dim);") && !/\.r-sev\.minor \{[^}]*yellow/.test(appCss) &&
-     appCss.includes(".r-btn.primary.r-act-btn { background: var(--ef-text-dim); border-color: var(--ef-text-dim); color: var(--ef-ink); }") &&
+     css.includes(".buttons button.primary { background: var(--ef-fg); border-color: var(--ef-fg); color: var(--ef-ink); }") &&
      css.includes("--sev-blocker: var(--ef-text-red); --sev-major: var(--ef-text-orange);"));
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }

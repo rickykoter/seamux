@@ -161,8 +161,6 @@ button { font: inherit; color: inherit; }
 .row .in { color: var(--muted); font-size: var(--fs-1); }
 .group { margin: 2px 0 4px 10px; border-left: 2px solid var(--rail); }
 .group .row { padding-left: 6px; }
-.why { padding: 0 12px 2px 8px; color: var(--muted); font-size: var(--fs-1); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; }
 #file-head .risk { font-size: var(--fs-2); font-weight: 600; }
 #file-head .risk .reasons { font-weight: 400; color: var(--muted); }
 #file-head .risk.band-high { color: var(--risk-high); }
@@ -182,6 +180,13 @@ button { font: inherit; color: inherit; }
 .st-M { color: var(--st-m); } .st-A { color: var(--st-a); } .st-D { color: var(--st-d); }
 .st-R, .st-C { color: var(--st-r); } .st-T { color: var(--muted); }
 .row.collapsed-file .name { font-style: italic; }
+/* Quiet rows: at rest a file row is its risk dot, its name and its findings
+   badge. Its extras (.x: the folder, the +/- counts, the status letter) show
+   on the selected row and on hover or focus; otherwise they are clipped out
+   of sight, not removed, so a screen reader still reads them, and the row's
+   tooltip names them. Showing them moves nothing: the name gives way. */
+.row.file:not(.sel):not(:hover):not(:focus-within) .x {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 #main { grid-area: main; overflow: auto; min-height: 0; min-width: 0; }
 #file-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 10px;
@@ -268,7 +273,15 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 8px; overflow: hidden; }
 .card.flash { background: var(--flash); transition: background .6s; }
 .card-head { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; flex-wrap: wrap; }
-.card.closed .card-head { cursor: pointer; opacity: .75; }
+/* Closed (resolved or dismissed): its own look, so it never reads as a live
+   finding. No fill, a fainter edge, the severity chip and title muted, the
+   status a muted chip. It folds to one row (review.js foldedClosed); opened,
+   its head folds it again. */
+.card.closed { background: none; border-color: color-mix(in srgb, var(--card-border) 65%, transparent); }
+.card.closed .card-head { cursor: pointer; }
+.card.closed .sev { --sev: var(--muted); }
+.card.closed.folded .title, .card.closed > .card-head .title { color: var(--muted); font-weight: 400; }
+.card.closed .status { color: var(--muted); border-color: transparent; background: color-mix(in srgb, var(--muted) 14%, transparent); }
 .sev { font: 600 var(--fs-1) var(--sans); text-transform: uppercase; letter-spacing: .04em;
   border-radius: 4px; padding: 1px 6px;
   color: var(--sev, var(--muted)); background: color-mix(in srgb, var(--sev, var(--muted)) 16%, transparent); }
@@ -292,7 +305,6 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .card .status.st-addressed { color: var(--risk-medium); border-color: var(--risk-medium); }
 /* An addressed blocker or major: open, and blocking, until the human resolves it. */
 .card .status.st-addressed.blocks { cursor: help; }
-.card .status.st-resolved { color: var(--st-a); border-color: var(--st-a); }
 .card-body { padding: 0 10px 8px; }
 .card-body .failure { margin-top: 4px; color: var(--muted); }
 /* The label is quiet: normal weight and muted, the scenario after it in the text colour. */
@@ -362,7 +374,9 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: v
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical; }
 .buttons { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
-.buttons button.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+/* The one filled primary, the app's (app/ui/index.html --primary, --on-primary):
+   Everforest's fg with ink words, a neutral that never reads as a state. */
+.buttons button.primary { background: var(--ef-fg); border-color: var(--ef-fg); color: var(--ef-ink); }
 .actions.folded { padding: 2px 10px 6px; border-top: 0; }
 /* Folded, Reply / Resolve / Dismiss take no room until wanted: on the
    current card (a click or n/p), with focus in it, a draft or a send note, and

@@ -44,7 +44,7 @@
   .feed > .feedbar, .pns > .pn (a pane, data-a="pane": + .agent or .term and
   its state, .wait/.work/.idle/.end/.unk/.sh, holding .pg, .pk, .pw and
   .ptag.plan/.outside), .chips > .chip (+ .pri, the one filled button; + .sig, an
-  actionable signal; + .pane on a muted card, its panes' tags), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
+  actionable signal, + .acc when the collector sent it amber; + .pane on a muted card, its panes' tags), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
   .end > .cost (the spend, held at the right end; also at the end of a quiet
   row's .top),
   .owned + .here, .empty, .sect, and for a deep-plan family: .fam on its card,
@@ -133,7 +133,7 @@
      it. fg and fg2 are the palette's text tiers; grey stays the board's own,
      a touch lighter than --ef-text-faint, which is 4.4:1 on the attend ground. */
   --fg:var(--ef-text); --fg2:var(--ef-text-dim); --grey:#a3ada5;
-  /* Tiers. The badge, the dial and the filled button wear these. Wilt's red is
+  /* Tiers. The badge, the dial and the card's frame wear these. Wilt's red is
      3.9:1 on a card, so where it is text it uses its lighter twin. */
   --attend:#dfa000; --running:var(--ef-blue); --wilt:var(--ef-red); --done:var(--ef-green); --quiet:var(--ef-grey0);
   --wilt-tx:#f0a0a0;
@@ -142,8 +142,11 @@
      tier, both pointing into it, so light needs no copy of its own. The
      uncommitted mark stays away from attend's amber: it is not a call. */
   --pr-open:var(--ef-text-green); --issue:#b9a5fb; --dirty:var(--ef-text-dim);
-  /* Text on a filled button, measured against each tier colour instead. */
-  --ink:var(--ef-ink);
+  --link:var(--ef-text-accent);
+  /* The one filled (primary) button, the same on every card and every page
+     of the app: the neutral text tier as its ground, the deepest ground as
+     its words. Amber is a status, never a button. */
+  --pri:var(--fg); --ink:var(--ef-ink);
   /* The dial's track is a graphic, not a ground: 2.5:1 on a card and 3:1 on
      the page, so the ring reads, while each tier's arc sits about 2:1 above it.
      Lifts and shades. Hover grounds sit under text (--gnd); the rest are
@@ -162,12 +165,11 @@
   --sky-dawn:linear-gradient(#1f2330,#33282f); --sky-day:linear-gradient(#1d2a33,#22313a);
   --sky-dusk:linear-gradient(#22202b,#3a2b27); --sky-night:#13181c;
   --star:#c9c3b0; --star2:#8f8a7c;
-  --orb:#5c4a2a; --orb-dawn:#8a5f2c; --orb-day:#9c7a2a; --orb-dusk:#93512f; --orb-night:#cfc7b0;
+  --orb:#8f8a7c; --orb-dawn:#e3c4a8; --orb-day:#efe6c8; --orb-dusk:#d9a99a; --orb-night:#cfc7b0;
   --zz:#8BA3C7;
 }
 /* Light: the same names on a light ground. Each tier is one colour that
-   reads both as words on a card and as a filled button's ground under
-   --ink, so it is darker than the palette's light hues. Twice, as in
+   reads as words on a card, so it is darker than the palette's light hues. Twice, as in
    theme/everforest.css: the OS's light mode, and data-theme="light". */
 @media (prefers-color-scheme: light){
 :root:not([data-theme="dark"]){
@@ -185,7 +187,7 @@
   --sky-dawn:linear-gradient(#eadbd0,#f0cdb6); --sky-day:linear-gradient(#d3e4e6,#c0d8dc);
   --sky-dusk:linear-gradient(#dccbd8,#eac4aa); --sky-night:#a9b6c7;
   --star:#fffdf5; --star2:#e8ecf2;
-  --orb:#e8c27a; --orb-dawn:#f0a35a; --orb-day:#f2c14e; --orb-dusk:#e8875a; --orb-night:#fffbef;
+  --orb:#fff6dc; --orb-dawn:#ffe2c4; --orb-day:#fff3c4; --orb-dusk:#fbd3c0; --orb-night:#fffbef;
   --zz:#4e6a94;
 }
 }
@@ -204,7 +206,7 @@
   --sky-dawn:linear-gradient(#eadbd0,#f0cdb6); --sky-day:linear-gradient(#d3e4e6,#c0d8dc);
   --sky-dusk:linear-gradient(#dccbd8,#eac4aa); --sky-night:#a9b6c7;
   --star:#fffdf5; --star2:#e8ecf2;
-  --orb:#e8c27a; --orb-dawn:#f0a35a; --orb-day:#f2c14e; --orb-dusk:#e8875a; --orb-night:#fffbef;
+  --orb:#fff6dc; --orb-dawn:#ffe2c4; --orb-day:#fff3c4; --orb-dusk:#fbd3c0; --orb-night:#fffbef;
   --zz:#4e6a94;
 }
 *{box-sizing:border-box}
@@ -295,12 +297,14 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 @keyframes twinkle{0%,100%{opacity:1}50%{opacity:.55}}
 #shelf[data-sky=night] .stars{animation:twinkle 9s steps(3,end) infinite}
 /* The sun, low at dawn and dusk and high by day, and the moon at night: a
-   chunky 9px disc at the far end of the shelf, behind the cat. */
-.orb{position:absolute;right:22px;top:20px;width:9px;height:9px;border-radius:3px;
+   round 10px disc at the far end of the shelf, behind the cat, with a soft
+   glow. Pale, never the amber of "needs you": a square amber sun read as one
+   more status dot. */
+.orb{position:absolute;right:22px;top:20px;width:10px;height:10px;border-radius:50%;
   background:var(--orb);opacity:0;transition:top 60s linear,background-color 60s linear,opacity 60s linear}
-#shelf[data-sky=dawn] .orb{opacity:1;top:17px;background:var(--orb-dawn)}
-#shelf[data-sky=day] .orb{opacity:1;top:5px;background:var(--orb-day)}
-#shelf[data-sky=dusk] .orb{opacity:1;top:17px;background:var(--orb-dusk)}
+#shelf[data-sky=dawn] .orb{opacity:1;top:17px;background:var(--orb-dawn);box-shadow:0 0 6px 2px color-mix(in srgb,var(--orb-dawn) 45%,transparent)}
+#shelf[data-sky=day] .orb{opacity:1;top:5px;background:var(--orb-day);box-shadow:0 0 6px 2px color-mix(in srgb,var(--orb-day) 45%,transparent)}
+#shelf[data-sky=dusk] .orb{opacity:1;top:17px;background:var(--orb-dusk);box-shadow:0 0 6px 2px color-mix(in srgb,var(--orb-dusk) 45%,transparent)}
 #shelf[data-sky=night] .orb{opacity:1;top:5px;background:var(--orb-night);box-shadow:inset -3px -1px 0 var(--sky-night)}
 
 /* A and B, one second each. steps(1) makes it a cut, not a crossfade: this is
@@ -428,8 +432,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
   min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 /* --- a card ------------------------------------------------------------ */
-/* A card. No edge stripe: the tier is on the badge, the dial and the filled
-   button (--c), and the card that needs you keeps its tinted ground, the
+/* A card. No edge stripe: the tier is on the badge, the dial and the frame
+   (--c), and the card that needs you keeps its tinted ground, the
    page's one loud thing. The worktree's own colour is the ring round the
    row you stand in, and only that: a dot beside the name or the branch
    read as one more state.
@@ -503,7 +507,10 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* --- the button row ---------------------------------------------------- */
 /* Every target is at least 28px tall: these are things you click while doing
    something else. The first chip is the one that resolves the row, and on the
-   tiers that ask something of you -- attend, wilt, done -- it is filled. A
+   tiers that ask something of you -- attend, wilt, done -- it is filled, in
+   the app's one primary style (--pri), never the tier's colour: the tier is
+   on the card's ring, badge and frame, and amber spent on a fifth thing
+   too (the button) left nothing for it to mean. A
    working card asks nothing, so everything on it stays a ghost; filling every
    card's first button turned the board into a wall of colour. Actionable
    signals (CI, allow, deny, a ticket) join the row as ghosts in their own
@@ -512,8 +519,12 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .chip{display:inline-flex;align-items:center;min-height:28px;padding:0 11px;border-radius:7px;
   border:1px solid var(--edge);background:transparent;color:var(--fg);
   font:600 var(--fs-3)/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
-.chip.pri{background:var(--c);border-color:var(--c);color:var(--ink)}
+.chip.pri{background:var(--pri);border-color:var(--pri);color:var(--ink)}
+.chip.pri:hover{filter:brightness(1.12)}
 .chip.sig{font-weight:500}
+/* A signal the collector sends in attend's amber (lookout running, CI
+   running, a plan's go) is not a call on you, so it wears the link colour. */
+.sig.acc{color:var(--link)}
 /* A signal's colour, lifted by render.js for each mode: --sg on dark, --sgl
    on light (the light blocks repeat this with --sgl). */
 .sig[style*="--sg"]{color:var(--sg)}
@@ -570,9 +581,12 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pr.open{color:var(--pr-open)}
 .issue{color:var(--issue);text-decoration-color:currentColor}
 .pr:hover,.issue:hover{filter:brightness(1.25)}
-/* Uncommitted work: a small hollow ring in the neutral text tier. Not a dot
-   and not amber, so it is not read as a status or as "needs you". */
-.foot>.dirty{display:inline-flex;align-items:center;color:var(--dirty)}
+/* Uncommitted work: a small hollow ring in the neutral text tier, then the
+   word, small. Not a dot and not amber, so it is not read as a status or as
+   "needs you"; the ring alone was a glyph you had to hover to read. A footer
+   carrying it may wrap (render.js), so the word never clips the branch. */
+.dirty{display:inline-flex;align-items:center;gap:4px;color:var(--dirty)}
+.foot>.dirty{font-size:var(--fs-1);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
 .dirty::before{content:"";flex:none;width:7px;height:7px;box-sizing:border-box;
   border:1.5px solid currentColor;border-radius:50%}
 /* Words are in the UI's sans: the progress count and the status signals. Mono
@@ -761,8 +775,8 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
    button that would resolve it breathes a halo. Exactly one element per row
    moves, only on rows that are actually waiting on a human, and the button
    itself never fades -- its label stays at full contrast. */
-@keyframes breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--attend) 0%,transparent)}
-  50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--attend) 22%,transparent)}}
+@keyframes breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--pri) 0%,transparent)}
+  50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--pri) 22%,transparent)}}
 .row.attend .chip.pri{animation:breathe 2.2s ease-in-out infinite}
 /* ...its own button, that is: not a done child's, inside an attend family. */
 .row.kid:not(.attend) .chip.pri{animation:none}
