@@ -237,11 +237,18 @@ checks.push(["the whole branch survives in the tooltip",
 checks.push(["the PR number is its own target", /class="pr open" data-a="pr"/.test(f)]);
 checks.push(["uncommitted work is marked", f.includes('class="dirty"')]);
 // The mark is a hollow ring drawn by CSS, not a "●" glyph: beside a signal's
-// dot it read as two states, and its amber was "needs you"'s.
+// dot it read as two states, and its amber was "needs you"'s. Round 12: the
+// ring alone was cryptic, so the footer says the word beside it.
 const fFoot0 = (f.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
-checks.push(["the uncommitted mark is a ring with its tooltip, not a dot",
-  /<span class="dirty" role="img" aria-label="Uncommitted changes" title="Uncommitted changes in this worktree"><\/span>/.test(fFoot0) &&
+checks.push(["the uncommitted mark is a ring and the word, with a tooltip, not a dot",
+  /<span class="dirty" title="This worktree has changes not yet committed">uncommitted<\/span>/.test(fFoot0) &&
   !fFoot0.includes("\u25cf")]);
+// The word is wider than the ring was: a footer carrying it may wrap, rather
+// than clip the branch on a one-line footer.
+render({ rows: [{ id: "dw", name: "dw", kind: "running", badge: "b", said: "", chips: [], frac: 0.5,
+  meta: "1/4 increments", branch: "sam/checkout-flow", dirty: true, ref: "workspace:3" }], quiet: "" });
+checks.push(["a footer with uncommitted work wraps rather than clip its branch",
+  /<div class="foot"><span class="branch"[^>]*>sam\/checkout-flow<\/span><span class="dirty"/.test(els.rows.innerHTML)]);
 checks.push(["the increments count sits in the footer after the branch, where it can share its line",
   fFoot0.indexOf('class="branch"') < fFoot0.indexOf('class="meta"') && !/class="foot one"/.test(fFoot0)]);
 render({ rows: [{ id: "lk", name: "lk", kind: "running", badge: "b", said: "", chips: [], frac: 0.33,
@@ -250,8 +257,10 @@ render({ rows: [{ id: "lk", name: "lk", kind: "running", badge: "b", said: "", c
             { t: "\u2713 approved", c: "#4ADE80", h: "A reviewer approved this PR" }] }], quiet: "" });
 {
   const lk = (els.rows.innerHTML.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
-  checks.push(["a status signal reads as its word in its colour, with no bare dot before it",
-    /class="sig" style="--sg:#[0-9a-f]{6};--sgl:#[0-9a-f]{6}" title="A lookout review[^"]*">lookout<\/span>/.test(lk) &&
+  // Round 12: the collector's amber is attend's, and lookout running asks
+// nothing of you, so an amber signal wears the link colour (.sig.acc).
+checks.push(["a status signal reads as its word in its colour, with no bare dot before it, and amber reads as the link colour",
+    /class="sig acc" title="A lookout review[^"]*">lookout<\/span>/.test(lk) &&
     !lk.includes("\u25cf") && />\u2713 approved<\/span>/.test(lk), lk]);
 }
 checks.push(["branch and PR are no longer buried in meta",
@@ -428,7 +437,7 @@ const lows = [];
 let measured = 0;
 for (const [mode, T] of [["dark", TOK], ["light", TOKL]]) {
   const GROUNDS = ["bg", "bg1", "bg-attend", "bg-kids"].map((k) => T[k]);
-  const FILLS = ["attend", "running", "wilt", "done"].map((k) => T[k]);
+  const FILLS = ["pri"].map((k) => T[k]);
   for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const sel = rule[1].trim();
     if (sel.startsWith(":root") || /^(from|to|\d)/.test(sel)) continue;     // tokens, keyframes
@@ -520,11 +529,17 @@ const sigOut = els.rows.innerHTML;
 const liftedPairs = [...sigOut.matchAll(/style="--sg:(#[0-9a-f]{6});--sgl:(#[0-9a-f]{6})"/g)];
 const lifted = liftedPairs.map((m) => m[1]), liftedL = liftedPairs.map((m) => m[2]);
 const cardsOf = (T) => ["bg", "bg1", "bg-attend", "bg-kids", "bg-hover", "bg-kid-hover"].map((k) => T[k]);
-checks.push(["every collector signal colour is lifted to 4.5:1 on a card, dark and light",
-  lifted.length === SIGCOLS.length * 2 &&
+checks.push(["every collector signal colour but amber is lifted to 4.5:1 on a card, dark and light",
+  lifted.length === (SIGCOLS.length - 1) * 2 &&
   lifted.every((c) => cardsOf(TOK).every((g) => ratio(c, g) >= 4.5)) &&
   liftedL.every((c) => cardsOf(TOKL).every((g) => ratio(c, g) >= 4.5))]);
 checks.push(["...and a bright one comes back unchanged", lifted.includes("#4ade80")]);
+// Amber is "needs you" on the board: a signal in it, chip or footer word,
+// wears the link colour instead, which is not amber in either mode.
+checks.push(["an amber signal is never drawn amber: it wears --link, as a chip and as a footer word",
+  (sigOut.match(/class="chip sig acc"/g) || []).length === 1 && (sigOut.match(/class="sig acc"/g) || []).length === 1 &&
+  !/F5A524|f5a524/.test(sigOut) && /\.sig\.acc\{color:var\(--link\)\}/.test(css) &&
+  TOK.link && TOK.link !== TOK.attend && TOKL.link !== TOKL.attend]);
 checks.push(["a signal colour that is not a hex never reaches a style attribute",
   !sigOut.includes("url(") && /class="chip sig" data-a="checks"[^>]*>bad</.test(sigOut)]);
 render({ rows: [{ id: "c", name: "c", kind: "running", badge: "b", said: "", chips: [], frac: null,
@@ -545,6 +560,21 @@ const priOf = (id) => {
 checks.push(["attend, wilt and done fill their first button, and only that one",
   ["attend", "wilt", "done"].every((k) => priOf(k).join() === "first")]);
 checks.push(["a working card's buttons are all ghosts", priOf("running").length === 0]);
+// Round 12: one primary style across the app. The filled button is the
+// neutral text tier with the ground's ink, never the tier's colour: the needs-
+// you card spent amber on its tally, ring, badge, frame AND button.
+{
+  const rb = (sel) => { for (const [, x, b] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) if (x.trim() === sel) return b; return ""; };
+  const ok = (T) => T.pri && T.pri === T.fg && ratio(T.ink, T.pri) >= 4.5 &&
+    !["attend", "running", "wilt", "done"].some((k) => T[k] === T.pri);
+  checks.push(["every filled button is the one neutral primary (--pri, the text tier) with --ink on it, in both modes",
+    /background:var\(--pri\)/.test(rb(".chip.pri")) && /border-color:var\(--pri\)/.test(rb(".chip.pri")) &&
+    /color:var\(--ink\)/.test(rb(".chip.pri")) && !/var\(--c\)|--attend/.test(rb(".chip.pri")) && ok(TOK) && ok(TOKL),
+    `dark ${ratio(TOK.ink, TOK.pri).toFixed(2)}:1, light ${ratio(TOKL.ink, TOKL.pri).toFixed(2)}:1`]);
+  checks.push(["...and no rule paints a button in a tier colour or breathes amber round it",
+    ![...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(([, sel, b]) => /\.chip/.test(sel) && /background:var\(--(c|attend|running|wilt|done)\)/.test(b)) &&
+    /@keyframes breathe\{[^}]*var\(--pri\)/.test(css) && !/@keyframes breathe\{[^}]*--attend/.test(css)]);
+}
 
 // A quiet row is one line: dot, name, badge if it has one. No dial, no said,
 // no buttons, no footer -- the row is the target.
@@ -955,6 +985,24 @@ render({ rows: [
     /<span class="badge">ci failed<\/span>/.test(cut("c")) && /<span class="badge">working<\/span>/.test(cut("w")) &&
     !/rsn/.test(cut("c") + cut("w"))]);
 }
+// Round 12: it counts the cards you see. A family's child sits folded in its
+// parent's card, so "2 working" over one working card was a miscount; the
+// child is named in the tooltip instead.
+render({ rows: [
+  { id: "P", name: "coupons-api", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "", family: "F", famrole: "parent", famkid: false },
+  { id: "K", name: "coupons-ui", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "", family: "F", famrole: "child", famkid: true },
+  { id: "X", name: "x", kind: "wilt", badge: "b", said: "", chips: [], frac: null, meta: "" },
+], quiet: "" });
+checks.push(["the tally counts top-level cards, with a family's children in its tooltip",
+  /class="tl running" title="1 more working inside coupons-api"><b>1<\/b> working</.test(els.tally.innerHTML) &&
+  /class="tl wilt"><b>1<\/b> broken</.test(els.tally.innerHTML), els.tally.innerHTML]);
+render({ rows: [
+  { id: "P", name: "auth-api", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "", family: "F", famrole: "parent", famkid: false },
+  { id: "K", name: "auth-ui", kind: "wilt", badge: "b", said: "", chips: [], frac: null, meta: "", family: "F", famrole: "child", famkid: true },
+], quiet: "" });
+checks.push(["...and a tier only a child wears still shows, at the child's count, saying where",
+  /class="tl wilt" title="broken inside auth-api"><b>1<\/b> broken</.test(els.tally.innerHTML) &&
+  /class="tl running"><b>1<\/b> working</.test(els.tally.innerHTML), els.tally.innerHTML]);
 render({ rows: [], quiet: "" });
 checks.push(["...and disappears when there is nothing", els.tally.innerHTML === ""]);
 // The headline counts one tier, so it must not speak for the others.
@@ -1003,6 +1051,21 @@ checks.push(["the board-only poses are in sync with cat_poses.py",
     /#cat\.swat \.swat-a,#cat\.pace \.walk-a,#cat\.nap \.nap-a\{visibility:visible\}/.test(reduce)]);
   checks.push(["...and the sky changes without fading", /#shelf \.sky,#shelf \.orb\{transition:none\b/.test(reduce)]);
   if (missing.length) console.log("    not stopped: " + missing.join(" | "));
+}
+// Round 12: a square amber sun read as one more status dot beside "needs
+// you". The sun is round and pale, its colours far from attend's amber.
+{
+  const orbRule = (css.match(/(?:^|\})\s*\.orb\{([^}]*)\}/) || ["", ""])[1];
+  const hue = (h) => { const [r, g, b] = hexRgb(h).map((x) => x / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    if (!d) return { h: 0, s: 0 };
+    const hh = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return { h: (hh * 60 + 360) % 360, s: d }; };   // s is chroma: a pale tint has little
+  const notAmber = (T) => ["orb-dawn", "orb-day", "orb-dusk"].every((k) => {
+    const o = hue(T[k]), a = hue(T.attend);
+    return T[k] !== T.attend && (o.s < 0.35 || Math.abs(o.h - a.h) > 25) && o.s < a.s / 2; });
+  checks.push(["the sun is a round, soft disc, never attend's amber, dark and light",
+    /border-radius:50%/.test(orbRule) && notAmber(TOK) && notAmber(TOKL) &&
+    /#shelf\[data-sky=day\] \.orb\{[^}]*box-shadow/.test(css)]);
 }
 
 // The sprite is generated from crew.swift, so the two boards cannot drift apart

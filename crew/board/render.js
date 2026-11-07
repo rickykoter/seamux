@@ -339,9 +339,26 @@ function __boardRender(d) {
   // the word the shader used. Ordered by urgency, like the list below it.
   var TIERS = [["wilt", "broken"], ["running", "working"], ["done", "done"]];
 
-  function tally(rows) {
-    var n = {};
-    for (var i = 0; i < rows.length; i++) n[rows[i].kind] = (n[rows[i].kind] || 0) + 1;
+  // It counts the cards you see: a family's children sit folded inside their
+  // parent's card, so counting them said "2 working" over one working card.
+  // A tier whose cards hold children of its kind says so in its tooltip
+  // ("1 more inside coupons-api"). A tier only children wear (a broken child
+  // in a working family) still shows, at the children's count, since the
+  // family's badge says it on the board too. groups is render's: each card
+  // with its children, a shell's tier its family's.
+  function tally(rows, groups) {
+    var n = {}, inside = {};
+    groups = groups || rows.map(function (r) { return { lead: r, kids: [] }; });
+    groups.forEach(function (g) {
+      var k = g.lead ? g.lead.kind : (g.kids[0].famtier || g.kids[0].kind);
+      n[k] = (n[k] || 0) + 1;
+      var where = g.lead ? g.lead.name : g.label;
+      g.kids.forEach(function (c) {
+        var by = inside[c.kind] || (inside[c.kind] = { n: 0, at: [] });
+        by.n++;
+        if (by.at.indexOf(where) < 0) by.at.push(where);
+      });
+    });
     // Done rows that all wear one badge are counted by it ("1 merged"), so
     // the tally and the card say the same word.
     var doneBadges = {};
@@ -350,9 +367,12 @@ function __boardRender(d) {
     var doneWord = one.length === 1 && one[0] ? one[0] : "done";
     var out = "";
     for (var t = 0; t < TIERS.length; t++) {
-      var k = TIERS[t][0];
-      if (!n[k]) continue;                 // a zero is noise; absence says it
-      out += '<span class="tl ' + k + '"><b>' + n[k] + "</b> " + esc(k === "done" ? doneWord : TIERS[t][1]) + "</span>";
+      var k = TIERS[t][0], word = k === "done" ? doneWord : TIERS[t][1], in_ = inside[k];
+      var shown = n[k] || (in_ ? in_.n : 0);
+      if (!shown) continue;                // a zero is noise; absence says it
+      var tip = in_ ? (n[k] ? in_.n + " more " : "") + word + " inside " + in_.at.join(", ") : "";
+      out += '<span class="tl ' + k + '"' + (tip ? ' title="' + esc(tip) + '"' : "") + "><b>" + shown + "</b> " +
+        esc(word) + "</span>";
     }
     return out;
   }
@@ -405,6 +425,18 @@ function __boardRender(d) {
     return "--sg:" + mixTo(c, CARD, 255) + ";--sgl:" + mixTo(c, CARD_L, 0);
   }
 
+  // A signal sent in attend's amber (lookout running, CI running, a plan's
+  // go) is not a call on you, and amber on the board means exactly that. It
+  // wears the link colour instead (.sig.acc); every other colour is lifted.
+  // (Keyed without the "#": these are the collector's colours to recognise,
+  // not colours this page paints, which the probe holds to tokens.)
+  var AMBER = { f5a524: 1, dfa000: 1, dbbc7f: 1 };
+  function sigAttr(c) {
+    if (AMBER[String(c || "").toLowerCase().replace(/^#/, "")]) return { cls: " acc", style: "" };
+    var col = lift(c);
+    return { cls: "", style: col ? ' style="' + col + '"' : "" };
+  }
+
   function chipTip(c) {
     return TIP[c] || TIP[String(c).replace(/\s+\d+$/, "")] || c;
   }
@@ -423,8 +455,8 @@ function __boardRender(d) {
     if (arm) out.push(arm);
     (a.signals || []).forEach(function (e) {
       if (!e.a) return;
-      var col = lift(e.c);
-      out.push('<span class="chip sig"' + (col ? ' style="' + col + '"' : "") +
+      var sa = sigAttr(e.c);
+      out.push('<span class="chip sig' + sa.cls + '"' + sa.style +
         ' data-a="' + esc(e.a) + '"' +
         (e.x !== undefined && e.x !== null && e.x !== "" ? ' data-x="' + esc(e.x) + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>");
@@ -499,10 +531,12 @@ function __boardRender(d) {
   }
 
   // Uncommitted work: a hollow ring drawn by CSS (.dirty::before) in a neutral
-  // colour. A filled amber dot beside a signal's dot read as two states, and
-  // amber is "needs you".
-  var DIRTY = '<span class="dirty" role="img" aria-label="Uncommitted changes" ' +
-    'title="Uncommitted changes in this worktree"></span>';
+  // colour, then the word. A filled amber dot beside a signal's dot read as
+  // two states, and amber is "needs you"; the ring alone was cryptic.
+  var DIRTY = '<span class="dirty" title="This worktree has changes not yet committed">uncommitted</span>';
+  // A quiet row's one line has no room for the word: the ring, named.
+  var DIRTY_MARK = '<span class="dirty" role="img" aria-label="Uncommitted changes" ' +
+    'title="This worktree has changes not yet committed"></span>';
 
   // No Wake icon on a row: jumping to the workspace and pressing ⌘E opens its
   // Wake, so an icon on every card was one more mark for little. The collector
@@ -516,8 +550,10 @@ function __boardRender(d) {
   // clicked, so they do not react.
   function foot(a) {
     var out = "";
-    // A footer of only the plain facts (no PR, issue or signal) keeps to one line.
-    var one = !a.pr && !a.issue && !(a.signals || []).some(function (e) { return !e.a; });
+    // A footer of only the plain facts (no PR, issue or signal) keeps to one
+    // line. Uncommitted work is a word now, and at rail width it would clip
+    // the branch, so a footer carrying it wraps instead.
+    var one = !a.pr && !a.issue && !a.dirty && !(a.signals || []).some(function (e) { return !e.a; });
     // No colour dot before the branch: beside the facts it read as one more
     // state. The worktree's colour stays on the "you are here" ring.
     if (a.branch) {
@@ -538,13 +574,13 @@ function __boardRender(d) {
     }
     (a.signals || []).forEach(function (e) {
       if (e.a) return;
-      var col = lift(e.c);
+      var sa = sigAttr(e.c);
       // A status signal reads as its word, in its colour. The collector's bare
       // "●" before some words (● lookout) is a chip's glyph; in the footer it
       // sat beside the uncommitted mark as a second dot, so it is dropped.
       // Glyphs that say something (✓ ✗ ⇣ ⚠) stay.
       var word = String(e.t || "").replace(/^\u25cf\s*/, "") || String(e.t || "");
-      out += '<span class="sig"' + (col ? ' style="' + col + '"' : "") +
+      out += '<span class="sig' + sa.cls + '"' + sa.style +
         ' title="' + esc(e.h) + '">' + esc(word) + "</span>";
     });
     if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
@@ -853,7 +889,7 @@ function __boardRender(d) {
     var more = foot(a);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       topOpen(a, "", !!more) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (shelf ? "" : slotOf(a, acts.length || arm ? "" : badgeOf(a))) + (acts.length || arm ? qb + limPill(a) : "") +
+      (a.dirty ? DIRTY_MARK : "") + (shelf ? "" : slotOf(a, acts.length || arm ? "" : badgeOf(a))) + (acts.length || arm ? qb + limPill(a) : "") +
       (shelf ? whyOf(a) + slotOf(a, "") : "") + cost(a) + topClose(a) +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
@@ -1057,7 +1093,7 @@ function __boardRender(d) {
   var treats = treatsLine(rows);
   if (says) says.textContent = treats || (asks ? "" : rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp));
   var tl = $("tally");
-  if (tl) tl.innerHTML = tally(rows);
+  if (tl) tl.innerHTML = tally(rows, groups);
 
   var n = rows.filter(function (a) { return a.kind === "attend"; }).length;
   // "all clear" claimed more than this number knows: it counts the attend tier
