@@ -10,9 +10,9 @@
 .w-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; padding: 16px 26px 6px; }
 /* The title block keeps a readable width; past that the picker drops to its own line. */
 .w-ttl { flex: 1 1 300px; min-width: 0; }
-.w-title { margin: 0; font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-title { margin: 0; font-size: var(--fs-5); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-dot { color: var(--muted); font-weight: 400; }
-.w-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.w-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--muted); font-size: var(--fs-2); margin-top: 2px; }
 .w-sub .risk { color: var(--bad-t); }
 .w-sub .kept { color: var(--good-t); }
 .w-ws { font: inherit; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); max-width: 260px; min-width: 0; }
@@ -23,7 +23,7 @@
 .w-q { flex: 1 1 120px; min-width: 0; font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
 .w-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 26px 8px; }
 .w-chip {
-  display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; padding: 2px 9px; border-radius: 10px;
+  display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: var(--fs-2); padding: 2px 9px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
 }
 .w-chip span { color: var(--muted); }
@@ -40,7 +40,7 @@
 .wake.embedded .w-row { grid-template-columns: 48px minmax(0, 1fr) minmax(0, auto) auto; }
 .wake.embedded .w-badges { flex-wrap: wrap; min-width: 0; }
 .wake.embedded .w-act, .wake.embedded .w-st { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.w-day h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--section); margin: 14px 0 6px; }
+.w-day h2 { font-size: var(--fs-1); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--section); margin: 14px 0 6px; }
 /* The day heading folds its day: a folded day is its heading and a count. */
 .w-dayh { all: unset; cursor: pointer; }
 .w-dayh:hover { color: var(--fg); }
@@ -55,16 +55,16 @@
 /* Visible overflow, so a row's ⋯ menu is not cut off; the last row rounds itself. */
 .w-grp { margin: 0 0 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
 .w-rows > .w-row:last-child { border-radius: 0 0 11px 11px; }
-.w-ph { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.w-ph { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: var(--fs-2); }
 .w-ph time { color: var(--muted); font-variant-numeric: tabular-nums; }
 /* A group of one: its prompt is a quiet caption above the row, not a band. */
-.w-grp.solo .w-ph { border-bottom: 0; padding: 6px 12px 0; font-size: 11.5px; color: var(--muted); }
+.w-grp.solo .w-ph { border-bottom: 0; padding: 6px 12px 0; font-size: var(--fs-2); color: var(--muted); }
 .w-grp.solo .w-rows { padding: 0 0 4px; }
 .w-prompt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .w-grp.open .w-prompt { white-space: normal; }
 .w-prompt.none { color: var(--muted); font-style: italic; }
-.w-br { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 11px ui-monospace, Menlo, monospace; }
-.w-sess { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px ui-monospace, Menlo, monospace; color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 6px; padding: 1px 6px; cursor: pointer; }
+.w-br { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: var(--fs-1) ui-monospace, Menlo, monospace; }
+.w-sess { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 6px; padding: 1px 6px; cursor: pointer; }
 /* The same branch or session as the card above: there on hover, not on every
    card. Out of the flow but still in the tab order, so Tab reaches the session
    button and :focus-within brings it back. */
@@ -76,19 +76,19 @@
 .w-row.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .w-row.gone .w-t { color: var(--muted); text-decoration: line-through; }
 /* The kind is a label, not a signal: grey. Only "at risk" keeps a hue. */
-.w-k { font-size: 11px; color: var(--muted); font-weight: 600; }
+.w-k { font-size: var(--fs-1); color: var(--muted); font-weight: 600; }
 .w-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-badges { display: flex; gap: 4px; }
-.w-st { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); }
+.w-st { font-size: var(--fs-1); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); }
 .w-st.risk { color: var(--bad-t); }
 .w-st.kept { color: var(--good-t); }
 /* A row's path shows when the row is picked, or while searching (a match can
    be in it); otherwise it is in the title's tooltip. A was-path always shows. */
 .w-row:not(.sel) .w-p:not(.was):not(.hit) { display: none; }
-.w-p { grid-column: 2 / 4; font: 11px ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-p { grid-column: 2 / 4; font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-p.was { opacity: 0.7; }
 .w-acts { grid-column: 4; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
-.w-act { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+.w-act { font: inherit; font-size: var(--fs-2); padding: 2px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
 .w-act.sure, .w-act.main { border-color: var(--accent); color: var(--accent-t); }
 .w-act.keepall { color: var(--bad-t); white-space: nowrap; }
 .w-keys { padding: 4px 10px; }
@@ -96,12 +96,12 @@
 .w-empty { margin: 14vh auto 0; max-width: 420px; text-align: center; color: var(--muted); }
 
 
-.w-help { position: absolute; right: 26px; top: 84px; z-index: 20; padding: 10px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 10px 28px var(--shade); font-size: 12px; }
+.w-help { position: absolute; right: 26px; top: 84px; z-index: 20; padding: 10px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 10px 28px var(--shade); font-size: var(--fs-2); }
 .w-help[hidden] { display: none; }
-.w-help h3 { margin: 0 0 6px; font-size: 12px; }
+.w-help h3 { margin: 0 0 6px; font-size: var(--fs-2); }
 .w-help p { margin: 2px 0; }
 .w-help b { display: inline-block; min-width: 46px; font-family: ui-monospace, Menlo, monospace; }
-.w-toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 6px 14px; border-radius: 9px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 24px var(--shade); font-size: 12px; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+.w-toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 6px 14px; border-radius: 9px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 24px var(--shade); font-size: var(--fs-2); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
 .w-toast.on { opacity: 1; }
 .w-toast.bad { color: var(--bad-t); }
 

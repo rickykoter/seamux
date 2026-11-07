@@ -1261,6 +1261,11 @@ function htmlHead(title, b64) {
   --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
   --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* type scale: every page sizes words with these, never a px value of its own.
+     1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
+     3 body and UI default · 4 emphasis, card titles · 5 section and page titles
+     6 the plan page's h1 alone */
+  --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
 }
 /* light */
 @media (prefers-color-scheme: light) {
@@ -1300,17 +1305,17 @@ function htmlHead(title, b64) {
 --hl:rgba(167,192,128,.26);--hl-on:rgba(167,192,128,.5);--find:rgba(219,188,127,.32);--find-on:var(--ef-orange);
 --mono:var(--ef-mono)}
 :root[data-theme="light"]{--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);--find:rgba(223,160,0,.28)}
-body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+body{background:var(--bg);color:var(--fg);font:var(--fs-4)/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
 -webkit-font-smoothing:antialiased;max-width:860px;margin:0 auto;padding:28px 20px 80px}
-h1{font:600 22px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
-h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+h1{font:600 var(--fs-6)/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
+h2{font:700 var(--fs-3)/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
 margin-top:2.4em;border-bottom:1px solid var(--line);padding-bottom:7px}
-h3{font-size:15px}
+h3{font-size:var(--fs-4)}
 a{color:var(--accent-t)}
-code{background:var(--card);border-radius:4px;padding:1px 5px;font:12.5px var(--mono)}
+code{background:var(--card);border-radius:4px;padding:1px 5px;font:var(--fs-3) var(--mono)}
 .dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
-.inc .st{float:right;font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
+.inc .st{float:right;font-size:var(--fs-2);padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
 .st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--warn-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-checks-st{list-style:none;padding-left:0}.dp-checks-st .dp-run{margin-left:19px}
@@ -1332,15 +1337,15 @@ details.dp-more[open]{display:inline}
 .dp-act[data-kind="quiet"]:not([disabled]):hover{color:var(--fg);text-decoration:underline}
 .dp-act[data-kind="quiet"][disabled]{opacity:.8}
 details.dp-run{display:block;margin:2px 0 4px;padding-left:14px}
-details.dp-run>summary{cursor:pointer;width:fit-content;font-size:12.5px;margin-left:-14px}
+details.dp-run>summary{cursor:pointer;width:fit-content;font-size:var(--fs-3);margin-left:-14px}
 .dp-path{color:var(--fg);cursor:default}
 .dp-live .dp-path{color:var(--accent-t);text-decoration:underline;cursor:pointer}
 .dp-path.dp-bad{color:var(--bad-t)}
 .dp-adr-edit,.dp-adr-promote{background:var(--card3);color:var(--fg);border:1px solid var(--line);
-border-radius:6px;padding:2px 10px;cursor:pointer;font:inherit;font-size:12px}
+border-radius:6px;padding:2px 10px;cursor:pointer;font:inherit;font-size:var(--fs-2)}
 .dp-adr-promote[data-staged="1"]{color:var(--good-t);border-color:var(--good)}
 .dp-adr-editor{border:1px dashed var(--line);border-radius:8px;padding:10px;margin:8px 0}
-.dp-adr-editor label{display:block;font-size:12px;color:var(--dim);margin:6px 0}
+.dp-adr-editor label{display:block;font-size:var(--fs-2);color:var(--dim);margin:6px 0}
 .dp-adr-editor input,.dp-adr-editor textarea{display:block;width:100%;box-sizing:border-box;
 background:transparent;color:inherit;border:1px solid var(--dim);border-radius:4px;padding:6px;font:inherit}
 .dp-adr-preview{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:2px 12px;margin-top:8px}
@@ -1348,9 +1353,9 @@ background:transparent;color:inherit;border:1px solid var(--dim);border-radius:4
 .dp-adr-editor textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .q{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .q .opt{display:block;margin:4px 0 4px 12px}
-label.auto{position:fixed;top:10px;right:64px;font-size:12px;color:var(--dim)}
+label.auto{position:fixed;top:10px;right:64px;font-size:var(--fs-2);color:var(--dim)}
 #dp-mode{position:fixed;top:8px;right:14px;background:var(--card3);color:var(--fg);
-border:1px solid var(--line);border-radius:6px;padding:4px 10px;font:inherit;font-size:13px;
+border:1px solid var(--line);border-radius:6px;padding:4px 10px;font:inherit;font-size:var(--fs-3);
 cursor:pointer;min-height:32px}
 #dp-mode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style></head><body>
@@ -1837,21 +1842,21 @@ function widgetHtml(spec, b64) {
 .dpsr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .dpwrap{padding:1rem 0}
 .dpfig{margin:0 0 var(--gap-md,16px)}
-.dpcap{font-size:13px;color:var(--text-muted,#666);margin-bottom:6px}
+.dpcap{font-size:var(--fs-3);color:var(--text-muted,#666);margin-bottom:6px}
 .mermaid{background:var(--surface-1,#f6f6f6);border:1px solid var(--border,#ddd);
   border-radius:var(--radius,8px);padding:12px;overflow-x:auto}
 .dpq{border:1px solid var(--border,#ddd);border-radius:12px;padding:var(--pad-md,14px);
   margin:0 0 var(--gap-md,16px);background:var(--surface-1,#fafafa)}
-.dpq legend{font-size:13px;color:var(--text-muted,#666);padding:0 6px}
-.dps{font-size:15px;line-height:1.6;margin:0 0 12px;color:var(--text-primary,#111)}
+.dpq legend{font-size:var(--fs-3);color:var(--text-muted,#666);padding:0 6px}
+.dps{font-size:var(--fs-4);line-height:1.6;margin:0 0 12px;color:var(--text-primary,#111)}
 .dpo{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;
   border:1px solid var(--border,#ddd);border-radius:var(--radius,8px);margin-bottom:7px;
   cursor:pointer;background:var(--surface-2,#fff)}
 .dpo:hover{border-color:var(--border-strong,#999)}
 .dpo input{margin-top:3px;flex:none}
-.dpo span{font-size:14px;line-height:1.5;color:var(--text-primary,#111)}
+.dpo span{font-size:var(--fs-4);line-height:1.5;color:var(--text-primary,#111)}
 .dpbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-top:4px}
-.dpgo{font:500 14px var(--font-sans,system-ui);padding:8px 16px;
+.dpgo{font:500 var(--fs-4) var(--font-sans,system-ui);padding:8px 16px;
   border-radius:var(--radius,8px);border:1px solid var(--border-strong,#999);
   background:var(--surface-2,#fff);color:var(--text-primary,#111);cursor:pointer}
 .dpgo[disabled]{cursor:default;opacity:.6}
@@ -1861,8 +1866,8 @@ ${diagBlocks}
 ${quizBlocks}
 ${qs.length ? `<div class="dpbar">
 <button class="dpgo" id="dpgo" type="button">Send answers for grading</button>
-<span id="dpmeta" style="font-size:13px;color:var(--text-secondary,#555)">0 of ${qs.length} answered</span>
-<span id="dperr" style="font-size:13px;color:var(--text-danger,#b00)" role="status"></span>
+<span id="dpmeta" style="font-size:var(--fs-3);color:var(--text-secondary,#555)">0 of ${qs.length} answered</span>
+<span id="dperr" style="font-size:var(--fs-3);color:var(--text-danger,#b00)" role="status"></span>
 </div>` : ""}
 </div>
 ${diagrams.length ? `<script src="data:text/javascript;base64,${b64}"></script>
@@ -1994,7 +1999,7 @@ function reviewSummaryHtml(spec, adrs, nq) {
   return `<div class="dp-sum" id="dp-sum" aria-label="what you're approving">
 <style>
 .dp-sum{border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:8px 0 18px;background:var(--card)}
-.dp-sum-h{margin:0 0 4px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.dp-sum-h{margin:0 0 4px;font-size:var(--fs-2);font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
 .dp-sum p{margin:6px 0}
 .dp-sum ol{margin:6px 0;padding-left:1.4em}
 .dp-sum li{margin:2px 0}
@@ -3108,25 +3113,25 @@ ${checksHtml(planChecks(spec, i), d.waiver)}</div>`).join("\n");
 --accent:#7aa7d8;--good:#69c08c;--warn:#e0b25c}}
 :root[data-theme="dark"]{--bg:#20262b;--card:#2a3138;--ink:#d7dce1;--muted:#8b969e;
 --line:#3a434b;--accent:#7aa7d8;--good:#69c08c;--warn:#e0b25c}
-body{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,system-ui,"Segoe UI",sans-serif;
+body{background:var(--bg);color:var(--ink);font:var(--fs-4)/1.55 -apple-system,system-ui,"Segoe UI",sans-serif;
 max-width:760px;margin:0 auto;padding:28px 20px 80px}
-h1{font-size:21px;letter-spacing:-.01em}h2{font-size:16px;margin-top:2em;
+h1{font-size:var(--fs-6);letter-spacing:-.01em}h2{font-size:var(--fs-4);margin-top:2em;
 border-bottom:1px solid var(--line);padding-bottom:4px}
-code{background:color-mix(in srgb,var(--ink) 8%,transparent);border-radius:4px;padding:1px 5px;font-size:13px}
+code{background:color-mix(in srgb,var(--ink) 8%,transparent);border-radius:4px;padding:1px 5px;font-size:var(--fs-3)}
 .dim{color:var(--muted)}
 .inc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .mermaid{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .annot{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:10px}
 .annot input[type=text]{background:var(--bg);color:var(--ink);border:1px solid var(--line);
-border-radius:6px;padding:7px 10px;font:14px system-ui;width:55%}
+border-radius:6px;padding:7px 10px;font:var(--fs-4) system-ui;width:55%}
 .annot select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px}
 .annot button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 14px;
-font:600 13px system-ui;cursor:pointer}
+font:600 var(--fs-3) system-ui;cursor:pointer}
 .annot button:focus-visible,.annot input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 ul.alist{padding-left:0;list-style:none}
-ul.alist li{border-top:1px solid var(--line);padding:7px 0;font-size:13px}
+ul.alist li{border-top:1px solid var(--line);padding:7px 0;font-size:var(--fs-3)}
 ul.alist li b{color:var(--accent-t)}
-.ro{color:var(--warn-t);font-size:13px}
+.ro{color:var(--warn-t);font-size:var(--fs-3)}
 </style>
 <h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code> — shared for annotation; the plan itself
@@ -3712,7 +3717,7 @@ ${o.example ? `<pre class="dp-example"><code>${esc(String(o.example))}</code></p
 </div>`;
   }).join("\n");
   return htmlHead((ask.header ? ask.header + " — " : "") + "question", b64) + `<style>
-.dp-example{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow:auto;font-size:13px}
+.dp-example{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow:auto;font-size:var(--fs-3)}
 .dp-ask-opt h3{margin:0 0 6px}
 #dp-ask-status{margin-top:16px}
 </style>

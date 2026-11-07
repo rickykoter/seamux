@@ -29,7 +29,7 @@
       html, body { height: 100%; }
       body {
         margin: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
-        font: 13px/1.45 -apple-system, system-ui, sans-serif; overflow: hidden;
+        font: var(--fs-3)/1.45 -apple-system, system-ui, sans-serif; overflow: hidden;
       }
       body > header {
         /* Left room for the window's own close / minimize / zoom buttons,
@@ -49,7 +49,7 @@
       button:focus:not(:focus-visible), select:focus:not(:focus-visible) { outline: none; }
       .tab.on { color: var(--fg); background: var(--on); box-shadow: 0 0 0 1px var(--line); }
       .grow { flex: 1; align-self: stretch; }
-      #conn { color: var(--muted); font-size: 12px; margin-right: 8px; white-space: nowrap; }
+      #conn { color: var(--muted); font-size: var(--fs-2); margin-right: 8px; white-space: nowrap; }
       #conn::before {
         content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
         margin-right: 6px; vertical-align: 1px; background: var(--muted);
@@ -92,9 +92,9 @@
         display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 84px; min-height: 38px; border-bottom: 1px solid var(--line);
       }
       .sheet-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .sheet-say { flex: 1; color: var(--bad); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sheet-say { flex: 1; color: var(--bad); font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .sheet-btn {
-        display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; color: var(--fg);
+        display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: var(--fs-2); color: var(--fg);
         background: var(--on); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; cursor: pointer;
       }
       .sheet-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
@@ -105,15 +105,15 @@
       /* The page side's tabs: the Wake, the workspace's open pages, the rest. */
       .sheet-tabs { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; flex: none; }
       .sheet-tab {
-        display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; min-width: 0; max-width: 280px; font: inherit; font-size: 12px;
+        display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; min-width: 0; max-width: 280px; font: inherit; font-size: var(--fs-2);
         padding: 4px 9px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--muted); cursor: pointer;
       }
       .sheet-tab:hover { background: var(--card); color: var(--fg); }
       .sheet-tab.on { background: var(--card); border-color: var(--line); color: var(--fg); flex-shrink: 0; }
       .sheet-tab kbd, .sheet-tab-kind, .sheet-tab-dot { flex: none; }
       .sheet-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-      .sheet-tab kbd { font: 11px ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; }
-      .sheet-tab-kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+      .sheet-tab kbd { font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; }
+      .sheet-tab-kind { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
       .sheet-tab-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 4ch; flex: 0 1 auto; }
       /* The state gives way first, then the name. */
       .sheet-tab-state { white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 100 auto; }
@@ -149,7 +149,7 @@
       body.splitting-y, body.splitting-y * { cursor: row-resize !important; }
       .sheet-chat-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--term-pad); font: var(--term-font); color: var(--pane-fg-or); background: var(--pane-bg-or); }
       .sheet-chat-body .ln { white-space: pre-wrap; overflow-wrap: anywhere; }
-      .sheet-kin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+      .sheet-kin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: var(--fs-2); }
       .sheet-kin[hidden] { display: none; }
       .sheet-kin-label { color: var(--muted, inherit); opacity: 0.8; margin-right: 4px; }
       .sheet-kin-chip { display: inline-flex; gap: 6px; align-items: baseline; font: inherit; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
@@ -158,7 +158,7 @@
       .sheet-kin-chip.here { background: var(--on); font-weight: 600; cursor: default; }
       .sheet-kin-chip.done { opacity: 0.6; }
       .sheet-kin-chip:disabled:not(.here) { opacity: 0.4; cursor: default; border-style: dashed; }
-      .sheet-chat-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+      .sheet-chat-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-2); }
       /* One tab per live pane: they scroll sideways when they do not fit, and
          the edge they run past fades. + and History stay put at the end. */
       .sheet-chat-tabs { flex: 1 1 0; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
@@ -167,7 +167,7 @@
       .sheet-chat-tabs.clip-l { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
       .sheet-chat-tabs.clip-l.clip-r { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
       .sheet-chat-tab {
-        display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; max-width: 200px; font: inherit; font-size: 12px;
+        display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; max-width: 200px; font: inherit; font-size: var(--fs-2);
         padding: 4px 9px; border-radius: 7px; border: 1px solid transparent; background: none; color: var(--muted); cursor: pointer;
       }
       .sheet-chat-tab:hover { background: var(--card); color: var(--fg); }
@@ -179,7 +179,7 @@
       .sheet-chat-tab.working .sheet-chat-tab-dot { background: var(--good); }
       .sheet-chat-tab.term.bell svg { color: var(--ask); }
       .sheet-chat-tab-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3ch; }
-      .sheet-chat-tab.term .sheet-chat-tab-name { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .sheet-chat-tab.term .sheet-chat-tab-name { font: var(--fs-2) ui-monospace, SFMono-Regular, Menlo, monospace; }
       .sheet-chat-tab.agent .sheet-chat-tab-name { font-weight: 600; flex: none; }
       .sheet-chat-tab-state { white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
       .sheet-chat-tab.needs_input .sheet-chat-tab-state { color: var(--ask-t); }
@@ -214,7 +214,7 @@
       .sheet-chat-sessions .sheet-open-in { margin-left: auto; align-self: center; }
       .sheet-chat-jump { align-self: center; padding: 3px 6px; }
       .sheet-chat-reply[hidden], .sheet-chat-note:empty { display: none; }
-      .sheet-chat-note { padding: 0 12px 6px; font-size: 11.5px; color: var(--muted); }
+      .sheet-chat-note { padding: 0 12px 6px; font-size: var(--fs-2); color: var(--muted); }
       /* On the tmux backend nothing goes through cmux: its controls hide, and
          a pane chip is a label rather than a jump. */
       body[data-backend="tmux"] .cmux-only { display: none !important; }
@@ -222,14 +222,14 @@
       /* A pane the app cannot draw: why, and the way to a native one. */
       .sheet-chat-plain { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
       .sheet-chat-plain[hidden] { display: none; }
-      .sheet-chat-plain p { margin: 0; flex: 1 1 16em; color: var(--muted); font-size: 12px; }
+      .sheet-chat-plain p { margin: 0; flex: 1 1 16em; color: var(--muted); font-size: var(--fs-2); }
       .sheet-imgbox { flex: 1; min-width: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 12px; background: var(--term); }
       .sheet-img { max-width: 100%; max-height: 100%; object-fit: contain; }
 
 
       .muted { color: var(--muted); }
       .bad { color: var(--bad); }
-      code { font: 12px ui-monospace, Menlo, monospace; }
+      code { font: var(--fs-2) ui-monospace, Menlo, monospace; }
     </style>
   </head>
   <body>

@@ -537,14 +537,13 @@ checks.push(["a footer item that runs long ends in an ellipsis, not past the car
   /text-overflow:ellipsis/.test(ruleBody(".foot>span")) && /max-width:100%/.test(ruleBody(".foot>span"))]);
 checks.push(["every footer link is at least 24px tall",
   px(ruleBody(".foot>span"), "min-height") >= 24 && px(ruleBody(".foot>span"), "line-height") >= 24]);
-checks.push(["body text is 13px", /font:13px\//.test(ruleBody("body")) && /font-size:13px/.test(ruleBody(".said"))]);
+checks.push(["body text is the body size (--fs-3)", /font:var\(--fs-3\)\//.test(ruleBody("body")) && /font-size:var\(--fs-3\)/.test(ruleBody(".said"))]);
 
 // The header: the tally shares the headline's line, and the caption is a
 // sentence at full strength, not 9px at half opacity.
 checks.push(["the tally folds into the headline's line",
   /<div class="hud">\s*<span id="need">[^<]*<\/span>\s*<span id="tally">/.test(pageHtml)]);
-checks.push(["the cat's caption is legible", px(ruleBody("#says"), "font:italic ") >= 11 ||
-  /font:italic 1[1-9](\.\d+)?px/.test(ruleBody("#says"))]);
+checks.push(["the cat's caption is legible", /font:italic var\(--fs-[1-6]\)/.test(ruleBody("#says"))]);
 
 // --- motion ---------------------------------------------------------------
 // Whimsy's rule is that motion means something, so each of these asserts that a

@@ -15,6 +15,11 @@
   --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
   --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* type scale: every page sizes words with these, never a px value of its own.
+     1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
+     3 body and UI default · 4 emphasis, card titles · 5 section and page titles
+     6 the plan page's h1 alone */
+  --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
 }
 /* light */
 @media (prefers-color-scheme: light) {
