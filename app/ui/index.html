@@ -14,6 +14,9 @@
         /* The filled primary button: high-contrast neutral, so it never reads as a state. */
         --primary: var(--ef-fg); --on-primary: var(--ef-ink); --bad: var(--ef-bad); --good: var(--ef-good);
         --card: var(--ef-bg1); --shade: rgba(0, 0, 0, 0.06);
+        /* A dialog's edges: a line that holds in light too, and a field ground
+           that parts from the card (the palette's lightest in light, darkest in dark). */
+        --line2: var(--ef-line2); --field: var(--ef-ink);
         /* Word colours: the hues above are for fills and dots. */
         --accent-t: var(--ef-text-accent); --ask-t: var(--ef-text-mark); --bad-t: var(--ef-text-bad); --good-t: var(--ef-text-good); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
         /* Section labels: quiet small caps. Yellow is kept for what needs you. */
@@ -51,9 +54,13 @@
       .grow { flex: 1; align-self: stretch; }
       /* The appearance button (appearance.ts): one click cycles system, light, dark. */
       #appearance {
-        flex: none; display: grid; place-items: center; width: 26px; height: 26px; margin-right: 6px;
-        padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer;
+        flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 26px; height: 26px; margin-right: 6px;
+        padding: 0 5px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; font: inherit;
       }
+      /* After a click: the new look in a word beside the icon, for a moment. */
+      .appearance-said { font-size: var(--fs-2); color: var(--fg); white-space: nowrap; }
+      .appearance-said:empty { display: none; }
+      #appearance.saying { background: var(--on); box-shadow: 0 0 0 1px var(--line2); }
       #appearance:hover { color: var(--fg); background: var(--on); }
       #appearance:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       #appearance svg { width: 15px; height: 15px; }
@@ -100,7 +107,7 @@
         display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 84px; min-height: 38px; border-bottom: 1px solid var(--line);
       }
       .sheet-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .sheet-say { flex: 1; color: var(--bad); font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sheet-say { flex: 1; color: var(--bad-t); font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .sheet-btn {
         display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: var(--fs-2); color: var(--fg);
         background: var(--on); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; cursor: pointer;
@@ -197,7 +204,7 @@
       .sheet-chat-sessions .sheet-btn:disabled { opacity: 0.5; cursor: default; }
       /* The one filled button on a surface: the same neutral fill on every page. */
       .sheet-btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
-      .sheet-chat-sess.act { color: var(--accent); }
+      .sheet-chat-sess.act { color: var(--accent-t); }
       .sheet-chat-sess.act + .sheet-chat-sess:not(.act) { margin-top: 3px; border-top-color: var(--line); border-radius: 0 0 6px 6px; }
       .sheet-chat-sess-what { color: var(--muted, inherit); opacity: 0.75; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
       .sheet-chat-sess-list { flex-basis: 100%; display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
@@ -237,7 +244,7 @@
 
 
       .muted { color: var(--muted); }
-      .bad { color: var(--bad); }
+      .bad { color: var(--bad-t); }
       code { font: var(--fs-2) ui-monospace, Menlo, monospace; }
     </style>
   </head>

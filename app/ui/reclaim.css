@@ -7,21 +7,27 @@
 .reclaim[hidden] { display: none; }
 .reclaim-card {
   width: min(560px, calc(100vw - 32px)); max-height: 80vh; display: flex; flex-direction: column;
-  background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 18px 50px var(--shade);
+  background: var(--card); border: 1px solid var(--line2); border-radius: 12px; box-shadow: 0 18px 50px var(--shade);
 }
-.rc-head { display: flex; align-items: baseline; gap: 12px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+/* Edges that hold in light, and the theme's accent for keyboard focus. */
+.reclaim .sheet-btn { border-color: var(--line2); }
+.reclaim .rc-primary { border-color: var(--primary); }
+.reclaim .rc-danger { border-color: var(--bad); }
+.reclaim :is(.sheet-btn, summary, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.reclaim input[type="checkbox"] { accent-color: var(--accent); }
+.rc-head { display: flex; align-items: baseline; gap: 12px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line2); }
 .rc-head b { font-size: var(--fs-4); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-steps { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; counter-reset: rc; font-size: var(--fs-2); color: var(--muted); flex: none; }
 .rc-steps li { counter-increment: rc; display: flex; align-items: center; gap: 4px; }
 .rc-steps li + li::before { content: ""; width: 12px; height: 1px; background: var(--line); margin-right: 2px; }
 .rc-steps li > :first-child, .rc-steps li { white-space: nowrap; }
 .rc-steps li.now { color: var(--fg); font-weight: 600; }
-.rc-steps li.past { color: var(--good); }
+.rc-steps li.past { color: var(--good-t); }
 
 .rc-body { padding: 12px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-.rc-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
+.rc-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px 14px; border-top: 1px solid var(--line2); }
 .rc-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
-.rc-danger { border-color: var(--bad); color: var(--bad); font-weight: 600; }
+.rc-danger { border-color: var(--bad); color: var(--bad-t); font-weight: 600; }
 .rc-danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
 
 .rc-busy { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--fs-3); padding: 6px 0; }
@@ -42,7 +48,7 @@
 .rc-facts .rc-note::before { content: "· "; }
 .mono { font: var(--fs-2) ui-monospace, Menlo, monospace; }
 
-.rc-checks { list-style: none; margin: 0; padding: 8px 10px; background: var(--term); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
+.rc-checks { list-style: none; margin: 0; padding: 8px 10px; background: var(--field); border: 1px solid var(--line2); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
 .rc-check { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: start; font-size: var(--fs-3); }
 .rc-check.skip, .rc-check.note { color: var(--muted); }
 .rc-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; overflow-wrap: anywhere; }
@@ -52,11 +58,11 @@
 .rc-mark.fail, .rc-mark.error { color: var(--bad); }
 .rc-mark.warn { color: var(--accent); }
 .rc-mark.skip, .rc-mark.note { color: var(--muted); }
-.rc-check.fail .rc-text > :first-child, .rc-check.error .rc-text > :first-child { color: var(--bad); }
+.rc-check.fail .rc-text > :first-child, .rc-check.error .rc-text > :first-child { color: var(--bad-t); }
 
 .rc-verdict { margin: 0; font-size: var(--fs-3); font-weight: 600; }
-.rc-verdict.bad { color: var(--bad); }
-.rc-error { margin: 0; color: var(--bad); font-size: var(--fs-3); overflow-wrap: anywhere; }
+.rc-verdict.bad { color: var(--bad-t); }
+.rc-error { margin: 0; color: var(--bad-t); font-size: var(--fs-3); overflow-wrap: anywhere; }
 .rc-sub { margin: 4px 0 0; font-size: var(--fs-2); font-weight: 600; }
 .rc-note { color: var(--muted); font-size: var(--fs-2); }
 

@@ -34,7 +34,7 @@
   box-shadow: 0 8px 24px var(--shade); font-size: var(--fs-3); opacity: 0; pointer-events: none; transition: opacity 0.2s;
 }
 .tuck-note.on { opacity: 1; pointer-events: auto; }
-.tuck-note.bad { color: var(--bad); }
+.tuck-note.bad { color: var(--bad-t); }
 .tuck-note button { font: inherit; font-size: var(--fs-2); padding: 3px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg); cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .tuck-note { transition: none; } }
 
@@ -128,7 +128,7 @@
 .search-p-bar { height: 4px; margin: -2px 0 2px 60px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .search-p-bar i { display: block; height: 100%; background: var(--good); }
 .search-p-fail { margin: 0; display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; font-size: var(--fs-3); }
-.search-p-fail .search-p-v { color: var(--bad, var(--accent)); }
+.search-p-fail .search-p-v { color: var(--bad-t); }
 .search-p-fam, .search-p-panes { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; font-size: var(--fs-3); }
 .search-p-fam ul, .search-p-panes ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .search-p-fam li { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
@@ -143,9 +143,9 @@
 .search-p-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-p-doing { flex: none; color: var(--muted); }
 .search-p-pane.needs_input .search-p-doing { color: var(--ask-t); }
-.search-p-pr a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-.search-p-ci.pass { color: var(--good); }
-.search-p-ci.fail { color: var(--bad); }
+.search-p-pr a { color: var(--accent-t); text-decoration: underline; text-underline-offset: 2px; }
+.search-p-ci.pass { color: var(--good-t); }
+.search-p-ci.fail { color: var(--bad-t); }
 /* The selected session's last exchange: the person's prompt, then Claude's reply. */
 .search-p-ex { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 0; font-size: var(--fs-3); }
 .search-p-ex > div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; }
