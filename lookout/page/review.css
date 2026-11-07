@@ -427,6 +427,8 @@ body.served .card:not(.cur):hover { border-color: color-mix(in srgb, var(--accen
 a.gfile, a.wloc { color: var(--accent-t); text-decoration: none; }
 a.wloc { font-family: var(--mono); font-size: var(--fs-2); }
 a.gfile { font-size: var(--fs-2); }
+/* A note's files that left the diff: named, not links. */
+span.gfile.gone { font-size: var(--fs-2); color: var(--muted); }
 a.gfile:hover, a.wloc:hover { text-decoration: underline; }
 a.gfile .fbadge { margin-left: 4px; }
 .nfiles { display: flex; gap: 2px 12px; flex-wrap: wrap; align-items: center; }

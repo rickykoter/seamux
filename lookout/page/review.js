@@ -552,10 +552,13 @@
 
   // One note inside an opened group. `lead`: the row shows its whole direction.
   // A note whose files differ from the group's leads with its own.
-  function noteCard(n, { lead = false, files = null } = {}) {
-    const own = files && [...n.files].sort().join("\n") !== [...files].sort().join("\n");
+  // `gone`: its files left the diff, so they are named but not links.
+  function noteCard(n, { lead = false, files = null, gone = false } = {}) {
+    const own = gone || (files && [...n.files].sort().join("\n") !== [...files].sort().join("\n"));
+    const names = gone ? el("div", { class: "nfiles" }, n.files.map(p => el("span", { class: "gfile gone", title: p }, p.slice(p.lastIndexOf("/") + 1))))
+      : fileLinks(n.files);
     return el("div", { class: "note", "data-note": n.id },
-      own ? el("div", { class: "note-head" }, fileLinks(n.files), ...marks(n)) : null,
+      own ? el("div", { class: "note-head" }, names, ...marks(n)) : null,
       asking(n) ? quizBlock(n) : [n.quiz && n.quiz.answered ? quizBlock(n) : null, noteBody(n, { lead })]);
   }
 
@@ -623,6 +626,8 @@
       isOpenNow ? ovOpen.delete(key) : ovOpen.add(key);
       saveOvOpen();
       const next = ovSection(key);
+      // A fresher review may have dropped this group: its row goes.
+      if (!next) { sec.remove(); return; }
       sec.replaceWith(next);
       next.querySelector(".ov-sum").focus({ preventScroll: true });
     };
@@ -653,7 +658,7 @@
         if (e.key !== "Escape" || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || !$("keys").hidden) return;
         e.preventDefault(); toggle();
       } },
-      mine.length ? mine.map((n, i) => noteCard(n, { lead: i === 0 && !asking(n) && n.direction.trim() === headline, files: lost ? null : files })) : null,
+      mine.length ? mine.map((n, i) => noteCard(n, { lead: i === 0 && !asking(n) && n.direction.trim() === headline, files: lost ? null : files, gone: lost })) : null,
       lost ? null : fileLinks(files)) : null;
     const sec = el("section", { class: "ov-group" + (band ? " band-" + band : "") + (isOpenNow ? " open" : ""), "data-group": key }, sum, body);
     return sec;

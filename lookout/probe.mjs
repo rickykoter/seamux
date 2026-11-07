@@ -2050,6 +2050,12 @@ if (want("page script")) {
     ok("page: low-risk groups without notes stay one line, and notes on files that left the diff are one more folded row",
        ov.includes('if (band === "low" && !ns.some(n => n.group === g.id)) continue;') && ov.includes("if (ns.some(n => !n.group)) list.append(ovSection(LOST));") &&
        ov.includes('`${plural(low.length, "low-risk group")} without notes: `') && sec.includes('const headline = lost ? "Notes on files no longer in the diff"'));
+    // Opened, a note in that row still names its files (they left the diff,
+    // so as plain names, not links); a toggle on a group a fresher review
+    // dropped removes the row instead of inserting "null".
+    ok("page: a note on files that left the diff names them when opened, and a dropped group's row goes on toggle",
+       /const own = gone \|\| \(files && /.test(js) && js.includes('class: "gfile gone"') && js.includes("gone: lost })") &&
+       js.includes("if (!next) { sec.remove(); return; }"));
   }
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
