@@ -811,6 +811,8 @@ export class Sheet {
       if (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement || at instanceof HTMLSelectElement) return;
       const t = this.tabs.filter((x) => x.key !== WAKE)[Number(e.key) - 1];
       if (t) {
+        // Picking a page by key means to see it: a hidden column comes back.
+        this.pageHidden = false;
         this.select(t.key);
         e.preventDefault();
       }
@@ -1080,6 +1082,9 @@ export class Sheet {
 
   /** ⌘E in the Dock: the side column away, or back, whatever it holds. */
   private toggleSide(): void {
+    // No terminal to widen (a workspace before its first pane): nothing folds,
+    // so nothing to change or remember.
+    if (!this.embedded || !this.body.classList.contains("with-chat")) return;
     const show = this.isFolded();
     if (this.active === WAKE) this.setWakeOpen(show);
     else {
@@ -1091,6 +1096,8 @@ export class Sheet {
   private step(by: number): void {
     if (!this.tabs.length) return;
     const i = Math.max(0, this.tabs.findIndex((t) => t.key === this.active));
+    // Stepping to a tab means to see it: a hidden column comes back.
+    this.pageHidden = false;
     this.select(this.tabs[(i + by + this.tabs.length) % this.tabs.length].key);
   }
 
