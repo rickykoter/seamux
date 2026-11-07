@@ -73,7 +73,7 @@
   border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
 }
 .d-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
-.d-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ef-ink); }
+.d-btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .d-btn:disabled { cursor: default; color: var(--muted); background: transparent; border-style: dashed; border-color: var(--line); }
 .d-btn:focus-visible, .d-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .d-note { margin: 0; font-size: 12px; color: var(--good); }

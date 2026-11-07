@@ -1294,7 +1294,7 @@ function htmlHead(title, b64) {
 body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
 -webkit-font-smoothing:antialiased;max-width:860px;margin:0 auto;padding:28px 20px 80px}
 h1{font:600 22px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
-h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark-t);
+h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
 margin-top:2.4em;border-bottom:1px solid var(--line);padding-bottom:7px}
 h3{font-size:15px}
 a{color:var(--accent-t)}
