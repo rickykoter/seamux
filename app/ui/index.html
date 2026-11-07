@@ -205,7 +205,9 @@
       .native-term.focused { box-shadow: inset 0 0 0 2px var(--accent); }
       .native-term .xterm { height: 100%; }
       .sheet-chat-body[hidden] { display: none; }
-      .sheet-chat-code { margin-left: auto; align-self: center; padding: 3px 6px; }
+      .sheet-chat-code { margin-left: auto; align-self: center; padding: 3px 8px; }
+      .sheet-chat-sessions .sheet-say { flex: 0 1 auto; max-width: 30%; }
+      .sheet-chat-sessions .sheet-say:empty { display: none; }
       .sheet-chat-jump { align-self: center; padding: 3px 6px; }
       .sheet-chat-reply[hidden], .sheet-chat-note:empty { display: none; }
       .sheet-chat-note { padding: 0 12px 6px; font-size: 11.5px; color: var(--muted); }

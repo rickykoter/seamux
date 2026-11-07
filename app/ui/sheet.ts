@@ -76,6 +76,27 @@ class Chat {
   el = document.createElement("section");
   /** Its worktree in VS Code and its pane in cmux: the end of the tab row. */
   private icons: HTMLElement[] = [];
+  private jumpBtn: HTMLElement | null = null;
+  /** The Dock's sheet header, moved into this row (sheet.ts Sheet): one row of tools. */
+  private extra: HTMLElement[] = [];
+
+  /** Take the sheet's own tools into the tab row. Its cmux button replaces
+   *  this row's jump, so there is one way to cmux, not two. */
+  adopt(tools: HTMLElement[]): void {
+    this.extra = tools;
+    this.icons = this.icons.filter((x) => x !== this.jumpBtn);
+    if (!this.bar.hidden && this.shown) this.drawSessions(this.shown);
+  }
+
+  /** This pane in cmux: the Dock's one cmux button, when no page is up. */
+  async jumpToPane(): Promise<void> {
+    try {
+      await invoke("wall_jump", { surfaceId: this.surface });
+      await invoke("hide_overlay");
+    } catch (e) {
+      this.note.textContent = String(e);
+    }
+  }
   private body = document.createElement("div");
   /** The pane, live where it is tmux-backed: click into it and keys go to the agent. */
   private term = new TermSlot();
@@ -158,13 +179,13 @@ class Chat {
     // Its worktree in VS Code, beside Jump.
     const code = document.createElement("button");
     code.type = "button";
-    code.className = "sheet-btn icon sheet-chat-code";
+    code.className = "sheet-btn sheet-chat-code";
     code.title = "Open this worktree in VS Code";
-    code.setAttribute("aria-label", code.title);
-    code.append(mark("M3.5 2.5 1 5l2.5 2.5M6.5 2.5 9 5 6.5 7.5"));
+    code.append(mark("M3.5 2.5 1 5l2.5 2.5M6.5 2.5 9 5 6.5 7.5"), document.createTextNode("VS Code"));
     code.addEventListener("click", () => void openInVSCode(this.shown?.cwd ?? "", (m) => (this.note.textContent = m)));
     // No header of its own: the pane tab says the state, the sheet the workspace.
     this.icons = [code, jump];
+    this.jumpBtn = jump;
     form.append(this.input);
     // Live by default; the plain text and its reply box only when frames fail.
     const live = (on: boolean) => {
@@ -448,7 +469,7 @@ class Chat {
         this.bar.querySelector<HTMLButtonElement>(".sheet-chat-hist"))?.focus();
     });
     tools.push(hist);
-    const parts: HTMLElement[] = [...tools, ...this.icons];
+    const parts: HTMLElement[] = [...tools, ...this.icons, ...this.extra];
     if (this.pickOpen && !hist.disabled) {
       const list = document.createElement("div");
       list.className = "sheet-chat-sess-list";
@@ -638,6 +659,13 @@ export class Sheet {
     this.wakeBtn.hidden = true;
     this.wakeBtn.addEventListener("click", () => this.setWakeOpen(true));
     head.append(this.titleEl, this.say, this.wakeBtn, cmux, close);
+    // The Dock: no header row of its own. Its tools join the terminal's tab
+    // row, and its cmux button opens the page when one is up, else the pane.
+    if (embedded) {
+      head.hidden = true;
+      cmux.title = "Open in cmux: the page beside its terminal, or this pane";
+      this.chat.adopt([this.say, this.wakeBtn, cmux]);
+    }
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
     this.tabsEl.className = "sheet-tabs";
@@ -1162,6 +1190,8 @@ export class Sheet {
   }
 
   private async toCmux(): Promise<void> {
+    // The Dock with no page up: the pane itself.
+    if (this.embedded && this.body.classList.contains("page-folded")) return this.chat.jumpToPane();
     if (!this.page && !this.toCmuxFn) return;
     try {
       if (this.toCmuxFn) await this.toCmuxFn();
