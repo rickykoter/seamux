@@ -452,6 +452,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .foot>.branch,.foot>.dirty,.foot>.meta,.foot .cost{transition:opacity .12s}
 .row:not(:hover):not(:focus-within) .foot>:is(.branch,.dirty,.meta),
 .row:not(:hover):not(:focus-within) .foot .cost{opacity:0}
+/* With nothing else on it, the footer folds away rather than leave a blank band. */
+.row:not(:hover):not(:focus-within) .foot.hov{display:none}
 
 /* The Wake: an icon, not a chip, pinned to the right end of the footer (and of
    a quiet row's line) beside the spend. Its own colour, the aqua no tier wears,

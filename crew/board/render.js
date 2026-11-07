@@ -476,12 +476,15 @@ function __boardRender(d) {
   // clicked, so they do not react.
   function foot(a, bare) {
     var out = "";
+    // Whether anything shows without the pointer (board.html hides the rest).
+    var seen = false;
     if (a.branch) {
       out += '<span class="branch" data-a="code" title="Open this worktree in VS Code — ' +
         esc(a.branch) + '">' + esc(headClip(a.branch, 30)) + "</span>";
     }
     if (a.dirty) out += DIRTY;
     if (a.pr) {
+      seen = true;
       out += '<span class="pr' + (a.pr_state === "open" ? " open" : "") +
         '" data-a="pr" title="Open the pull request in your default browser">' +
         esc(a.pr) + "</span>";
@@ -489,11 +492,13 @@ function __boardRender(d) {
     // The linked issue (closing reference or branch pattern) — present only
     // when the GitHub Issues integration is enabled; the collector gates it.
     if (a.issue) {
+      seen = true;
       out += '<span class="issue" data-a="issue" title="Open the linked issue in your default browser">' +
         esc(a.issue) + "</span>";
     }
     (a.signals || []).forEach(function (e) {
       if (e.a) return;
+      seen = true;
       var col = lift(e.c);
       out += '<span class="sig"' + (col ? ' style="color:' + col + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
@@ -504,7 +509,9 @@ function __boardRender(d) {
     // the far left of a line of its own, away from the spend it sits beside.
     var end = bare ? "" : cost(a) + wakeOf(a);
     if (end) out += '<span class="end">' + end + "</span>";
-    return out ? '<div class="foot">' + out + "</div>" : "";
+    if (!bare && hasWake(a)) seen = true;
+    // A footer of hover-only facts folds away entirely, so it leaves no gap.
+    return out ? '<div class="foot' + (seen ? "" : " hov") + '">' + out + "</div>" : "";
   }
 
   // A blocked ask has a deadline. The bar is a CSS animation whose duration IS
