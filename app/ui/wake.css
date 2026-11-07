@@ -26,7 +26,6 @@
   display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; padding: 2px 9px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
 }
-.w-chip i { display: none; }
 .w-chip span { color: var(--muted); }
 .w-chip.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .w-chip[hidden] { display: none; }

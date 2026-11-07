@@ -927,7 +927,7 @@ export class Sheet {
       ...this.tabs.map((t) => {
         const b = document.createElement("button");
         b.type = "button";
-        b.className = `sheet-tab tk-${t.kind}` + (t.key === this.active ? " on" : "") + (t.waiting ? " waiting" : "");
+        b.className = "sheet-tab" + (t.key === this.active ? " on" : "") + (t.waiting ? " waiting" : "");
         b.setAttribute("role", "tab");
         b.setAttribute("aria-selected", String(t.key === this.active));
         const key = document.createElement("kbd");
