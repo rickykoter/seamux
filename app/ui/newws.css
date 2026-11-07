@@ -44,6 +44,23 @@
 .newws-prefix { padding-left: 8px; color: var(--muted); font: var(--fs-3) ui-monospace, Menlo, monospace; }
 .newws-prefix[hidden] { display: none; }
 .newws .newws-branchbox input { flex: 1; border: 0; background: none; padding-left: 1px; font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-3); }
+/* The bug source found in the prompt, under it. */
+.newws-sourcerow { margin-top: -4px; }
+.newws-source {
+  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 4px 5px 8px;
+  background: var(--term); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 7px;
+}
+.newws-source-mark { flex: none; width: 12px; height: 12px; fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.newws-source-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.newws-source-text b { font-size: var(--fs-3); font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.newws-source-text span { font-size: var(--fs-1); color: var(--muted); }
+.newws-source-x {
+  flex: none; display: grid; place-items: center; width: 20px; height: 20px; padding: 0;
+  color: var(--muted); background: none; border: 0; border-radius: 5px; cursor: pointer;
+}
+.newws-source-x:hover, .newws-source-x:focus-visible { color: var(--fg); background: var(--card); outline: none; }
+.newws-source-x:disabled { opacity: 0.55; cursor: default; }
+.newws-source-x svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 .newws-more { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .newws-more summary { cursor: pointer; color: var(--muted); font-size: var(--fs-2); list-style: none; }
 .newws-more summary::before { content: "▸ "; }
