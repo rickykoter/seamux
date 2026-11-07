@@ -619,7 +619,7 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     else:
         py_cli = [sys.executable, CLI]
         rs_cli = [crew_impl.seamux_bin(), "crew-artifacts"]
-        subs = {t: "<T>"}
+        subs = {t: "<T>", home: "<HOME>"}  # <HOME>: the scrub check refuses a literal /home/ path
 
         def run(argv, *args):
             # UTC, so the listing's local times read the same on every machine.

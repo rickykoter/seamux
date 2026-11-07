@@ -12,7 +12,7 @@ re-records a file, it holds the Python's bytes.
 | `core/` | `crew/tools/core_probe.py` | `families` (with and without a family, and 400 17-digit floats), `pricing --merge` and `--compare` (with and without upstream), `costs --attribute` (0.1 + 0.2, 1e-07, and 17-digit floats) |
 | `artifacts/` | `crew/tools/artifacts_probe.py` | the `crew-artifacts` CLI's non-ASCII searches, the FTS syntax error, `keep` and an unknown verb, plus `row`, `workspaces`, `search --limit`, `keep --json` and `keep-all --json` |
 
-The probe replaces machine paths with `<T>`. `artifacts/` also masks rows
+The probe replaces machine paths with `<T>` (and the throwaway HOME with `<HOME>`). `artifacts/` also masks rows
 made at run time (`<NOW>`) and the `kept/` folder's hash. Those searches run
 with `TZ=UTC`.
 
