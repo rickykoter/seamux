@@ -954,6 +954,10 @@ function __boardRender(d) {
     return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "", g.kids.length ? g : null);
   }).join("") :
     '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>") + tuckSect;
+  // "collapse all" shows while any card is open (intent.js hides it again
+  // once a fold or its own click leaves none open).
+  var fa = $("foldall");
+  if (fa) fa.hidden = !/class="row [^"]*\bfd open\b/.test(host.innerHTML);
   for (var fid in fold) {
     var ff = fold[fid];
     if (!(fid in keptFold) && Array.isArray(ff) && foldNow - (+ff[2] || foldNow) < FOLD_KEEP_MS) keptFold[fid] = ff;

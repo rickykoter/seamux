@@ -312,6 +312,12 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 #tally{display:inline-flex;flex-wrap:wrap;gap:2px 9px;
   font:500 var(--fs-1)/1.35 system-ui;color:var(--grey)}
 #tally:empty{display:none}
+/* Shown while any card is open (render.js, intent.js): folds them all. */
+#foldall{margin-left:auto;flex:none;align-self:center;background:none;border:0;padding:0 2px;cursor:pointer;
+  font:500 var(--fs-1)/1.35 system-ui;color:var(--grey);text-decoration:underline;text-decoration-color:var(--edge);
+  text-underline-offset:3px}
+#foldall:hover,#foldall:focus-visible{color:var(--fg);text-decoration-color:currentColor}
+#foldall[hidden]{display:none}
 .tl{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .tl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dot);flex:none}
 .tl b{font-weight:700;font-variant-numeric:tabular-nums;color:var(--fg)}
@@ -852,6 +858,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
   <div class="hud">
     <span id="need">…</span>
     <span id="tally"></span>
+    <button type="button" id="foldall" hidden>collapse all</button>
   </div>
   <div class="hud2">
     <span id="says"></span>
