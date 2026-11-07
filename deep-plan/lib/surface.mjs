@@ -185,6 +185,10 @@ body{max-width:none;margin:0;padding:0}
   .dp-sub .dp-sub-t{display:block;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .dp-sub-dg,.dp-sub-adr{display:flex !important}
   .dp-sub .dp-num{font:500 var(--fs-1)/1 var(--mono);color:var(--faint)}
+  /* A section's increments, ADRs and diagrams are listed only under the
+     section the reader is in; the others are their names, so the rail is a
+     map of the page, not a second copy of it. */
+  .dp-toc>li:not(.dp-here)>.dp-sub{display:none}
 }
 @media (min-width:1300px){
   #dp-shell{grid-template-columns:236px minmax(0,820px) minmax(280px,320px);justify-content:center;column-gap:8px}
@@ -566,6 +570,11 @@ export const SURFACE_JS = String.raw`<script>
     navLinks.forEach(function (l) {
       var on = l === cur || l === curSub;
       if (on !== (l.a.getAttribute("aria-current") === "true")) l.a.setAttribute("aria-current", on ? "true" : "false");
+    });
+    // The section the reader is in shows its children in the rail (CSS).
+    Array.prototype.forEach.call(toc.children, function (li) {
+      var here = !!cur && li === cur.a.parentNode;
+      if (here !== li.classList.contains("dp-here")) li.classList.toggle("dp-here", here);
     });
     if (cur && window.innerWidth < 980) {
       var a = cur.a, tr = toc.getBoundingClientRect(), ar = a.getBoundingClientRect();

@@ -67,7 +67,10 @@
   --risk-high: var(--ef-text-red); --risk-medium: var(--ef-text-yellow); --risk-low: var(--ef-text-faint); --rail: var(--ef-line2);
   --dot-high: var(--ef-red); --dot-medium: var(--ef-yellow); --dot-low: var(--ef-grey0);
   --card: var(--ef-bg1); --card-border: var(--ef-line2); --flash: var(--ef-bg-yellow);
-  --sev-blocker: var(--ef-text-red); --sev-major: var(--ef-text-orange); --sev-minor: var(--ef-text-yellow); --sev-nit: var(--ef-text-dim); --sev-comment: var(--ef-text-blue);
+  /* Yellow means "needs you" in seamux: a minor is a neutral grey, a nit a fainter one. */
+  --sev-blocker: var(--ef-text-red); --sev-major: var(--ef-text-orange); --sev-minor: var(--ef-text-dim); --sev-nit: var(--ef-text-faint); --sev-comment: var(--ef-text-blue);
+  /* The findings gutter's dots take the hues; a nit's is hollow. */
+  --gdot-blocker: var(--ef-red); --gdot-major: var(--ef-orange); --gdot-minor: var(--ef-grey2); --gdot-nit: var(--ef-grey0); --gdot-comment: var(--ef-blue);
   --hl-comment: var(--ef-text-dim); --hl-keyword: var(--ef-text-red); --hl-string: var(--ef-text-aqua); --hl-number: var(--ef-text-purple);
   --hl-title: var(--ef-text-green); --hl-built: var(--ef-text-yellow); --hl-attr: var(--ef-text-blue); --hl-tag: var(--ef-text-orange);
   --hl-meta: var(--ef-text-purple); --hl-var: var(--ef-text-blue);
@@ -175,7 +178,6 @@ button { font: inherit; color: inherit; }
 #file-head .from { color: var(--muted); font-size: var(--fs-2); }
 #file-head .counts { font: var(--fs-2) var(--mono); }
 .plus { color: var(--st-a); } .minus { color: var(--st-d); }
-#file-head .lang { color: var(--muted); font-size: var(--fs-2); margin-left: auto; }
 
 .notice { margin: 24px 16px; padding: 16px; border: 1px dashed var(--border); border-radius: 8px;
   color: var(--muted); }
@@ -234,6 +236,8 @@ td.del mark { background: var(--del-mark); color: inherit; border-radius: 2px; }
 .fbadge.sev-minor, .sev.sev-minor { --sev: var(--sev-minor); }
 .fbadge.sev-nit, .sev.sev-nit { --sev: var(--sev-nit); }
 .fbadge.sev-comment, .sev.sev-comment { --sev: var(--sev-comment); }
+/* A nit's chip is only an outline, so it reads quieter than a minor's grey tint. */
+.sev.sev-nit { background: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sev-nit) 45%, transparent); }
 .gate { font: 600 var(--fs-2) var(--sans); padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border);
   background: none; cursor: pointer; }
 .gate:hover:not(:disabled) { background: var(--hover); }
@@ -259,7 +263,7 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .cat { font-size: var(--fs-1); color: var(--muted); }
 /* The id, category and verdict take no room in the row, so a title wraps only
    at the card's edge. Hovered, the title's tooltip names them (review.js), so
-   nothing covers the card; picked, focused or flashed (keys, a reply box) they
+   nothing covers the card; current, focused or flashed (keys, a reply box) they
    rejoin the row, as the action row does. They stay in the DOM for screen
    readers; on touch, in the row. */
 .card { position: relative; }
@@ -293,6 +297,34 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .outside { margin: 12px 16px; }
 .outside-head { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
 @media (max-width: 760px) { tr.thread-row > td { padding-left: 12px; } }
+
+/* A folded card (a minor, nit or comment that is not current): one row, its
+   chip and short title, and nothing else. A click or Enter opens it. */
+.card.folded { cursor: pointer; }
+.card.folded .card-head { padding: 3px 10px; flex-wrap: nowrap; }
+.card.folded .title { font-weight: 400; color: var(--muted); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card.folded:hover .title, .card.folded:focus-visible .title { color: var(--fg); }
+.threads:has(> .card.folded) { gap: 4px; }
+
+/* Picked: in the app's Act set (edit, fix, post), a check at the card's left.
+   Not the same as current (.cur), the card the reader is on. */
+.pickmark { flex: none; align-self: center; display: inline-grid; place-items: center; width: 15px; height: 15px;
+  border-radius: 50%; background: var(--fg); color: var(--bg); }
+.pickmark svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.card.picked { border-color: color-mix(in srgb, var(--fg) 40%, var(--card-border)); }
+
+/* The findings gutter: dots in a line's number cell, one per severity on it,
+   worst first, overlapping a little. The cell keeps its number on the right. */
+table.diff td.ln.marked { position: relative; }
+.gmark { position: absolute; left: 3px; top: 3px; display: inline-flex; padding: 1px; border: 0; border-radius: 7px;
+  background: none; cursor: pointer; line-height: 0; }
+.gmark:hover, .gmark:focus-visible { background: var(--hover); }
+.gdot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--bg); background: var(--gdot, var(--muted)); }
+.gdot + .gdot { margin-left: -3px; }
+.gdot.sev-blocker { --gdot: var(--gdot-blocker); } .gdot.sev-major { --gdot: var(--gdot-major); }
+.gdot.sev-minor { --gdot: var(--gdot-minor); } .gdot.sev-comment { --gdot: var(--gdot-comment); }
+.gdot.sev-nit { background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--gdot-nit), 0 0 0 1.5px var(--bg); }
+@media (max-width: 760px) { .gmark { left: 1px; } }
 .ghost-head { color: var(--muted); }
 .row.ghost .name { font-style: italic; color: var(--muted); }
 
@@ -315,8 +347,8 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: v
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 .buttons button.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .actions.folded { padding: 2px 10px 6px; border-top: 0; }
-/* Folded, Reply / Resolve / Dismiss take no room until wanted: on the card
-   picked by a click or n/p, with focus in it, a draft or a send note, and
+/* Folded, Reply / Resolve / Dismiss take no room until wanted: on the
+   current card (a click or n/p), with focus in it, a draft or a send note, and
    always on touch. Hover moves nothing; the card's edge firms up instead. */
 .card > .actions.folded { display: none; }
 .card.cur > .actions.folded, .card:focus-within > .actions.folded,
@@ -378,7 +410,7 @@ ul.watch li { margin: 2px 0; }
 .qopt:disabled { cursor: not-allowed; opacity: .7; }
 .qkey { font: 600 var(--fs-1) var(--mono); color: var(--muted); }
 .quiz.done.right { border-color: var(--st-a); }
-.quiz.done.wrong { border-color: var(--sev-minor); }
+.quiz.done.wrong { border-color: var(--sev-major); }
 .quiz .qwhy { color: var(--muted); }
 .strips { margin: 8px 16px 0; display: flex; flex-direction: column; gap: 6px; }
 .strip { border: 1px solid var(--card-border); border-radius: 6px; background: var(--card); }

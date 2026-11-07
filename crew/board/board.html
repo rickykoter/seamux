@@ -517,11 +517,17 @@ details.away>summary{cursor:pointer;list-style:none}
 details.away>summary::-webkit-details-marker{display:none}
 details.away>summary::before{content:"\25B8  ";color:var(--grey)}
 details.away[open]>summary::before{content:"\25BE  "}
-/* On the shelf every row is a quiet row's line, whatever its tier: a merged
-   row on a card's ground stood out from the rest of the shelf. */
-details.away>.row{--gnd:var(--bg);background:transparent;border:1px solid var(--line);
-  padding:3px 9px;margin-bottom:3px}
+/* On the shelf every row is one plain line, whatever its tier: no border, no
+   card ground, the name left and its why right in muted words. A bordered
+   pill per row read as four more cards. The whole line lifts on hover (its
+   header's own lift steps aside, so it is one ground), and the header jumps,
+   as any row's does. */
+#rows details.away>.row{--gnd:var(--bg);background:transparent;border:0;
+  padding:3px 5px;margin-bottom:0}
+#rows details.away>.row:hover{background:rgba(255,255,255,.05)}
+details.away>.row>.top.jumps:hover{background:none}
 details.away>.row>.top{min-height:22px}
+details.away>.row>.top>.why{margin-left:auto;padding-left:8px}
 details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2)}
 /* Why a row is on the hidden shelf: muted words, not a pill. */
 .why{flex:none;margin-left:6px;color:var(--grey);font:400 var(--fs-2)/1.2 system-ui;white-space:nowrap}

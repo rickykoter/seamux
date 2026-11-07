@@ -680,13 +680,15 @@ function __boardRender(d) {
   // data-a, nearer the click than the header around it.
   var CARET = '<button type="button" class="caret" data-a="fold" aria-label="Fold or unfold"></button>';
   // The opening of a card's header: what a click on it does, then the caret.
-  function topOpen(a, cls, foldable) {
+  function topOpen(a, cls, foldable, more) {
     // The header's tooltip replaces the row's, so it leads with the name: a
     // name cut short at Dock width is still readable on hover. A folded card
     // shows no footer, so the footer's hover-only facts (branch, progress,
     // spend) follow on a line of their own: still there, under the pointer.
-    var facts = factsOf(a), tip = a.name + (a.ref ? " \u00b7 " + TIP.jump : "") + (facts ? "\n" + facts : "");
-    var does = a.ref ? ' data-a="jump" title="' + esc(tip) + '"' : (foldable ? ' data-a="fold"' : "") + (facts ? ' title="' + esc(tip) + '"' : "");
+    // `more` is a line the header leaves off its face (a family's children,
+    // when the limit pill holds the slot their pips would crowd).
+    var facts = factsOf(a), tip = a.name + (a.ref ? " \u00b7 " + TIP.jump : "") + (facts ? "\n" + facts : "") + (more ? "\n" + more : "");
+    var does = a.ref ? ' data-a="jump" title="' + esc(tip) + '"' : (foldable ? ' data-a="fold"' : "") + (facts || more ? ' title="' + esc(tip) + '"' : "");
     return '<div class="top' + cls + (a.ref ? " jumps" : "") + '"' + does + ">" + (foldable ? CARET : "");
   }
   function topClose() { return "</div>"; }
@@ -767,7 +769,7 @@ function __boardRender(d) {
     return '<span class="tk" data-a="tk" title="Hide" aria-label="Hide or show again">' +
       '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></span>' +
       '<span class="tkm">' + (a.tuck === "mute" ? back : item("Hide until it needs you", "mute")) + sep + snooze + sep +
-      (a.tuck === "tuck" ? back : item("Hide until I bring it back", "tuck")) + resumeOf(a, sep) + "</span>";
+      (a.tuck === "tuck" ? back : item("Hide until you bring it back", "tuck")) + resumeOf(a, sep) + "</span>";
   }
   function resumeOf(a, sep) {
     if (!a.limited && !a.armed) return "";
@@ -849,12 +851,18 @@ function __boardRender(d) {
     // parent holding a child that needs you starts open, so the child's line
     // and button show, and it reopens when a child starts waiting.
     var fk = g && COL[a.famtier] ? a.famtier : a.kind;
+    // A limit's pill in the slot is the row's one loud thing, and it is wide:
+    // the pips beside it only cut the name. Its children are then a line of
+    // the header's tooltip ("plans: auth-api · working, ..."), and the card's
+    // body still lists them.
+    var pipsOff = !!g && !roll && !!a.limited;
+    var kidsTip = pipsOff ? "plans: " + g.kids.map(function (k) { return k.name + (k.badge ? " \u00b7 " + badgeText(k) : ""); }).join(", ") : "";
     return opening(a, (a.family ? " fam" : "") + (whole ? " famdone" : ""), "",
       foldCls(a.id, fk, !!inner), fk) +
       (whole && !turned(a) ? confetti("fam:" + a.id, 22) : "") +
-      topOpen(a, fq ? " loud" : "", !!inner) +
+      topOpen(a, fq ? " loud" : "", !!inner, kidsTip) +
       dial(a.frac, a.kind, a.meta) + nameOf(a) +
-      (g ? pips(g.kids) : "") + slotOf(a, roll || badgeOf(a)) + fq + topClose(a) +
+      (g && !pipsOff ? pips(g.kids) : "") + slotOf(a, roll || badgeOf(a)) + fq + topClose(a) +
       (inner ? '<div class="fold">' + inner + "</div>" : "") + "</div>";
   }
 

@@ -1835,7 +1835,7 @@ if (want("page script")) {
      css.includes(":root[data-host] #top { padding: 0; border: 0; min-height: 0; height: 0; }") &&
      css.includes(":root[data-host] #top .tools { display: none; }") &&
      app.includes('if (!f || e.source !== f.contentWindow || e.origin !== this.pageOrigin) return;') &&
-     app.includes('if (d.lookout === "hello") f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);') &&
+     /if \(d\.lookout === "hello"\) \{[^}]*this\.sentPicks = "";\s*f\.contentWindow\?\.postMessage\(\{ lookout: "host" \}, this\.pageOrigin\);/.test(app) &&
      app.includes('f.contentWindow?.postMessage({ lookout: "do", op, ...extra }, this.pageOrigin);') &&
      ["gate", "overview", "map", "layout", "keys"].every(op => app.includes(`this.tell("${op}"`) && js.includes(`d.op === "${op}"`)) &&
      app.includes("h.append(...tools.state);") && app.includes('if (view.length) acts.append(el("span", "r-sep"), ...view.map((t) => t.el));'));
@@ -1902,7 +1902,7 @@ if (want("page script")) {
      js.includes("Math.abs(Date.parse(pill.at) - Date.parse(prev.at)) <= 120000 ? { m: pill, after: prev, to: pill.to, text: pill.text } : null;") &&
      js.includes("if (folded && m === folded.m) return null;") &&
      js.includes('el("span", { class: "at note", title: `${folded.m.by} marked it ${folded.to}` }, " · " + folded.text)'));
-  ok("page: folded, Reply / Resolve / Dismiss take no room until the card is picked (click or n/p), focused or has a draft; always on touch; hover moves nothing",
+  ok("page: folded, Reply / Resolve / Dismiss take no room until the card is current (click or n/p), focused or has a draft; always on touch; hover moves nothing",
      css.includes(".card > .actions.folded { display: none; }") &&
      css.includes(".card.cur > .actions.folded, .card:focus-within > .actions.folded,") &&
      css.includes(".card > .actions.folded.draft") &&
@@ -1910,7 +1910,8 @@ if (want("page script")) {
      !/\.card:hover[^{]*\.actions/.test(css) && !css.includes(".card > .actions.folded { opacity") &&
      css.includes("body.served .card:not(.cur):hover { border-color:") &&
      js.includes("onclick: e => pickCard(x.id, e) },") &&
-     /function pickCard\(id, e\) \{\s*if \(e\.target\.closest\("button, a, textarea, input"\) \|\| String\(getSelection\(\) \|\| ""\)\) return;\s*curFinding = id;/.test(js) &&
+     /function pickCard\(id, e\) \{\s*if \(e\.target\.closest\("button, a, textarea, input"\) \|\| String\(getSelection\(\) \|\| ""\)\) return;\s*openCard\(id\);/.test(js) &&
+     /function openCard\(id, focus = false\) \{\s*const prev = curFinding;\s*curFinding = id;\s*redrawCards\(\[prev, id\]\);/.test(js) &&
      js.includes('box.classList.toggle("draft", !show && !!draftText(key).trim());') &&
      js.includes('(x.id === curFinding ? " cur" : "")'));
   ok("page+app: a blocked gate reads in the blocker colour, and its pill shows an arrow when it jumps",
@@ -1922,6 +1923,39 @@ if (want("page script")) {
   ok("page: Reply, Resolve and Dismiss are quiet outlined buttons with a focus ring, not plain text",
      /\.buttons\.links button \{[^}]*border: 1px solid[^}]*\}/.test(css) && !/\.buttons\.links button \{[^}]*border: 0/.test(css) &&
      /\.buttons\.links button:focus-visible \{[^}]*outline: 2px solid/.test(css));
+  ok("page: a line with open findings gets a dot per severity in its number cell, worst first; hovered they name the findings, a click or Enter goes to the worst",
+     js.includes("let gutter = new Map();") && js.includes('const GUTTER_ORDER = [...SEV, "comment"];') &&
+     js.includes('gutter = new Map([...anch.at].map(([k, list]) => [k, list.filter(isOpen).sort(worstFirst)]).filter(([, list]) => list.length));') &&
+     js.includes('return el("button", { type: "button", class: "gmark", title: names.join("\\n"),') &&
+     js.includes("onclick: e => { e.stopPropagation(); goTo(list[0].id); } },") &&
+     js.includes('sevs.map(s => el("span", { class: "gdot sev-" + s })));') &&
+     js.includes('const here = n == null ? null : gutter.get(side + ":" + n);') &&
+     css.includes("table.diff td.ln.marked { position: relative; }") && css.includes(".gdot + .gdot { margin-left: -3px; }") &&
+     ["blocker", "major", "minor", "comment"].every(s => css.includes(`.gdot.sev-${s} { --gdot: var(--gdot-${s}); }`)) && css.includes(".gdot.sev-nit {"));
+  ok("page: blocker and major cards stay open; a minor, nit or comment folds to one row (chip and short title) unless current or holding a draft, and opens on click, Enter or n/p",
+     js.includes('const holdsOpen = x => x.severity === "blocker" || x.severity === "major";') &&
+     js.includes('const foldedCard = x => isOpen(x) && !holdsOpen(x) && x.id !== curFinding && !draftText("r:" + x.id).trim();') &&
+     /if \(foldedCard\(x\)\) \{[\s\S]{0,300}class: "card folded"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false"[\s\S]{0,300}onclick: e => pickCard\(x\.id, e\),[\s\S]{0,200}e\.key === "Enter" \|\| e\.key === " "[\s\S]{0,100}openCard\(x\.id, true\);[\s\S]{0,100}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\)\)\);/.test(js) &&
+     /function goTo\(id\) \{[\s\S]{0,500}redrawCards\(\[prev, id\]\);/.test(js) &&
+     /function stepFinding\(d\) \{\s*let list = \(R\.findings \|\| \[\]\)\.filter\(isOpen\);/.test(js) &&
+     css.includes(".card.folded .card-head { padding: 3px 10px; flex-wrap: nowrap; }"));
+  ok("page+app: picked (the app's Act set, .picked, a custom SVG check at the card's left) is named apart from current (the card the reader is on, .cur); the app posts its picks to the page",
+     js.includes("let picked = new Set();") && js.includes('document.createElementNS(ns, "svg")') &&
+     js.includes('(x.id === curFinding ? " cur" : "") + (mark ? " picked" : "")') &&
+     js.includes('else if (d.op === "picks" && Array.isArray(d.ids)) setPicked(d.ids);') &&
+     /function setPicked\(ids\) \{[\s\S]{0,300}redrawCards\(changed\);/.test(js) &&
+     css.includes(".pickmark {") && css.includes(".card.picked {") && !/picked by a click|focused or picked|or the picked finding/.test(js + css) &&
+     app.includes('f.contentWindow?.postMessage({ lookout: "do", op: "picks", ids }, this.pageOrigin);') &&
+     app.includes("this.syncPicks(job);") && app.includes("if (key === this.sentPicks) return;"));
+  ok("page: the file header leaves out the language and a risk reason that only repeats an open finding",
+     js.includes('const headReasons = f => (f.reasons || []).filter(r => !/^open \\w+ finding$/.test(r));') &&
+     !js.includes('el("span", { class: "lang" }, f.lang)') && !css.includes("#file-head .lang") &&
+     js.includes('reasons.length ? el("span", { class: "reasons" }, " · " + reasons.join(", ")) : null) : null,'));
+  ok("page+app: amber is kept for \"needs you\": a minor chip is neutral grey on the page and in the Act menu, and the Act button a neutral grey fill",
+     css.includes("--sev-minor: var(--ef-text-dim);") && !css.includes("--sev-minor: var(--ef-text-yellow)") &&
+     appCss.includes(".r-sev.minor { color: var(--ef-text-dim);") && !/\.r-sev\.minor \{[^}]*yellow/.test(appCss) &&
+     appCss.includes(".r-btn.primary.r-act-btn { background: var(--ef-text-dim); border-color: var(--ef-text-dim); color: var(--ef-ink); }") &&
+     css.includes("--sev-blocker: var(--ef-text-red); --sev-major: var(--ef-text-orange);"));
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
 

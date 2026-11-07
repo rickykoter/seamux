@@ -421,9 +421,15 @@ export class Wake {
     }
     const newest = this.vis.length ? dayKey(local(this.vis[0].created_at)) : "";
     const runs: number[] = [];
+    // Whether each card holds a row at risk: such a card never folds away.
+    const runRisk: boolean[] = [];
     this.vis.forEach((r, i) => {
       if (i > 0 && keyOf(r) === keyOf(this.vis[i - 1])) runs[runs.length - 1]++;
-      else runs.push(1);
+      else {
+        runs.push(1);
+        runRisk.push(false);
+      }
+      if (r.state === "risk") runRisk[runRisk.length - 1] = true;
     });
     let run = -1;
     this.vis.forEach((r, i) => {
@@ -462,7 +468,9 @@ export class Wake {
         const solo = runs[run] === 1;
         // A long day (over 15 things) shows its newest groups up to about 10
         // rows; the rest are "later", behind a "show N more" at the day's end.
-        const later = !this.query && (perDay.get(dk) ?? 0) > 15 && shownToday >= 10 && !this.dayAll.has(dk);
+        // A card with a row at risk is never later, wherever it sits: only
+        // safe cards fold.
+        const later = !this.query && !runRisk[run] && (perDay.get(dk) ?? 0) > 15 && shownToday >= 10 && !this.dayAll.has(dk);
         const g = el("div", `w-grp${later ? " later" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
         const ph = el("div", "w-ph");
         // A card of one row whose prompt is its title says it once.
@@ -510,10 +518,8 @@ export class Wake {
       const hid = sec.querySelectorAll(".w-grp.later .w-row").length;
       if (!hid) continue;
       // Not "w-more": that is the kind chips' own "more N".
+      // Never at risk: a card holding a row at risk is never later.
       const more = button(`show ${hid} more`, "w-daymore");
-      // Like a folded day's heading, it says when what it hides is at risk.
-      const risk = sec.querySelectorAll(".w-grp.later .w-row.risk").length;
-      if (risk) more.append(el("span", "w-dayrisk", ` · ${risk} at risk`));
       const dk = sec.dataset.day ?? "";
       more.addEventListener("click", () => {
         this.dayAll.add(dk);
@@ -540,13 +546,18 @@ export class Wake {
     t.append(marked(title, this.query));
     li.append(t);
     const badges = el("span", "w-badges");
-    // At risk is said by the row's red keep button, not a second pill.
-    if (r.state === "risk") {
-      // nothing here
-    } else if (r.state === "kept") badges.append(el("span", "w-st kept", "kept"));
+    // At risk is a state, said in red; its keep button is a plain action.
+    if (r.state === "risk") badges.append(el("span", "w-st risk", "at risk"));
+    else if (r.state === "kept") badges.append(el("span", "w-st kept", "kept"));
     else if (r.state === "gone") badges.append(el("span", "w-st", "gone"));
     if (r.published) badges.append(el("span", "w-st pub", "claude.ai"));
-    if (r.kind === "commit" && r.sha) badges.append(el("span", "w-st", r.sha));
+    if (r.kind === "commit" && r.sha) {
+      // The sha waits for hover, focus or the pick (wake.css), unless a search matched it.
+      const hit = this.query.toLowerCase().split(/\s+/).some((w) => !!w && r.sha.toLowerCase().includes(w));
+      const sha = el("span", `w-st w-sha${hit ? " hit" : ""}`);
+      sha.append(marked(r.sha, this.query));
+      badges.append(sha);
+    }
     if (gh && r.title) badges.append(el("span", "w-st", `#${gh.n}`));
     li.append(badges);
     const w = where(r, this.home);
@@ -603,7 +614,8 @@ export class Wake {
       },
     };
     const primary = r.state === "risk" ? keep : r.publishable && !r.published ? publish : null;
-    if (primary === keep) shown(keep.label, keep.title ?? "", () => void this.keep(r)).classList.add("risk");
+    // Keep is a plain button: the row's "at risk" pill is the signal.
+    if (primary === keep) shown(keep.label, keep.title ?? "", () => void this.keep(r)).classList.remove("main");
     else if (primary === publish) shown(pubLabel, pubTitle, (b) => void this.publish(r, b)).classList.add("pub");
     if (r.kind === "plan") {
       items.push(

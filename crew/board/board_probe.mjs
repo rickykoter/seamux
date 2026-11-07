@@ -704,6 +704,21 @@ checks.push(["and it has something to say about each",
     (els.rows.innerHTML.match(/class="pip /g) || []).length === 5 &&
     /<span class="pips"><svg class="pip attend"/.test(els.rows.innerHTML) &&
     els.rows.innerHTML.includes('<span class="pipmore">+3</span>')]);
+  // A limit's pill holds the badge slot: the pips beside it only cut the
+  // name, so they step off that header and its tooltip names the children.
+  {
+    const limF = { error: "rate_limit", window: "five_hour", label: "5h limit", resets_at: Date.now() + 3600e3, next_try: null, tries: 0, usage: false };
+    render({ rows: [R4("LP", "attend", { family: "L", famrole: "parent", famkid: false, limited: limF, armed: false }),
+      R4("L1", "running", { family: "L", famrole: "child", famkid: true, badge: "working" })], quiet: "" });
+    const lh = els.rows.innerHTML, head = lh.slice(lh.indexOf('data-id="LP"'), lh.indexOf('<div class="fold">'));
+    checks.push(["pips: a family card whose slot holds a limit's pill draws no pips; its header tooltip names the children",
+      /class="badge lim"/.test(head) && !/class="pips"/.test(head) && /<div class="top[^"]*"[^>]*title="LP[^"]*\nplans: L1 · working"/.test(head), head.slice(0, 700)]);
+    render({ rows: [R4("LP", "running", { family: "L", famrole: "parent", famkid: false, limited: limF, armed: false }),
+      R4("L1", "attend", { family: "L", famrole: "child", famkid: true })], quiet: "" });
+    const rh = els.rows.innerHTML;
+    checks.push(["pips: ...but a rollup in the slot keeps them, and no limit line in the tooltip",
+      /<span class="pips">/.test(rh) && /class="badge roll attend">1 needs you</.test(rh) && !/plans: /.test(rh)]);
+  }
   checks.push(["family: a card that climbs on the push it turns done keeps its ring",
     /\.row\.up\.ripple\{animation:ripple/.test(css) && /\.row\.up\.famdone\{animation:famdone/.test(css) &&
     css.indexOf(".row.up.ripple{") > css.indexOf(".row.up{")]);
@@ -2348,7 +2363,7 @@ if (crewImpl.isRust("crew-board")) {
   const hf = els.rows.innerHTML;
   delete sandbox.parent;
   checks.push(["tuck: framed by the app, a workspace row has the ⋯ menu, set by its level",
-    /data-id="mr"[^]*?data-a="tk"[^]*?data-x="none">Show again<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
+    /data-id="mr"[^]*?data-a="tk"[^]*?data-x="none">Show again<[^]*?data-x="tuck">Hide until you bring it back</.test(hf) &&
     /data-id="tq"[^]*?data-x="mute">Hide until it needs you<[^]*?data-x="none">Show again</.test(hf)]);
   const plAt = hf.indexOf('data-id="pl"');
   const plCard = hf.slice(plAt, hf.indexOf('<div class="row ', plAt) > 0 ? hf.indexOf('<div class="row ', plAt) : hf.indexOf("<details", plAt));
@@ -2396,6 +2411,16 @@ if (crewImpl.isRust("crew-board")) {
       /<span class="why">merged and idle \u00b7 <span class="rcl" data-a="reclaim" title="[^"]+">reclaim<\/span><\/span>/.test(cutS("mg")) &&
       !/class="chip/.test(cutS("mg")), ["brk", "zq", "mg", "tq"].map(shape).join(" | ")]);
   }
+  // A shelf row is a plain line: no border or card ground, name left, why
+  // pushed right; its header's hover ground and jump are any row's.
+  {
+    const shelfRule = ruleBody("#rows details.away>.row");
+    checks.push(["shelf: rows are borderless single lines, the why at the right, the line lifting on hover, the header still the jump",
+      /(^|;)border:0(;|$)/.test(shelfRule) && /background:transparent/.test(shelfRule) &&
+      /margin-left:auto/.test(ruleBody("details.away>.row>.top>.why")) && /background:rgba/.test(ruleBody("#rows details.away>.row:hover")) &&
+      (render({ rows: [R("tj", { tuck: "tuck", ref: "w" })], quiet: "" }), /data-id="tj"[^>]*><div class="top jumps" data-a="jump"/.test(els.rows.innerHTML)), shelfRule]);
+    render({ rows: rowsS, quiet: "" });
+  }
   checks.push(["shelf: snoozed rows first, then settled, then tucked",
     at('data-id="brk"') < at('data-id="mg"') && at('data-id="zq"') < at('data-id="mg"') && at('data-id="mg"') < at('data-id="tq"')]);
   checks.push(["snooze: a snoozed row sits on the shelf even when broken; a merged one not yet idle stays in the list",
@@ -2435,11 +2460,11 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["menu: framed by the app, one Hide verb with its until, the presets grouped by dividers, and no resume on a row no limit stopped",
     hf.includes(T("mute", "Hide until it needs you") + SEP + T("snooze:1h", "Hide for 1 hour") + T("snooze:3h", "Hide for 3 hours") +
       T("snooze:tomorrow", "Hide until tomorrow 9 AM") + T("snooze:monday", "Hide until Monday 9 AM") + SEP +
-      T("tuck", "Hide until I bring it back") + "</span>") && !/data-a="resume"/.test(hf) &&
+      T("tuck", "Hide until you bring it back") + "</span>") && !/data-a="resume"/.test(hf) &&
     /title="Hide" aria-label="Hide or show again"/.test(hf) && !/Mute|Snooze|Tuck away|Unmute|Wake now|Bring back/.test(hf)]);
   checks.push(["snooze: framed by the app, the ⋯ menu offers the four presets, or Show again on a snoozed row",
-    /data-id="q"[^]*?data-x="snooze:1h">Hide for 1 hour<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
-    /data-id="zq"[^]*?data-x="none">Show again<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
+    /data-id="q"[^]*?data-x="snooze:1h">Hide for 1 hour<[^]*?data-x="tuck">Hide until you bring it back</.test(hf) &&
+    /data-id="zq"[^]*?data-x="none">Show again<[^]*?data-x="tuck">Hide until you bring it back</.test(hf) &&
     !hf.slice(hf.indexOf('data-id="zq"'), hf.indexOf('<div class="row ', hf.indexOf('data-id="zq"'))).includes("snooze:1h")]);
   checks.push(["shelf: it stays open across a push when it was open", /<details class="away" open>/.test(hf)]);
   // The ⋯ waits for a pointer or focus on its row (or its own open menu);
@@ -2540,7 +2565,7 @@ if (crewImpl.isRust("crew-board")) {
   const cutF = (id) => { const i = hf.indexOf('data-id="' + id + '"'), j = hf.indexOf('<div class="row ', i + 1); return hf.slice(i, j > 0 ? j : undefined); };
   const SEPL = '<span class="tks" role="separator"></span>';
   checks.push(["limits: framed, a stopped row's ⋯ menu offers to resume when the limit resets, below the Hide group, or on an armed row its undoing",
-    cutF("un").includes('data-x="tuck">Hide until I bring it back</span>' + SEPL + '<span class="tki tkr" data-a="resume" data-x="on"') &&
+    cutF("un").includes('data-x="tuck">Hide until you bring it back</span>' + SEPL + '<span class="tki tkr" data-a="resume" data-x="on"') &&
     /data-a="resume" data-x="on"[^>]*>Resume when the limit resets<\/span><\/span>/.test(cutF("un")) &&
     /data-a="resume" data-x="off"[^>]*>Don\u2019t resume when the limit resets</.test(cutF("ar")) &&
     !/Resume at reset|resume at reset/.test(hf), hf.slice(0, 1500)]);

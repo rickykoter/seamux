@@ -129,6 +129,10 @@
 .r-menu-pick .r-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .r-menu-more { margin: 1px 8px 0; font-size: var(--fs-2); color: var(--muted); }
 .r-btn.pickbtn { font-variant-numeric: tabular-nums; }
+/* Act: the filled primary, but a neutral grey: --primary (Everforest's fg) is a
+   cream that reads as amber, and amber means "needs you" in this app. */
+.r-btn.primary.r-act-btn { background: var(--ef-text-dim); border-color: var(--ef-text-dim); color: var(--ef-ink); }
+.r-btn.primary.r-act-btn:hover:not(:disabled) { border-color: var(--fg); }
 .r-btn.pickbtn.short { display: inline-flex; align-items: center; gap: 4px; padding-left: 8px; padding-right: 8px; }
 .r-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 .r-confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 10px; font-size: var(--fs-3); }
@@ -143,7 +147,9 @@
 /* The page's severity colours (lookout/page/review.css --sev-*): a pale tint, the word in its text shade. */
 .r-sev.blocker { color: var(--ef-text-red); background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); }
 .r-sev.major { color: var(--ef-text-orange); background: color-mix(in srgb, var(--ef-text-orange) 16%, transparent); }
-.r-sev.minor { color: var(--ef-text-yellow); background: color-mix(in srgb, var(--ef-text-yellow) 16%, transparent); }
+/* Yellow means "needs you" in seamux: a minor is a neutral grey, as on the page. */
+.r-sev.minor { color: var(--ef-text-dim); background: color-mix(in srgb, var(--ef-text-dim) 16%, transparent); }
+.r-sev.nit { color: var(--ef-text-faint); background: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ef-text-faint) 45%, transparent); }
 .r-loc { font: var(--fs-2) ui-monospace, Menlo, monospace; color: var(--muted); flex: none; }
 .r-sum { min-width: 0; }
 

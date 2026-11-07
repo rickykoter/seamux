@@ -1235,11 +1235,13 @@ function htmlHead(title, b64) {
 <title>${esc(title)}</title>
 <script>
 // Theme, resolved before first paint so neither mode flashes the other:
-// the saved choice wins, else the OS preference.
+// the saved choice wins; a page framed by the seamux app (its Dock and
+// sheets are dark Everforest) is dark; else the OS preference.
 (function () {
-  var t = "";
+  var t = "", framed = false;
   try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {}
-  if (!t) t = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  if (!t) t = framed ? "dark" : (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", t);
 })();
 </script>
@@ -1304,7 +1306,8 @@ function htmlHead(title, b64) {
 --good-t:var(--ef-text-good);--warn-t:var(--ef-text-warn);--bad-t:var(--ef-text-bad);--mark-t:var(--ef-text-mark);--accent-t:var(--ef-text-accent);--card:var(--ef-card);--card2:var(--ef-card2);--card3:var(--ef-card3);
 --hl:rgba(167,192,128,.26);--hl-on:rgba(167,192,128,.5);--find:rgba(219,188,127,.32);--find-on:var(--ef-orange);
 --mono:var(--ef-mono)}
-:root[data-theme="light"]{--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);--find:rgba(223,160,0,.28)}
+:root[data-theme="light"]{--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);--find:rgba(223,160,0,.28);color-scheme:light}
+:root[data-theme="dark"]{color-scheme:dark}
 body{background:var(--bg);color:var(--fg);font:var(--fs-4)/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
 -webkit-font-smoothing:antialiased;max-width:860px;margin:0 auto;padding:28px 20px 80px}
 h1{font:600 var(--fs-6)/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
@@ -1335,8 +1338,10 @@ border-radius:6px;padding:3px 12px;margin-left:2px}
 .dp-gate-fix:hover{opacity:.9}
 .dp-drift{color:var(--warn-t)}
 .dp-gate-fix:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* A div, not a p: a <details> inside a p ends the p, and the ⋯ fell to a line of its own. */
+.dp-acts{margin:14px 0 2px}
 details.dp-more{display:inline-block;vertical-align:middle}
-details.dp-more>summary{list-style:none;cursor:pointer;color:var(--dim);padding:0 8px;border-radius:6px;line-height:26px;letter-spacing:.05em}
+details.dp-more>summary{display:inline-block;list-style:none;cursor:pointer;color:var(--dim);padding:0 8px;border-radius:6px;line-height:26px;letter-spacing:.05em}
 details.dp-more>summary::-webkit-details-marker{display:none}
 details.dp-more>summary:hover{color:var(--fg);background:var(--card)}
 details.dp-more>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -2366,14 +2371,19 @@ function familyStripHtml(slug) {
   if (!f) return "";
   const waitsOn = new Set(f.waitingOn.length ? [f.parent] : []);
   const plansDone = f.members.filter(m => m.phase === "done" || (m.total && m.done === m.total)).length;
-  let anyIncs = false;
+  // Waiting on the parent is said once. A child that waits reads it in its
+  // own line under the strip (which parent increment, and its status); every
+  // other page counts the waiting children on the parent's row.
+  const waiting = f.members.filter(m => m.role === "child" && waitingOn(m.slug).length).length;
+  const meWaits = f.waitingOn.length > 0;
+  let anyIncs = (f.members || []).some(m => (m.increments || []).length);
+  let first = true;
   const items = f.members.map(m => {
     const me = m.slug === slug;
     const name = me ? `<b>${esc(m.slug)}</b>` :
       `<a class="dp-fam-link" href="${esc(m.slug)}.working.html" data-plan="${esc(m.slug)}">${esc(m.slug)}</a>`;
     const incs = (m.increments || []).map(i => {
       const p = famIncParts(i);
-      anyIncs = true;
       return `<span class="dp-fam-inc dp-fam-${esc(i.status)}" title="${esc(i.title)} — ${esc(i.status)}">` +
         `${p.status} ${i.n}${[p.checks, p.review, p.by].filter(Boolean).map((x, k) => `${k ? " ·" : ""} <span class="dim">${esc(x)}</span>`).join("")}</span>`;
     }).join("");
@@ -2382,17 +2392,20 @@ function familyStripHtml(slug) {
     const words = [FAM_PHASE[m.phase] || m.phase, `${m.done} of ${m.total} increments done`];
     // The parent's name is the family's, so its line carries the family count.
     if (m.role === "parent") words.push(`${plansDone} of ${f.members.length} plans done`);
+    if (m.role === "parent" && waiting && !meWaits) words.push(`${waiting} ${waiting === 1 ? "child waits" : "children wait"} on it`);
     if (m.role === "child" && m.go === "parent") words.push("the parent gives its go");
-    if (!me && m.role === "child" && waitingOn(m.slug).length) words.push("waits on the parent");
+    // The key to the glyphs ends the first row, not a row of its own.
+    const key = first && anyIncs ? FAM_KEY : "";
+    first = false;
     const line = `<span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
       ` <span class="dim">· ${words.map(esc).join(" · ")}</span>`;
     const held = m.held ? `<div class="dp-fam-wait">held by the parent: ${esc(m.held)}</div>` : "";
     // This plan's own line and the plan it waits on stay open; every other
     // member is one line, its increments behind a disclosure.
     const open = me || waitsOn.has(m.slug);
-    if (open || !incs) return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}">${line}${held}` +
+    if (open || !incs) return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}">${key}${line}${held}` +
       (incs ? `<div class="dp-fam-incs">${incs}</div>` : "") + `</li>`;
-    return `<li class="dp-fam-m"><details class="dp-fam-more"><summary>${line}</summary>` +
+    return `<li class="dp-fam-m">${key}<details class="dp-fam-more"><summary>${line}</summary>` +
       `<div class="dp-fam-incs">${incs}</div></details>${held}</li>`;
   }).join("");
   const owns = f.owns.length ? `<p class="dim">this plan owns ${f.owns.map(g => `<code>${esc(g)}</code>`).join(" ")}</p>` : "";
@@ -2407,17 +2420,16 @@ function familyStripHtml(slug) {
 .dp-fam-inc{white-space:nowrap}
 .dp-fam-done{opacity:.75}
 .dp-fam p{margin:4px 0}
-.dp-fam-tail{display:flex;flex-wrap:wrap;align-items:flex-start;gap:0 10px}
-.dp-fam-tail>div{flex:1;min-width:0}
-.dp-fam-help{margin:4px 0 0 auto;text-align:right}
-.dp-fam-help[open]{flex-basis:100%}
+.dp-fam-help{float:right;margin:1px 0 0 10px}
+.dp-fam-help[open]{float:none;display:block;margin:0}
+.dp-fam-help[open]>summary{float:right;margin:1px 0 0 10px}
 .dp-fam-help>summary{list-style:none;cursor:pointer;display:inline-block;width:18px;height:18px;line-height:16px;text-align:center;
   border:1px solid var(--line,#8884);border-radius:50%;font-size:.8em;color:var(--dim)}
 .dp-fam-help>summary::-webkit-details-marker{display:none}
 .dp-fam-help>summary:hover,.dp-fam-help[open]>summary{color:var(--fg);border-color:var(--dim)}
 .dp-fam-help>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.dp-fam .dp-fam-key{margin:4px 0 2px;font-size:.88em;text-align:left;max-width:46ch}
-.dp-fam-wait{color:var(--warn,#c80)}
+.dp-fam .dp-fam-key{margin:0 0 6px;font-size:.88em;max-width:56ch}
+.dp-fam-wait{color:var(--warn-t,#c80)}
 .dp-fam-link{color:inherit}
 .dp-fam-more>summary{cursor:pointer;list-style:none;width:fit-content}
 .dp-fam-more>summary::-webkit-details-marker{display:none}
@@ -2426,7 +2438,7 @@ function familyStripHtml(slug) {
 .dp-fam-more[open]>summary::after{transform:rotate(45deg)}
 .dp-fam-more>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>
-<ul>${items}</ul><div class="dp-fam-tail"><div>${owns}${waits}</div>${anyIncs ? FAM_KEY : ""}</div>
+<ul>${items}</ul>${owns}${waits}
 <script>
 if (/^https?:/.test(location.protocol)) document.querySelectorAll(".dp-fam-link").forEach(function (a) {
   a.setAttribute("href", "/plan/" + encodeURIComponent(a.getAttribute("data-plan")));
@@ -2470,10 +2482,19 @@ function gateLineHtml(st, g, next, nextAct, drift) {
   else if (!g.allow && st.phase === "review")
     why = `the alignment check isn't taken yet. <a class="dp-gate-fix" href="${esc(st.slug)}.review.html#s-alignment-check">Take it on the review page</a>.`;
   else if (g.between && next) {
-    const blocked = (st.increments || []).filter(i => i.status === "blocked").map(i => i.n);
-    const cause = blocked.length ? `${list(blocked)} ${blocked.length === 1 ? "is" : "are"} blocked`
-      : drift ? "the plan changed since you approved it" : "no increment has its go yet";
-    why = `${cause}. Next: <a href="#inc-${next.n}">${esc(nextAct || "go")} on increment ${next.n}</a>.`;
+    // A blocked increment is named with its title and the reason it was
+    // blocked, and the way on is its unblock (a go from blocked), not a go.
+    const bl = (st.increments || []).filter(i => i.status === "blocked");
+    if (bl.length === 1) {
+      const b = bl[0];
+      why = `increment ${b.n} (${esc(b.title)}) is blocked${b.note ? `: ${esc(String(b.note).replace(/\.$/, ""))}` : ""}. ` +
+        `When that is sorted, <a href="#inc-${b.n}">unblock increment ${b.n}</a>.`;
+    } else if (bl.length) {
+      why = `${list(bl.map(i => i.n))} are blocked. Start with <a href="#inc-${bl[0].n}">unblock increment ${bl[0].n}</a>.`;
+    } else {
+      const cause = drift ? "the plan changed since you approved it" : "no increment has its go yet";
+      why = `${cause}. Next: <a href="#inc-${next.n}">${esc(nextAct || "go")} on increment ${next.n}</a>.`;
+    }
   }
   else if (g.allow && p.open.length)
     why = `${list(p.open.map(i => i.n))} ${p.open.length === 1 ? "has its" : "have their"} go.`;
@@ -2489,7 +2510,7 @@ const gateTip = st => [st.root || "", `phase: ${st.phase}${PHASE_WORDS[st.phase]
 function workingHtml(spec, st, b64) {
   // The plan's next step: the lowest increment not done, and its first allowed
   // move (go, start or done). That one button is primary; block and reset are
-  // quiet, so five equal buttons no longer hide which one matters.
+  // quiet and folded, so five equal buttons no longer hide which one matters.
   const next = (st.increments || []).find(i => i.status !== "done");
   const nextAct = next && incActions(next.status).find(a => !ALWAYS.includes(a));
   // Until the alignment check passes, applyTransition refuses every go. So a
@@ -2504,14 +2525,20 @@ function workingHtml(spec, st, b64) {
     const files = fileTreeHtml(planPaths(d));
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
+    // A blocked increment's go is its unblock (applyTransition takes go from
+    // blocked), so it says so; data-a stays go, which is what the server runs.
+    const label = a => a === "go" && inc.status === "blocked" ? "unblock" : a;
     const btn = a => `<button class="dp-act" data-a="${a}" data-n="${inc.n}"${kindOf(inc, a) ? ` data-kind="${kindOf(inc, a)}"` : ""} disabled ` +
-      `title="${kindOf(inc, a) === "held" ? HELD_TIP : `${a} increment ${inc.n}`} — available when served">${a}</button>`;
-    // The next increment shows its moves in the open. Any other card shows
-    // only the move an increment that has its go still owes (start or done);
-    // the rest (a go out of order, block, reset) wait behind a small ⋯.
+      `title="${kindOf(inc, a) === "held" ? HELD_TIP : label(a) === "unblock" ? `unblock increment ${inc.n}: give it its go again` : `${a} increment ${inc.n}`} — available when served">${label(a)}</button>`;
+    // Every card shows at most one move in the open: the next increment's
+    // go, start or done, a blocked one's unblock, or the start or done an
+    // increment that has its go still owes. The rest (a go out of order, the
+    // second of start and done, block, reset) wait behind a small ⋯ on every
+    // card alike.
     const all = incActions(inc.status);
-    const owed = inc !== next && (inc.status === "authorized" || inc.status === "working") ? all.filter(a => !ALWAYS.includes(a)) : [];
-    const shown = inc === next ? all : owed, more = all.filter(a => !shown.includes(a));
+    const moves = all.filter(a => !ALWAYS.includes(a));
+    const open1 = inc === next || inc.status === "blocked" || inc.status === "authorized" || inc.status === "working";
+    const shown = open1 ? moves.slice(0, 1) : [], more = all.filter(a => !shown.includes(a));
     const acts = shown.map(btn).join("") + (more.length
       ? `<details class="dp-more"><summary aria-label="more for increment ${inc.n}" title="more for increment ${inc.n}">⋯</summary><span class="dp-more-acts">${more.map(btn).join("")}</span></details>` : "");
     // The verdict belongs beside the status, not in a section of its own: it is
@@ -2530,7 +2557,7 @@ ${files}
 ${oos}
 ${dcommits ? `<ul class="dim">${dcommits}</ul>` : ""}
 ${checks}
-${acts ? `<p class="dp-acts">${acts}</p>` : ""}</div>`;
+${acts ? `<div class="dp-acts">${acts}</div>` : ""}</div>`;
   }).join("\n");
   const g = gateView(st);
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
