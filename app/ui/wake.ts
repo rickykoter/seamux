@@ -605,6 +605,17 @@ export class Wake {
     this.draw();
   }
 
+  /** j / k: the next row in that direction that shows. A folded day's rows
+   *  are in the list but hidden, so they are stepped over. */
+  private step(by: 1 | -1): void {
+    const els = this.list.querySelectorAll<HTMLElement>(".w-row");
+    let i = this.sel + by;
+    while (i >= 0 && i < els.length && els[i].closest(".w-day.folded")) i += by;
+    if (i < 0 && by < 0) return this.select(-1, true);
+    if (i >= els.length) return;
+    this.select(i, true);
+  }
+
   private select(i: number, scroll = false): void {
     const els = this.list.querySelectorAll<HTMLElement>(".w-row");
     els.forEach((x) => x.classList.remove("sel"));
@@ -771,12 +782,12 @@ export class Wake {
       case "j":
       case "ArrowDown":
         e.preventDefault();
-        this.select(this.sel + 1, true);
+        this.step(1);
         break;
       case "k":
       case "ArrowUp":
         e.preventDefault();
-        this.select(this.sel - 1, true);
+        this.step(-1);
         break;
       case "Enter":
         if (r) {
