@@ -114,7 +114,7 @@ export class DockView {
       if (d?.crew === "tuck" && typeof d.ws === "string" && d.ws && lvl) {
         void setLevel(d.ws, typeof t?.name === "string" ? t.name : d.ws, lvl, this.levels[d.ws], until);
       }
-      // The board's Resume at reset (its ⋯ menu) and the armed chip's disarm.
+      // The board's "Resume when the limit resets" (its ⋯ menu) and the armed chip's disarm.
       const u = d as { on?: unknown; name?: unknown } | null;
       if (d?.crew === "resume" && typeof d.ws === "string" && d.ws && typeof u?.on === "boolean") {
         void setResume(d.ws, typeof u.name === "string" ? u.name : d.ws, u.on);

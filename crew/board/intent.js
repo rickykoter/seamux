@@ -16,7 +16,7 @@
 //   sandbox chip         crew:sandbox-up / -down           -> a=sandbox-up|-down
 //   feed allow / deny    crew:feed-allow / crew:feed-deny  -> a=feed-allow|-deny
 //   the sync clock       crew:sync-now                     -> a=sync
-//   resume at reset      the framing app's resume_set      -> a=resume&x=on|off
+//   resume when it resets the framing app's resume_set      -> a=resume&x=on|off
 //                        (the ⋯ menu item, and the armed chip's disarm)
 //
 // One verb never leaves the page: a=fold, on a card's caret. It folds or
@@ -56,7 +56,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "19";
+  var V = "20";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -406,13 +406,11 @@ function __boardIntent(cfg) {
       if (host.getAttribute("data-intent") !== V) return;
       // A click anywhere but the ⋯ menu shuts an open one.
       if (!(ev.target.closest && ev.target.closest(".tk, .tkm"))) shutMenu();
-      // A shelf's header (snoozed, settled, tucked): remember it open or
-      // shut for the next push.
-      var sum = ev.target.closest && ev.target.closest("details.snoozed > summary, details.settled > summary, details.tucked > summary");
+      // The hidden shelf's header (snoozed, settled and tucked rows, all in
+      // one): remember it open or shut for the next push.
+      var sum = ev.target.closest && ev.target.closest("details.away > summary");
       if (sum) {
-        var SHELF = { snoozed: "data-snooze-open", settled: "data-settle-open", tucked: "data-tuck-open" };
-        var attr = SHELF[sum.parentNode.className] || "data-tuck-open";
-        setTimeout(function () { host.setAttribute(attr, sum.parentNode.open ? "1" : "0"); }, 0);
+        setTimeout(function () { host.setAttribute("data-hidden-open", sum.parentNode.open ? "1" : "0"); }, 0);
         return;
       }
       var t = target(ev.target);
@@ -456,7 +454,7 @@ function __boardIntent(cfg) {
         }
         return;
       }
-      // Resume at reset (the menu item) or stop it (the menu item, the armed
+      // Resume when the limit resets (the menu item) or stop it (the menu item, the armed
       // chip): the app keeps resume.json. Unframed, nothing writes it.
       if (t.a === "resume") {
         shutMenu();

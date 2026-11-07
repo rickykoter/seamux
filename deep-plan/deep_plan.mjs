@@ -921,18 +921,24 @@ function mdInline(s) {
 // person must do or know -- an acquire step, a claim that asks, the
 // expectation, a note -- stays in view.
 const CHECK_HOW = /^(recipe |run — |run: |wait — |browser — |scripts: |query: )/;
-function checkDetailHtml(lines) {
+// The check's id closes the fold, beside the commands that take it.
+function checkDetailHtml(lines, id = "") {
   const shown = lines.filter(l => !CHECK_HOW.test(l)), how = lines.filter(l => CHECK_HOW.test(l));
+  if (how.length && id) how.push(`check id \`${id}\``);
   return shown.map(l => `<br>${mdInline(l)}`).join("") +
     (how.length ? `<details class="dp-run"><summary>how it runs</summary>` + how.map(l => mdInline(l)).join("<br>") + "</details>" : "");
 }
 
+// The review page's checks: the name and its kind in words, the id in the
+// title and the fold. checkLinesMd's head is the markdown plan's.
 function checksHtml(list, waiver) {
   if (!list.length) return waiver ? `<p class="dim">checks: none — waived: ${esc(waiver)}</p>` : "";
-  return `<p class="dim">checks — <code>done</code> is gated on these:</p><ul class="dim">` +
+  return `<p class="dim">checks — <code>done</code> is gated on these:</p><ul class="dim dp-checks">` +
     list.map(c => {
-      const { head, lines } = checkLinesMd(c);
-      return `<li>${mdInline(head)}${checkDetailHtml(lines)}</li>`;
+      const { lines } = checkLinesMd(c);
+      const inferred = c.inferred ? ` — inferred: a default recipe in <code>${esc(c.source)}</code> covers this increment's files` : "";
+      return `<li title="check ${esc(c.id)}"><b>${esc(c.name || "")}</b> <span class="dp-kind">· ${esc(checkKindWords(c))}</span>${inferred}` +
+        `${checkDetailHtml(lines, c.id)}</li>`;
     }).join("") + "</ul>";
 }
 
@@ -1304,6 +1310,7 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:12.5px var(--
 .inc .st{float:right;font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
 .st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--warn-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
+.dp-checks-st{list-style:none;padding-left:0}.dp-checks-st .dp-run{margin-left:19px}
 .dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
@@ -1468,9 +1475,19 @@ if (/^https?:/.test(location.protocol)) document.querySelectorAll(".dp-ws .dp-fa
 
 // Contracts card list, shared by the review/working body and the shareable
 // artifact page — declared shape changes stay visible wherever the plan goes.
+// A contract's kind, scope and change as one phrase: "changes an internal
+// DB schema". The raw fields stay in the title.
+const CONTRACT_CHANGE = { new: "adds", modify: "changes", remove: "removes" };
+const CONTRACT_KIND = { "db-schema": "DB schema", api: "API", "method-signature": "method signature", event: "event", config: "config" };
+function contractWords(c) {
+  const scope = c.scope === "internal" || c.scope === "external" ? c.scope + " " : "";
+  const what = scope + (CONTRACT_KIND[c.kind] || c.kind || "surface");
+  return `${CONTRACT_CHANGE[c.change] || c.change || "touches"} ${/^[aeiou]/i.test(what) ? "an" : "a"} ${what}`;
+}
+
 function contractsHtml(spec) {
   const items = (spec.contracts || []).map(c =>
-    `<li><b>${esc(c.surface || "")}</b> <span class="dim">[${esc(c.kind || "?")} · ${esc(c.scope || "?")} · ${esc(c.change || "?")}]</span><br>` +
+    `<li><b>${esc(c.surface || "")}</b> <span class="dim" title="${esc(`${c.kind || "?"} · ${c.scope || "?"} · ${c.change || "?"}`)}">${esc(contractWords(c))}</span><br>` +
     `reach: ${esc(c.reach || "")} <span class="dim">— decision: ${esc(c.decisionRef || "")}` +
     (c.waiver ? ` · waiver: ${esc(c.waiver)}` : "") + `</span></li>`).join("");
   return items ? `<h2>Contracts</h2>
@@ -1938,8 +1955,8 @@ function reviewFoot(nq) {
 // rather than reads through. A section the reader opened or shut keeps that.
 const REVIEW_FOLDED = ["End state", "Contracts", "Verified facts", "ADRs", "Diagrams", "Verification"];
 
-// "What you're approving": the increments, the counts, and the way
-// to the quiz, above the spec. Counts link to their sections; the client
+// "What you're approving": the increments, the counts, and a link to
+// the quiz (the button for it is the foot bar's), above the spec. Counts link to their sections; the client
 // opens a folded one through its rail link. No .dp-note, no inputs, so the
 // copy-back reads the page exactly as before.
 function reviewSummaryHtml(spec, adrs, nq) {
@@ -1969,22 +1986,23 @@ function reviewSummaryHtml(spec, adrs, nq) {
 .dp-sum li{margin:2px 0}
 .dp-sum a{color:inherit;text-decoration-color:var(--line2);text-underline-offset:2px}
 .dp-sum a:hover{text-decoration-color:currentColor}
-.dp-sum-go{margin-top:10px}
-.dp-sum-go .dp-tbtn{font:500 13px/1 system-ui,sans-serif;padding:0 12px;height:32px}
-.dp-sum a:focus-visible,.dp-sum button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.dp-sum-go{margin-top:8px}
+.dp-sum .dp-sum-go a{color:var(--accent-t);font-weight:500;text-decoration-color:currentColor}
+.dp-sum a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>
 <p class="dp-sum-h">What you're approving</p>
 ${incs ? `<ol>${incs}</ol>` : ""}
 ${counts.length ? `<p class="dim">${counts.join(" · ")}</p>` : ""}
-<p class="dp-sum-go"><button type="button" class="dp-tbtn" id="dp-sum-go">${nq ? `Go to the quiz (${nq} question${nq === 1 ? "" : "s"})` : "Go to send it back"}</button></p>
+<p class="dp-sum-go"><a href="#s-alignment-check" id="dp-sum-go">${nq ? `${plural(nq, "question")} to answer` : "Send it back"}</a></p>
 <script>
 (function () {
   var box = document.getElementById("dp-sum");
   box.addEventListener("click", function (e) {
     var a = e.target.closest && e.target.closest("a");
+    // The one quiz button is the foot bar's; this link does what it does.
     if (e.target.closest && e.target.closest("#dp-sum-go")) {
       var go = document.getElementById("dp-foot-go");
-      if (go) go.click();
+      if (go) { e.preventDefault(); go.click(); }
       return;
     }
     if (!a) return;
@@ -2101,8 +2119,9 @@ label.opt{cursor:pointer;padding:3px 0}
 .dp-note[hidden]{display:none}
 .inc .dp-note-open{display:block;margin:6px 0 0;padding:0}
 ${DP_RISK_CSS}
-#dp-copyback{background:var(--accent,#46f);color:var(--bg);border:0;border-radius:6px;font-weight:600;
-  padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
+/* The foot bar's Copy is the button; this one builds the blob and reads as a link. */
+#dp-copyback{background:none;color:var(--accent-t,#46f);border:0;padding:6px 0;font:inherit;font-weight:500;
+  cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:3px;padding:0 4px}
 .opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
 .dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
@@ -2113,7 +2132,7 @@ kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
 <p class="dim">Pick an answer per question, add comments where you have them, then
-<b>Copy for session</b> below puts one paste-back on your clipboard — the slug, a ready
+<b>Copy for session</b> in the bar at the bottom puts one paste-back on your clipboard — the slug, a ready
 <code>deep-plan grade</code> line, and your comments. A wrong answer means the plan
 and your model of it disagree — and either one may be the broken one.</p>
 ${qs}
@@ -2220,6 +2239,15 @@ const ELAPSED_TICK = `<style>.dp-elapsed.dp-late{color:var(--warn-t,#b45309);fon
   tick(); if (!window.__dpElapsed) window.__dpElapsed = setInterval(tick, 1000);
 })();</script>`;
 
+// A check's kind in words, for the pages. The markdown plan and the
+// terminal keep the bracketed kind (checkLinesMd).
+const CHECK_KIND_WORDS = { test: "test", e2e: "end-to-end test", observability: "watched in production",
+  manual: "check by hand", review: "review", browser: "browser run", ci: "CI" };
+function checkKindWords(c) {
+  if (c.kind === "observability" && c.system) return `watched in ${c.system}`;
+  return (CHECK_KIND_WORDS[c.kind] || c.kind || "check") + (c.system ? ` (${c.system})` : "");
+}
+
 function checksRow(inc, slug = "") {
   const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
   if (!all.length) return "";
@@ -2228,7 +2256,7 @@ function checksRow(inc, slug = "") {
     const st = v.status || "pending";
     // A passed check shows its verdict alone; an outstanding one shows its
     // detail, the run part folded (checkDetailHtml).
-    const detail = st === "pass" ? "" : checkDetailHtml(checkLinesMd({ id, ...v }).lines);
+    const detail = st === "pass" ? "" : checkDetailHtml(checkLinesMd({ id, ...v }).lines, id);
     // A check the Dock can act on (a browser run, a claim that asks) carries
     // its address; the served page's plan.js adds run, open tab, the live
     // filmstrip and the picker. On disk the row is just text.
@@ -2243,14 +2271,25 @@ function checksRow(inc, slug = "") {
     // turns amber past its recipe's timeout (the script below the list).
     const since = st === "running" && v.runner && v.runner.startedAt;
     const elapsed = since ? ` · <span class="dp-elapsed" data-since="${Number(since)}" data-timeout="${Number((v.exec && v.exec.timeout) || 0)}">running</span>` : "";
-    return `<li${live}>${CHECK_GLYPH[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
-      `${esc(v.name || "")} <code>${esc(id)}</code>` +
+    // Said once: the glyph carries a check that has not run, and the word
+    // joins it once there is a result. The id sits in the title and under
+    // "how it runs", where the command that takes it is.
+    const word = st === "pending" ? "" : ` ${esc(st)} ·`;
+    return `<li${live} title="check ${esc(id)}">${CHECK_GLYPH[st] || ""}${word} ${esc(v.name || "")} ` +
+      `<span class="dp-kind">· ${esc(checkKindWords(v))}</span>` +
       // A served working page reaches the review page on the same server.
       (v.synth === "review" && slug ? ` · <a href="/review/${esc(slug)}-inc${inc.n}">open the review</a>` : "") +
       (v.note ? ` — ${esc(v.note)}` : "") + elapsed + extra + detail + "</li>";
   }).join("");
   const tick = items.includes('class="dp-elapsed"') ? ELAPSED_TICK : "";
-  return `<p class="dim">checks: ${CHECK_GLYPH[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>${tick}`;
+  // A summary line only when the checks disagree: when they all stand the
+  // same, each one's glyph already says it.
+  const states = new Set(all.map(([, v]) => v.status || "pending"));
+  const passed = all.filter(([, v]) => v.status === "pass").length;
+  const failed = all.filter(([, v]) => v.status === "fail").length;
+  const sum = states.size > 1
+    ? `<p class="dim dp-checks-sum">checks: ${CHECK_GLYPH[agg] || ""} ${passed} of ${all.length} passed${failed ? `, ${failed} failed` : ""}</p>` : "";
+  return `${sum}<ul class="dim dp-checks dp-checks-st">${items}</ul>${tick}`;
 }
 
 // The family this plan belongs to, under the title: the parent and every
@@ -2327,6 +2366,32 @@ const ALWAYS = ["block", "reset"];
 const incActions = status => INC_ALLOWED[status] || ALWAYS;
 const allows = (status, action) => ALWAYS.includes(action) || incActions(status).includes(action);
 
+// The working page's gate as one plain line: the state in bold, why, and a
+// link to the fix when it is on a page. The root and phase sit in a hover
+// title: the folder name is enough to tell worktrees apart. gateView's `why`
+// stays as it is for the board.
+const PHASE_WORDS = { review: "waiting on the review", implementing: "building", delivery: "in its delivery review", done: "done", closed: "closed" };
+function gateLineHtml(st, g, next, nextAct) {
+  const p = progress(st);
+  const list = ns => ns.length === 1 ? `increment ${ns[0]}` : `increments ${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`;
+  let why;
+  if (st.gate === "open") why = "opened by hand.";
+  else if (!g.allow && st.phase === "review")
+    why = `the alignment check isn't taken yet. <a href="${esc(st.slug)}.review.html#s-alignment-check">Take it on the review page</a>.`;
+  else if (g.between && next)
+    why = `no increment has its go yet. Next: <a href="#inc-${next.n}">${esc(nextAct || "go")} on increment ${next.n}</a>.`;
+  else if (g.allow && p.open.length)
+    why = `${list(p.open.map(i => i.n))} ${p.open.length === 1 ? "has its" : "have their"} go.`;
+  else if (g.allow && st.phase === "delivery")
+    why = `every increment is done. The delivery review keeps the plan open: <code>deep-plan deliver ${esc(st.slug)}</code>.`;
+  else why = esc(String(g.why || "").replace(/^./, c => c.toLowerCase()));
+  const root = st.root || "";
+  const tip = [root, `phase: ${st.phase}${PHASE_WORDS[st.phase] ? " (" + PHASE_WORDS[st.phase] + ")" : ""}`].filter(Boolean).join("\n");
+  const where = `<span class="dim dp-gate-where" title="${esc(tip)}">· in ${esc(path.basename(root) || "?")}</span>`;
+  return `<p class="dp-gate" data-allow="${g.allow ? 1 : 0}">${g.allow ? CHECK_GLYPH.pass : CHECK_GLYPH.fail} ` +
+    `<b>Gate ${g.allow ? "open" : "shut"}</b>: ${why.replace(/\.$/, "")} ${where}</p>`;
+}
+
 function workingHtml(spec, st, b64) {
   // The plan's next step: the lowest increment not done, and its first allowed
   // move (go, start or done). That one button is primary; block and reset are
@@ -2369,8 +2434,7 @@ ${checks}
   const approved = st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
       st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>\n` : "";
   const work = familyStripHtml(spec.slug) + "\n" + approved +
-    `<h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
-<span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
+    `<h2>Gate</h2>${gateLineHtml(st, g, next, nextAct)}
 <h2>Increments</h2>${rows}
 `;
   const body = commonBody(spec, st.adrs || [], true,
@@ -3624,7 +3688,7 @@ ${o.example ? `<pre class="dp-example"><code>${esc(String(o.example))}</code></p
 #dp-ask-status{margin-top:16px}
 </style>
 <h1>${esc(ask.header || "A question for you")}</h1>
-<p class="dim">ask <code>${esc(ask.id)}</code>${ask.slug ? ` · plan <code>${esc(ask.slug)}</code>` : ""} · ${esc(ask.created)}</p>
+<p class="dim dp-ask-meta" data-ask="${esc(ask.id)}" title="ask ${esc(ask.id)}">${askWhenHtml(ask.created)}${ask.slug ? ` · for the plan <code>${esc(ask.slug)}</code>` : ""}</p>
 <p>${esc(ask.question).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${ask.mermaid ? `<pre class="mermaid">${esc(String(ask.mermaid).trim())}</pre>` : ""}
 <h2>Options</h2>
@@ -3633,8 +3697,33 @@ ${opts}
   ? `answered: ${esc(String(ask.answer.n))} — ${esc(ask.options[ask.answer.n - 1]?.label || "")}`
   : "Answer in the prompt as usual. In cmux, a pick here is typed into the terminal for you."}</p>
 ${MERMAID_BOOT}
+${ASK_WHEN_JS}
 </body></html>`;
 }
+
+// When the ask was made, as "asked 2 min ago" with the full time on hover.
+// The page is written once, so the words come from the reader's clock; the
+// text on disk is the time itself, for a page opened with scripts off.
+function askWhenHtml(created) {
+  const t = Date.parse(created);
+  if (!Number.isFinite(t)) return "asked";
+  const at = new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  return `<time class="dp-ask-when" datetime="${esc(created)}" title="${esc(at)}">asked ${esc(at)}</time>`;
+}
+const ASK_WHEN_JS = `<script>
+(function () {
+  var el = document.querySelector(".dp-ask-when");
+  if (!el) return;
+  var t = Date.parse(el.getAttribute("datetime"));
+  if (!isFinite(t)) return;
+  el.title = new Date(t).toLocaleString();
+  function words() {
+    var s = Math.max(0, Math.round((Date.now() - t) / 1000)), m = Math.round(s / 60), h = Math.round(m / 60), d = Math.round(h / 24);
+    el.textContent = "asked " + (s < 45 ? "just now" : m < 60 ? m + " min ago" : h < 24 ? h + " h ago" : d + (d === 1 ? " day ago" : " days ago"));
+  }
+  words(); setInterval(words, 30000);
+})();
+</script>`;
 
 function askWrite(ask) {
   fs.mkdirSync(ASKS_DIR, { recursive: true });

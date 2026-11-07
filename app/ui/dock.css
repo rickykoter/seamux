@@ -17,4 +17,5 @@
 .sheet.embedded { position: static; inset: auto; z-index: auto; display: flex; height: 100%; }
 .sheet.embedded[hidden] { display: none; }
 .sheet.embedded .sheet-card > header { padding-left: 12px; min-height: 0; }
+.sheet.embedded .sheet-card > header[hidden] { display: none; }
 .sheet.embedded .sheet-card > header .sheet-btn.icon[hidden] { display: none; }

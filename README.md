@@ -281,20 +281,21 @@ line to paste. Inside a [plan family](deep-plan/README.md#families-parallel-work
 each session also hears what changed at its next prompt. More in
 [the board README](crew/board/README.md#the-news-footer).
 
-#### Snooze, settle and resume at reset
+#### Hide, settle and resume when the limit resets
 
-Three ways a row gets out of your way until it needs you. All three live in
-the app: the board's ⋯ menu offers them only when the app frames it.
+Ways a row gets out of your way until it needs you. They live in the app:
+the board's ⋯ menu offers them only when the app frames it. Hidden rows sit
+in one collapsed "hidden" shelf at the foot of the rail, each saying why.
 
-- **Snooze** a row for 1 hour, 3 hours, until tomorrow 9am or until Monday
-  9am. It moves to a collapsed "snoozed" shelf that says when each row
-  wakes. A question, a shut gate or a review brings it back early. Red CI
-  or a conflict waits until the snooze ends.
+- **Hide** a row until it needs you, for 1 hour, for 3 hours, until
+  tomorrow 9am, until Monday 9am, or until you bring it back. A timed row
+  says when it comes back. A question, a shut gate or a review brings it
+  back early. Red CI or a conflict waits until the time is up.
 - **Settle** needs no click. A row whose PR merged, with no agent working
-  and no pane activity for 2 hours, moves to a "settled" shelf. Any new
-  activity brings it back. `"settleHours"` in
+  and no pane activity for 2 hours, moves to the hidden shelf as "merged
+  and idle". Any new activity brings it back. `"settleHours"` in
   `~/.config/cmux/crew-local/config.json` changes the wait.
-- **Resume at reset.** When a usage limit stops a session, its row says
+- **Resume when the limit resets.** When a usage limit stops a session, its row says
   which limit and when it resets, and you get a notification. Arm the
   worktree from the ⋯ menu, and when the limit resets the app types
   `continue` into that session. It reads the screen first and refuses if a

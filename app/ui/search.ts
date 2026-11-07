@@ -123,7 +123,26 @@ export type Family = {
 };
 
 const STATE_RANK: Record<string, number> = { needs_input: 0, working: 1, idle: 2, ended: 3, shell: 4 };
-const base = (p: string) => p.replace(/\/+$/, "").split("/").pop() ?? p;
+/** A path's last folder: "~/code/x.worktrees/dock" is "dock". */
+export const base = (p: string) => p.replace(/\/+$/, "").split("/").pop() ?? p;
+
+/** One part of a TUI's key hints: "Enter to select", "↑/↓ to navigate",
+ *  "Esc to cancel", "? for shortcuts". */
+const HINT = /^(?:press\s+)?(?:enter|return|esc|escape|tab|shift\+tab|space|ctrl\+\S+|⌘\S*|↑\/↓|↑↓|←\/→|\?)\s+(?:to|for)\s+\S/i;
+/** Whether a terminal line is only key hints, as Claude's own question
+ *  footer is ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
+export const isKeyHints = (line: string): boolean => {
+  const parts = line.trim().split(/\s+·\s+/);
+  return !!parts[0] && parts.every((p) => HINT.test(p.trim()));
+};
+
+/** The last `n` lines of a terminal worth reading in the preview: key-hint
+ *  lines dropped (the search has its own keys), trailing blanks trimmed. */
+export function tailOf(lines: string[], n = 4): string {
+  const kept = lines.filter((l) => !isKeyHints(l));
+  while (kept.length && !kept[kept.length - 1].trim()) kept.pop();
+  return kept.slice(-n).join("\n").replace(/^\s*\n/, "").trimEnd();
+}
 
 /** A workspace's panes as the preview lists them: agents first (the one
  *  that waits, then works), then shells; each says what it is doing. */

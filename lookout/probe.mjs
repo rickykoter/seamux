@@ -1766,6 +1766,33 @@ if (want("page script")) {
   ok("page: a card puts its title first and shows a status pill only when it is not open",
      /el\("span", \{ class: "title" \}[^\n]*\n\s*el\("span", \{ class: "fid" \}/.test(js) &&
      js.includes('(x.status || "open") !== "open" ? el("span", { class: "status st-" + x.status }, x.status) : null'));
+  const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
+  const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
+  ok("page: the gate pill counts open findings by severity as \"1 blocker, 1 major open\"",
+     js.includes('.map(([s, n]) => `${n} ${s}`).join(", ");') && js.includes("text: `blocked · ${counts} open`"));
+  ok("app: the Findings button counts the way the gate pill does, from the same open counts",
+     app.includes('return parts.length ? `${parts.join(", ")} open` : "no open findings";') &&
+     app.includes('const SEVERITIES = ["blocker", "major", "minor", "nit"];') && js.includes('const SEV = ["blocker", "major", "minor", "nit"];') &&
+     app.includes("btn(`Findings · ${openSummary(j.open)}"));
+  ok("app: framed, the header leaves the verdict to the page's gate pill; unframed or down, it shows it",
+     app.includes('const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;') &&
+     /state === "blocked" \|\| state === "pass" \? \(framed \? null : el\("span", `r-chip \$\{state\}`, state\)\)/.test(app) &&
+     /const down = [\s\S]{0,300}this\.frameDown = rid;/.test(app));
+  ok("app: an open review folds the list away, and Reviews ▸ brings it back, remembered in try/catch",
+     app.includes('const folded = this.hasOpen() && !this.listShown;') && app.includes("this.side.hidden = folded;") &&
+     /try \{\s*localStorage\.setItem\(LIST_KEY, this\.listShown \? "shown" : "folded"\);\s*\} catch/.test(app) &&
+     app.includes('this.listShown = localStorage.getItem(LIST_KEY) === "shown";') &&
+     app.includes('btn(shown ? "◂ Reviews" : "Reviews ▸"') && app.includes('list.setAttribute("aria-expanded", String(shown));') &&
+     appCss.includes(".review.folded { grid-template-columns: minmax(0, 1fr); }") && appCss.includes(".r-side[hidden] { display: none; }"));
+  ok("page: a card's id, category and verdict show on hover or focus, and stay in the DOM",
+     css.includes(".card-head .fid, .card-head .cat { opacity: 0;") && css.includes(".card:focus-within .card-head .fid") &&
+     !/\.card-head \.(fid|cat)[^{]*\{[^}]*display: none/.test(css));
+  ok("page: an addressed blocker or major says it still blocks until resolved",
+     js.includes('finding && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major")') &&
+     js.includes('el("span", { class: "still-blocks" }, "Still blocks until you resolve it")'));
+  ok("page: Reply, Resolve and Dismiss are quiet outlined buttons with a focus ring, not plain text",
+     /\.buttons\.links button \{[^}]*border: 1px solid[^}]*\}/.test(css) && !/\.buttons\.links button \{[^}]*border: 0/.test(css) &&
+     /\.buttons\.links button:focus-visible \{[^}]*outline: 2px solid/.test(css));
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
 

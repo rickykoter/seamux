@@ -145,7 +145,7 @@ export async function setResume(ws: string, name: string, on: boolean): Promise<
     if (on) armed.add(ws);
     else armed.delete(ws);
     void refreshArmed();
-    say(on ? `Resumes at the limit's reset: ${name}` : `Won't resume at reset: ${name}`, { label: "Undo", run: () => void setResume(ws, name, !on) });
+    say(on ? `Resumes when the limit resets: ${name}` : `Won't resume when the limit resets: ${name}`, { label: "Undo", run: () => void setResume(ws, name, !on) });
   } catch (e) {
     say(String(e), undefined, true);
   }
@@ -222,8 +222,9 @@ function flip(m: HTMLElement): void {
   if (m.getBoundingClientRect().bottom > floor) m.classList.add("up");
 }
 
-/** The ⋯ button and its menu for one workspace's card, tile or lane. */
-export function menu(ws: string, name: string, level: Level | undefined): HTMLElement {
+/** The ⋯ button and its menu for one workspace's card, tile or lane.
+ *  `limited`: a usage limit stopped it, so the menu offers to resume. */
+export function menu(ws: string, name: string, level: Level | undefined, limited = false): HTMLElement {
   const to = (t: Level | "none") => () => void setLevel(ws, name, t, level);
   // One verb, Hide, with when it comes back; the presets between dividers.
   // Whatever hid it, its item reads Show again.
@@ -231,14 +232,20 @@ export function menu(ws: string, name: string, level: Level | undefined): HTMLEl
   const snooze: MenuItem[] = level === "snooze"
     ? [{ label: back, sep: true, run: to("none") }]
     : SNOOZES.map((s, i) => ({ label: s.label, sep: i === 0, run: () => void setLevel(ws, name, "snooze", level, snoozeUntil(s.key, new Date())) }));
+  // Resuming is not hiding: it sits below the Hide group, on its own, and
+  // only while a usage limit holds the row (or it is armed, to undo that),
+  // as the board's menu does. No key hints: no view binds m or t now.
   const on = armed.has(ws);
+  const resume: MenuItem[] = on
+    ? [{ label: "Don\u2019t resume when the limit resets", sep: true, title: "Stop typing continue here when the limit resets", run: () => void setResume(ws, name, false) }]
+    : limited
+      ? [{ label: "Resume when the limit resets", sep: true, title: "Type continue here once the limit resets", run: () => void setResume(ws, name, true) }]
+      : [];
   return dotsMenu(`${name}: hide or show again`, [
-    level === "mute" ? { label: back, hint: "m", run: to("none") } : { label: "Hide until it needs you", hint: "m", run: to("mute") },
+    level === "mute" ? { label: back, run: to("none") } : { label: "Hide until it needs you", run: to("mute") },
     ...snooze,
-    level === "tuck" ? { label: back, hint: "t", sep: true, run: to("none") } : { label: "Hide until I bring it back", hint: "t", sep: true, run: to("tuck") },
-    on
-      ? { label: "Don\u2019t resume at reset", sep: true, title: "Stop typing continue here when a usage limit resets", run: () => void setResume(ws, name, false) }
-      : { label: "Resume at reset", sep: true, title: "When a usage limit stops this worktree, type continue once it resets", run: () => void setResume(ws, name, true) },
+    level === "tuck" ? { label: back, sep: true, run: to("none") } : { label: "Hide until I bring it back", sep: true, run: to("tuck") },
+    ...resume,
   ]);
 }
 

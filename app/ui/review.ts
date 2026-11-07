@@ -72,6 +72,8 @@ const STEPS: [string[], string][] = [
   [["ingesting"], "Save the findings"],
 ];
 const SEL_KEY = "seamux.lookout.selected";
+/** "shown" when the reader opened the review list beside an open review; folded otherwise. */
+const LIST_KEY = "seamux.lookout.list";
 const SVG = "http://www.w3.org/2000/svg";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -154,9 +156,13 @@ function since(t: number, cls = "r-clock"): HTMLElement {
   return s;
 }
 
+/**
+ * Open findings by severity, worded as the page's gate pill words them
+ * (lookout/page/review.js gateText): "1 blocker, 1 major open".
+ */
 function openSummary(open: Record<string, number>): string {
   const parts = SEVERITIES.filter((s) => open[s]).map((s) => `${open[s]} ${s}`);
-  return parts.length ? parts.join(" · ") : "no open findings";
+  return parts.length ? `${parts.join(", ")} open` : "no open findings";
 }
 
 /** Which run of a job this is: Re-review keeps the id and restarts the clock. */
@@ -175,6 +181,10 @@ export class ReviewView {
   private picks: Picks | null = null;
   private picksAt = 0;
   private selected: string | null = null;
+  /** Whether the review list shows beside an open review. With none open it always shows. */
+  private listShown = false;
+  /** The review whose frame couldn't load: its header keeps the verdict chip. */
+  private frameDown = "";
 
   private side = el("aside", "r-side");
   private main = el("section", "r-main");
@@ -208,6 +218,7 @@ export class ReviewView {
     this.root.className = "review";
     try {
       this.selected = localStorage.getItem(SEL_KEY);
+      this.listShown = localStorage.getItem(LIST_KEY) === "shown";
     } catch {
       /* no storage: start with nothing picked */
     }
@@ -431,6 +442,22 @@ export class ReviewView {
     this.drawMain(force);
   }
 
+  /** A review is open: one picked that is still there. */
+  private hasOpen(): boolean {
+    const sel = this.selected;
+    return !!sel && (this.jobs.some((j) => `job:${j.id}` === sel) || this.others.some((o) => `other:${o.id}` === sel));
+  }
+
+  private toggleList(): void {
+    this.listShown = !this.listShown;
+    try {
+      localStorage.setItem(LIST_KEY, this.listShown ? "shown" : "folded");
+    } catch {
+      /* a convenience only */
+    }
+    this.render(true);
+  }
+
   private title(j: Job): string {
     const name = j.repo.split("/").pop() || j.repo || j.input;
     return `${name} · ${j.pr ? `PR #${j.pr}` : j.branch || j.input}`;
@@ -477,11 +504,15 @@ export class ReviewView {
   }
 
   private drawMain(force: boolean): void {
+    // An open review gets the width: the list folds away unless the reader opened it.
+    const folded = this.hasOpen() && !this.listShown;
+    this.root.classList.toggle("folded", folded);
+    this.side.hidden = folded;
     const sel = this.selected;
     const job = sel?.startsWith("job:") ? this.jobs.find((j) => `job:${j.id}` === sel) : undefined;
     const other = sel?.startsWith("other:") ? this.others.find((o) => `other:${o.id}` === sel) : undefined;
 
-    const key = JSON.stringify([sel, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length]);
+    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length]);
     if (force || key !== this.drawn) {
       this.drawn = key;
       if (job) this.drawJob(job);
@@ -514,6 +545,11 @@ export class ReviewView {
    */
   private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: HTMLElement | null = null): void {
     const h = el("div", "r-mhead-row");
+    const shown = this.listShown;
+    const list = btn(shown ? "◂ Reviews" : "Reviews ▸", () => this.toggleList(), "r-btn quiet r-list-btn");
+    list.setAttribute("aria-expanded", String(shown));
+    list.title = shown ? "Hide the review list" : "Show the review list";
+    h.append(list);
     const n = el("h2", "r-name", name);
     n.title = meta;
     h.append(n);
@@ -582,7 +618,9 @@ export class ReviewView {
     const running = RUNNING.has(j.status);
     // A finished review shows the gate's verdict, the word the page uses.
     const state = j.busy ? "running" : running ? "running" : j.status === "ready" ? verdict(j.open) : j.status;
-    const chip = el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
+    // Framed, the page's gate pill carries the verdict: no second one here.
+    const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;
+    const chip = state === "blocked" || state === "pass" ? (framed ? null : el("span", `r-chip ${state}`, state)) : el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
     const meta = `${j.depth} · ${j.model || "default model"}${j.base ? ` · against ${j.base}` : ""}`;
     let more: HTMLElement | null = null;
     if (!running && !j.busy) {
@@ -669,6 +707,11 @@ export class ReviewView {
   private showFrame(rid: string, title: string): void {
     const down = (why: string) => {
       if (this.framed !== rid) return;
+      // No gate pill to read: the header shows the verdict again.
+      if (this.frameDown !== rid) {
+        this.frameDown = rid;
+        this.render(true);
+      }
       // Plain words on the page; what went wrong goes in the tooltip and console.
       console.warn(`lookout: review ${rid} not framed: intent server down (${why})`);
       const p = el("p", "r-detail bad", "This review isn't available right now. ");
@@ -679,6 +722,10 @@ export class ReviewView {
     invoke<IntentServer>("intent_server").then((s) => {
       if (!s.up || !s.origin) return down(s.reason ?? "no answer");
       if (this.framed !== rid) return;
+      if (this.frameDown === rid) {
+        this.frameDown = "";
+        this.render(true);
+      }
       const f = el("iframe");
       // embed=app: the page leaves the title to this tab's header.
       f.src = `${s.origin}/review/${encodeURIComponent(rid)}?embed=app`;
