@@ -6,7 +6,6 @@ import { Wake } from "./wake";
 import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
-import { dotsMenu } from "./tuck";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -84,8 +83,8 @@ class Chat {
    *  this row's jump, so there is one way to cmux, not two. */
   adopt(tools: HTMLElement[]): void {
     this.extra = tools;
-    // VS Code and the pane's cmux jump move into the sheet's "Open in" menu.
-    this.icons = [];
+    // VS Code stays; the pane's cmux jump gives way to the sheet's one cmux icon.
+    this.icons = this.icons.filter((x) => !x.classList.contains("sheet-chat-jump"));
     if (!this.bar.hidden && this.shown) this.drawSessions(this.shown);
   }
 
@@ -185,9 +184,10 @@ class Chat {
     // Its worktree in VS Code, beside Jump.
     const code = document.createElement("button");
     code.type = "button";
-    code.className = "sheet-btn sheet-chat-code";
+    code.className = "sheet-btn icon sheet-chat-code";
     code.title = "Open this worktree in VS Code";
-    code.append(mark("M3.5 2.5 1 5l2.5 2.5M6.5 2.5 9 5 6.5 7.5"), document.createTextNode("VS Code"));
+    code.setAttribute("aria-label", code.title);
+    code.append(mark("M3.5 2.5 1 5l2.5 2.5M6.5 2.5 9 5 6.5 7.5"));
     code.addEventListener("click", () => void openInVSCode(this.shown?.cwd ?? "", (m) => (this.note.textContent = m)));
     // No header of its own: the pane tab says the state, the sheet the workspace.
     this.icons = [code, jump];
@@ -419,10 +419,10 @@ class Chat {
     // A native session (a real terminal here, in tmux) can always be started.
     const fresh = document.createElement("button");
     fresh.type = "button";
-    fresh.className = "sheet-btn sheet-chat-new";
+    fresh.className = "sheet-btn icon sheet-chat-new";
     fresh.title = "New native session: Claude in local tmux, a real terminal here and a pane in cmux";
     fresh.setAttribute("aria-label", fresh.title);
-    fresh.append(mark("M5 2v6M2 5h6"), document.createTextNode("Session"));
+    fresh.append(mark("M5 2v6M2 5h6"));
     fresh.addEventListener("click", () => void this.native(t));
     // A start takes seconds: one at a time.
     fresh.disabled = this.starting;
@@ -663,8 +663,9 @@ export class Sheet {
     this.wakeBtn.type = "button";
     this.wakeBtn.className = "sheet-btn sheet-wake-btn";
     this.wakeBtn.title = "Show or hide the side column beside the terminal (⌘E)";
-    // "Show": it opens the Wake beside the terminal; the Wake tab is the whole view.
-    this.wakeBtn.textContent = "Show Wake ⌘E";
+    // An icon (a column beside a pane): what it shows or hides is in its tooltip.
+    this.wakeBtn.classList.add("icon");
+    this.wakeBtn.append(mark("M1.5 2h7v6h-7zM5.5 2v6"));
     this.wakeBtn.hidden = true;
     this.wakeBtn.addEventListener("click", () => this.toggleSide());
     head.append(this.titleEl, this.say, this.wakeBtn, cmux, close);
@@ -672,16 +673,17 @@ export class Sheet {
     // row, and its cmux button opens the page when one is up, else the pane.
     if (embedded) {
       head.hidden = true;
-      // One menu for leaving the app: VS Code, and cmux (the page beside its
-      // terminal, or this pane). cmux's item hides on the tmux backend.
-      const open = dotsMenu("Open this workspace in", [
-        { label: "VS Code", title: "Open this worktree in VS Code", run: () => this.chat.openCode() },
-        { label: "cmux", title: "The page beside its terminal, or this pane", run: () => void this.toCmux() },
-      ]);
-      for (const b of open.querySelectorAll<HTMLElement>("[role=menuitem]")) if (b.textContent?.startsWith("cmux")) b.classList.add("cmux-only");
-      open.classList.add("sheet-open-in");
-      open.querySelector(".tuck-btn")?.setAttribute("title", "Open in VS Code or cmux");
-      this.chat.adopt([this.say, this.wakeBtn, open]);
+      // Icons, not words, so the row stays short: VS Code (the chat's own),
+      // the side column (⌘E), and one way to cmux (the page beside its
+      // terminal, or this pane; hidden on the tmux backend).
+      const toCmux = document.createElement("button");
+      toCmux.type = "button";
+      toCmux.className = "sheet-btn icon cmux-only";
+      toCmux.title = "Open in cmux: the page beside its terminal, or this pane";
+      toCmux.setAttribute("aria-label", toCmux.title);
+      toCmux.append(mark("M3 7 7 3M4 3h3v3"));
+      toCmux.addEventListener("click", () => void this.toCmux());
+      this.chat.adopt([this.say, this.wakeBtn, toCmux]);
     }
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
@@ -1076,7 +1078,9 @@ export class Sheet {
     // One button, always there in the Dock: it says what it brings back, or hides.
     const t = this.tabs.find((x) => x.key === this.active);
     const what = this.active === WAKE || !t ? "Wake" : t.kind === "page" ? "page" : t.kind;
-    this.wakeBtn.textContent = folded ? `Show ${what} ⌘E` : "Hide side ⌘E";
+    this.wakeBtn.title = folded ? `Show the ${what} beside the terminal (⌘E)` : "Hide the side column (⌘E)";
+    this.wakeBtn.setAttribute("aria-label", this.wakeBtn.title);
+    this.wakeBtn.classList.toggle("on", !folded);
     this.wakeBtn.hidden = !this.embedded || !this.body.classList.contains("with-chat");
   }
 
