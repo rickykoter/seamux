@@ -616,6 +616,9 @@ export class Sheet {
   /** The Dock's Wake beside the terminal: shown, or folded away (wakeOpenPref). */
   private wakeOpen = wakeOpenPref();
   private wakeBtn = document.createElement("button");
+  /** The Dock's side column hidden by hand while a page is up (the Wake's
+   *  own open state is wakeOpen). Cleared by a new page or another workspace. */
+  private pageHidden = false;
   private pages: NowPage[] = [];
   /** Every page seen so far, as ws + path: a page not in it just opened. */
   private seen = new Set<string>();
@@ -659,11 +662,11 @@ export class Sheet {
     // The Dock folds the Wake away until asked: this brings it back.
     this.wakeBtn.type = "button";
     this.wakeBtn.className = "sheet-btn sheet-wake-btn";
-    this.wakeBtn.title = "Show what this workspace left behind beside the terminal (⌘E)";
+    this.wakeBtn.title = "Show or hide the side column beside the terminal (⌘E)";
     // "Show": it opens the Wake beside the terminal; the Wake tab is the whole view.
     this.wakeBtn.textContent = "Show Wake ⌘E";
     this.wakeBtn.hidden = true;
-    this.wakeBtn.addEventListener("click", () => this.setWakeOpen(true));
+    this.wakeBtn.addEventListener("click", () => this.toggleSide());
     head.append(this.titleEl, this.say, this.wakeBtn, cmux, close);
     // The Dock: no header row of its own. Its tools join the terminal's tab
     // row, and its cmux button opens the page when one is up, else the pane.
@@ -796,7 +799,9 @@ export class Sheet {
     // shell.rs's keys: they work with focus in a framed page too.
     await listen<string>("sheet:key", (e) => {
       if (!this.keysHere()) return;
-      if (e.payload === "wake") this.toggleWake();
+      // The Dock: ⌘E shows or hides the side column, whatever it holds. The
+      // overlay sheet: ⌘E goes to the Wake and back.
+      if (e.payload === "wake") this.embedded ? this.toggleSide() : this.toggleWake();
       else if (e.payload === "next" || e.payload === "prev") this.step(e.payload === "next" ? 1 : -1);
     });
     // 1–9 pick a page tab while focus is in the shell (a framed page keeps its own keys).
@@ -941,7 +946,11 @@ export class Sheet {
     const ws = this.workspace();
     const mine = fresh.filter((p) => p.ws === ws && this.tabs.some((t) => t.key === p.path));
     const p = mine.find((x) => x.kind === "plan") ?? mine.find((x) => x.waiting) ?? mine[0];
-    if (p) this.select(p.path);
+    if (p) {
+      // A new page wants to be seen, even if the side column was hidden.
+      this.pageHidden = false;
+      this.select(p.path);
+    }
   }
 
   /** A new place starts on a page, not blank: its plan, else what waits on you, else the Wake. */
@@ -964,6 +973,7 @@ export class Sheet {
     this.active = "";
     this.back = "";
     this.picked = "";
+    this.pageHidden = false;
   }
 
   /** The tabs: the Wake, this workspace's open pages, then the rest opened here. */
@@ -996,7 +1006,8 @@ export class Sheet {
         b.setAttribute("role", "tab");
         b.setAttribute("aria-selected", String(t.key === this.active));
         const key = document.createElement("kbd");
-        key.textContent = t.key === WAKE ? "⌘E" : ++n <= 9 ? String(n) : "";
+        // In the Dock ⌘E shows or hides the column, so the Wake tab carries no key there.
+        key.textContent = t.key === WAKE ? (this.embedded ? "" : "⌘E") : ++n <= 9 ? String(n) : "";
         b.append(key);
         if (t.key !== WAKE) {
           const kind = document.createElement("span");
@@ -1029,20 +1040,13 @@ export class Sheet {
     this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
 
-  /** ⌘E: the Wake, or back to the tab before it. In the Dock, with no page
-   *  to go back to, it folds the Wake away (and opens it when folded). */
+  /** ⌘E in the overlay sheet: the Wake, or back to the tab before it. (The
+   *  Dock's ⌘E is toggleSide.) */
   private toggleWake(): void {
-    if (this.embedded && this.active === WAKE && (!this.wakeOpen || !this.tabs.some((t) => t.key !== WAKE))) {
-      this.setWakeOpen(!this.wakeOpen);
-      return;
-    }
     if (this.active === WAKE) {
       const back = this.tabs.find((t) => t.key === this.back) ?? this.tabs.find((t) => t.key !== WAKE);
       if (back) this.select(back.key);
-    } else {
-      if (this.embedded && !this.wakeOpen) this.setWakeOpen(true);
-      this.select(WAKE);
-    }
+    } else this.select(WAKE);
   }
 
   private setWakeOpen(on: boolean): void {
@@ -1055,14 +1059,33 @@ export class Sheet {
     this.fold();
   }
 
-  /** The Dock's page column folds away while it would show only the Wake and
-   *  the Wake is closed: the terminal takes the width. A page (a plan, a
-   *  review, an ask) always shows. */
+  /** The Dock's side column folds away and the terminal takes the width:
+   *  the Wake while it is closed (the remembered choice), a page (a plan, a
+   *  review, an ask) while it is hidden by hand. */
+  private isFolded(): boolean {
+    // With no terminal to widen (a workspace before its first pane), the column stays.
+    if (!this.embedded || !this.body.classList.contains("with-chat")) return false;
+    return this.active === WAKE ? !this.wakeOpen : this.pageHidden;
+  }
+
   private fold(): void {
-    // With no terminal to widen (a workspace before its first pane), the Wake stays.
-    const folded = this.embedded && this.active === WAKE && !this.wakeOpen && this.body.classList.contains("with-chat");
+    const folded = this.isFolded();
     this.body.classList.toggle("page-folded", folded);
-    this.wakeBtn.hidden = !folded;
+    // One button, always there in the Dock: it says what it brings back, or hides.
+    const t = this.tabs.find((x) => x.key === this.active);
+    const what = this.active === WAKE || !t ? "Wake" : t.kind === "page" ? "page" : t.kind;
+    this.wakeBtn.textContent = folded ? `Show ${what} ⌘E` : "Hide side ⌘E";
+    this.wakeBtn.hidden = !this.embedded || !this.body.classList.contains("with-chat");
+  }
+
+  /** ⌘E in the Dock: the side column away, or back, whatever it holds. */
+  private toggleSide(): void {
+    const show = this.isFolded();
+    if (this.active === WAKE) this.setWakeOpen(show);
+    else {
+      this.pageHidden = !show;
+      this.fold();
+    }
   }
 
   private step(by: number): void {
