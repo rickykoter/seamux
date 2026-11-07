@@ -827,6 +827,14 @@ ok("mermaid theme follows the page theme",
     html.includes("logged-out visitor") && (html.match(/<pre class="mermaid">/g) || []).length === 2 &&
     html.includes("amounts redacted") && html.includes('class="dp-act dp-ask-pick" data-n="3" disabled'));
   ok("the id passes the intent server's slug pattern", /^[a-z0-9][a-z0-9._-]{0,120}$/.test(id || "!"));
+  // The header says when, in words the page works out from the reader's
+  // clock; the id stays out of view, in an attribute and the title.
+  const meta = (html.match(/<p class="dim dp-ask-meta"[^>]*>[\s\S]*?<\/p>/) || [""])[0];
+  ok("the ask header keeps its id out of view, in a data attribute and the title",
+    !!id && meta.includes(`data-ask="${id}"`) && meta.includes(`title="ask ${id}"`) && !meta.replace(/<[^>]+>/g, "").includes(id), meta);
+  ok("the ask header shows when it was asked, the ISO time only as datetime and a fallback",
+    meta.includes(`<time class="dp-ask-when" datetime="${ask.created}"`) && !meta.replace(/<[^>]+>/g, "").includes(ask.created) &&
+    /setInterval\(words, 30000\)/.test(html) && /" min ago"/.test(html), meta);
   ok("ask show reports unanswered", /unanswered/.test(cli("ask", "show", id || "x").stdout));
   // In a pane of the seamux app's tmux: the SEAMUX ids, not an inherited
   // CMUX one, and the pane's own tmux socket and pane for typing the answer.
@@ -1053,6 +1061,19 @@ ok("validate: a freshly rendered plan is clean",
   ok("validateDiagrams: a parse error survives as a real error", bad2.length === 1 && !!bad2[0].error);
 }
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+{
+  // One plain gate line: the state leads, the fix is a link, and the root
+  // and phase wait in a hover title behind the folder's name.
+  const gl = (working.match(/<h2>Gate<\/h2><p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
+  const where = (gl.match(/<span class="dim dp-gate-where" title="([^"]*)">· in ([^<]*)<\/span>/) || []);
+  ok("working: the gate line leads with its state and links to the quiz",
+    /data-allow="0"><svg[\s\S]*?<\/svg> <b>Gate shut<\/b>: the alignment check isn't taken yet\. <a href="[^"]+\.review\.html#s-alignment-check">Take it on the review page<\/a> <span class="dim dp-gate-where"/.test(gl), gl);
+  ok("working: the gate line shows the folder name; the full root and phase are in its title",
+    where[2] === path.basename(REPO) && path.isAbsolute(where[1].split("\n")[0]) &&
+      where[1].split("\n")[0].endsWith("/" + where[2]) && where[1].split("\n")[1] === "phase: review (waiting on the review)", JSON.stringify(where));
+  ok("working: no root path or phase word in the gate line's text",
+    !/<code>/.test(gl) && !/· phase/.test(gl) && !!where[1] && !gl.replace(/title="[^"]*"/g, "").includes(where[1].split("\n")[0]));
+}
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
 ok("working surface has the auto-refresh checkbox, with a short label for a narrow rail",
@@ -1082,10 +1103,23 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
   // A check that has not passed folds its recipe and run lines under its
   // status line; a passed one has none to fold.
   const w2 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
-  const pend = w2.split("<li").map(x => x.split("</li>")[0]).filter(x => / pending · \[/.test(x));
+  const pend = w2.split("<li").map(x => x.split("</li>")[0]).filter(x => x.includes('title="check ') && x.includes('stroke="var(--faint)"'));
   ok("working surface: an outstanding check's recipe and run fold into <details>",
     pend.length > 0 && pend.every(li => !/<br>(recipe|run —) /.test(li)) && pend.some(li => li.includes('<details class="dp-run"><summary>how it runs</summary>')),
     pend.slice(0, 1).join(""));
+  // Said once: the card's pill says pending; a check not yet run carries its
+  // glyph, its name and its kind in words, and its id only in the title and
+  // the fold.
+  const lead = li => li.replace(/<details[\s\S]*$/, "");
+  ok("working surface: a check not yet run shows no state word and no id beside its name",
+    pend.every(li => !/pending/.test(lead(li).replace(/<[^>]+>/g, "")) && !/<code>/.test(lead(li)) && !/\[(test|manual)/.test(li)),
+    pend.slice(0, 1).join(""));
+  ok("working surface: the check id sits in the title and closes the fold",
+    pend.some(li => /^ title="check ([^"]+)"[\s\S]*<br>check id <code>\1<\/code><\/details>/.test(li)), pend.slice(0, 1).join(""));
+  ok("working surface: kinds read as words",
+    /<span class="dp-kind">· test<\/span>/.test(w2) && /<span class="dp-kind">· check by hand<\/span>/.test(w2));
+  ok("working surface: no summary line while every check of an increment stands the same",
+    !w2.includes("dp-checks-sum") && !/<p class="dim">checks: <svg/.test(w2));
   // ...but what a person must do stays in view: an acquire step is never folded.
   // (the example has no acquire step, so the fold's own pattern is what is held)
   const HOW = (fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8").match(/const CHECK_HOW = (\/.*\/);/) || [])[1] || "";
@@ -1093,11 +1127,14 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
     /recipe /.test(HOW) && /run — /.test(HOW) && !/acquire|claim|expect|note|brief/.test(HOW), HOW);
   // The review page folds the same way: one line per check, the run detail
   // under the same "how it runs".
-  const rvChecks = review.split("<li").map(x => x.split("</li>")[0]).filter(x => /^><b>\[/.test(x));
+  const rvChecks = review.split("<li").map(x => x.split("</li>")[0]).filter(x => /^ title="check [^"]+"><b>/.test(x));
   ok("review surface: a check's run lines fold under how it runs",
     rvChecks.length > 0 && rvChecks.every(li => !/<br>(recipe |run — |run: )/.test(li)) &&
     rvChecks.some(li => li.includes('<details class="dp-run"><summary>how it runs</summary>run: ')),
     rvChecks.slice(0, 1).join(""));
+  ok("review surface: a check reads as its name and kind, the id only in its title and fold",
+    rvChecks.every(li => !/<code>/.test(li.replace(/<details[\s\S]*$/, "")) && !/\[(test|manual|e2e)/.test(li)) &&
+    rvChecks.some(li => /<span class="dp-kind">· test<\/span>/.test(li)), rvChecks.slice(0, 1).join(""));
   // A slim bar at the foot of the review page: the quiz count and the same
   // copy button, which clicks the real one rather than building its own blob.
   ok("review surface: a sticky foot counts quiz answers and copies through #dp-copyback",
@@ -1381,7 +1418,14 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
 }
 
 // -------------------------------------------------- go / working / done
+// The gate as one line: its state in bold, why, and the way on.
+const gateLine = () => (fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
+  .match(/<p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
+ok("working: between increments the gate line points at the next go",
+  /<b>Gate shut<\/b>: no increment has its go yet\. Next: <a href="#inc-1">go on increment 1<\/a> <span/.test(gateLine()), gateLine());
 ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0);
+ok("working: with an increment open the gate line says which",
+  /data-allow="1"[\s\S]*<b>Gate open<\/b>: increment 1 has its go <span/.test(gateLine()), gateLine());
 const HEAD0 = execSync("git rev-parse HEAD", { cwd: REPO, encoding: "utf8" }).trim();
 let st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
 ok("go records HEAD as the increment's start sha", st.increments[0].startSha === HEAD0);
@@ -2056,6 +2100,18 @@ if (want("checks: one model, every kind")) {
     stOf("chk-1").log.some(l => /test-unit-suite \(recipe-backed, passed by hand with --force\)/.test(l.what)));
 
   ok("a manual check takes a hand pass", cli("check", "pass", "chk-1", "1", "log", "3 rows requeued").status === 0);
+  // Status said once: the pill, then a summary line only while the checks
+  // disagree, and a check's state word only once it has a result.
+  {
+    const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "chk-1.working.html"), "utf8");
+    const inc1 = wk.split('<div class="inc" id="inc-1"')[1].split('<div class="inc" id="inc-2"')[0];
+    const lis = inc1.split("<li").slice(1).map(x => x.split("</li>")[0]).filter(x => x.includes('title="check '));
+    const words = lis.map(li => li.replace(/^[^>]*>/, "").replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<details[\s\S]*$/, "").replace(/<[^>]+>/g, ""));
+    ok("working: mixed checks get one summary line, in counts",
+      /<p class="dim dp-checks-sum">checks: <svg[\s\S]*?<\/svg> 2 of 3 passed<\/p>/.test(inc1), inc1.slice(0, 400));
+    ok("working: a passed check says pass, a check not yet run shows its glyph alone",
+      words.filter(w => /^ pass · /.test(w)).length === 2 && words.filter(w => !/pending|pass ·/.test(w)).length === 1, JSON.stringify(words));
+  }
   const tree = stOf("chk-1").increments[0].checks.log.tree;
   ok("a pass records the tree it was seen against",
     tree && /^[0-9a-f]{40}$/.test(tree.head) && /^[0-9a-f]{40}$/.test(tree.content));
@@ -2086,6 +2142,8 @@ if (want("checks: one model, every kind")) {
   cli("reset", "chk-1", "1");
   ok("reset returns every check to pending",
     Object.values(stOf("chk-1").increments[0].checks).every(v => v.status === "pending" && !v.tree));
+  ok("working: checks that all stand the same get no summary line",
+    !fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "chk-1.working.html"), "utf8").split('<div class="inc" id="inc-2"')[0].includes("dp-checks-sum"));
   cli("go", "chk-1", "1");
   cli("check", "pass", "chk-1", "1", "log", "x"); cli("check", "fail", "chk-1", "1", "manual-bundle-exec-rspec-spec-outbox", "red");
   ok("check reset <id> resets only that check",
@@ -2708,7 +2766,7 @@ if (want("browser checks: a repo script through cmux's repl")) {
 
   const work = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-1.working.html"), "utf8");
   ok("the working page marks a browser check's row for the Dock, with its brief",
-    /<li class="dp-check" data-n="1" data-id="flow" data-status="pass" data-browser="1">/.test(work) &&
+    /<li class="dp-check" data-n="1" data-id="flow" data-status="pass" data-browser="1"[^>]*>/.test(work) &&
     /<span class="dp-brief">brief: the sign-in suite; extend a step per new screen<\/span>/.test(work));
   ok("…and leaves other checks' rows plain", !/data-id="review-code-review"/.test(work));
   r = bcli("check", "evidence", "br-1", "1", "flow", "--json");
@@ -2995,7 +3053,7 @@ if (want("claim steps: engine-run acquisition")) {
     cck("askonly").status === "pass" && /using-v2/.test(fs.readFileSync(cck("askonly").ran.log, "utf8")));
   // The detached runner records its verdict before it redraws the page, so a
   // read straight after `check wait` can still see "running" on a slow machine.
-  const askPicker = /<li class="dp-check" data-n="1" data-id="askonly" data-status="pass" data-asks="1">/;
+  const askPicker = /<li class="dp-check" data-n="1" data-id="askonly" data-status="pass" data-asks="1"[^>]*>/;
   ok("the working page marks a claim that asks for the Dock's picker",
     until(() => askPicker.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "cl-1.working.html"), "utf8")), 5000));
   cli("check", "reset", "cl-1", "1", "askonly");
@@ -3753,7 +3811,16 @@ if (want("decision first: summary card, default folds, work on top")) {
   const counts = sum.replace(/<[^>]+>/g, "");
   ok("review: the card counts decisions, contracts, risks still open and ADR drafts",
     counts.includes("2 decisions · 1 contract · 3 risks, 2 not decided · 1 ADR draft"), counts);
-  ok("review: the card leads to the quiz", sum.includes('id="dp-sum-go"') && sum.includes("Go to the quiz (3 questions)"));
+  // One quiz button: the foot bar's. The card's way there is a text link.
+  ok("review: the card links to the quiz in words, not with a second button",
+    /<a href="#s-alignment-check" id="dp-sum-go">3 questions to answer<\/a>/.test(sum) && !/<button/.test(sum.split("<script>")[0]));
+  ok("review: one quiz button on the page, the foot bar's",
+    (rv.match(/<button[^>]*>[^<]*quiz/gi) || []).length === 1 && /<button[^>]*id="dp-foot-go">Go to quiz</.test(rv));
+  ok("review: the bottom Copy for session reads as a link and still builds the blob the bar copies",
+    /<button id="dp-copyback" type="button">Copy for session<\/button>/.test(rv) &&
+    /#dp-copyback\{background:none;[^}]*text-decoration:underline/.test(rv) && rv.includes('var b = document.getElementById("dp-copyback");'));
+  ok("review: contracts read as words, the raw fields in the title",
+    /title="db-schema · internal · modify">changes an internal DB schema<\/span>/.test(rv) && !/\[db-schema/.test(rv));
   ok("review: the card holds no comment box or control the copy-back reads",
     !/dp-note|<input|<textarea|<select|data-section|data-qid/.test(sum));
   const pageOf = h => JSON.parse(h.match(/window\.DP_PAGE=(\{.*?\});<\/script>/)[1]);
