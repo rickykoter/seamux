@@ -194,7 +194,9 @@ export class MigrateBanner {
         this.list.hidden = true;
         return;
       }
-      if (!this.say.textContent || this.el.hidden) {
+      // Done means something moved this run (the tally), not that a message
+      // is left over: dismissing every offer with × moves nothing and hides.
+      if (!this.moved.size || this.el.hidden) {
         this.reset();
         this.el.hidden = true;
         return;
@@ -202,8 +204,7 @@ export class MigrateBanner {
       this.el.classList.add("done");
       this.line.textContent = "All done";
       // One line for the whole run, not the last one's: "5 restarted".
-      const parts = [...this.moved].map(([v, n]) => `${n} ${v}`);
-      if (parts.length && [...this.moved.values()].reduce((a, b) => a + b, 0) > 1) this.say.textContent = parts.join(" · ");
+      this.tell([...this.moved].map(([v, n]) => `${n} ${v}`).join(" · "));
       this.all.hidden = true;
       this.review.hidden = true;
       this.later.hidden = true;
