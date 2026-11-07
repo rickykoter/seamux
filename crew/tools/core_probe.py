@@ -6,13 +6,12 @@ corpus sweep, TTL derivation), families (grouping), pricing (--doctor,
 --args, --merge, --compare) and costs (--attribute, Python float printing),
 plus workspaces' list-json and dormant-days against fakecmux.
 
-Each case runs the implementation CREW_IMPL picks (crew_impl.argv) and checks
-what it printed. Under CREW_IMPL=rust it also runs the Python on the same
-input and checks the two printed the same bytes, so a Rust that differs only
-in spacing or float format fails here. No cmux, no network, throwaway HOME.
+Each case runs this branch's `seamux <tool>` and checks what it printed.
+Cases where spacing or float format is the point are held to golden files
+recorded from crew's retired Python (crew/tools/golden/), so a change that
+moves one byte fails here. No cmux, no network, throwaway HOME.
 
     python3 crew/tools/core_probe.py
-    CREW_IMPL=rust python3 crew/tools/core_probe.py
 """
 import datetime
 import json
@@ -25,6 +24,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 CREW = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402
 import golden  # noqa: E402  (beside this probe)
 
@@ -64,28 +64,19 @@ def env_for(h, **kw):
     return e
 
 
-def run(tool, args, env, stdin="", impl=True):
-    """The implementation CREW_IMPL picks (impl=True), or always the Python."""
-    path = PATHS[tool]
-    argv = crew_impl.argv(tool, path, sys.executable) if impl else [sys.executable, path]
+def run(tool, args, env, stdin=""):
+    """`seamux <tool>` with args, in env."""
+    argv = crew_impl.argv(tool, PATHS[tool], sys.executable)
     return subprocess.run(argv + list(args), input=stdin, capture_output=True, text=True,
-                          env=crew_impl.env(env) if impl else env, timeout=60)
+                          env=crew_impl.env(env), timeout=60)
 
 
-def both(tool, args, make_env, stdin="", norm=lambda s: s):
-    """Run the picked implementation; under rust also the Python, each with
-    its own fresh HOME from make_env. -> (result, same_as_python or None)."""
-    r = run(tool, args, make_env("impl"), stdin)
-    if not crew_impl.is_rust(tool):
-        LAST["py"] = r          # CREW_IMPL unset: the picked one is the Python
-        return r, None
-    p = run(tool, args, make_env("py"), stdin, impl=False)
-    LAST["py"] = p
-    return r, (norm(r.stdout), r.returncode) == (norm(p.stdout), p.returncode)
+def both(tool, args, make_env, stdin="", norm=None):
+    """One run in a fresh HOME from make_env -> (result, None). Named for the
+    parity runs it replaced; same() holds the result to its golden."""
+    return run(tool, args, make_env("impl"), stdin), None
 
 
-LAST = {}
-TOOL_OF = {'families.txt': 'families', 'families-flat.txt': 'families', 'pricing-merge.txt': 'pricing', 'pricing-compare.txt': 'pricing', 'pricing-compare-no-upstream.txt': 'pricing', 'costs-attribute.txt': 'costs', 'costs-attribute-17.txt': 'costs', 'families-echo-17.txt': 'families'}
 
 
 def as_text(r):
@@ -93,13 +84,10 @@ def as_text(r):
 
 
 def same(name, eq, r, gold=None):
-    if eq is not None:
-        check(name + " — Rust prints the Python's bytes", eq, r.stdout[-400:])
+    """Hold r to its golden; a case without one is checked where it runs."""
     if gold:
-        # Recorded from the Python (CREW_GOLDEN=write); outlives the parity check.
-        okp, want = golden.expect("core/" + gold, as_text(LAST["py"]), {T: "<T>"})
-        okr = golden.same("core/" + gold, as_text(r), {T: "<T>"})[0] if crew_impl.is_rust(TOOL_OF[gold]) else True
-        check(name + " — matches its golden", okp and okr, want[-300:])
+        ok, want = golden.expect("core/" + gold, as_text(r), {T: "<T>"})
+        check(name + " — matches its golden", ok, want[-300:])
 
 
 def iso(t):
@@ -168,9 +156,6 @@ check("--stop says so on a fresh break", msg == "cache broke last turn [lbl]: ~3
       r1.stdout + r1.stderr)
 check("…writes the facts file", os.path.isfile(os.path.join(h, ".cache", "cmux-crew", "cache-facts", "s2.json")))
 check("…and is quiet the second time", r2.stdout == "" and r2.returncode == 0, r2.stdout)
-if crew_impl.is_rust("cachefacts"):
-    p1 = run("cachefacts", ["--stop", TX, "s2", "lbl"], env_for(home("stop-py"), CREW_BILLING="usage"), impl=False)
-    check("--stop — Rust prints the Python's bytes", p1.stdout == r1.stdout, p1.stdout + "|" + r1.stdout)
 
 r, eq = both("cachefacts", ["--scan", os.path.join(T, "projects")], lambda t: env_for(home(t), CREW_BILLING="usage"))
 check("--scan tallies the corpus", r.stdout.startswith("1 transcripts, 4 breaks, 0.1M tokens re-cached"), r.stdout)
@@ -237,12 +222,12 @@ ea = pricing_env("args")
 r = run("pricing", ["--args"], ea)
 a = json.loads(r.stdout or "[]")
 check("--args names a generated config", a[:1] == ["--config"] and os.path.isfile(a[1] if len(a) > 1 else ""), r.stdout)
-if crew_impl.is_rust("pricing") and len(a) > 1:
-    gen = open(a[1]).read()
-    os.remove(a[1])
-    p = run("pricing", ["--args"], ea, impl=False)
-    check("--args — the Python names the same file for the same overrides (one hash, one format)",
-          p.stdout == r.stdout and open(json.loads(p.stdout)[1]).read() == gen, p.stdout + "|" + r.stdout)
+if len(a) > 1:
+    # The file's name hashes the overrides, so a config already on disk
+    # keeps its name: the golden holds both the name and the bytes.
+    ok, want = golden.expect("core/pricing-args.txt", r.stdout + "-- config\n" + open(a[1]).read(),
+                             {ea["HOME"]: "<HOME>", T: "<T>"})
+    check("--args — names the config and writes it as its golden does", ok, want[-300:])
 cfg = json.load(open(a[1])) if len(a) > 1 else {}
 check("…crew's fields over the user's, which survive underneath",
       cfg.get("other") == 1 and cfg["defaults"]["pricingOverrides"]["claude-test-9-9"] ==
@@ -314,6 +299,5 @@ same("dormant-days", eq, r)
 r = run("workspaces", ["list-json"], env_for(home("dead"), CREW_CMUX="/usr/bin/false"))
 check("list-json exits 1 when cmux is silent", r.returncode == 1 and r.stdout == "")
 
-print(f"\ncore probe: {sum(results)} passed, {len(results) - sum(results)} failed"
-      + (" (CREW_IMPL=%s)" % os.environ["CREW_IMPL"] if os.environ.get("CREW_IMPL") else ""))
+print(f"\ncore probe: {sum(results)} passed, {len(results) - sum(results)} failed")
 sys.exit(0 if all(results) else 1)

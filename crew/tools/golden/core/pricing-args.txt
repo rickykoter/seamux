@@ -1,0 +1,17 @@
+["--config", "<HOME>/.cache/cmux-crew/ccusage/config-aed4cac4d4ed5ef6.json"]
+-- config
+{
+ "defaults": {
+  "pricingOverrides": {
+   "claude-gap-1": {
+    "inputCostPerToken": 1e-06
+   },
+   "claude-test-9-9": {
+    "cacheReadInputTokenCost": 3e-07,
+    "inputCostPerToken": 3e-06,
+    "outputCostPerToken": 1.5e-05
+   }
+  }
+ },
+ "other": 1
+}

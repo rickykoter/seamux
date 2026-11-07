@@ -11,10 +11,9 @@ first, and that a tab left in the Dock by an older crew is closed.
 
     python3 crew/tools/wake_split_probe.py
 
-Black-box: the server is driven through `crew-board-intent --wake-tab`, and
-what it did is read back from fakecmux's log, its pane tree and the keep files
-in the state directory. Nothing is imported, so the same probe runs against
-the Python server and the Rust one.
+Black-box: `seamux crew-board-intent --wake-tab` drives the server, and what
+it did is read back from fakecmux's log, its pane tree and the keep files in
+the state directory.
 """
 import json
 import os
@@ -27,6 +26,7 @@ ROOT = os.path.dirname(HERE)
 FAKE = os.path.join(HERE, "fakecmux.py")
 tmp = tempfile.mkdtemp(prefix="wake-split-")
 sys.path.insert(0, HERE)
+os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402  (beside this probe)
 # The seamux app's tmux panes set these for the session running the probe.
 for k in ("SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"):
@@ -38,21 +38,19 @@ os.environ["SEAMUX_BACKEND"] = "cmux"
 ENV = crew_impl.env(dict(os.environ, HOME=tmp, FAKE_CMUX_DIR=tmp, CREW_CMUX=FAKE))
 STATE_DIR = os.path.join(tmp, ".cache", "cmux-crew")
 WAKE_TAB, WAKE_VIEW = "wake", "wake-view"
-# The Rust server opens the Wake in the workspace's companion pane (crew-board
-# companion.rs), sized to 40% so the chat keeps the rest; the Python server it
-# replaced widened its own split to 80%.
-RUST = crew_impl.is_rust("crew-board-intent")
-WAKE_SHARE = 0.4 if RUST else 0.8
+# The server opens the Wake in the workspace's companion pane (crew-board
+# companion.rs), sized to 40% so the chat keeps the rest.
+WAKE_SHARE = 0.4
 
 
 def at_share(w):
-    """The companion lands on its share; the old split reached at least its."""
-    return abs(w - WAKE_SHARE) <= 0.04 if RUST else w >= WAKE_SHARE - 0.01
+    """The companion lands on its share."""
+    return abs(w - WAKE_SHARE) <= 0.04
 
 
 def tool(name):
     """The argv that runs one board tool: the one place a probe names it,
-    through the CREW_IMPL helper (`seamux <name>` once the Rust registers it)."""
+    through the CREW_IMPL helper, as `seamux <name>`."""
     return crew_impl.argv(name, os.path.join(ROOT, "board", name))
 
 
@@ -162,14 +160,13 @@ checks.append(("...focuses it, and widens it back (%.2f -> %.2f)" % (narrow, wak
 
 # Widened by hand past its share, then clicked again: the Rust companion
 # leaves it as wide as the person made it (only a squeezed one is widened).
-if RUST:
-    st = state()
-    st["trees"][WS1]["ratio"] = 0.3
-    json.dump(st, open(PANES, "w"))
-    wide = wake_width(sid)
-    ok, detail = wake_tab(WAKE_TAB, URL + "z")
-    checks.append(("a companion widened by hand stays that wide (%.2f -> %.2f)" % (wide, wake_width(sid)),
-                   ok and wide > WAKE_SHARE + 0.05 and abs(wake_width(sid) - wide) < 0.01))
+st = state()
+st["trees"][WS1]["ratio"] = 0.3
+json.dump(st, open(PANES, "w"))
+wide = wake_width(sid)
+ok, detail = wake_tab(WAKE_TAB, URL + "z")
+checks.append(("a companion widened by hand stays that wide (%.2f -> %.2f)" % (wide, wake_width(sid)),
+               ok and wide > WAKE_SHARE + 0.05 and abs(wake_width(sid) - wide) < 0.01))
 
 # What the Wake opens goes into its group, as a tab in the same pane.
 open(LOG, "w").close()

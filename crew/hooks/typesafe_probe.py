@@ -18,11 +18,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TYPESAFE = os.path.join(HERE, "typesafe.py")
-ASKED = os.path.join(HERE, "asked.py")
+# The tools, as this branch's `seamux typesafe` and `seamux asked`.
+TYPESAFE, ASKED = "typesafe", "asked"
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
-import crew_impl  # noqa: E402  CREW_IMPL picks the Python or `seamux <tool>`
-TOOL = {TYPESAFE: "typesafe", ASKED: "asked"}
+os.environ["CREW_IMPL"] = "rust-strict"  # never crew's Python
+import crew_impl  # noqa: E402
 
 SCRIPT = []          # (status, dict-body) pairs, consumed per request
 REQUESTS = []        # every body the mock ever received
@@ -70,7 +70,7 @@ def ok(name, cond):
 
 
 def run(argv, env, stdin=""):
-    head = crew_impl.argv(TOOL[argv[0]], argv[0], sys.executable)
+    head = crew_impl.argv(argv[0], os.path.join(HERE, argv[0] + ".py"), sys.executable)
     return subprocess.run(head + list(argv[1:]), input=stdin, env=crew_impl.env(env),
                           capture_output=True, text=True, timeout=30)
 
@@ -94,7 +94,7 @@ def main():
         json.dump({"typesafe": {"enabled": False}}, fh)
     ok("available: enabled:false beats a key",
        run([TYPESAFE, "available"], keyed).returncode == 1)
-    ok("asked.py available agrees", run([ASKED, "available"], keyed).returncode == 1)
+    ok("asked available agrees", run([ASKED, "available"], keyed).returncode == 1)
     os.unlink(integ)
 
     # -------------------------------------------------- ask CLI, happy + retry
