@@ -73,9 +73,11 @@ The dial is an arc with no number in it (one that small could not be read); its
 tooltip says how far, "1 of 4 increments". A card that needs you says so on its
 badge, in the headline's words, and its reason opens its said line ("Question:",
 "Gate shut:") unless the line already says it; the other tiers keep their reason
-on the badge. A row a usage limit stopped wears one pill, "limit · back 2:04pm",
-in place of its badge. Framed by the app, the ⋯ menu sits over the badge on hover
-and takes no room from the name.
+on the badge. A row a usage limit stopped wears one pill, "limit · back 2:04 PM",
+in place of its badge. Every time on the board is in that one format: "2:04 PM"
+today, "Sat 1:31 AM" within the week. Framed by the app, the ⋯ menu comes after
+the badge on hover, never over it, so the badge and the pill read in full; the
+name gives it the room by its ellipsis.
 
 The **button row** is everything you can do. The first chip is the verb that
 resolves the row (the collector orders them that way), and on the tiers that ask
@@ -86,9 +88,11 @@ sandbox) follow as ghosts in their own colour. Every button is at least 28px tal
 
 The **footer** is what you recognise the row by: branch, the dirty dot, PR, issue,
 status signals (`✓ approved`, `draft`, `⚠ conflicts`), progress and spend, in one
-mono line that wraps. Branch, PR and issue are links, at least 24px tall. A footer
-with only hover facts on it (branch, progress, spend) is not in the flow: on hover
-it hangs under the card as a strip over the rows below, so nothing moves.
+mono line that wraps. Branch, PR and issue are links, at least 24px tall. The footer
+shows only on an open card, the expanded view, and shows all of it at rest, in the
+card's flow: nothing waits for hover, so hovering moves no row and covers none. A
+folded card shows no footer; its header's tooltip carries the branch, progress and
+spend instead.
 
 A **quiet row** is one line: the name, then its `diff` / `pr` chips as
 ghost buttons, or, with none, its badge (and no badge when it has none). Its

@@ -244,7 +244,7 @@ checks.push(["branch and PR are no longer buried in meta",
 // Actionable signals are buttons in the button row; status signals are text in
 // the footer. Both wear the collector's colour, lifted until it reads on a card.
 const fChips = (f.match(/<div class="chips">.*?<\/div>/) || [""])[0];
-const fFoot = (f.match(/<div class="foot">.*?<\/div>/) || [""])[0];
+const fFoot = (f.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
 checks.push(["an actionable signal is a button, a status signal is footer text",
   /class="chip sig" style="color:#[0-9a-f]{6}" data-a="checks"/.test(fChips) &&
   /class="sig" style="color:#[0-9a-f]{6}"[^>]*>draft</.test(fFoot) &&
@@ -281,6 +281,21 @@ checks.push(["fold: waiting and broken cards start unfolded; working and done st
 checks.push(["fold: the header jumps, the caret folds, and the body is what folds away",
   /data-id="running"[^>]*><div class="top jumps" data-a="jump" title="running · Switch to this workspace"><button type="button" class="caret" data-a="fold"[^>]*><\/button>[^]*?<span class="badge">b<\/span><\/div><div class="fold"><p class="said">/.test(fo) &&
   !fo.includes('class="jmp"')]);
+// A folded card shows no footer, so its header's tooltip carries the footer's
+// facts (branch, progress, spend); the footer itself is inside .fold, in the
+// card's flow, never hung over the next row.
+{
+  render({ rows: [{ id: "hf", name: "hf", kind: "running", badge: "b", said: "s", chips: ["jump"], frac: null,
+    meta: "2/4 increments", branch: "dev/hover-facts", cost: 3.5, ref: "workspace:9" },
+  { id: "hn", name: "hn", kind: "running", badge: "b", said: "s", chips: [], frac: null, meta: "1/2 increments", branch: "dev/no-ref" }], quiet: "" });
+  const hh = els.rows.innerHTML;
+  checks.push(["fold: a card's header tooltip names its branch, progress and spend, on a line after the name and the jump",
+    hh.includes('<div class="top jumps" data-a="jump" title="hf \u00b7 Switch to this workspace\ndev/hover-facts \u00b7 2/4 increments \u00b7 $3.50 today">') &&
+    hh.includes('<div class="top" data-a="fold" title="hn\ndev/no-ref \u00b7 1/2 increments">'), hh.slice(0, 700)]);
+  checks.push(["fold: the footer is inside the folding body, in the card's flow, after its said line, with no hover-only class",
+    /data-id="hf"[^]*?<div class="fold"><p class="said">[^]*?<div class="foot one">[^]*?<span class="branch"[^]*?<\/div><\/div><\/div>/.test(hh) &&
+    !/foot hov/.test(hh)]);
+}
 // No arrow at the header's end: the header is the jump, and its hover ground says so.
 checks.push(["fold: no arrow on the header; its hover lifts its ground instead",
   !/class="go"/.test(fo)]);
@@ -461,7 +476,7 @@ const qo = els.rows.innerHTML;
 checks.push(["a quiet row is one line: no dial, said, or footer until unfolded",
   !/class="(dial|said|feed)/.test(qo) && (qo.match(/class="top jumps"/g) || []).length === 2 &&
   !/<div class="chips">/.test(qo) && !/ open"/.test(qo) &&
-  /class="row quiet owned fd"[^]*<div class="top jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"[^]*<div class="fold"><div class="foot"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
+  /class="row quiet owned fd"[^]*<div class="top jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"[^]*<div class="fold"><div class="foot( one)?"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
   !/class="cost|class="wk/.test((qo.match(/<div class="fold">[^]*?<\/div><\/div>/) || [""])[0]) &&
   /class="row quiet" data-id="q2"[^]*?<div class="top jumps" data-a="jump"/.test(qo) && !qo.split('data-id="q2"')[1].includes("fold")]);
 // Its chips stay, as ghosts on that line -- except jump, which the row itself
@@ -489,23 +504,15 @@ render({ rows: [
   const [w5, rest2] = rest.split('data-id="c6"');
   const [w6, rest3] = rest2.split('data-id="c7"');
   const [w7, w8] = rest3.split('data-id="c8"');
-  const icon = /<span class="wk" data-a="wake" title="Open the Wake[^"]*"><svg [^>]*aria-hidden="true">/;
-  checks.push(["wake: an icon with data-a=wake and a tooltip, never a text chip",
-    icon.test(w4) && !/>wake<\/span>/.test(h) && !/class="chip"[^>]*>wake</.test(h)]);
-  checks.push(["wake: an idle quiet row with only the Wake still says idle",
+  // No row draws the Wake: jump, then ⌘E opens it. The collector's "wake" chip
+  // is dropped, never shown as a text chip either.
+  checks.push(["wake: no row draws a Wake icon or a wake chip, though the collector lists one",
+    !h.includes('class="wk"') && !/>wake<\/span>/.test(h) && !/class="chip"[^>]*>wake</.test(h)]);
+  checks.push(["wake: an idle quiet row with only the Wake chip still says idle",
     w4.includes('class="badge">idle<')]);
-  checks.push(["wake: ...while a quiet row with pr lets its badge step aside, spend then the Wake last",
-    !w5.includes('class="badge"') && />pr<\/span>/.test(w5) &&
-    /class="cost[^"]*"[^>]*>\$2\.50<\/span><span class="wk"/.test(w5) && /<\/svg><\/span><\/div><\/div><div class="row [^"]*" $/.test(w5)]);
-  checks.push(["wake: a card's footer ends with the spend and then the Wake",
-    /<div class="foot">.*<span class="end"><span class="cost[^"]*"[^>]*>\$4\.12<\/span><span class="wk".*<\/svg><\/span><\/span><\/div>/.test(w6) &&
-    !/<div class="chips">[^]*wk/.test(w6.split('<div class="foot">')[0])]);
-  checks.push(["wake: a card with nothing else in its footer still gets one for the Wake, and no empty chip row",
-    /<div class="foot"><span class="end"><span class="wk"/.test(w7) && !w7.includes('class="chips"')]);
-  checks.push(["wake: the spend and the Wake wrap as one unit, held at the right end",
-    /\.foot>\.end\{[^}]*display:inline-flex[^}]*margin-left:auto/.test(css) &&
-    !/\.foot>\.end\{[^}]*flex-wrap:wrap/.test(css)]);
-  checks.push(["wake: a row the collector gave no wake has no icon", !w8.includes('class="wk"')]);
+  checks.push(["wake: a card's footer ends with the spend",
+    /<div class="foot( one)?">.*<span class="end"><span class="cost[^"]*"[^>]*>\$4\.12<\/span><\/span><\/div>/.test(w6)]);
+  void w5; void w7; void w8;
 }
 
 // A family card holds rows of other tiers, so a tier rule that reaches its
@@ -517,11 +524,10 @@ checks.push(["tier rules style a row's own head, never its children's",
 // No edge stripe at all. The worktree colour is a dot before the branch, in
 // the footer: beside the name it read as a second state dot.
 checks.push(["the worktree colour is a dot before the branch, never on the header, and not a stripe",
-  /<div class="foot"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
+  /<div class="foot( one)?"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
   !/<div class="top[^]*?class="own"[^]*?<\/div><div class="fold">/.test(q1head(qo)) &&
   !/inset\s+\d+px\s+0\s+0\s+0\s+var\(--own\)/.test(css) &&
-  /\.foot>\.own\{[^}]*background:var\(--own\)/.test(css) &&
-  /\.row:not\(:hover\):not\(:focus-within\) \.foot>:is\(\.own,/.test(css)]);
+  /\.foot>\.own\{[^}]*background:var\(--own\)/.test(css)]);
 // The header is the jump with no arrow: its ground lifts on hover.
 checks.push(["no arrow on any header, and no rule for one; the hover ground is the cue",
   !/\.go\b/.test(css) && /\.top\.jumps:hover\{background:/.test(css)]);
@@ -1662,7 +1668,7 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["intent: framed, a pane row asks the app to show its workspace with that pane up, not cmux",
     fetched.length === nf2 && !!ps && ps[0].ws === "WS-1" && ps[0].pane === "S-PANE-B" && ps[1] === APP, JSON.stringify(ps)]);
   // The armed chip's ×, and the ⋯ menu's Resume at reset: the app keeps resume.json.
-  const armedEl = mk("span", { class: "chip sig armed", "data-a": "resume", "data-x": "off" }, [], "resumes 3:04pm \u00d7");
+  const armedEl = mk("span", { class: "chip sig armed", "data-a": "resume", "data-x": "off" }, [], "resumes 3:04 PM \u00d7");
   const armItem = mk("span", { class: "tki", "data-a": "resume", "data-x": "on" }, [], "Resume at reset");
   row.children[1].appendChild(armedEl);
   row.children[1].appendChild(armItem);
@@ -2377,13 +2383,14 @@ if (crewImpl.isRust("crew-board")) {
     /^until \S/.test(why("brk") || "") && /^until \S/.test(why("zq") || "") && why("mg") === "merged and idle \u00b7 " &&
     why("tq") === "until you bring it back" && /class="why wakes"/.test(h) && !/badge wakes/.test(h) && why("q") === undefined,
     [why("brk"), why("mg"), why("tq")].join(" | ")]);
-  // Every shelf row has one shape: name, badge, why. A settled row's reclaim
+  // Every shelf row has one shape: name, why. No badge: "idle" or "merged"
+  // beside "merged and idle" said the state twice. A settled row's reclaim
   // is a link in its why, not a chip on the line.
   {
     const cutS = (id) => { const i = at('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
     const shape = (id) => cutS(id).split('<div class="fold">')[0].match(/class="(nm|badge|why|chip)\b/g).join(" ");
-    checks.push(["shelf: every row is one shape, name, badge, why; reclaim is a link in the settled row's why",
-      ["brk", "zq", "mg", "tq"].every((id) => shape(id) === 'class="nm class="badge class="why') &&
+    checks.push(["shelf: every row is one shape, name and why, with no badge; reclaim is a link in the settled row's why",
+      ["brk", "zq", "mg", "tq"].every((id) => shape(id) === 'class="nm class="why') &&
       /<span class="why">merged and idle \u00b7 <span class="rcl" data-a="reclaim" title="[^"]+">reclaim<\/span><\/span>/.test(cutS("mg")) &&
       !/class="chip/.test(cutS("mg")), ["brk", "zq", "mg", "tq"].map(shape).join(" | ")]);
   }
@@ -2395,6 +2402,21 @@ if (crewImpl.isRust("crew-board")) {
   const tl = String(els.tally ? els.tally.innerHTML : "");
   checks.push([`snooze: the tally leaves snoozed and settled rows out, and counts done rows by their one badge (${tl})`,
     !/broken/.test(tl) && /<b>1<\/b> merged/.test(tl) && !/ done</.test(tl) && /<b>1<\/b> working/.test(tl)]);
+  // One time format on the whole board, clockOf's: "1:31 AM" today, "Sat 1:31 AM"
+  // within the week. The shelf's "until" and a limit's "back" read alike.
+  {
+    const tom = new Date(); tom.setDate(tom.getDate() + 1); tom.setHours(13, 5, 0, 0);
+    render({ rows: [R("t1", { tuck: "snooze", until: tom.getTime() }),
+      R("t2", { kind: "attend", badge: "b", cwd: "/w/t2", limited: { error: "rate_limit", window: "five_hour", label: "5h limit",
+        resets_at: tom.getTime(), next_try: null, tries: 0, usage: false } })], quiet: "" });
+    const ht = els.rows.innerHTML, day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][tom.getDay()];
+    checks.push(["times: the shelf and a limit's pill say a time in one format, \"" + day + " 1:05 PM\"",
+      ht.includes(">until " + day + " 1:05 PM<") && ht.includes(">limit \u00b7 back " + day + " 1:05 PM<") &&
+      !/\d(am|pm)\b/.test(ht), ht.slice(0, 900)]);
+    checks.push(["times: the render keeps no locale clock of its own (toLocaleTimeString, toTimeString) or a lower-case am/pm",
+      !/toLocaleTimeString|toLocaleDateString|toTimeString/.test(readFileSync(join(HERE, "render.js"), "utf8")) &&
+      !/"am"|"pm"|\d(am|pm)"/.test(readFileSync(join(HERE, "render.js"), "utf8"))]);
+  }
   // Snoozed rows on the shelf come back soonest first, whatever order they came in.
   render({ rows: [R("late", { tuck: "snooze", until: soon + 7200000 }), R("early", { tuck: "snooze", until: soon })], quiet: "" });
   checks.push(["shelf: snoozed rows sort by when they come back",
@@ -2410,7 +2432,7 @@ if (crewImpl.isRust("crew-board")) {
   const SEP = '<span class="tks" role="separator"></span>';
   checks.push(["menu: framed by the app, one Hide verb with its until, the presets grouped by dividers, and no resume on a row no limit stopped",
     hf.includes(T("mute", "Hide until it needs you") + SEP + T("snooze:1h", "Hide for 1 hour") + T("snooze:3h", "Hide for 3 hours") +
-      T("snooze:tomorrow", "Hide until tomorrow 9am") + T("snooze:monday", "Hide until Monday 9am") + SEP +
+      T("snooze:tomorrow", "Hide until tomorrow 9 AM") + T("snooze:monday", "Hide until Monday 9 AM") + SEP +
       T("tuck", "Hide until I bring it back") + "</span>") && !/data-a="resume"/.test(hf) &&
     /title="Hide" aria-label="Hide or show again"/.test(hf) && !/Mute|Snooze|Tuck away|Unmute|Wake now|Bring back/.test(hf)]);
   checks.push(["snooze: framed by the app, the ⋯ menu offers the four presets, or Show again on a snoozed row",
@@ -2424,19 +2446,23 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["menu: the row's ⋯ shows only on hover, focus within, or while its menu is open, under (hover:hover)",
     /\.row:not\(:hover\):not\(:focus-within\):not\(\.tkopen\) \.tk\{opacity:0/.test(hovBlocks) &&
     !/(^|\})\s*\.tk\{[^}]*(opacity:0|display:none|visibility:hidden)/.test(css.replace(/@media \(hover:hover\)\{[^]*?\}\s*\}/g, ""))]);
-  // The ⋯ takes no width: framed, it sits in the badge's slot (.bs) and,
-  // where there is a pointer, is drawn over the badge's end on the row's
-  // ground, so the name keeps the room at rest and on hover.
-  checks.push(["menu: the ⋯ sits in the badge's slot, absolute over it on the row's ground, so it takes no width",
+  // The ⋯ comes after the badge in the line, never over it: the badge and a
+  // limit's pill read in full while you point at them. At rest it takes no
+  // width; while it shows, the name gives the room by its ellipsis.
+  checks.push(["menu: the ⋯ follows the badge in the line, in flow, never absolute over it; at rest it takes no width",
     /data-id="q"[^]*?<span class="bs"><span class="badge">idle<\/span><span class="tk" data-a="tk"/.test(hf) &&
-    /\.bs\{[^}]*position:relative/.test(css) &&
-    /\.bs>\.tk\{[^}]*position:absolute[^}]*background:var\(--gnd\)/.test(hovBlocks) &&
-    !/(^|\})\s*\.tk\{[^}]*position:absolute/.test(css)]);
-  // Hover moves nothing: the hover-only footer is a strip hung under the
-  // card, out of the flow, never a line that pushes the rows below down.
-  checks.push(["hover: a hover-only footer is an absolute strip under the card, so the rows below do not move",
-    /\.foot\.hov\{[^}]*position:absolute[^}]*top:calc\(100% - \d+px\)[^}]*background:var\(--gnd\)/.test(hovBlocks) &&
-    /\.row\{[^}]*position:relative/.test(css) && /\.row:not\(:hover\):not\(:focus-within\) \.foot\.hov\{display:none\}/.test(hovBlocks)]);
+    !/position:absolute/.test(ruleBody(".bs>.tk") || "") && !/\.bs\{[^}]*position:relative/.test(css) &&
+    !/\.bs>\.tk\{[^}]*position:absolute/.test(css) && !/(^|\})\s*\.tk\{[^}]*position:absolute/.test(css) &&
+    /\.row:not\(:hover\):not\(:focus-within\):not\(\.tkopen\) \.tk\{[^}]*width:0/.test(hovBlocks) &&
+    /\.nm\{[^}]*flex:1[^}]*text-overflow:ellipsis/.test(css) && /\.badge\{[^}]*flex:none/.test(css)]);
+  // Hover moves nothing and covers nothing: an open card shows its footer at
+  // rest, in its own flow, and no rule hides, reveals or lifts it on hover. A
+  // folded card has none: its .fold is gone, and its header's tooltip names
+  // the facts instead.
+  checks.push(["footer: shown at rest in the open card's flow; no hover rule hides, reveals or positions it; none on a folded card",
+    !/\.foot\.hov|foot hov/.test(css + hf) && !/\.foot[^{]*\{[^}]*position:absolute/.test(css) &&
+    !/:not\(:hover\)[^{]*\.foot/.test(css) && !/:hover[^{,]*\.foot[^{]*\{/.test(css.replace(/\.foot>\.end>\.wk|\.wk:hover[^{]*/g, "")) &&
+    /\.row\.fd:not\(\.open\)>\.fold\{display:none\}/.test(css) && /\.foot\.one\{flex-wrap:nowrap\}/.test(css)]);
   els.rows.attrs["data-hidden-open"] = "0";
   // intent.js keeps the one shelf's open state in data-hidden-open.
   const isrc = readFileSync(join(HERE, "intent.js"), "utf8");
@@ -2494,16 +2520,16 @@ if (crewImpl.isRust("crew-board")) {
   const cut = (id) => { const i = h.indexOf('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
   const un = cut("un"), ar = cut("ar");
   checks.push(["limits: a stopped row wears an amber pill saying when it is back (which limit in its tooltip), or the limit with no time",
-    /class="badge lim"[^>]*>limit \u00b7 back 11:04pm</.test(un) && /class="badge lim"[^>]*title="[^"]*weekly limit[^"]*">limit \u00b7 back 11:04pm</.test(ar) &&
+    /class="badge lim"[^>]*>limit \u00b7 back 11:04 PM</.test(un) && /class="badge lim"[^>]*title="[^"]*weekly limit[^"]*">limit \u00b7 back 11:04 PM</.test(ar) &&
     /class="badge lim"[^>]*>rate limited</.test((render({ rows: [R("x", { limited: lim({ resets_at: null, label: "rate limited", window: null }) })], quiet: "" }), els.rows.innerHTML)), un.slice(0, 600)]);
   // The limit is why the row needs you: it takes the badge's place, so the
   // name keeps its room.
   checks.push(["limits: the limit pill replaces the badge, never sits beside it",
     !/<span class="badge">/.test(un) && !/<span class="badge">/.test(ar) && (un.match(/class="badge/g) || []).length === 1]);
   checks.push(["limits: its said line says it stopped and when it resets, in place of what it said",
-    /class="said"><span class="lim"[^>]*>stopped: 5h limit \u00b7 resets 11:04pm</.test(un) && !/Working on it/.test(un), un]);
+    /class="said"><span class="lim"[^>]*>stopped: 5h limit \u00b7 resets 11:04 PM</.test(un) && !/Working on it/.test(un), un]);
   checks.push(["limits: an unarmed row has no armed chip; an armed quiet row has it, drawn clock and all",
-    !/chip sig armed/.test(un) && /class="chip sig armed" data-a="resume" data-x="off"[^>]*><svg[^]*?resumes 11:04pm \u00d7</.test(ar), ar]);
+    !/chip sig armed/.test(un) && /class="chip sig armed" data-a="resume" data-x="off"[^>]*><svg[^]*?resumes 11:04 PM \u00d7</.test(ar), ar]);
   checks.push(["limits: unframed (cmux's Dock), no ⋯ menu offers to arm", !/data-a="tk"/.test(h)]);
   sandbox.parent = { postMessage() {} };
   render({ rows: rowsL, quiet: "" });
@@ -2521,8 +2547,8 @@ if (crewImpl.isRust("crew-board")) {
   const said = (l, armed) => { render({ rows: [R("u", { limited: l, armed })], quiet: "" }); return els.rows.innerHTML; };
   const u = { window: null, label: "rate limited", usage: true, resets_at: null };
   checks.push(["limits: on usage billing an armed rate limit names its next try",
-    /stopped: rate limited \u00b7 next try 11:06pm/.test(said(lim({ ...u, next_try: at(23, 6), tries: 1 }), true)) &&
-    /resumes 11:06pm/.test(els.rows.innerHTML)]);
+    /stopped: rate limited \u00b7 next try 11:06 PM/.test(said(lim({ ...u, next_try: at(23, 6), tries: 1 }), true)) &&
+    /resumes 11:06 PM/.test(els.rows.innerHTML)]);
   checks.push(["limits: ...and once the app gave up, says why and that it waits for you",
     /stopped: rate limited \u00b7 didn\u2019t resume: three tries did not get through/.test(
       said(lim({ ...u, tries: 3, gave_up: "three tries did not get through" }), true)) && /armed \u00b7 gave up/.test(els.rows.innerHTML)]);
@@ -2536,7 +2562,7 @@ if (crewImpl.isRust("crew-board")) {
   // The cat: every live session stopped on a limit, and it naps till the soonest reset.
   render({ rows: [R("a1", { limited: lim() }), R("a2", { kind: "quiet", limited: lim({ resets_at: at(23, 30) }), armed: true })], quiet: "" });
   checks.push(["limits: with every live session stopped, the cat is out of treats till the soonest reset",
-    els.says.textContent === "out of treats till 11:04pm", els.says.textContent]);
+    els.says.textContent === "out of treats till 11:04 PM", els.says.textContent]);
   render({ rows: rowsL, quiet: "" });
   checks.push(["limits: ...but not while another one works", !/out of treats/.test(els.says.textContent), els.says.textContent]);
 }

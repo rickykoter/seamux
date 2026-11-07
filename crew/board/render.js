@@ -46,12 +46,14 @@ function __boardRender(d) {
   // A turn a usage limit stopped (the Rust board's `limited`, with `armed`
   // when the app will type continue at the reset). Its header wears a pill
   // naming the limit; its said line says when it can go again; an armed row
-  // carries a chip, its click the disarm. Times are this machine's clock.
+  // carries a chip, its click the disarm. Times are this machine's clock,
+  // and every time on the board is in one format, clockOf's: "1:31 AM"
+  // today, "Sat 1:31 AM" within the week, "Nov 14 1:31 AM" further off.
   var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   function clockOf(ms) {
     var d = new Date(ms), now = new Date(), h = d.getHours(), m = d.getMinutes();
-    var hm = ((h % 12) || 12) + ":" + (m < 10 ? "0" : "") + m + (h < 12 ? "am" : "pm");
+    var hm = ((h % 12) || 12) + ":" + (m < 10 ? "0" : "") + m + (h < 12 ? " AM" : " PM");
     if (d.toDateString() === now.toDateString()) return hm;
     if (ms > now.getTime() && ms - now.getTime() < 6 * 864e5) return DAYS[d.getDay()] + " " + hm;
     return MONTHS[d.getMonth()] + " " + d.getDate() + " " + hm;
@@ -487,29 +489,18 @@ function __boardRender(d) {
 
   var DIRTY = '<span class="dirty" title="Uncommitted changes in this worktree">●</span>';
 
-  // The Wake is not a chip: every live row carries it and it says nothing about
-  // the row, so as one more ghost button it read as noise and was easy to miss.
-  // It is an icon at the right end instead, beside the spend -- a hull and the
-  // ripples it leaves behind -- and declares its verb with data-a, so the label
-  // table is not involved. The collector still lists it among the chips; that
-  // is what says a row has one.
-  var WAKE = '<span class="wk" data-a="wake" title="' + esc(TIP.wake) + '">' +
-    '<svg viewBox="0 0 28 16" width="28" height="16" aria-hidden="true">' +
-    '<path class="hull" d="M17 5.5h5l4.5 2.5-4.5 2.5h-5z"/>' +
-    '<path d="M14.5 5.2Q12.4 8 14.5 10.8"/>' +
-    '<path class="r2" d="M10.6 3.6Q7.2 8 10.6 12.4"/>' +
-    '<path class="r3" d="M6.6 2Q2 8 6.6 14"/></svg></span>';
-  function hasWake(a) { return (a.chips || []).indexOf("wake") >= 0; }
+  // No Wake icon on a row: jumping to the workspace and pressing ⌘E opens its
+  // Wake, so an icon on every card was one more mark for little. The collector
+  // still lists "wake" among the chips; it is dropped here.
   function chipsOf(a) { return (a.chips || []).filter(function (c) { return c !== "wake"; }); }
-  function wakeOf(a) { return hasWake(a) ? WAKE : ""; }
 
   // The footer: what you recognise a row by, in one mono line. Branch, PR and
   // issue are targets; status signals, progress and spend are read, not
   // clicked, so they do not react.
   function foot(a, bare) {
     var out = "";
-    // Whether anything shows without the pointer (board.html hides the rest).
-    var seen = false;
+    // A footer of only the plain facts (no PR, issue or signal) keeps to one line.
+    var one = !a.pr && !a.issue && !(a.signals || []).some(function (e) { return !e.a; });
     if (a.branch || a.dirty) out += dotOf(a);
     if (a.branch) {
       out += '<span class="branch" data-a="code" title="Open this worktree in VS Code — ' +
@@ -517,7 +508,6 @@ function __boardRender(d) {
     }
     if (a.dirty) out += DIRTY;
     if (a.pr) {
-      seen = true;
       out += '<span class="pr' + (a.pr_state === "open" ? " open" : "") +
         '" data-a="pr" title="Open the pull request in your default browser">' +
         esc(a.pr) + "</span>";
@@ -525,13 +515,11 @@ function __boardRender(d) {
     // The linked issue (closing reference or branch pattern) — present only
     // when the GitHub Issues integration is enabled; the collector gates it.
     if (a.issue) {
-      seen = true;
       out += '<span class="issue" data-a="issue" title="Open the linked issue in your default browser">' +
         esc(a.issue) + "</span>";
     }
     (a.signals || []).forEach(function (e) {
       if (e.a) return;
-      seen = true;
       var col = lift(e.c);
       out += '<span class="sig"' + (col ? ' style="color:' + col + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
@@ -540,13 +528,12 @@ function __boardRender(d) {
     // Spend and the Wake are one unit at the right end: when the line is full
     // they wrap together, still on the right. Apart, the icon alone dropped to
     // the far left of a line of its own, away from the spend it sits beside.
-    var end = bare ? "" : cost(a) + wakeOf(a);
+    var end = bare ? "" : cost(a);
     if (end) out += '<span class="end">' + end + "</span>";
-    if (!bare && hasWake(a)) seen = true;
-    // A footer of hover-only facts folds away entirely, so it leaves no gap,
-    // and shows on hover as a strip under the card (board.html), over the
-    // rows below, so nothing moves.
-    return out ? '<div class="foot' + (seen ? "" : " hov") + '">' + out + "</div>" : "";
+    // The footer shows only on an open card, at rest, in the card's own
+    // flow. A folded card has none (its .fold is gone); its header's tooltip
+    // says the facts instead (factsOf).
+    return out ? '<div class="foot' + (one ? " one" : "") + '">' + out + "</div>" : "";
   }
 
   // A blocked ask has a deadline. The bar is a CSS animation whose duration IS
@@ -557,8 +544,7 @@ function __boardRender(d) {
     if (!a.feedby) return "";
     var left = a.feedby - Math.floor(Date.now() / 1000);
     if (left < 1) return "";
-    var when = new Date(a.feedby * 1000).toTimeString().slice(0, 8);
-    return '<div class="feed" title="The reply window closes at ' + when + '">' +
+    return '<div class="feed" title="The reply window closes at ' + esc(clockOf(a.feedby * 1000)) + '">' +
       '<span class="feedbar" style="animation-duration:' + left + 's"></span></div>';
   }
 
@@ -698,11 +684,21 @@ function __boardRender(d) {
   // The opening of a card's header: what a click on it does, then the caret.
   function topOpen(a, cls, foldable) {
     // The header's tooltip replaces the row's, so it leads with the name: a
-    // name cut short at Dock width is still readable on hover.
-    var does = a.ref ? ' data-a="jump" title="' + esc(a.name) + " \u00b7 " + esc(TIP.jump) + '"' : foldable ? ' data-a="fold"' : "";
+    // name cut short at Dock width is still readable on hover. A folded card
+    // shows no footer, so the footer's hover-only facts (branch, progress,
+    // spend) follow on a line of their own: still there, under the pointer.
+    var facts = factsOf(a), tip = a.name + (a.ref ? " \u00b7 " + TIP.jump : "") + (facts ? "\n" + facts : "");
+    var does = a.ref ? ' data-a="jump" title="' + esc(tip) + '"' : foldable ? ' data-a="fold"' + (facts ? ' title="' + esc(tip) + '"' : "") : "";
     return '<div class="top' + cls + (a.ref ? " jumps" : "") + '"' + does + ">" + (foldable ? CARET : "");
   }
   function topClose() { return "</div>"; }
+  // The footer's hover-only facts as words, for the header's tooltip.
+  function factsOf(a) {
+    var c = typeof a.cost === "number" ? a.cost : 0, unpriced = Array.isArray(a.cost_unpriced) && a.cost_unpriced.length;
+    return [a.branch ? a.branch + (a.dirty ? " (uncommitted changes)" : "") : a.dirty ? "uncommitted changes" : "",
+      a.meta || "", c > 0 || unpriced ? "$" + (c >= 100 ? Math.round(c) : c.toFixed(2)) + (unpriced ? "+" : "") + " today" : ""]
+      .filter(Boolean).join(" \u00b7 ");
+  }
   // A card that has something to fold carries .fd, its open state, and its
   // tier in data-k, which is what intent.js writes into data-fold.
   // Whether this push draws any card open: "collapse all" shows when it does.
@@ -742,9 +738,9 @@ function __boardRender(d) {
     if (a.limited) return limPill(a);
     return a.badge ? '<span class="badge">' + esc(badgeText(a)) + "</span>" : "";
   }
-  // The badge's slot, which the ⋯ sits over at its right end when the
-  // pointer is on the row. Absolute, so it takes no room from the name at
-  // rest; with no badge it covers the name's empty end instead.
+  // The badge's slot: the badge, then the ⋯ after it in the line, which takes
+  // its width only while the pointer or focus is on the row (board.html). The
+  // name gives the room, by its ellipsis; the badge always reads in full.
   function slotOf(a, inner) {
     var tk = tuckOf(a);
     if (!tk) return inner;
@@ -762,7 +758,7 @@ function __boardRender(d) {
   // Resuming is not hiding: it sits below the Hide group, on its own, and
   // only on a row a usage limit stopped (or one already armed, to undo it).
   var SNOOZES = [["1h", "Hide for 1 hour"], ["3h", "Hide for 3 hours"],
-    ["tomorrow", "Hide until tomorrow 9am"], ["monday", "Hide until Monday 9am"]];
+    ["tomorrow", "Hide until tomorrow 9 AM"], ["monday", "Hide until Monday 9 AM"]];
   function tuckOf(a) {
     if (!inApp || !a.cwd) return "";
     var item = function (label, x) { return '<span class="tki" data-a="tuck" data-x="' + x + '">' + label + "</span>"; };
@@ -784,10 +780,11 @@ function __boardRender(d) {
   }
   // Why a row is on the hidden shelf, in muted words of its own: a snoozed
   // row says when it comes back ("until 3:00 PM" today, else "until Mon
-  // 9:00 AM"), a settled one that it is merged and idle, a tucked one that
-  // it waits for you.
+  // 9:00 AM", clockOf's format), a settled one that it is merged and idle, a
+  // tucked one that it waits for you.
   // A settled row's reclaim is a link in its reason, so every shelf row has
-  // the one shape: name, badge, why.
+  // the one shape: name, why. No badge: "idle" or "merged" beside "merged and
+  // idle" said the row's state twice.
   function whyOf(a) {
     var s = shelfOf(a);
     if (s === "settled") return '<span class="why">merged and idle' + ((a.chips || []).indexOf("reclaim") >= 0 ?
@@ -795,10 +792,7 @@ function __boardRender(d) {
     if (s === "tucked") return '<span class="why">until you bring it back</span>';
     if (s !== "snoozed") return "";
     if (!a.until) return '<span class="why">for now</span>';
-    var w = new Date(+a.until), now = new Date();
-    var t = w.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    if (w.toDateString() !== now.toDateString()) t = w.toLocaleDateString([], { weekday: "short" }) + " " + t;
-    return '<span class="why wakes" title="' + esc(w.toString()) + '">until ' + esc(t) + "</span>";
+    return '<span class="why wakes" title="' + esc(new Date(+a.until).toString()) + '">until ' + esc(clockOf(+a.until)) + "</span>";
   }
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
@@ -824,10 +818,12 @@ function __boardRender(d) {
   // worth noticing.
   // Unfolded, it shows its footer -- branch, PR, issue -- under the line; its
   // caret folds it, and its line jumps (a row with no workspace folds there).
-  // On the hidden shelf a row is one shape, its name, badge and why: its
-  // chips are the list's business, and a settled row's reclaim is in its why.
+  // On the hidden shelf a row is one shape, its name and why: its chips are
+  // the list's business, a settled row's reclaim is in its why, and its badge
+  // would say again what the why says. Its ⋯ comes last, after the why.
   function quietRow(a) {
-    var acts = shelfOf(a) ? [] : chipsOf(a).filter(function (c) { return c !== "jump"; });
+    var shelf = !!shelfOf(a);
+    var acts = shelf ? [] : chipsOf(a).filter(function (c) { return c !== "jump"; });
     var arm = armedChip(a);
     var qb = acts.length || arm ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
@@ -835,8 +831,8 @@ function __boardRender(d) {
     var more = foot(a, true);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       topOpen(a, "", !!more) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + slotOf(a, acts.length || arm ? "" : badgeOf(a)) + (acts.length || arm ? qb + limPill(a) : "") +
-      whyOf(a) + cost(a) + wakeOf(a) + topClose(a) +
+      (a.dirty ? DIRTY : "") + (shelf ? "" : slotOf(a, acts.length || arm ? "" : badgeOf(a))) + (acts.length || arm ? qb + limPill(a) : "") +
+      (shelf ? whyOf(a) + slotOf(a, "") : "") + cost(a) + topClose(a) +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
