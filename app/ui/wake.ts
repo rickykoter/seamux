@@ -476,18 +476,22 @@ export class Wake {
           g.classList.toggle("open");
         });
         ph.append(el("time", "", hm(d)), prompt);
-        if (r.branch) ph.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
+        // A group of one row is one line: time and prompt, the row, then the
+        // branch and session at the end (CSS lays it out; embedded keeps two).
+        const tail = solo && !this.embedded ? el("div", "w-ph w-tail") : ph;
+        if (r.branch) tail.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
         if (r.session_id) {
           // Said as what it does: a bare id read as a commit's sha.
           const s = button("copy resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
           s.title = `copy the command that resumes session ${r.session_id.slice(0, 8)}`;
           s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
-          ph.append(s);
+          tail.append(s);
         }
         lastBr = r.branch ?? "";
         lastSess = r.session_id ?? "";
         ul = el("ul", "w-rows");
         g.append(ph, ul);
+        if (tail !== ph) g.append(tail);
         section!.append(g);
         group = gk;
       }

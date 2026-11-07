@@ -26,8 +26,11 @@
   for (var i = 0; i < acts.length; i++) {
     var b = acts[i];
     if (!allowed(b)) { b.hidden = true; continue; }
-    b.disabled = false;
     b.title = (b.title || "").replace(/ — available when.*$/, "");
+    // A held go (the plan is still in review) still enables: it is drawn quiet
+    // and its title says why, but a page that has not reloaded since a grade
+    // in the terminal must not stay stuck. The engine refuses it while in review.
+    b.disabled = false;
   }
 
   // Turns on the affordance the stylesheet keeps behind .dp-live: a path is only

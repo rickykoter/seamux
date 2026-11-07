@@ -54,6 +54,17 @@ function button(label: string, cls: string, on: () => void): HTMLButtonElement {
   b.addEventListener("click", on);
   return b;
 }
+/** A cmux ref in parentheses, "(workspace:4)": the person reads the name
+ *  beside it, so the ref goes to the tooltip. */
+const REF = /\s*\((?:workspace|pane|surface|tab|window):[\w-]+\)/g;
+/** A span of `text` with any cmux ref left out; the full text, ref and
+ *  all, is its tooltip. Text that is only a ref keeps it. */
+function said(cls: string, text: string): HTMLSpanElement {
+  const bare = text.replace(REF, "").trim();
+  const s = el("span", cls, bare || text);
+  if (bare && bare !== text) s.title = text;
+  return s;
+}
 /** A long path, its home shown as ~. */
 const tidy = (p: string, home: string) => (home && p.startsWith(home + "/") ? "~" + p.slice(home.length) : p);
 
@@ -164,30 +175,32 @@ export class ReclaimWizard {
     this.review(r);
   }
 
+  /** What would go first: it is the decision. Then what needs reading
+   *  (blockers, warnings), then the facts nothing above says, then every
+   *  check that passed, folded. With a blocker there is nothing to remove,
+   *  so the blockers lead. */
   private review(r: Report): void {
     const body = this.frame("review", `Reclaim ${r.branch ?? this.name}`);
-    // With nothing blocking, "Would remove" below names the worktree, branch
-    // and workspace: the facts keep only what it does not say.
-    const named = new Set(r.blockers > 0 ? [] : r.remove.map((x) => x.what));
-    const said = r.blockers > 0 ? "" : r.remove.map((x) => `${x.target} ${x.note}`).join(" ");
-    const facts = el("dl", "rc-facts");
-    const fact = (k: string, v: string | null | undefined, mono = false) => {
-      if (!v || named.has(k)) return;
-      facts.append(el("dt", "", k), el("dd", mono ? "mono" : "", v));
-    };
-    fact("worktree", tidy(r.worktree, this.home), true);
-    fact("branch", r.branch, true);
-    if (!r.size || !said.includes(r.size)) fact("size", r.size);
-    fact("workspace", r.workspace?.name);
-    fact("plan", r.plan);
-    fact("sandbox", r.sandbox);
-    if (facts.childElementCount) body.append(facts);
+    const ok = r.blockers === 0;
+
+    if (ok) {
+      body.append(el("h3", "rc-sub", "Would remove"));
+      const gone = el("ul", "rc-remove");
+      for (const x of r.remove) {
+        const li = el("li");
+        const mono = x.what === "worktree" || x.what === "branch";
+        li.append(el("span", "rc-what", x.what), said(mono ? "rc-target mono" : "rc-target", x.what === "worktree" ? tidy(x.target, this.home) : x.target));
+        if (x.note) li.append(said("rc-note", x.note));
+        gone.append(li);
+      }
+      body.append(gone);
+    }
 
     const row = (c: Check) => {
       const li = el("li", `rc-check ${c.kind}`);
       const text = el("div", "rc-text");
-      text.append(el("span", "", c.text));
-      if (c.hint) text.append(el("span", "rc-hint", c.hint));
+      text.append(said("", c.text));
+      if (c.hint) text.append(said("rc-hint", c.hint));
       li.append(mark(c.kind), text);
       return li;
     };
@@ -198,6 +211,27 @@ export class ReclaimWizard {
       list.append(...loud.map(row));
       body.append(list);
     }
+
+    // With nothing blocking, "Would remove" names the worktree, branch and
+    // workspace: the facts keep only what it does not say.
+    const named = new Set(ok ? r.remove.map((x) => x.what) : []);
+    const told = ok ? r.remove.map((x) => `${x.target} ${x.note}`).join(" ") : "";
+    const facts = el("dl", "rc-facts");
+    const fact = (k: string, v: string | null | undefined, mono = false) => {
+      if (!v || named.has(k)) return;
+      facts.append(el("dt", "", k));
+      const dd = el("dd", mono ? "mono" : "");
+      dd.append(said("", v));
+      facts.append(dd);
+    };
+    fact("worktree", tidy(r.worktree, this.home), true);
+    fact("branch", r.branch, true);
+    if (!r.size || !told.includes(r.size)) fact("size", r.size);
+    fact("workspace", r.workspace?.name);
+    fact("plan", r.plan);
+    fact("sandbox", r.sandbox);
+    if (facts.childElementCount) body.append(facts);
+
     // Every check that passed (or had nothing to check) folds into one line.
     const quiet = r.checks.filter((c) => c.kind === "pass" || c.kind === "skip");
     if (quiet.length) {
@@ -210,7 +244,7 @@ export class ReclaimWizard {
       body.append(fold);
     }
 
-    if (r.blockers > 0) {
+    if (!ok) {
       body.append(el("p", "rc-verdict bad", `${r.blockers} blocker${r.blockers === 1 ? "" : "s"}. Nothing will change.`));
       const again = button("Re-check", "rc-primary", () => void this.check());
       this.foot(button("Close", "", () => this.cancel()), again);
@@ -218,15 +252,6 @@ export class ReclaimWizard {
       return;
     }
 
-    body.append(el("h3", "rc-sub", "Would remove"));
-    const gone = el("ul", "rc-remove");
-    for (const x of r.remove) {
-      const li = el("li");
-      li.append(el("span", "rc-what", x.what), el("span", x.what === "worktree" || x.what === "branch" ? "rc-target mono" : "rc-target", x.what === "worktree" ? tidy(x.target, this.home) : x.target));
-      if (x.note) li.append(el("span", "rc-note", x.note));
-      gone.append(li);
-    }
-    body.append(gone);
     const cancel = button("Cancel", "", () => this.cancel());
     const go = button(`Reclaim${r.size ? ` ${r.size}` : ""}`, "rc-danger", () => void this.run(r));
     this.foot(cancel, go);

@@ -1781,10 +1781,10 @@ if (want("page script")) {
      /bar\.push\(toggle\);[\s\S]{0,300}const menu: HTMLButtonElement\[\] = \[\];\s*if \(n\) \{[\s\S]{0,900}menu\.push\(edit, fix, post\);\s*\}/.test(app) &&
      app.includes("if (n) menu.push(push);\n      else bar.push(push);") &&
      app.includes('const act = el("button", "r-btn primary r-act-btn", `Act on ${n} picked ▾`);') &&
-     app.includes("bar.push(this.menu(`act:${j.id}`, act, menu));") && !app.includes("bar.push(edit, fix, post)") &&
-     app.includes('private menu(key: string, b: HTMLButtonElement, items: HTMLButtonElement[], meta = ""): HTMLElement {') &&
-     app.includes("return this.menu(j.id, b, items, meta);") &&
-     app.includes('.r-menu [role=menuitem]:not(:disabled)")?.focus()') &&
+     app.includes('bar.push(this.menu(`act:${j.id}`, act, [this.changePicks(j), el("div", "r-menu-sep"), ...menu], "", [this.pickedList(rows, picked)]));') && !app.includes("bar.push(edit, fix, post)") &&
+     app.includes('private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = []): HTMLElement {') &&
+     app.includes("return this.menu(key, b, items, meta);") &&
+     app.includes('.r-menu [role=menuitem]:not(:disabled):not(.r-change)")?.focus()') &&
      app.includes("if (this.moreOpen === id || this.moreOpen === `act:${id}`) this.moreOpen = null;") &&
      app.includes('btn("Edit", ') && app.includes('btn("Fix with commits", ') && app.includes('btn("Post comments", ') &&
      !app.includes("suffix") && app.includes('if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));'));
@@ -1801,6 +1801,31 @@ if (want("page script")) {
      !app.includes("`log (${j.log.length})`") && !app.includes('el("details", "r-log")'));
   ok("app: a fix or post underway says what it is doing on the header row, not a row under it",
      app.includes('status = el("span", "r-now r-busy", j.activity || "starting");') && app.includes("this.headOf(this.title(j), chip, meta, link, acts.buttons, more, status);"));
+  ok("app: the Act menu names what it acts on: the picked findings by severity, at most five then \"+N more\", and Change picks opens the picker",
+     app.includes("const PICKS_SHOWN = 5;") && /private pickedList\(rows: Finding\[\], picked: string\[\]\): HTMLElement \{[\s\S]{0,700}\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);[\s\S]{0,200}`Acts on \$\{fs\.length\} picked`[\s\S]{0,200}fs\.slice\(0, PICKS_SHOWN\)[\s\S]{0,300}el\("span", `r-sev \$\{f\.severity\}`, f\.severity\), el\("span", "r-sum", f\.summary\)[\s\S]{0,200}`\+\$\{fs\.length - PICKS_SHOWN\} more`/.test(app) &&
+     /private changePicks\(j: Job\): HTMLButtonElement \{\s*const b = btn\("Change picks", \(\) => \{\s*this\.pickerOpen\.add\(j\.id\);\s*this\.render\(true\);/.test(app) &&
+     app.includes("m.append(...top);") && appCss.includes(".r-menu-pick .r-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"));
+  ok("app: the header is one row at any width: the title ellipsizes, then GitHub, Overview (and Map), Split or Unified and ? fold into ⋯ in that order; the gate pill and Act button stay",
+     app.includes('const FOLDS = ["github", "overview", "layout", "keys"] as const;') && app.includes("const TITLE_MIN = 160;") &&
+     /this\.fold = 0;\s*draw\(\);\s*while \(this\.fold < FOLDS\.length && this\.overflows\(\)\) \{\s*this\.fold\+\+;\s*draw\(\);\s*\}/.test(app) &&
+     app.includes("return row.scrollWidth > row.clientWidth + 1 || squeezed;") &&
+     app.includes("name.scrollWidth > name.clientWidth && name.clientWidth < TITLE_MIN") &&
+     /new ResizeObserver\(\(\) => \{\s*if \(fitFrame\) return;\s*fitFrame = requestAnimationFrame\(\(\) => \{\s*fitFrame = 0;\s*const w = this\.head\.clientWidth;\s*if \(w && w !== this\.fitWidth\) this\.render\(true\);\s*\}\);\s*\}\)\.observe\(this\.head\);/.test(app) &&
+     app.includes("for (const t of tools.view) if (folds.has(t.fold)) folded.push(t.item);") &&
+     app.includes('folds.has("github") ? "Open on GitHub" : "GitHub"') &&
+     appCss.includes(".r-mhead-row { display: flex; align-items: center; gap: 8px 10px; min-width: 0; flex-wrap: nowrap; }") &&
+     appCss.includes(".r-acts { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; margin-left: auto; flex: none; }") &&
+     !/\.r-(mhead-row|acts) \{[^}]*flex-wrap: wrap/.test(appCss));
+  ok("app: a folded tool keeps its key: the menu item shows it, and o, m, v and ? work from the header as in the page",
+     ["\"o\", () => this.tell(\"overview\")", "\"m\", () => this.tell(\"map\")", "\"v\", () => this.tell(\"layout\", { layout: other })", "\"?\", () => this.tell(\"keys\")"].every(k => app.includes(k)) &&
+     app.includes('b.append(el("kbd", "r-kbd", key));') &&
+     app.includes('const op = ({ o: "overview", m: "map", v: "layout", "?": "keys" } as Record<string, string>)[e.key];') &&
+     app.includes('this.tell(op, op === "layout" ? { layout: p.layout === "split" ? "unified" : "split" } : {});'));
+  ok("page+app: one Overview: the app drops its Overview button while the page's file list shows its own Overview row (o still opens it)",
+     js.includes('ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length }, hostOrigin);') &&
+     /function drawSide\(\) \{[\s\S]*?\$\("tree"\)\.prepend\(el\("div", \{ class: "row ov-row"[\s\S]*?postState\(\);\n  \}/.test(js) &&
+     app.includes("ovRow?: boolean;") && /if \(!p\.ovRow\) \{\s*const ov = pressed\(btn\("Overview"/.test(app) &&
+     js.includes('else if (e.key === "o") { toggleOverview(); e.preventDefault(); }'));
   ok("page+app: framed, the page's tools move onto the app's header row after a hello/host handshake, so one band sits above the file",
      js.includes('window.parent.postMessage({ lookout: "hello", id: R.id }, "*");') &&
      /if \(d\.lookout === "host"\) \{[\s\S]*?hostOrigin = e\.origin && e\.origin !== "null" \? e\.origin : "\*";\s*clearInterval\(helloTimer\);\s*hosted = true;\s*document\.documentElement\.dataset\.host = "app";/.test(js) &&
@@ -1813,13 +1838,13 @@ if (want("page script")) {
      app.includes('if (d.lookout === "hello") f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);') &&
      app.includes('f.contentWindow?.postMessage({ lookout: "do", op, ...extra }, this.pageOrigin);') &&
      ["gate", "overview", "map", "layout", "keys"].every(op => app.includes(`this.tell("${op}"`) && js.includes(`d.op === "${op}"`)) &&
-     app.includes("h.append(...tools.state);") && app.includes('acts.append(el("span", "r-sep"), ...tools.view);'));
+     app.includes("h.append(...tools.state);") && app.includes('if (view.length) acts.append(el("span", "r-sep"), ...view.map((t) => t.el));'));
   // The page pins the host's origin: state goes only there, and only it is heard
   // after the handshake. Hello (only the id) repeats until answered, for an app
   // that was not listening yet.
   ok("page: the host's origin is pinned after the handshake, and hello repeats until answered",
      js.includes('if (hostOrigin !== "*" && e.origin !== hostOrigin) return;') &&
-     /keys: !\$\("keys"\)\.hidden \}, hostOrigin\);/.test(js) &&
+     /keys: !\$\("keys"\)\.hidden,[\s\S]{0,200}\}, hostOrigin\);/.test(js) &&
      /helloTimer = setInterval\(\(\) => \{ if \(hosted \|\| \+\+tries > 10\) clearInterval\(helloTimer\); else hello\(\); \}, 500\);/.test(js));
   ok("page: unframed, or framed by an app that never answers, the page keeps its own tools row",
      !/:root\[data-embed\][^{]*\.tools[^{]*\{[^}]*display: none/.test(css) && js.includes("let hosted = false;"));

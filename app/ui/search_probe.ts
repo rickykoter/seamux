@@ -1,6 +1,6 @@
 // node app/ui/search_probe.ts — the session search's rows, matching and
 // order (search.ts), with no DOM. Node runs this file as TypeScript.
-import { base, fuzzy, isKeyHints, rowsOf, search, tailOf, type Inputs, type TileIn } from "./search.ts";
+import { asideOf, base, echoes, fuzzy, isKeyHints, rowsOf, search, tailOf, type Inputs, type TileIn } from "./search.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
@@ -165,6 +165,26 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   ok("tail: a terminal of only hints and blanks has none", tailOf(["", "Esc to cancel", " "]) === "");
   ok("tail: a first line keeps its indent", tailOf(["", "  indented", "x"]) === "  indented\nx", JSON.stringify(tailOf(["", "  indented", "x"])));
   ok("base: a row's folder is its path's last part", base("/u/code/shop.worktrees/checkout-flow/") === "checkout-flow");
+}
+
+// ---- the row's one line ---------------------------------------------------
+{
+  ok("echoes: a branch that is the name, or <prefix>/<name>, only repeats it",
+    echoes("sam/checkout-flow", "checkout-flow") && echoes("Checkout-Flow", "checkout-flow") && echoes("a/b/dock", "dock"));
+  ok("echoes: a branch that says more does not", !echoes("sam/checkout-flow-v2", "checkout-flow") && !echoes("dev/dock-density", "dock") && !echoes("x", ""));
+  const i = inputs({
+    tiles: [
+      tile("A", "SA", { workspace_title: "checkout-flow", topic: "coupon expiry" }),
+      tile("B", "SB", { workspace_title: "payments" }),
+    ],
+    branches: { A: "sam/checkout-flow", B: "dev/pay-retry" },
+  });
+  const hit = (q: string, name: string) => search(rowsOf(i), q).find((h) => h.row.name === name)!;
+  ok("aside: a branch that only repeats the name is not shown", asideOf(hit("", "checkout-flow")) === null);
+  ok("aside: a branch that says more is", asideOf(hit("", "payments"))?.text === "dev/pay-retry", JSON.stringify(asideOf(hit("", "payments"))));
+  const t = asideOf(hit("expiry", "checkout-flow"));
+  ok("aside: a match outside the name shows that field, with its letters", t?.field === "topic" && t.text === "coupon expiry" && t.at?.[0] === 7, JSON.stringify(t));
+  ok("aside: a match in the name alone falls back to the branch rule", asideOf(hit("checkout", "checkout-flow")) === null && asideOf(hit("pay", "payments"))?.field === "branch");
 }
 
 let failed = 0;

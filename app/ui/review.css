@@ -58,10 +58,12 @@
 .r-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .r-mhead:empty, .r-ctl:empty { display: none; }
 .r-mhead { padding: 6px 14px; }
-.r-mhead-row { display: flex; align-items: center; gap: 8px 10px; min-width: 0; flex-wrap: wrap; }
+/* One line at any width: the title ellipsizes, then review.ts folds the
+   lesser tools into ⋯ (FOLDS). Nothing wraps under it. */
+.r-mhead-row { display: flex; align-items: center; gap: 8px 10px; min-width: 0; flex-wrap: nowrap; }
 .r-name { margin: 0; font-size: var(--fs-4); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3ch; flex: 0 1 auto; }
-/* The actions, at the row's end; a narrow window wraps them under the name. */
-.r-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+/* The actions, at the row's end. */
+.r-acts { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; margin-left: auto; flex: none; }
 .r-meta { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .r-grow { flex: 1; }
 .r-link { font-size: var(--fs-2); color: var(--accent); overflow-wrap: anywhere; }
@@ -105,7 +107,17 @@
 .r-more-btn svg { width: 16px; height: 16px; fill: currentColor; }
 .r-menu { position: absolute; z-index: 6; right: 0; top: calc(100% + 4px); min-width: 180px; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px var(--shade, rgba(0, 0, 0, 0.18)); }
 .r-menu .r-btn { text-align: left; }
+.r-menu a.r-btn { text-decoration: none; }
 .r-menu-meta { margin: 2px 8px 6px; font-size: var(--fs-2); color: var(--muted); white-space: nowrap; }
+.r-menu-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+/* A tool folded off the row, its key at the end. */
+.r-menu-tool { display: flex; align-items: center; gap: 16px; }
+.r-kbd { margin-left: auto; font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; }
+/* The Act menu's top: what it acts on. */
+.r-menu-picks { display: flex; flex-direction: column; gap: 3px; padding-bottom: 2px; width: 300px; max-width: 70vw; }
+.r-menu-pick { display: flex; align-items: baseline; gap: 8px; padding: 1px 8px; font-size: var(--fs-2); min-width: 0; }
+.r-menu-pick .r-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r-menu-more { margin: 1px 8px 0; font-size: var(--fs-2); color: var(--muted); }
 .r-btn.pickbtn { font-variant-numeric: tabular-nums; }
 .r-confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 10px; font-size: var(--fs-3); }
 .r-empty { margin: 18vh auto 0; color: var(--muted); font: var(--fs-3)/1.4 ui-monospace, Menlo, monospace; text-align: center; max-width: 42ch; }

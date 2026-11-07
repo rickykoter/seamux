@@ -2,14 +2,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
-import { base, FIELDS, rowsOf, search, tailOf, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
+import { asideOf, rowsOf, search, tailOf, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
-import { say, untilSaid, type Level, type TuckRow } from "./tuck";
+import { say, untilSaid, wakesAt, type Level, type TuckRow } from "./tuck";
 
 /** A hidden row's until: "until it needs you", "until 3:00 PM", "until you
  *  bring it back". Every level reads as hidden; only the until differs. */
 const untilOf = (r: Row): string =>
   r.level === "mute" || r.level === "snooze" || r.level === "tuck" ? untilSaid(r.level as Level, r.until || undefined) : "";
+
+/** A hidden row's until in a word or two, for the row itself: "until 3 PM",
+ *  "until needed", "hidden". The row's tooltip and the preview say it in full. */
+const untilShort = (r: Row): string =>
+  r.level === "snooze" ? (r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : "for now") : r.level === "mute" ? "until needed" : "hidden";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -265,6 +270,8 @@ export class Palette {
     this.foot.textContent = keys.join(" · ");
   }
 
+  /** One line: the name, then (muted) what else is worth seeing (asideOf),
+   *  then the time, or for a hidden row when it comes back. */
   private rowEl(h: Hit, i: number): HTMLElement {
     const r = h.row;
     const row = el("div", `palette-row search-row${i === this.sel ? " sel" : ""}${r.level ? " away" : ""}`);
@@ -274,34 +281,23 @@ export class Palette {
     const b = el("b");
     b.append(...marked(r.name, h.marks.name));
     name.append(dot(r), b);
-    const meta = el("span", "palette-meta");
-    meta.append(...this.secondLine(h));
-    row.title = this.tilde(r.path);
-    const when = el("span", "palette-when");
-    if (r.level) when.append(el("span", "hid", "hidden"), document.createTextNode(` ${untilOf(r)}`));
-    else when.textContent = ago(Date.now() - r.since);
-    row.append(name, when, meta);
+    row.append(name);
+    const a = asideOf(h);
+    if (a) {
+      const meta = el("span", `palette-meta ${a.field}`);
+      // A tilde shortens the path, so its marks no longer line up: plain then.
+      const text = a.field === "path" ? this.tilde(a.text) : a.text;
+      meta.append(...marked(text, a.field === "path" && text !== a.text ? undefined : a.at));
+      row.append(meta);
+    }
+    const where = this.tilde(r.path);
+    row.title = r.level ? `Hidden ${untilOf(r)}\n${where}` : where;
+    row.append(el("span", "palette-when", r.level ? untilShort(r) : ago(Date.now() - r.since)));
     row.addEventListener("mousemove", () => {
       if (this.sel !== i) { this.sel = i; this.selKey = r.key; this.draw(); }
     });
     row.addEventListener("click", () => { this.sel = i; this.selKey = r.key; void this.choose(false); });
     return row;
-  }
-
-  /** The row's second line: the field the query matched, else the branch,
-   *  else the worktree's folder when it is not the name already. Every row
-   *  shares the same ~/code/... start, so the full path is the row's title. */
-  private secondLine(h: Hit): Node[] {
-    const r = h.row;
-    const f: Field | undefined = FIELDS.filter((x) => x !== "name").find((x) => h.marks[x]?.length);
-    if (!f) {
-      if (r.branch) return [document.createTextNode(r.branch)];
-      const folder = base(r.path);
-      return folder && folder !== r.name ? [document.createTextNode(folder)] : [];
-    }
-    const text = f === "path" ? this.tilde(r.path) : r[f];
-    // A tilde shortens the path, so its marks no longer line up: plain then.
-    return marked(text, f === "path" && text !== r.path ? undefined : h.marks[f]);
   }
 
   private drawPreview(h: Hit | undefined): void {

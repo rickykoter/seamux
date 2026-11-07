@@ -1326,6 +1326,14 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
    cannot act, but it stays full contrast: it names the next step. */
 .dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
 .dp-act[data-kind="primary"][disabled]{opacity:1}
+/* A go the gate would refuse (the plan is still in review): drawn quiet and
+   dashed, so it reads as waiting; the gate line's fix link is the primary. */
+.dp-act[data-kind="held"]{background:none;border-style:dashed;color:var(--dim)}
+.dp-act[data-kind="held"][disabled]{opacity:.8;cursor:not-allowed}
+.dp-gate-fix{display:inline-block;background:var(--fg);color:var(--bg);font-weight:600;text-decoration:none;
+border-radius:6px;padding:3px 12px;margin-left:2px}
+.dp-gate-fix:hover{opacity:.9}
+.dp-gate-fix:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 details.dp-more{display:inline-block;vertical-align:middle}
 details.dp-more>summary{list-style:none;cursor:pointer;color:var(--dim);padding:0 8px;border-radius:6px;line-height:26px;letter-spacing:.05em}
 details.dp-more>summary::-webkit-details-marker{display:none}
@@ -1973,6 +1981,10 @@ function reviewFoot(nq) {
 // The review page's sections that start folded: reference a reader looks up
 // rather than reads through. A section the reader opened or shut keeps that.
 const REVIEW_FOLDED = ["End state", "Contracts", "Verified facts", "ADRs", "Diagrams", "Verification"];
+// Increments fold too when the summary card lists them: the card links to
+// each one (its link opens the section), so the page does not show the list
+// twice before the quiz. A note kept in an increment opens it again.
+const reviewFolded = spec => (spec.deliverables || []).length ? [...REVIEW_FOLDED, "Increments"] : REVIEW_FOLDED;
 
 // "What you're approving": the increments, the counts, and a link to
 // the quiz (the button for it is the foot bar's), above the spec. Counts link to their sections; the client
@@ -2128,7 +2140,7 @@ ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).
   // boxes above, so this button carries it with no extra wiring.
 })();
 </script>`;
-  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review", REVIEW_FOLDED) + AUTO_REFRESH_BOX + `<style>
+  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review", reviewFolded(spec)) + AUTO_REFRESH_BOX + `<style>
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
@@ -2323,6 +2335,12 @@ function famIncParts(i) {
   };
 }
 
+const FAM_PHASE = { review: "in review", implementing: "building", delivery: "in its delivery review" };
+// What the glyphs in an opened family member mean, one line above them.
+const FAM_KEY = `<p class="dim dp-fam-key">${FAM_STATUS.done} done, ${FAM_STATUS.working} building, ${FAM_STATUS.authorized} has its go, ` +
+  `${FAM_STATUS.pending} not started, ${FAM_STATUS.blocked} blocked. Checks and review: ${FAM_VERDICT.pass} passed, ${FAM_VERDICT.fail} failed, ` +
+  `${FAM_VERDICT.pending} not run yet. "go by" names who gave the go.</p>`;
+
 function familyStripHtml(slug) {
   const idx = familyOf(slug);
   const f = idx && familyRow(idx, slug);
@@ -2337,8 +2355,13 @@ function familyStripHtml(slug) {
       return `<span class="dp-fam-inc dp-fam-${esc(i.status)}" title="${esc(i.title)} — ${esc(i.status)}">` +
         `${p.status} ${i.n}${[p.checks, p.review, p.by].filter(Boolean).map((x, k) => `${k ? " ·" : ""} <span class="dim">${esc(x)}</span>`).join("")}</span>`;
     }).join("");
+    // The member's line in words: phase, how many increments are done, who
+    // gives its go, and whether it waits on the parent.
+    const words = [FAM_PHASE[m.phase] || m.phase, `${m.done} of ${m.total} done`];
+    if (m.role === "child" && m.go === "parent") words.push("the parent gives its go");
+    if (!me && m.role === "child" && waitingOn(m.slug).length) words.push("waits on the parent");
     const line = `<span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
-      ` <span class="dim">· ${esc(m.phase === "implementing" ? "building" : m.phase)} · ${m.done}/${m.total}${m.role === "child" && m.go === "parent" ? " · parent goes" : ""}</span>`;
+      ` <span class="dim">· ${words.map(esc).join(" · ")}</span>`;
     const held = m.held ? `<div class="dp-fam-wait">held by the parent: ${esc(m.held)}</div>` : "";
     // This plan's own line and the plan it waits on stay open; every other
     // member is one line, its increments behind a disclosure.
@@ -2346,7 +2369,7 @@ function familyStripHtml(slug) {
     if (open || !incs) return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}">${line}${held}` +
       (incs ? `<div class="dp-fam-incs">${incs}</div>` : "") + `</li>`;
     return `<li class="dp-fam-m"><details class="dp-fam-more"><summary>${line}</summary>` +
-      `<div class="dp-fam-incs">${incs}</div></details>${held}</li>`;
+      `${FAM_KEY}<div class="dp-fam-incs">${incs}</div></details>${held}</li>`;
   }).join("");
   const owns = f.owns.length ? `<p class="dim">this plan owns ${f.owns.map(g => `<code>${esc(g)}</code>`).join(" ")}</p>` : "";
   const waits = f.waitingOn.length
@@ -2360,6 +2383,7 @@ function familyStripHtml(slug) {
 .dp-fam-inc{white-space:nowrap}
 .dp-fam-done{opacity:.75}
 .dp-fam p{margin:4px 0}
+.dp-fam .dp-fam-key{margin:4px 0 2px 1.2em;font-size:.88em}
 .dp-fam-wait{color:var(--warn,#c80)}
 .dp-fam-link{color:inherit}
 .dp-fam-more>summary{cursor:pointer;list-style:none;width:fit-content}
@@ -2404,7 +2428,7 @@ function gateLineHtml(st, g, next, nextAct) {
   let why;
   if (st.gate === "open") why = "opened by hand.";
   else if (!g.allow && st.phase === "review")
-    why = `the alignment check isn't taken yet. <a href="${esc(st.slug)}.review.html#s-alignment-check">Take it on the review page</a>.`;
+    why = `the alignment check isn't taken yet. <a class="dp-gate-fix" href="${esc(st.slug)}.review.html#s-alignment-check">Take it on the review page</a>.`;
   else if (g.between && next)
     why = `no increment has its go yet. Next: <a href="#inc-${next.n}">${esc(nextAct || "go")} on increment ${next.n}</a>.`;
   else if (g.allow && p.open.length)
@@ -2424,14 +2448,20 @@ function workingHtml(spec, st, b64) {
   // quiet, so five equal buttons no longer hide which one matters.
   const next = (st.increments || []).find(i => i.status !== "done");
   const nextAct = next && incActions(next.status).find(a => !ALWAYS.includes(a));
-  const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : inc === next && a === nextAct ? "primary" : "";
+  // Until the alignment check passes, applyTransition refuses every go. So a
+  // go is drawn held (quiet, kept disabled even when served, its title saying
+  // why) and the gate line's fix link is the page's one primary. The grade
+  // that passes rewrites this page, and the served page reloads on that.
+  const held = st.phase === "review";
+  const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : held ? "held" : inc === next && a === nextAct ? "primary" : "";
+  const HELD_TIP = "The gate is shut: take the alignment check first";
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
     const files = fileTreeHtml(planPaths(d));
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
     const btn = a => `<button class="dp-act" data-a="${a}" data-n="${inc.n}"${kindOf(inc, a) ? ` data-kind="${kindOf(inc, a)}"` : ""} disabled ` +
-      `title="${a} increment ${inc.n} — available when served">${a}</button>`;
+      `title="${kindOf(inc, a) === "held" ? HELD_TIP : `${a} increment ${inc.n}`} — available when served">${a}</button>`;
     // The next increment shows its moves in the open. Any other card shows
     // only the move an increment that has its go still owes (start or done);
     // the rest (a go out of order, block, reset) wait behind a small ⋯.

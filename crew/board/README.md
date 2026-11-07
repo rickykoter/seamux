@@ -73,7 +73,7 @@ The dial is an arc with no number in it (one that small could not be read); its
 tooltip says how far, "1 of 4 increments". A card that needs you says so on its
 badge, in the headline's words, and its reason opens its said line ("Question:",
 "Gate shut:") unless the line already says it; the other tiers keep their reason
-on the badge. A row a usage limit stopped wears one pill, "limit · back 2:04 PM",
+on the badge. A row a usage limit stopped wears one pill, "back 2:04 PM",
 in place of its badge. Every time on the board is in that one format: "2:04 PM"
 today, "Sat 1:31 AM" within the week. Framed by the app, the ⋯ menu comes after
 the badge on hover, never over it, so the badge and the pill read in full; the

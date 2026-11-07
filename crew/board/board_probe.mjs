@@ -162,18 +162,18 @@ render({ rows: [{ id: "n", name: "no-increments", kind: "attend", badge: "review
   said: "x", chips: [], frac: null, meta: "" }], quiet: "" });
 checks.push(["null progress renders a dot, not 0%", !/<text/.test(els.rows.innerHTML)]);
 
-// Today's-$ fact: rendered with dollars, dimmed when small, absent when the
+// Today's $: a card says it in its header's tooltip, never as a footer fact
+// (at rail width it wrapped onto a line of its own), and says nothing when the
 // field is missing (the CI/no-ccusage path sends rows without it).
-checks.push(["cost fact rendered with dollars", out.includes(">$4.20<")]);
-checks.push(["a small cost is dimmed", /class="cost small"[^>]*>\$0\.31</.test(out)]);
+checks.push(["cost is in the card's header tooltip", /title="[^"]*\$4\.20 today/.test(out) && /title="[^"]*\$0\.31 today/.test(out)]);
+checks.push(["a card draws no cost fact", !/class="cost/.test(out)]);
 // Linked-issue chip: rendered when the collector supplied it (integration
 // enabled), absent otherwise — the un-enabled row must show none.
 checks.push(["issue chip renders as its own target",
   /class="issue" data-a="issue"[^>]*>#87</.test(out)]);
 checks.push(["rows without an issue field show no issue chip",
   (out.match(/class="issue"/g) || []).length === 1]);
-checks.push(["a row without cost shows no dollar fact",
-  (out.match(/class="cost/g) || []).length === 2]);
+checks.push(["a row without cost shows no dollar figure", (out.match(/ today"/g) || []).length === 2]);
 
 // The one that matters: agent output must not become markup.
 render({ rows: [{ id: "x", name: "<img src=x onerror=1>", kind: "attend",
@@ -476,7 +476,7 @@ const qo = els.rows.innerHTML;
 checks.push(["a quiet row is one line: no dial, said, or footer until unfolded",
   !/class="(dial|said|feed)/.test(qo) && (qo.match(/class="top jumps"/g) || []).length === 2 &&
   !/<div class="chips">/.test(qo) && !/ open"/.test(qo) &&
-  /class="row quiet owned fd"[^]*<div class="top jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"[^]*<div class="fold"><div class="foot( one)?"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
+  /class="row quiet owned fd"[^]*<div class="top jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"[^]*<div class="fold"><div class="foot( one)?"><span class="branch"/.test(qo) &&
   !/class="cost|class="wk/.test((qo.match(/<div class="fold">[^]*?<\/div><\/div>/) || [""])[0]) &&
   /class="row quiet" data-id="q2"[^]*?<div class="top jumps" data-a="jump"/.test(qo) && !qo.split('data-id="q2"')[1].includes("fold")]);
 // Its chips stay, as ghosts on that line -- except jump, which the row itself
@@ -510,8 +510,8 @@ render({ rows: [
     !h.includes('class="wk"') && !/>wake<\/span>/.test(h) && !/class="chip"[^>]*>wake</.test(h)]);
   checks.push(["wake: an idle quiet row with only the Wake chip still says idle",
     w4.includes('class="badge">idle<')]);
-  checks.push(["wake: a card's footer ends with the spend",
-    /<div class="foot( one)?">.*<span class="end"><span class="cost[^"]*"[^>]*>\$4\.12<\/span><\/span><\/div>/.test(w6)]);
+  checks.push(["wake: a card's footer carries no spend; its header tooltip does",
+    !/class="end"|class="cost/.test(w6) && /\$4\.12 today/.test(w6)]);
   void w5; void w7; void w8;
 }
 
@@ -521,13 +521,12 @@ render({ rows: [
 checks.push(["tier rules style a row's own head, never its children's",
   !/\.(attend|running|wilt|done|quiet) \.(badge|top|nm|cost|chips|dial)\b/.test(css)]);
 
-// No edge stripe at all. The worktree colour is a dot before the branch, in
-// the footer: beside the name it read as a second state dot.
-checks.push(["the worktree colour is a dot before the branch, never on the header, and not a stripe",
-  /<div class="foot( one)?"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
-  !/<div class="top[^]*?class="own"[^]*?<\/div><div class="fold">/.test(q1head(qo)) &&
+// No edge stripe and no dot. The worktree colour is only the ring round the
+// row you stand in: a dot beside the name or the branch read as one more state.
+checks.push(["the worktree colour draws no dot and no stripe, only the ring of the row you stand in",
+  !/class="own"/.test(qo) && !/\.own\{/.test(css) &&
   !/inset\s+\d+px\s+0\s+0\s+0\s+var\(--own\)/.test(css) &&
-  /\.foot>\.own\{[^}]*background:var\(--own\)/.test(css)]);
+  /\.row\.here\{box-shadow:0 0 0 2px var\(--own/.test(css)]);
 // The header is the jump with no arrow: its ground lifts on hover.
 checks.push(["no arrow on any header, and no rule for one; the hover ground is the cue",
   !/\.go\b/.test(css) && /\.top\.jumps:hover\{background:/.test(css)]);
@@ -1149,11 +1148,14 @@ if (live && Array.isArray(live.rows)) {
       cost: 0, cost_unpriced: ["claude-test-9-9"] },
   ], quiet: "" });
   const uout = els.rows.innerHTML;
-  checks.push(["unpriced: the row's dollars carry a + marker", uout.includes(">$0.11+<")]);
-  checks.push(["unpriced: ...and a title naming the model",
-    /class="cost"[^>]*title="[^"]*no price for claude-test-9-9[^"]*">\$0\.11\+</.test(uout)]);
-  checks.push(["unpriced: a priced row has no marker", uout.includes(">$2.00<")]);
-  checks.push(["unpriced: $0 of only-unpriced usage still shows, as a floor", uout.includes(">$0.00+<")]);
+  checks.push(["unpriced: the card's dollars carry a + marker", uout.includes("$0.11+ today")]);
+  checks.push(["unpriced: a priced card has no marker", uout.includes("$2.00 today")]);
+  checks.push(["unpriced: $0 of only-unpriced usage still shows, as a floor", uout.includes("$0.00+ today")]);
+  // A quiet row still draws the figure, and its title names the model.
+  render({ rows: [{ id: "q", name: "q-unpriced", kind: "quiet", badge: "idle", said: "", chips: [], frac: null, meta: "",
+    cost: 0, cost_unpriced: ["claude-test-9-9"] }], quiet: "" });
+  checks.push(["unpriced: a quiet row's figure has a title naming the model",
+    /class="cost"[^>]*title="[^"]*no price for claude-test-9-9[^"]*">\$0\.00\+</.test(els.rows.innerHTML), els.rows.innerHTML.slice(0, 600)]);
 
   // The status line, on usage billing, where it shows dollars.
   // The whole line: on usage billing it is the month line, then any cache segment.
@@ -2411,7 +2413,7 @@ if (crewImpl.isRust("crew-board")) {
         resets_at: tom.getTime(), next_try: null, tries: 0, usage: false } })], quiet: "" });
     const ht = els.rows.innerHTML, day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][tom.getDay()];
     checks.push(["times: the shelf and a limit's pill say a time in one format, \"" + day + " 1:05 PM\"",
-      ht.includes(">until " + day + " 1:05 PM<") && ht.includes(">limit \u00b7 back " + day + " 1:05 PM<") &&
+      ht.includes(">until " + day + " 1:05 PM<") && ht.includes(">back " + day + " 1:05 PM<") &&
       !/\d(am|pm)\b/.test(ht), ht.slice(0, 900)]);
     checks.push(["times: the render keeps no locale clock of its own (toLocaleTimeString, toTimeString) or a lower-case am/pm",
       !/toLocaleTimeString|toLocaleDateString|toTimeString/.test(readFileSync(join(HERE, "render.js"), "utf8")) &&
@@ -2520,7 +2522,7 @@ if (crewImpl.isRust("crew-board")) {
   const cut = (id) => { const i = h.indexOf('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
   const un = cut("un"), ar = cut("ar");
   checks.push(["limits: a stopped row wears an amber pill saying when it is back (which limit in its tooltip), or the limit with no time",
-    /class="badge lim"[^>]*>limit \u00b7 back 11:04 PM</.test(un) && /class="badge lim"[^>]*title="[^"]*weekly limit[^"]*">limit \u00b7 back 11:04 PM</.test(ar) &&
+    /class="badge lim"[^>]*>back 11:04 PM</.test(un) && /class="badge lim"[^>]*title="[^"]*weekly limit[^"]*">back 11:04 PM</.test(ar) &&
     /class="badge lim"[^>]*>rate limited</.test((render({ rows: [R("x", { limited: lim({ resets_at: null, label: "rate limited", window: null }) })], quiet: "" }), els.rows.innerHTML)), un.slice(0, 600)]);
   // The limit is why the row needs you: it takes the badge's place, so the
   // name keeps its room.

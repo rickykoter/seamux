@@ -254,6 +254,23 @@ export function fuzzy(q: string, text: string): { score: number; at: number[] } 
 
 export type Hit = { row: Row; score: number; marks: Partial<Record<Field, number[]>> };
 
+/** Whether `branch` only repeats `name`: "checkout-flow" or
+ *  "sam/checkout-flow" for a session named checkout-flow. */
+export const echoes = (branch: string, name: string): boolean => {
+  const b = branch.toLowerCase(), n = name.toLowerCase();
+  return !!n && (b === n || b.endsWith("/" + n));
+};
+
+/** What a row shows after its name, on the same line: the field the query
+ *  matched when it was not the name, else the branch when it says more than
+ *  the name does, else nothing. `at` are the matched letters in `text`. */
+export function asideOf(h: Hit): { field: Field; text: string; at?: number[] } | null {
+  const r = h.row;
+  const f = FIELDS.find((x) => x !== "name" && h.marks[x]?.length);
+  if (f) return { field: f, text: r[f], at: h.marks[f] };
+  return r.branch && !echoes(r.branch, r.name) ? { field: "branch", text: r.branch } : null;
+}
+
 /** The rows matching every word of `q` in some field, ranked (see the top
  *  of this file); with an empty `q`, every row. `marks` are the matched
  *  letters per field, for the page to underline. */
