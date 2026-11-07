@@ -478,6 +478,8 @@ export class Wake {
     this.list.classList.toggle("searching", !!this.query);
     this.list.replaceChildren(...out);
     this.sel = keepId === undefined ? -1 : this.vis.findIndex((r) => r.id === keepId);
+    // A pick whose day was just folded is out of sight: Enter must not open it.
+    if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded")) this.sel = -1;
   }
 
   private row(r: Row, i: number, sel: boolean): HTMLElement {
