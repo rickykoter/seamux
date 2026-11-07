@@ -10,12 +10,12 @@
         /* seamux's palette (everforest.css, from theme/everforest.css), as
            deep-plan's pages wear it; both modes come from there. */
         --fg: var(--ef-text); --muted: var(--ef-text-dim); --bg: var(--ef-bg); --strip: var(--ef-bg-dim); --line: var(--ef-line);
-        --on: var(--ef-bg1); --accent: var(--ef-mark); --bad: var(--ef-bad); --good: var(--ef-good);
+        --on: var(--ef-bg1); --accent: var(--ef-accent); --ask: var(--ef-mark); --bad: var(--ef-bad); --good: var(--ef-good);
         --card: var(--ef-bg1); --shade: rgba(0, 0, 0, 0.06);
         /* Word colours: the hues above are for fills and dots. */
-        --accent-t: var(--ef-text-mark); --bad-t: var(--ef-text-bad); --good-t: var(--ef-text-good); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
-        /* Section labels: deep-plan's amber small caps. */
-        --section: var(--ef-text-mark);
+        --accent-t: var(--ef-text-accent); --ask-t: var(--ef-text-mark); --bad-t: var(--ef-text-bad); --good-t: var(--ef-text-good); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
+        /* Section labels: quiet small caps. Yellow is kept for what needs you. */
+        --section: var(--ef-text-dim);
         /* Every drawing of a pane, live or text, shares these; --pane-bg and
            --pane-fg are the terminal theme cmux reports (term.ts sets them). */
         --term-font: 12px/15px ui-monospace, Menlo, monospace; --term-pad: 8px;
@@ -116,7 +116,7 @@
       .sheet-tab-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 4ch; flex: 0 1 auto; }
       /* The state gives way first, then the name. */
       .sheet-tab-state { white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 100 auto; }
-      .sheet-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+      .sheet-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ask); flex: none; }
       .sheet-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; }
       .sheet-pane, .sheet-wake { flex: 1; min-height: 0; display: flex; flex-direction: column; }
       .sheet-pane[hidden], .sheet-wake[hidden] { display: none; }
@@ -142,10 +142,6 @@
       body.splitting, body.splitting * { user-select: none; -webkit-user-select: none; }
       body.splitting-x, body.splitting-x * { cursor: col-resize !important; }
       body.splitting-y, body.splitting-y * { cursor: row-resize !important; }
-      .sheet-chat header { flex: none; display: flex; align-items: baseline; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-      .sheet-chat-state { font-size: 11.5px; color: var(--muted); }
-      .sheet-chat-state.needs_input { color: var(--accent); }
-      .sheet-chat-state.working { color: var(--good); }
       .sheet-chat-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--term-pad); font: var(--term-font); color: var(--pane-fg-or); background: var(--pane-bg-or); }
       .sheet-chat-body .ln { white-space: pre-wrap; overflow-wrap: anywhere; }
       .sheet-kin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
@@ -174,13 +170,14 @@
       .sheet-chat-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
       .sheet-chat-tab svg { flex: none; width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
       .sheet-chat-tab-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-      .sheet-chat-tab.needs_input .sheet-chat-tab-dot { background: var(--accent); }
+      .sheet-chat-tab.needs_input .sheet-chat-tab-dot { background: var(--ask); }
       .sheet-chat-tab.working .sheet-chat-tab-dot { background: var(--good); }
-      .sheet-chat-tab.term.bell svg { color: var(--accent); }
+      .sheet-chat-tab.term.bell svg { color: var(--ask); }
       .sheet-chat-tab-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3ch; }
       .sheet-chat-tab.term .sheet-chat-tab-name { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
       .sheet-chat-tab.agent .sheet-chat-tab-name { font-weight: 600; flex: none; }
-      .sheet-chat-tab-state { white-space: nowrap; color: var(--accent); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+      .sheet-chat-tab-state { white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+      .sheet-chat-tab.needs_input .sheet-chat-tab-state { color: var(--ask-t); }
       .sheet-chat-tab-state::before { content: "·"; margin-right: 6px; color: var(--muted); }
       .sheet-chat-new, .sheet-chat-hist, .sheet-chat-resume { flex: none; }
       .sheet-chat-sessions .sheet-btn:disabled { opacity: 0.5; cursor: default; }

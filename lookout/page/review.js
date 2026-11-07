@@ -937,6 +937,8 @@
     // A sent draft is cleared before the redraw, so the redraw does not put
     // it back; every other draft is restored by afterDraw.
     const openComposers = new Set();
+    // Reply boxes opened on this page, and ones Esc folded with a draft in them.
+    const replying = new Set(), folded = new Set();
     const send = (body, status, key) => {
       status.textContent = "sending…";
       status.classList.remove("bad");
@@ -944,7 +946,7 @@
       // the reply is not a failed send, and never reads as a dead server.
       return post(body).then(j => {
         if (key) {
-          saveDraft(key, ""); openComposers.delete(key);
+          saveDraft(key, ""); openComposers.delete(key); replying.delete(key); folded.delete(key);
           const sent = document.querySelector(`textarea[data-draft="${CSS.escape(key)}"]`);
           if (sent) sent.value = "";
         }
@@ -969,26 +971,59 @@
       });
     };
 
-    // Reply, and close or reopen, under every card.
+    // Reply, and close or reopen, under every card. Folded, a card shows small
+    // Reply / Resolve / Dismiss links; the reply box opens on Reply, and closes
+    // on Esc or when it loses focus empty. A box with a draft in it starts open,
+    // unless Esc folded it on this page.
     actions = x => {
       const finding = x.id.startsWith("f");
       const open = isOpen(x);
       const key = "r:" + x.id;
-      const ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…", "data-draft": key });
-      ta.value = draftText(key);
-      ta.addEventListener("input", () => saveDraft(key, ta.value));
       const status = el("span", { class: "send-status" });
+      let ta = null;
       const go = (op, needText) => () => {
-        if (needText && !ta.value.trim()) { ta.focus(); return; }
-        send({ op, item: x.id, text: ta.value }, status, key).then(() => {}, () => {});
+        if (needText && !(ta && ta.value.trim())) { unfold(); return; }
+        // Folded, a close sends no note and leaves a kept draft alone.
+        send({ op, item: x.id, text: ta ? ta.value : "" }, status, ta ? key : null).then(() => {}, () => {});
       };
-      ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go("comment", true)(); });
-      return el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
-        el("button", { type: "button", class: "primary", onclick: go("comment", true) }, "Reply"),
+      const box = el("div", { class: "actions" });
+      const unfold = () => { replying.add(key); folded.delete(key); draw(); ta.focus(); };
+      const fold = () => { replying.delete(key); if (draftText(key).trim()) folded.add(key); draw(); };
+      const closers = [
         open ? el("button", { type: "button", onclick: go("resolve") }, "Resolve") : null,
         open && finding ? el("button", { type: "button", onclick: go("dismiss") }, "Dismiss") : null,
         !open ? el("button", { type: "button", onclick: go("reopen") }, "Reopen") : null,
-        status));
+      ];
+      function draw() {
+        const show = replying.has(key) || (!!draftText(key).trim() && !folded.has(key));
+        box.classList.toggle("folded", !show);
+        if (!show) {
+          ta = null;
+          box.replaceChildren(el("div", { class: "buttons links" },
+            el("button", { type: "button", onclick: unfold }, draftText(key).trim() ? "Reply (draft)" : "Reply"),
+            ...closers, status));
+          return;
+        }
+        ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…", "data-draft": key });
+        ta.value = draftText(key);
+        ta.addEventListener("input", () => saveDraft(key, ta.value));
+        ta.addEventListener("keydown", e => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go("comment", true)();
+          else if (e.key === "Escape" && $("keys").hidden) { e.preventDefault(); fold(); }
+        });
+        // A click on this card's own buttons is not leaving the box.
+        // A redraw replaces the box; only a box still on the page folds.
+        const mine = ta;
+        mine.addEventListener("blur", e => {
+          if (e.relatedTarget && box.contains(e.relatedTarget)) return;
+          setTimeout(() => { if (mine.isConnected && document.activeElement !== mine && !mine.value.trim()) fold(); });
+        });
+        box.replaceChildren(ta, el("div", { class: "buttons" },
+          el("button", { type: "button", class: "primary", onclick: go("comment", true) }, "Reply"),
+          ...closers, status));
+      }
+      draw();
+      return box;
     };
 
     // A click on a line number opens a comment under that line.

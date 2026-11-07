@@ -44,7 +44,7 @@
 }
 .tuck-chip[hidden] { display: none; }
 .tuck-chip:hover, .tuck-chip:focus-visible { color: var(--fg); background: var(--on); outline: none; }
-.tuck-chip.waiting { color: var(--fg); border-color: var(--accent); }
+.tuck-chip.waiting { color: var(--fg); border-color: var(--ask); }
 .tuck-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 
 .palette {
@@ -96,7 +96,7 @@
 /* The tier colours, as the board wears them: waiting is the accent, working
    the running blue, the rest grey; a tucked or muted one is a hollow ring. */
 .search-dot { flex: none; width: 10px; height: 10px; fill: var(--muted); }
-.search-dot.needs_input { fill: var(--accent); }
+.search-dot.needs_input { fill: var(--ask); }
 .search-dot.working { fill: var(--ef-blue, var(--good)); }
 .search-dot.away { fill: none; stroke: var(--muted); stroke-width: 1.4; }
 .search-preview { overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -141,7 +141,7 @@
 .search-p-pane:hover, .search-p-pane:focus-visible { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .search-p-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-p-doing { flex: none; color: var(--muted); }
-.search-p-pane.needs_input .search-p-doing { color: var(--accent); }
+.search-p-pane.needs_input .search-p-doing { color: var(--ask-t); }
 .search-p-pr a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .search-p-ci.pass { color: var(--good); }
 .search-p-ci.fail { color: var(--bad); }

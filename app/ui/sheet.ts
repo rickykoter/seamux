@@ -74,8 +74,8 @@ function tabView(p: Tile): { cls: string; name: string; state: string; tip: stri
  *  box when the live pane fails). */
 class Chat {
   el = document.createElement("section");
-  private name = document.createElement("b");
-  private state = document.createElement("span");
+  /** Its worktree in VS Code and its pane in cmux: the end of the tab row. */
+  private icons: HTMLElement[] = [];
   private body = document.createElement("div");
   /** The pane, live where it is tmux-backed: click into it and keys go to the agent. */
   private term = new TermSlot();
@@ -120,7 +120,6 @@ class Chat {
       this.tabsEl.scrollLeft += e.deltaY;
       e.preventDefault();
     });
-    const head = document.createElement("header");
     this.body.className = "sheet-chat-body";
     const form = document.createElement("form");
     // Replies and jumps go through cmux: hidden on the tmux backend (index.html).
@@ -164,7 +163,8 @@ class Chat {
     code.setAttribute("aria-label", code.title);
     code.append(mark("M3.5 2.5 1 5l2.5 2.5M6.5 2.5 9 5 6.5 7.5"));
     code.addEventListener("click", () => void openInVSCode(this.shown?.cwd ?? "", (m) => (this.note.textContent = m)));
-    head.append(this.name, this.state, code, jump);
+    // No header of its own: the pane tab says the state, the sheet the workspace.
+    this.icons = [code, jump];
     form.append(this.input);
     // Live by default; the plain text and its reply box only when frames fail.
     const live = (on: boolean) => {
@@ -182,7 +182,7 @@ class Chat {
     };
     this.plain.className = "sheet-chat-plain";
     this.plain.hidden = true;
-    this.el.append(head, this.bar, this.term.el, this.plain, this.body, form, this.note);
+    this.el.append(this.bar, this.term.el, this.plain, this.body, form, this.note);
   }
 
   /** A pane that is not tmux-backed has no live terminal here: say so, and
@@ -448,7 +448,7 @@ class Chat {
         this.bar.querySelector<HTMLButtonElement>(".sheet-chat-hist"))?.focus();
     });
     tools.push(hist);
-    const parts: HTMLElement[] = [...tools];
+    const parts: HTMLElement[] = [...tools, ...this.icons];
     if (this.pickOpen && !hist.disabled) {
       const list = document.createElement("div");
       list.className = "sheet-chat-sess-list";
@@ -495,16 +495,16 @@ class Chat {
     this.shown = t;
     this.surface = t.surface;
     this.panes = panes.some((p) => p.surface === t.surface) ? panes : [t, ...panes];
-    if (!this.bar.hidden) this.drawTabs();
+    // The row carries the tabs and icons: draw it now, sessions fill in when they load.
+    if (this.bar.hidden) this.drawSessions(t);
+    else this.drawTabs();
     this.term.show(t.surface);
     this.term.agentState(t.state, t.since);
     this.drawPlain(t);
     this.loadSessions(t);
     // The workspace, then what Claude says the conversation is about.
     const base = t.workspace_title || t.label;
-    this.name.textContent = t.topic ? `${base} · ${t.topic}` : base;
-    this.state.textContent = t.state.replace("_", " ");
-    this.state.className = `sheet-chat-state ${t.state}`;
+    this.bar.title = t.topic ? `${base} · ${t.topic}` : base;
     const text = t.lines.join("\n");
     if (text === this.last) return;
     this.last = text;
@@ -985,7 +985,7 @@ export class Sheet {
     this.active = key;
     this.page = t.page ?? null;
     this.toCmuxFn = t.toCmux ?? null;
-    this.titleEl.textContent = t.key === WAKE ? `the wake · ${this.dir().split("/").pop() ?? ""}` : t.label;
+    this.titleEl.textContent = t.key === WAKE ? this.dir().split("/").pop() ?? "" : t.label;
     this.say.textContent = "";
     // A page that could not load (the server was down) tries again.
     if (t.el?.dataset.failed) {
@@ -1018,7 +1018,7 @@ export class Sheet {
     }
     this.wakeDir = d;
     this.wakeRoots = roots;
-    this.titleEl.textContent = `the wake · ${d.split("/").pop() ?? ""}`;
+    this.titleEl.textContent = d.split("/").pop() ?? "";
     this.wake.showDir(d, roots);
   }
 

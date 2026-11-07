@@ -915,12 +915,24 @@ function mdInline(s) {
       : seg.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")).join("");
 }
 
+// A check's detail lines as HTML, shared by the review and working pages. How
+// the engine runs a check (recipe, commands, polls) folds away under "how it
+// runs": the check's name and verdict are what a reader scans for. What a
+// person must do or know -- an acquire step, a claim that asks, the
+// expectation, a note -- stays in view.
+const CHECK_HOW = /^(recipe |run — |run: |wait — |browser — |scripts: |query: )/;
+function checkDetailHtml(lines) {
+  const shown = lines.filter(l => !CHECK_HOW.test(l)), how = lines.filter(l => CHECK_HOW.test(l));
+  return shown.map(l => `<br>${mdInline(l)}`).join("") +
+    (how.length ? `<details class="dp-run"><summary>how it runs</summary>` + how.map(l => mdInline(l)).join("<br>") + "</details>" : "");
+}
+
 function checksHtml(list, waiver) {
   if (!list.length) return waiver ? `<p class="dim">checks: none — waived: ${esc(waiver)}</p>` : "";
   return `<p class="dim">checks — <code>done</code> is gated on these:</p><ul class="dim">` +
     list.map(c => {
       const { head, lines } = checkLinesMd(c);
-      return `<li>${mdInline(head)}${lines.map(l => `<br>${mdInline(l)}`).join("")}</li>`;
+      return `<li>${mdInline(head)}${checkDetailHtml(lines)}</li>`;
     }).join("") + "</ul>";
 }
 
@@ -1825,6 +1837,58 @@ const AUTO_REFRESH_JS = `
 })();
 </script>`;
 
+// The review page's way out is its last section, so a slim bar stays at the
+// bottom of the column: how many quiz questions have an answer, a jump to the
+// next one, and the same Copy for session (it clicks #dp-copyback, so the
+// blob is built in one place). The count follows change events, which the
+// draft restore in SURFACE_JS fires too.
+function reviewFoot(nq) {
+  const count = nq
+    ? `<span class="dp-foot-n" role="status" aria-live="polite">Quiz <b id="dp-foot-a">0</b>/${nq}<span class="dp-foot-long"> answered</span><span id="dp-foot-msg"></span></span>`
+    : `<span class="dp-foot-n" role="status" aria-live="polite"><span id="dp-foot-msg"></span></span>`;
+  return `<div id="dp-foot" aria-label="send it back">${count}
+<button type="button" class="dp-tbtn" id="dp-foot-go">${nq ? "Go to quiz" : "Go to send it back"}</button>
+<button type="button" class="dp-tbtn dp-foot-copy" id="dp-foot-copy">Copy<span class="dp-foot-long">&nbsp;for session</span></button>
+<script>
+(function () {
+  var a = document.getElementById("dp-foot-a"), msg = document.getElementById("dp-foot-msg");
+  function qs() { return Array.prototype.slice.call(document.querySelectorAll(".q[data-qid]")); }
+  function count() {
+    if (!a) return;
+    var all = qs(), n = all.filter(function (q) { return q.querySelector("input:checked"); }).length;
+    a.textContent = n;
+    a.parentNode.classList.toggle("dp-foot-all", n === all.length);
+  }
+  document.addEventListener("change", function (e) { if (e.target.closest && e.target.closest(".q")) count(); });
+  count();
+  function show(node) {
+    var sec = node && node.closest(".dp-sec");
+    if (sec && sec.classList.contains("dp-folded")) { var f = sec.querySelector(".dp-fold"); if (f) f.click(); }
+    // Centered: narrow, the section rail sits over the top of the page.
+    if (node) node.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  document.getElementById("dp-foot-go").addEventListener("click", function () {
+    var open = qs().filter(function (q) { return !q.querySelector("input:checked"); })[0];
+    var to = open || document.getElementById("dp-copyback");
+    show(to);
+    var f = open ? open.querySelector("input") : to;
+    if (f) setTimeout(function () { f.focus({ preventScroll: true }); }, 300);
+  });
+  // The status line under the real button says what happened; the bar
+  // repeats it for a moment.
+  var said = document.getElementById("dp-copied"), t = 0;
+  document.getElementById("dp-foot-copy").addEventListener("click", function () {
+    var b = document.getElementById("dp-copyback");
+    if (b) b.click();
+  });
+  if (said && msg) new MutationObserver(function () {
+    msg.textContent = said.textContent ? " \u00b7 " + said.textContent : "";
+    clearTimeout(t); t = setTimeout(function () { msg.textContent = ""; }, 4000);
+  }).observe(said, { childList: true, characterData: true, subtree: true });
+})();
+</script></div>`;
+}
+
 function reviewHtml(spec, b64, adrs = [], map = null) {
   // Quiz options shuffled per-slug; the shuffled correct position lives in the
   // key file, never in this page.
@@ -1918,7 +1982,7 @@ ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 and your model of it disagree — and either one may be the broken one.</p>
 ${qs}
 ${COPYBACK}
-${surfaceClose()}${SURFACE_JS}${AUTO_REFRESH_JS}</body></html>`;
+${surfaceClose(reviewFoot((spec.quiz || []).length))}${SURFACE_JS}${AUTO_REFRESH_JS}</body></html>`;
 }
 
 // Annotations pulled back from the plan's published artifact, if any. The AGENT
@@ -2026,15 +2090,9 @@ function checksRow(inc, slug = "") {
   const agg = checksAggregate(inc);
   const items = all.map(([id, v]) => {
     const st = v.status || "pending";
-    // How the engine runs a check (recipe, commands, polls) folds away under
-    // its status line: the verdict is what a reader scans for. What a person
-    // must do or know -- an acquire step, a claim that asks, the expectation,
-    // a note -- stays in view.
-    const lines = st === "pass" ? [] : checkLinesMd({ id, ...v }).lines;
-    const HOW = /^(recipe |run — |run: |wait — |browser — |scripts: |query: )/;
-    const shown = lines.filter(l => !HOW.test(l)), how = lines.filter(l => HOW.test(l));
-    const detail = shown.map(l => `<br>${mdInline(l)}`).join("") +
-      (how.length ? `<details class="dp-run"><summary>how it runs</summary>` + how.map(l => mdInline(l)).join("<br>") + "</details>" : "");
+    // A passed check shows its verdict alone; an outstanding one shows its
+    // detail, the run part folded (checkDetailHtml).
+    const detail = st === "pass" ? "" : checkDetailHtml(checkLinesMd({ id, ...v }).lines);
     // A check the Dock can act on (a browser run, a claim that asks) carries
     // its address; the served page's plan.js adds run, open tab, the live
     // filmstrip and the picker. On disk the row is just text.

@@ -272,6 +272,10 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: 1
 .buttons { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 .buttons button.primary { background: var(--ef-text-accent); border-color: var(--ef-text-accent); color: var(--bg); }
+.actions.folded { padding: 2px 10px 6px; border-top: 0; }
+.buttons.links { gap: 2px; margin-left: -6px; }
+.buttons.links button { background: none; border: 0; padding: 2px 6px; font-size: 12px; color: var(--muted); }
+.buttons.links button:hover, .buttons.links button:focus-visible { color: var(--accent-t); text-decoration: underline; }
 .send-status { font-size: 12px; color: var(--muted); }
 .send-status.bad { color: var(--sev-major); }
 @media (max-width: 760px) { tr.composer > td { padding-left: 12px; } }

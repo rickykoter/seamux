@@ -67,7 +67,8 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   `diagrams[].simple` into an archived spec, and `specHash` strips `simple`
   so adding one never drifts an approved snapshot or stales a published copy.
 - Review and working pages wrap their body in `#dp-shell` > `#dp-rail`,
-  `#dp-main`, `#dp-margin` (lib/surface.mjs); the client moves `#dp-mode` and
+  `#dp-main`, `#dp-margin` (lib/surface.mjs), and the review page adds
+  `#dp-foot` (quiz count, copy button) to the shell after them; the client moves `#dp-mode` and
   `label.auto` into the rail and sections each `h2` at load. Highlight
   comments are `.dp-quote` cards whose textarea is a `.dp-note`, so both
   copy buttons pick them up with the rest. `SURFACE_JS` is `String.raw`: no

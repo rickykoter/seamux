@@ -565,7 +565,8 @@ export class ReviewView {
 
   private logBox(j: Job): HTMLElement {
     const d = el("details", "r-log");
-    d.open = this.logOpen.get(j.id) ?? j.status === "failed";
+    // Closed until asked for: a failed run says why above it.
+    d.open = this.logOpen.get(j.id) ?? false;
     d.addEventListener("toggle", () => this.logOpen.set(j.id, d.open));
     const pre = el("pre", "", j.log.join("\n"));
     d.append(el("summary", "", `log (${j.log.length})`), pre);
@@ -578,7 +579,10 @@ export class ReviewView {
   private showFrame(rid: string, title: string): void {
     const down = (why: string) => {
       if (this.framed !== rid) return;
-      const p = el("p", "r-detail bad", `The intent server is down (${why}), so the review page can't be shown here. `);
+      // Plain words on the page; what went wrong goes in the tooltip and console.
+      console.warn(`lookout: review ${rid} not framed: intent server down (${why})`);
+      const p = el("p", "r-detail bad", "This review isn't available right now. ");
+      p.title = `The intent server is down (${why}).`;
       p.append(btn("Retry", () => this.showFrame(rid, title), "r-btn quiet"));
       this.frameBox.replaceChildren(p);
     };
@@ -605,7 +609,8 @@ export class ReviewView {
 
     const bar = el("div", "r-bar");
     const open = this.pickerOpen.has(j.id);
-    const toggle = btn(`Findings ${n} of ${rows.length} ${open ? "▴" : "▾"}`, () => {
+    // Folded by default, the picker is one line: what is open, and how many are ticked.
+    const toggle = btn(`Findings · ${openSummary(j.open)}${n ? ` · ${n} picked` : ""} ${open ? "▾" : "▸"}`, () => {
       if (!this.pickerOpen.delete(j.id)) this.pickerOpen.add(j.id);
       this.render(true);
     }, "r-btn pickbtn");
@@ -633,8 +638,6 @@ export class ReviewView {
       push.title = j.cross ? "A pull request from a fork: the fixes stay local" : j.dirty ? "Uncommitted edits: commit them with Fix, or leave them" : `To ${j.branch}`;
       bar.append(push);
     }
-    const summary = el("span", "r-meta", openSummary(j.open));
-    bar.append(el("span", "r-grow"), summary);
     out.push(bar);
 
     if (open && rows.length) out.push(this.picker(j, rows, ticked, busy));
