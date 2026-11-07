@@ -425,14 +425,19 @@ function __boardRender(d) {
     return "--sg:" + mixTo(c, CARD, 255) + ";--sgl:" + mixTo(c, CARD_L, 0);
   }
 
-  // A signal sent in attend's amber (lookout running, CI running, a plan's
-  // go) is not a call on you, and amber on the board means exactly that. It
-  // wears the link colour instead (.sig.acc); every other colour is lifted.
+  // A signal sent in attend's amber that only reports a state (lookout or CI
+  // running, a stacked parent, Jira in review) is not a call on you, and
+  // amber on the board means exactly that: it wears the link colour instead
+  // (.sig.acc). One that asks something of you (a plan's "go N", its gated
+  // "◈ N/M", "read it →") keeps the amber. Every other colour is lifted.
   // (Keyed without the "#": these are the collector's colours to recognise,
-  // not colours this page paints, which the probe holds to tokens.)
-  var AMBER = { f5a524: 1, dfa000: 1, dbbc7f: 1 };
-  function sigAttr(c) {
-    if (AMBER[String(c || "").toLowerCase().replace(/^#/, "")]) return { cls: " acc", style: "" };
+  // not colours this page paints, which the probe holds to tokens. Not named
+  // AMBER: that is the limit pill's colour above, and a second var would
+  // replace it.)
+  var SIG_AMBER = { f5a524: 1, dfa000: 1, dbbc7f: 1 };
+  var ASKS = /^(go\b|read it|\u25c8)/;
+  function sigAttr(c, t) {
+    if (SIG_AMBER[String(c || "").toLowerCase().replace(/^#/, "")] && !ASKS.test(String(t || ""))) return { cls: " acc", style: "" };
     var col = lift(c);
     return { cls: "", style: col ? ' style="' + col + '"' : "" };
   }
@@ -455,7 +460,7 @@ function __boardRender(d) {
     if (arm) out.push(arm);
     (a.signals || []).forEach(function (e) {
       if (!e.a) return;
-      var sa = sigAttr(e.c);
+      var sa = sigAttr(e.c, e.t);
       out.push('<span class="chip sig' + sa.cls + '"' + sa.style +
         ' data-a="' + esc(e.a) + '"' +
         (e.x !== undefined && e.x !== null && e.x !== "" ? ' data-x="' + esc(e.x) + '"' : "") +
@@ -574,7 +579,7 @@ function __boardRender(d) {
     }
     (a.signals || []).forEach(function (e) {
       if (e.a) return;
-      var sa = sigAttr(e.c);
+      var sa = sigAttr(e.c, e.t);
       // A status signal reads as its word, in its colour. The collector's bare
       // "●" before some words (● lookout) is a chip's glyph; in the footer it
       // sat beside the uncommitted mark as a second dot, so it is dropped.

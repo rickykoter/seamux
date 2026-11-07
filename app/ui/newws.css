@@ -142,10 +142,12 @@
 .migrate-pop-head { margin: 0; padding: 0 8px 2px; font-size: var(--fs-2); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .migrate-list { display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; }
 .migrate-list.more { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); }
-.migrate-row { flex: none; height: 30px; box-sizing: border-box; scroll-snap-align: start; display: flex; align-items: center; gap: 8px; padding: 0 2px 0 8px; border-radius: 6px; cursor: pointer; outline: none; }
-.migrate-row:hover, .migrate-row:focus-visible { background: var(--on); }
-.migrate-row:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
-.migrate-row[aria-disabled="true"] { cursor: default; }
+/* A row: its action (.migrate-go: name, state, hint) and the ×, side by side. */
+.migrate-row { flex: none; height: 30px; box-sizing: border-box; scroll-snap-align: start; display: flex; align-items: center; gap: 2px; padding: 0 2px 0 0; border-radius: 6px; }
+.migrate-row:hover, .migrate-row:focus-within { background: var(--on); }
+.migrate-go { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 8px; border-radius: 6px; cursor: pointer; outline: none; }
+.migrate-go:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.migrate-go[aria-disabled="true"] { cursor: default; }
 .migrate-row b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 .migrate-state, .migrate-where { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .migrate-state.busy { color: var(--accent-t); }
@@ -154,9 +156,9 @@
 /* What the row does: quiet words at its right edge, shown on hover or focus
    for a ready row, always for a failure (try again) or a wait. */
 .migrate-hint { margin-left: auto; flex: none; color: var(--muted); font-size: var(--fs-2); white-space: nowrap; opacity: 0; transition: opacity 0.12s; }
-.migrate-row:hover .migrate-hint, .migrate-row:focus-visible .migrate-hint, .migrate-hint.on { opacity: 1; }
+.migrate-row:hover .migrate-hint, .migrate-go:focus-visible .migrate-hint, .migrate-hint.on { opacity: 1; }
 .migrate-row.bad .migrate-hint { color: var(--fg); text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
-.migrate-row.bad:hover .migrate-hint, .migrate-row.bad:focus-visible .migrate-hint { text-decoration-color: currentColor; }
+.migrate-row.bad:hover .migrate-hint, .migrate-row.bad .migrate-go:focus-visible .migrate-hint { text-decoration-color: currentColor; }
 .migrate-why + .migrate-hint { margin-left: 0; }
 @media (hover: none) { .migrate-hint { opacity: 1; } }
 .migrate .migrate-no, .migrate-pop .migrate-no { flex: none; padding: 0 7px; height: 22px; background: none; border-color: transparent; color: var(--muted); }

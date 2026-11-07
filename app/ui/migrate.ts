@@ -191,7 +191,7 @@ export class MigrateBanner {
     this.review.setAttribute("aria-expanded", String(open));
     this.review.classList.toggle("on", open);
     this.draw();
-    if (open) this.list.querySelector<HTMLElement>(".migrate-row:not([aria-disabled='true'])")?.focus();
+    if (open) this.list.querySelector<HTMLElement>(".migrate-go:not([aria-disabled='true'])")?.focus();
     else if (refocus) this.review.focus();
   }
 
@@ -374,7 +374,7 @@ export class MigrateBanner {
     this.pop.hidden = false;
     this.place();
     if (had) {
-      const again = this.list.querySelector<HTMLElement>(`.migrate-row[data-key="${CSS.escape(had)}"]`) ?? this.list.querySelector<HTMLElement>(".migrate-row");
+      const again = this.list.querySelector<HTMLElement>(`.migrate-row[data-key="${CSS.escape(had)}"] .migrate-go`) ?? this.list.querySelector<HTMLElement>(".migrate-go");
       again?.focus({ preventScroll: true });
     }
   }
@@ -402,11 +402,11 @@ export class MigrateBanner {
 
   /** ↑ and ↓ walk the rows; Enter and Space act on the one in focus. */
   private key(e: KeyboardEvent): void {
-    const row = (e.target as HTMLElement).closest<HTMLElement>(".migrate-row");
+    const row = (e.target as HTMLElement).closest<HTMLElement>(".migrate-go");
     if (!row || e.target !== row) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      const all = [...this.list.querySelectorAll<HTMLElement>(".migrate-row")];
+      const all = [...this.list.querySelectorAll<HTMLElement>(".migrate-go")];
       const at = all.indexOf(row) + (e.key === "ArrowDown" ? 1 : -1);
       all[Math.max(0, Math.min(all.length - 1, at))]?.focus();
     } else if (e.key === "Enter" || e.key === " ") {
@@ -418,10 +418,16 @@ export class MigrateBanner {
   private row(o: Offer, said: string): HTMLElement {
     const k = key(o);
     const bad = this.failed.get(k);
-    const r = el("div", `migrate-row${bad ? " bad" : ""}`);
-    r.dataset.key = k;
+    // A list item holding two controls side by side: the row's action (the
+    // name, its state and a quiet hint, all one target) and the ×. Never a
+    // button inside a button.
+    const row = el("div", `migrate-row${bad ? " bad" : ""}`);
+    row.dataset.key = k;
+    row.setAttribute("role", "listitem");
+    const r = el("div", "migrate-go");
     r.setAttribute("role", "button");
     r.tabIndex = 0;
+    row.append(r);
     const name = el("b", "", nameOf(o));
     name.title = o.cwd;
     r.append(name);
@@ -466,21 +472,15 @@ export class MigrateBanner {
     r.setAttribute("aria-label", `${nameOf(o)}: ${hint}`);
     if (act) {
       const go = act;
-      r.addEventListener("click", (e) => {
-        if ((e.target as HTMLElement).closest(".migrate-no")) return;
-        go();
-      });
+      r.addEventListener("click", () => go());
     } else r.setAttribute("aria-disabled", "true");
     const no = button("×", "migrate-no");
     no.title = o.kind === "restart" ? "Don't restart it, and forget it" : o.kind === "revive" ? "Leave it in cmux" : "Leave it where it is";
     no.setAttribute("aria-label", no.title);
     no.tabIndex = -1;
-    no.addEventListener("click", (e) => {
-      e.stopPropagation();
-      void this.decline(o);
-    });
-    r.append(no);
-    return r;
+    no.addEventListener("click", () => void this.decline(o));
+    row.append(no);
+    return row;
   }
 
   private async apply(o: Offer): Promise<void> {

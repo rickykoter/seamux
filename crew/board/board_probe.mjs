@@ -540,6 +540,26 @@ checks.push(["an amber signal is never drawn amber: it wears --link, as a chip a
   (sigOut.match(/class="chip sig acc"/g) || []).length === 1 && (sigOut.match(/class="sig acc"/g) || []).length === 1 &&
   !/F5A524|f5a524/.test(sigOut) && /\.sig\.acc\{color:var\(--link\)\}/.test(css) &&
   TOK.link && TOK.link !== TOK.attend && TOKL.link !== TOKL.attend]);
+// ...except one that asks something of you: a plan's "go N", its gated
+// "◈ N/M" and "read it →" keep the amber, as "needs you" does.
+render({ rows: [{ id: "g", name: "g", kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "",
+  signals: [{ t: "go 2", c: "#F5A524", h: "Authorize increment 2", a: "go", x: "2" },
+            { t: "read it \u2192", c: "#F5A524", h: "Too long", a: "jump" },
+            { t: "\u25c8 1/3", c: "#F5A524", h: "Increments done" },
+            { t: "\u25cf CI", c: "#F5A524", h: "Open the running checks", a: "checks" }] }], quiet: "" });
+{
+  const ga = els.rows.innerHTML;
+  checks.push(["an amber signal that asks something of you (go, read it, a gated plan) stays amber; a running CI does not",
+    /class="chip sig" style="--sg:[^"]*"[^>]*data-a="go"/.test(ga) && /class="chip sig" style="--sg:[^"]*"[^>]*data-a="jump"/.test(ga) &&
+    /class="sig" style="--sg:[^"]*"[^>]*>\u25c8 1\/3</.test(ga) && /class="chip sig acc"[^>]*data-a="checks"/.test(ga), ga.slice(0, 900)]);
+}
+// The limit pill's colour is a colour, not the signal table (a second var
+// AMBER once replaced it with an object: color:[object Object]).
+render({ rows: [{ id: "l", name: "l", kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "",
+  limited: { error: "rate_limit", window: "five_hour", label: "5h limit", resets_at: Date.now() + 3600e3, next_try: null, tries: 0, usage: false } }], quiet: "" });
+checks.push(["the limit pill and its said line wear the attend colour, never an object",
+  /class="badge lim" style="color:var\(--attend\);border-color:var\(--attend\)"/.test(els.rows.innerHTML) &&
+  !els.rows.innerHTML.includes("[object"), els.rows.innerHTML.slice(0, 600)]);
 checks.push(["a signal colour that is not a hex never reaches a style attribute",
   !sigOut.includes("url(") && /class="chip sig" data-a="checks"[^>]*>bad</.test(sigOut)]);
 render({ rows: [{ id: "c", name: "c", kind: "running", badge: "b", said: "", chips: [], frac: null,
