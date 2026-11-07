@@ -287,10 +287,11 @@
     const head = el("div", { class: "card-head", onclick: closed ? () => { expandedClosed.has(x.id) ? expandedClosed.delete(x.id) : expandedClosed.add(x.id); drawFile(); } : null },
       finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment"),
       // Title first; folded, a finding shows its short summary, open, the full one, once.
-      el("span", { class: "title" }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
+      // Hovered, the title's tooltip names the id, category and verdict.
+      el("span", { class: "title", title: x.id + (finding ? " · " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible") : "") }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
       // The id, category and verdict sit out of the row (review.css .card-head
-      // .meta), so the title has the full width until the card is hovered,
-      // focused or picked.
+      // .meta), so the title has the full width until the card is focused
+      // or picked.
       el("span", { class: "meta" }, el("span", { class: "fid" }, x.id),
         finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null),
       // Open is the usual state: only the others get a pill. An addressed

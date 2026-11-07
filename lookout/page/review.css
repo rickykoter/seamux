@@ -258,16 +258,15 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .fid { font: var(--fs-1) var(--mono); color: var(--muted); }
 .cat { font-size: var(--fs-1); color: var(--muted); }
 /* The id, category and verdict take no room in the row, so a title wraps only
-   at the card's edge. Hovered, they show in the card's bottom corner, clear of
-   the title and its status pill; picked,
-   focused or flashed (keys, a reply box) they rejoin the row, as the action
-   row does. They stay in the DOM for screen readers; on touch, in the row. */
+   at the card's edge. Hovered, the title's tooltip names them (review.js), so
+   nothing covers the card; picked, focused or flashed (keys, a reply box) they
+   rejoin the row, as the action row does. They stay in the DOM for screen
+   readers; on touch, in the row. */
 .card { position: relative; }
 .card-head .meta { position: absolute; bottom: 0; right: 0; z-index: 1; display: flex; gap: 4px; align-items: baseline;
   max-width: 60%; padding: 2px 8px; white-space: nowrap; overflow: hidden;
   background: var(--card); border-left: 1px solid var(--card-border); border-top: 1px solid var(--card-border);
   border-top-left-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .12s; }
-.card:hover .card-head .meta { opacity: 1; }
 .card:focus-within .card-head .meta, .card.flash .card-head .meta, .card.cur .card-head .meta {
   position: static; opacity: 1; max-width: none; padding: 0; background: none; border: 0; pointer-events: auto; }
 @media (hover: none) { .card-head .meta { position: static; opacity: 1; max-width: none; padding: 0; background: none; border: 0; } }

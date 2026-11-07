@@ -644,16 +644,16 @@ export class ReviewView {
     if (job?.status === "ready") void this.loadFindings(job);
   }
 
-  /**
-   * The header row is one line: it overflows when its content runs past its
-   * width, or when the title is squeezed under TITLE_MIN while it still has
-   * more to show.
-   */
   /** Whether the header row has taken this step (FOLDS) to fit. */
   private folds(f: Fold): boolean {
     return FOLDS.indexOf(f) < this.fold;
   }
 
+  /**
+   * The header row is one line: it overflows when its content runs past its
+   * width, or when the title is squeezed under TITLE_MIN while it still has
+   * more to show.
+   */
   private overflows(): boolean {
     const row = this.head.querySelector<HTMLElement>(".r-mhead-row");
     if (!row) return false;
@@ -785,8 +785,11 @@ export class ReviewView {
     return { state: [gate, mode], view };
   }
 
-  /** A small menu for what is used less: the review's settings, Re-review, Remove, and what the row folded. */
-  /** `name`: the title, the menu's first line while the row cuts it (review.css .cut). */
+  /**
+   * A small menu for what is used less: the review's settings, Re-review,
+   * Remove, and what the row folded. `name` is the title, the menu's first
+   * line while the row cuts it (review.css .cut).
+   */
   private more(key: string, meta: string, items: HTMLElement[], name = ""): HTMLElement {
     const b = el("button", "r-btn quiet r-more-btn");
     b.append(dots());

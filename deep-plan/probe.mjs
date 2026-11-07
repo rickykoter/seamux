@@ -789,9 +789,10 @@ ok("mermaid theme follows the page theme",
     rgh.includes("function riskMoved(card)") && rgh.includes("!riskMoved(card)) { ctl.hidden = true; b.hidden = false; }") &&
     rgh.includes("if (riskMoved(card)) riskOpen(card)"));
   ok("a risk's change link shows on hover or focus of its row, stays for an undecided risk and on screens with no hover",
-    rgh.includes(".dp-risk .dp-risk-change{opacity:0;") &&
-    rgh.includes('.dp-risk:hover .dp-risk-change,.dp-risk:focus-within .dp-risk-change,.dp-risk[data-disposition=""] .dp-risk-change{opacity:1}') &&
-    rgh.includes("@media (hover:none){.dp-risk .dp-risk-change{opacity:1}}") &&
+    // Hidden, it takes no clicks either: no invisible target beside the text.
+    rgh.includes(".dp-risk .dp-risk-change{opacity:0;pointer-events:none;") &&
+    rgh.includes('.dp-risk:hover .dp-risk-change,.dp-risk:focus-within .dp-risk-change,.dp-risk[data-disposition=""] .dp-risk-change{opacity:1;pointer-events:auto}') &&
+    rgh.includes("@media (hover:none){.dp-risk .dp-risk-change{opacity:1;pointer-events:auto}}") &&
     !/\.dp-risk-change\{[^}]*(display:none|visibility:hidden)/.test(rgh));
   const rgk = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "risk-good-plan.key.json"), "utf8"));
   ok("the key lists no undispositioned risk", (rgk.undispositionedRisks || []).length === 0);

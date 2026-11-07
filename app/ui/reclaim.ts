@@ -190,7 +190,7 @@ export class ReclaimWizard {
     const fact = (k: string, v: string | null | undefined, note = "", mono = false, full = v, stays = false) => {
       if (!v) return;
       // "search-index (done 3/3)": the parenthesis is the note.
-      const m = !note && v.replace(REF, "") === v ? /^(.+?)\s*\(([^()]+)\)$/.exec(v) : null;
+      const m = !note && !mono && v.replace(REF, "") === v ? /^(.+?)\s*\(([^()]+)\)$/.exec(v) : null;
       if (m) [v, note] = [m[1], m[2]];
       // Under "Would remove", a fact that is not removed says so.
       if (stays) note = note ? `${note} · stays` : "stays";
@@ -199,7 +199,11 @@ export class ReclaimWizard {
       const val = said(mono ? "rc-val mono" : "rc-val", v);
       val.title = (full ?? v).trim();
       dd.append(val);
-      if (note) dd.append(said("rc-note", note));
+      if (note) {
+        const n = said("rc-note", note);
+        n.title = note;
+        dd.append(n);
+      }
       facts.append(dd);
     };
     const named = new Set(ok ? r.remove.map((x) => x.what) : []);
@@ -212,13 +216,14 @@ export class ReclaimWizard {
     }
     // The facts "Would remove" has not said already.
     const told = ok ? r.remove.map((x) => `${x.target} ${x.note}`).join(" ") : "";
-    if (!named.has("worktree")) fact("worktree", tidy(r.worktree, this.home), "", true, r.worktree);
-    if (!named.has("branch")) fact("branch", r.branch, "", true);
+    // Under "Would remove", a fact reclaim leaves alone says "stays".
+    if (!named.has("worktree")) fact("worktree", tidy(r.worktree, this.home), "", true, r.worktree, ok);
+    if (!named.has("branch")) fact("branch", r.branch, "", true, r.branch, ok);
     if (r.size && !told.includes(r.size)) fact("size", r.size);
-    if (!named.has("workspace")) fact("workspace", r.workspace?.name);
+    if (!named.has("workspace")) fact("workspace", r.workspace?.name, "", false, r.workspace?.name, ok);
     // The plan lives outside the worktree: reclaim leaves it.
     fact("plan", r.plan, "", false, r.plan, ok);
-    fact("sandbox", r.sandbox);
+    fact("sandbox", r.sandbox, "", false, r.sandbox, ok);
 
     const row = (c: Check) => {
       const li = el("li", `rc-check ${c.kind}`);

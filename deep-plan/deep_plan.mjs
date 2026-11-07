@@ -1693,9 +1693,9 @@ const DP_RISK_CSS = `.dp-risk-ctl{display:flex;flex-wrap:wrap;gap:6px 12px;align
    risks reads as text. Tab still reaches it (opacity keeps it focusable); an
    undecided risk keeps it in view, since it needs a decision; and a screen
    with no hover always shows it. */
-.dp-risk .dp-risk-change{opacity:0;transition:opacity .12s}
-.dp-risk:hover .dp-risk-change,.dp-risk:focus-within .dp-risk-change,.dp-risk[data-disposition=""] .dp-risk-change{opacity:1}
-@media (hover:none){.dp-risk .dp-risk-change{opacity:1}}`;
+.dp-risk .dp-risk-change{opacity:0;pointer-events:none;transition:opacity .12s}
+.dp-risk:hover .dp-risk-change,.dp-risk:focus-within .dp-risk-change,.dp-risk[data-disposition=""] .dp-risk-change{opacity:1;pointer-events:auto}
+@media (hover:none){.dp-risk .dp-risk-change{opacity:1;pointer-events:auto}}`;
 
 // The End state map: the model render stored (st.map) as JSON in the page,
 // then the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in a

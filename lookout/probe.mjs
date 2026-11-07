@@ -1764,7 +1764,7 @@ if (want("page script")) {
      tpl.includes('<button type="button" id="gate" class="gate">') && js.includes('$("gate").addEventListener("click", firstBlocking);') &&
      /function firstBlocking\(\) \{[\s\S]{0,400}x\.severity === "blocker" \|\| x\.severity === "major"[\s\S]{0,200}goTo\(list\[0\]\.id\);\s*else stepFinding\(1\);/.test(js));
   ok("page: a card puts its title first and shows a status pill only when it is not open",
-     /el\("span", \{ class: "title" \}[^\n]*\n(\s*\/\/[^\n]*\n)*\s*el\("span", \{ class: "meta" \}, el\("span", \{ class: "fid" \}/.test(js) &&
+     /el\("span", \{ class: "title", title: x\.id[^\n]*\n(\s*\/\/[^\n]*\n)*\s*el\("span", \{ class: "meta" \}, el\("span", \{ class: "fid" \}/.test(js) &&
      js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.status)) : null);'));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
@@ -1854,9 +1854,9 @@ if (want("page script")) {
      app.includes('this.listShown = localStorage.getItem(LIST_KEY) === "shown";') &&
      app.includes('btn(shown ? "◂ Reviews" : "Reviews ▸"') && app.includes('list.setAttribute("aria-expanded", String(shown));') &&
      appCss.includes(".review.folded { grid-template-columns: minmax(0, 1fr); }") && appCss.includes(".r-side[hidden] { display: none; }"));
-  ok("page: a card's id, category and verdict take no width from the title: out of the row until hovered (over the card's corner), back in it when focused or picked, and always in the DOM",
+  ok("page: a card's id, category and verdict take no width from the title: out of the row (hovered, the title's tooltip names them, so nothing covers the card), back in it when focused or picked, and always in the DOM",
      /\.card-head \.meta \{ position: absolute;[^}]*opacity: 0; pointer-events: none;/.test(css) &&
-     css.includes(".card:hover .card-head .meta { opacity: 1; }") &&
+     !/\.card:hover \.card-head \.meta/.test(css) && js.includes('title: x.id + (finding ? " · " + x.category') &&
      /\.card:focus-within \.card-head \.meta, \.card\.flash \.card-head \.meta, \.card\.cur \.card-head \.meta \{\s*position: static; opacity: 1;/.test(css) &&
      css.includes("@media (hover: none) { .card-head .meta { position: static; opacity: 1;") &&
      css.includes(".card { position: relative; }") &&
