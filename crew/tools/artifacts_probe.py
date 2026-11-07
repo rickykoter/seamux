@@ -63,6 +63,7 @@ BOARD = os.path.join(REPO, "crew", "board")
 CLI = os.path.join(REPO, "crew", "bin", "crew-artifacts")
 sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402
+import golden  # noqa: E402  (beside this probe)
 results = []
 
 
@@ -618,9 +619,16 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     else:
         py_cli = [sys.executable, CLI]
         rs_cli = [crew_impl.seamux_bin(), "crew-artifacts"]
+        subs = {t: "<T>"}
 
         def run(argv, *args):
-            return subprocess.run(argv + list(args), capture_output=True, text=True, env=crew_impl.env(env))
+            # UTC, so the listing's local times read the same on every machine.
+            return subprocess.run(argv + list(args), capture_output=True, text=True,
+                                  env=crew_impl.env(dict(env, TZ="UTC")))
+
+        def gname(kind, args, ext):
+            words = [golden.norm(x, subs).strip("-") for x in args]
+            return "artifacts/%s-%s.%s" % (kind, "-".join("".join(c if c.isalnum() else "_" for c in w) for w in words)[:80], ext)
 
         todo_id = next(r["id"] for r in PY.search(kind="file") if r["locator"].endswith("todo.txt"))
         # Text outside ASCII, where json.dumps escapes and %-5d pads by characters.
@@ -631,7 +639,18 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
                                 created_at="2099-02-01T00:00:00.000Z")])
         db.execute("COMMIT")
         db.close()
-        differ = []
+        # Each CLI run's bytes, recorded from the Python (CREW_GOLDEN=write) and
+        # held over the Rust: they outlive the comparison when the Python goes.
+        import re
+
+        def scrub(text):
+            """Rows earlier sections made now, and the kept/ folder named from
+            this run's temp path, read the same on every run."""
+            text = re.sub(r"20[0-8]\d-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z", "<NOW>", text)
+            text = re.sub(r"20[0-8]\d-\d\d-\d\d \d\d:\d\d", "<NOW>", text)
+            return re.sub(r"-[0-9a-f]{6}/\d{8}-\d{6}-", "-<H>/<STAMP>-", text)
+        cli_text = lambda p: scrub("%s\n-- stderr\n%s\n-- exit %d\n" % (p.stdout, p.stderr, p.returncode))
+        differ, gold_off = [], []
         for args in (["search"], ["search", "guide", "--json"], ["search", "--kind", "commit"],
                      ["search", "scratch", "notes", "--ws", ws + "/", "--json"], ["search", '"oops* OR (NEAR'],
                      ["search", "naïve"], ["search", "résumé", "--json"],
@@ -639,7 +658,16 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
             a, b = run(py_cli, *args), run(rs_cli, *args)
             if (a.stdout, a.stderr, a.returncode) != (b.stdout, b.stderr, b.returncode):
                 differ.append(" ".join(args))
+            if args[:1] == ["search"] and not set(args) & {"naïve", "résumé", '"oops* OR (NEAR'}:
+                # These list every row the sections above made: rows made in
+                # the same second sort either way and commit shas change, so
+                # no golden holds. The sections above check search on its own.
+                continue
+            g = gname("cli", args, "txt")
+            if not (golden.expect(g, cli_text(a), subs)[0] and golden.same(g, cli_text(b), subs)[0]):
+                gold_off.append(" ".join(args))
         check("the Python and Rust CLIs print the same bytes and exit codes", not differ, differ)
+        check("the CLI runs match their goldens", not gold_off, gold_off)
 
         # The Rust-only outputs print what the module returns, as
         # json.dumps(..., indent=1) would. One keep_all first keeps whatever
@@ -655,6 +683,12 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
                  (["keep-all", ws, "--json"], dumps(PY.keep_all(ws)))]
         differ = [" ".join(a) for a, want in pairs if run(rs_cli, *a).stdout != want]
         check("row, workspaces, --limit, keep --json and keep-all print the module's own results", not differ, differ)
+        gold_off = []
+        for a, want in pairs:
+            g = gname("module", a, "json")
+            if not (golden.expect(g, scrub(want), subs)[0] and golden.same(g, scrub(run(rs_cli, *a).stdout), subs)[0]):
+                gold_off.append(" ".join(a))
+        check("...and those results match their goldens", not gold_off, gold_off)
 
         # A successful keep from each side: the same message, into the same
         # folder, the copy beside the other.

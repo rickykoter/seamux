@@ -2078,6 +2078,11 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
   const fs = await import("node:fs");
   const os = await import("node:os");
   const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-parity-"));
+  const golden = await import("../tools/golden.mjs");
+  // A golden per case, recorded from the Python (CREW_GOLDEN=write) and held
+  // over both: the parity check goes when the Python does, the golden stays.
+  const gold = (name, py, rs) => golden.expect(name, py)[0] && golden.same(name, rs)[0];
+  const golds = [];
   const both = (name, args, opts = {}) => {
     const py = execFileSync("python3", [join(HERE, name + ".py"), ...args], { encoding: "utf8", ...opts });
     const [cmd, ...pre] = crewImpl.argv(name, join(HERE, name + ".py"), "python3");
@@ -2110,6 +2115,7 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
     fs.writeFileSync(f, JSON.stringify(fx));
     const [py, rs] = both("news", ["--compose", f], { env: { ...process.env, CREW_NEWS_HOURS: "3" } });
     if (py !== rs) console.log(`  --   news case ${i}\n       py ${py.slice(0, 300)}\n       rs ${rs.slice(0, 300)}`);
+    golds.push(["news " + i, gold(`board/news-${i}.txt`, py, rs)]);
     return py === rs;
   });
   checks.push(["parity: news --compose prints the Python's bytes, every badge and family", newsSame]);
@@ -2121,6 +2127,7 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
       "/w/e": { at: NOW, stuck: "nope", urgency: [] } } }));
   const [jp, jr] = both("judgments", ["--apply", jfx]);
   checks.push(["parity: judgments --apply prints the Python's bytes", jp === jr, jp + " | " + jr]);
+  golds.push(["judgments --apply", gold("board/judgments-apply.txt", jp, jr)]);
   // The writer: the same records into two caches, read back as bytes (times aside).
   const rec = (impl, file) => {
     const env = { ...process.env, CREW_JUDGMENTS_FILE: file };
@@ -2135,6 +2142,9 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
   };
   const rp = rec("py", join(tmp, "jp.json")), rr = rec("rs", join(tmp, "jr.json"));
   checks.push(["parity: judgments --record writes the Python's cache", rp === rr, rp + " | " + rr]);
+  golds.push(["judgments --record", gold("board/judgments-record.json", rp, rr)]);
+  checks.push(["golden: news and judgments match their goldens", golds.every(([, ok]) => ok),
+    golds.filter(([, ok]) => !ok).map(([n]) => n).join(", ")]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
@@ -2157,8 +2167,12 @@ if (crewImpl.isRust("crew-board")) {
     return execFileSync(cmd, [...pre, ...args], { encoding: "utf8", env: toolEnv(process.env) })
       .replace(/"stamp": "[0-9:]+"/, '"stamp": "T"').replace(/^\d\d:\d\d:\d\d · /, "T · ");
   };
+  const golden = await import("../tools/golden.mjs");
+  const golds = [];
   const same = (fx, json) => { const p = out("py", fx, json), r = out("rs", fx, json);
     if (p !== r) console.log(`  --   rank parity (${json ? "json" : "text"})\n       py ${p.slice(0, 400)}\n       rs ${r.slice(0, 400)}`);
+    const name = `board/rank-${fx === FX ? "full" : "plans-only"}.${json ? "json" : "txt"}`;
+    golds.push([name, golden.expect(name, p)[0] && golden.same(name, r)[0]]);
     return p === r; };
   checks.push(["parity: state --json ranks every tier as the Python does", same(FX, true)]);
   checks.push(["parity: ...and the cmux-down path, from plans alone", same(noPlans, true)]);
@@ -2168,6 +2182,9 @@ if (crewImpl.isRust("crew-board")) {
     return "exit 0"; } catch (e) { return `exit ${e.status}\n${e.stdout}`; } };
   const up = usage([join(HERE, "crew-board")]), ur = usage(crewImpl.argv("crew-board", join(HERE, "crew-board")));
   checks.push(["parity: an unknown subcommand prints the same usage and exits 2", up === ur && up.startsWith("exit 2\n")]);
+  golds.push(["board/usage.txt", golden.expect("board/usage.txt", up)[0] && golden.same("board/usage.txt", ur)[0]]);
+  checks.push(["golden: ranking, the cmux-down path, the text listing and usage match their goldens",
+    golds.every(([, ok]) => ok), golds.filter(([, ok]) => !ok).map(([n]) => n).join(", ")]);
   // A retired Dock verb points at the served board, never at the Python,
   // which the live tree no longer has.
   const retired = (() => { const r = crewImpl.argv("crew-board", join(HERE, "crew-board"));

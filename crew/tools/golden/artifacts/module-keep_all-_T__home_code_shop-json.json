@@ -1,0 +1,17 @@
+[
+ {
+  "ok": false,
+  "id": 23,
+  "why": "a directory"
+ },
+ {
+  "ok": false,
+  "id": 24,
+  "why": "a symlink"
+ },
+ {
+  "ok": false,
+  "id": 22,
+  "why": "over 50MB"
+ }
+]

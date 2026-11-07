@@ -20,15 +20,16 @@ sets CREW_CMUX_TRANSPORT=cli, so crates/cmux sends every call through the
 probe's CREW_CMUX (fakecmux), and CREW_HOME to this checkout's crew/ unless
 the probe set one.
 
-seamux is SEAMUX_BIN, else app/target/debug/seamux in this checkout, else
-`seamux` on PATH. Build it first: cargo build --manifest-path app/Cargo.toml -p seamux-cli
+seamux is SEAMUX_BIN, else app/target/debug/seamux in this checkout. Never
+`seamux` on PATH: that is the installed app, and a probe that fell back to it
+would test another branch's code. Build it first:
+cargo build --manifest-path app/Cargo.toml -p seamux-cli
 
 From another language: crew_impl.py argv <tool> <path> [interp]  prints the argv
 as JSON (crew_impl.mjs is the node twin, and needs no python).
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -56,7 +57,7 @@ def seamux_bin():
     built = os.path.join(REPO, "app", "target", "debug", "seamux")
     if os.access(built, os.X_OK):
         return built
-    return shutil.which("seamux")
+    return None
 
 
 _registered = {}

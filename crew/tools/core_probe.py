@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CREW = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402
+import golden  # noqa: E402  (beside this probe)
 
 PATHS = {
     "cachefacts": os.path.join(CREW, "hooks", "cachefacts.py"),
@@ -76,14 +77,29 @@ def both(tool, args, make_env, stdin="", norm=lambda s: s):
     its own fresh HOME from make_env. -> (result, same_as_python or None)."""
     r = run(tool, args, make_env("impl"), stdin)
     if not crew_impl.is_rust(tool):
+        LAST["py"] = r          # CREW_IMPL unset: the picked one is the Python
         return r, None
     p = run(tool, args, make_env("py"), stdin, impl=False)
+    LAST["py"] = p
     return r, (norm(r.stdout), r.returncode) == (norm(p.stdout), p.returncode)
 
 
-def same(name, eq, r):
+LAST = {}
+TOOL_OF = {'families.txt': 'families', 'families-flat.txt': 'families', 'pricing-merge.txt': 'pricing', 'pricing-compare.txt': 'pricing', 'pricing-compare-no-upstream.txt': 'pricing', 'costs-attribute.txt': 'costs', 'costs-attribute-17.txt': 'costs', 'families-echo-17.txt': 'families'}
+
+
+def as_text(r):
+    return r.stdout + "\n-- exit %d\n" % r.returncode
+
+
+def same(name, eq, r, gold=None):
     if eq is not None:
         check(name + " — Rust prints the Python's bytes", eq, r.stdout[-400:])
+    if gold:
+        # Recorded from the Python (CREW_GOLDEN=write); outlives the parity check.
+        okp, want = golden.expect("core/" + gold, as_text(LAST["py"]), {T: "<T>"})
+        okr = golden.same("core/" + gold, as_text(r), {T: "<T>"})[0] if crew_impl.is_rust(TOOL_OF[gold]) else True
+        check(name + " — matches its golden", okp and okr, want[-300:])
 
 
 def iso(t):
@@ -173,11 +189,11 @@ d = json.loads(r.stdout or "{}")
 check("a family moves as one unit, parent first, at its most urgent member's place",
       [x["id"] for x in d.get("rows", [])] == ["p", "c", "c2", "a", "x"], r.stdout)
 check("a family without its parent row is labelled", d["rows"][4].get("famlabel") == "g" if d.get("rows") else False)
-same("families", eq, r)
+same("families", eq, r, gold="families.txt")
 flat = {"rows": [{"id": "a", "kind": "done"}], "quiet": []}
 r, eq = both("families", [], lambda t: env_for(home(t)), stdin=json.dumps(flat))
 check("no family on the board: the same rows back", json.loads(r.stdout or "{}") == flat)
-same("families with no family", eq, r)
+same("families with no family", eq, r, gold="families-flat.txt")
 
 # ---------------------------------------------------------------- pricing
 print("pricing")
@@ -239,15 +255,15 @@ json.dump({"defaults": {"pricingOverrides": {"m2": {"outputCostPerToken": 0.5, "
 r, eq = both("pricing", ["--merge", sf, lf], lambda t: env_for(home(t)))
 check("--merge: a local entry replaces the shipped one wholesale",
       json.loads(r.stdout or "{}") == {"m1": {"inputCostPerToken": 1}, "m2": {"outputCostPerToken": 0.5}}, r.stdout)
-same("--merge", eq, r)
+same("--merge", eq, r, gold="pricing-merge.txt")
 of, uf = os.path.join(T, "ov.json"), os.path.join(T, "up.json")
 json.dump({"m": {"inputCostPerToken": 3e-06, "fastMultiplier": 2}, "n": {"inputCostPerToken": 1e-06}}, open(of, "w"))
 json.dump({"m": {"input_cost_per_token": 3e-06}}, open(uf, "w"))
 r, eq = both("pricing", ["--compare", of, uf], lambda t: env_for(home(t)))
 check("--compare lists each model's verdict", len(json.loads(r.stdout or "[]")) == 2, r.stdout)
-same("--compare", eq, r)
+same("--compare", eq, r, gold="pricing-compare.txt")
 r, eq = both("pricing", ["--compare", of, "-"], lambda t: env_for(home(t)))
-same("--compare with no upstream", eq, r)
+same("--compare with no upstream", eq, r, gold="pricing-compare-no-upstream.txt")
 
 # ---------------------------------------------------------------- costs
 print("costs")
@@ -262,7 +278,7 @@ r, eq = both("costs", ["--attribute", fx, "/w/a", "/w/b"], lambda t: env_for(hom
 d = json.loads(r.stdout or "{}")
 check("--attribute sums floats as Python does and names unpriced models",
       d.get("/w/a", {}).get("unpricedToday") == ["x-1"] and d.get("/w/b", {}).get("today") == 0.0, r.stdout)
-same("--attribute (0.1 + 0.2, 1e-07)", eq, r)
+same("--attribute (0.1 + 0.2, 1e-07)", eq, r, gold="costs-attribute.txt")
 # Real ccusage costs carry 16-17 significant digits, which a float parser
 # that is not round-trip exact reads one ulp off (seeded, so a failure repeats).
 import random  # noqa: E402
@@ -272,12 +288,12 @@ fx2 = os.path.join(T, "fx2.json")
 json.dump({"today": "2026-10-21", "projects": {"-w-a": long_rows}}, open(fx2, "w"))
 r, eq = both("costs", ["--attribute", fx2, "/w/a"], lambda t: env_for(home(t)))
 check("--attribute over 400 17-digit costs", '"week"' in r.stdout, r.stdout[:200])
-same("--attribute with 17-digit floats", eq, r)
+same("--attribute with 17-digit floats", eq, r, gold="costs-attribute-17.txt")
 # families echoes every row, so each float is parsed and printed once.
 echo = {"rows": [{"id": str(i), "kind": "done", "family": "f", "urgency": x["totalCost"]}
                  for i, x in enumerate(long_rows)], "quiet": []}
 r, eq = both("families", [], lambda t: env_for(home(t)), stdin=json.dumps(echo))
-same("families echoing 400 17-digit floats", eq, r)
+same("families echoing 400 17-digit floats", eq, r, gold="families-echo-17.txt")
 
 # ---------------------------------------------------------------- workspaces CLI
 print("workspaces CLI")

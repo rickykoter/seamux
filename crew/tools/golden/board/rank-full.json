@@ -1,0 +1,421 @@
+{
+  "rows": [
+    {
+      "id": "g",
+      "name": "g",
+      "kind": "attend",
+      "badge": "gate shut",
+      "said": "{{Gate me}} needs your go-ahead. Alignment check not taken.",
+      "chips": [
+        "go 3",
+        "diff",
+        "jump",
+        "wake"
+      ],
+      "frac": 0.5,
+      "meta": "2/4 increments \u00b7 held b: a second \u00b7 held k: wait for the schema",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "",
+      "dirty": true,
+      "pr": "",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [
+        {
+          "t": "draft",
+          "c": "#859289",
+          "h": "The PR is still a draft"
+        },
+        {
+          "t": "\u2299 in review",
+          "c": "#F5A524",
+          "h": "Jira: In Review"
+        }
+      ],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/g",
+      "pr_url": "",
+      "slug": "g",
+      "subject": "Gate me",
+      "commits": [],
+      "family": "g",
+      "famrole": "parent",
+      "famgo": "human",
+      "famtier": "attend",
+      "famkid": false
+    },
+    {
+      "id": "k",
+      "name": "k",
+      "kind": "attend",
+      "badge": "gate shut",
+      "said": "{{Owned}} waits on its go from the parent, g. You can still give it.",
+      "chips": [
+        "parent goes \u00b7 inc 1",
+        "diff",
+        "jump",
+        "wake"
+      ],
+      "frac": 0.0,
+      "meta": "0/2 increments",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "k",
+      "dirty": false,
+      "pr": "",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/k",
+      "pr_url": "",
+      "slug": "k",
+      "subject": "Owned",
+      "commits": [],
+      "family": "g",
+      "famrole": "child",
+      "famgo": "parent",
+      "famtier": "attend",
+      "famkid": true
+    },
+    {
+      "id": "b",
+      "name": "b",
+      "kind": "wilt",
+      "badge": "blocked",
+      "said": "{{Blk}} is blocked: None",
+      "chips": [
+        "jump",
+        "wake"
+      ],
+      "frac": 0.0,
+      "meta": "0/2 increments",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "b",
+      "dirty": false,
+      "pr": "",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/b",
+      "pr_url": "",
+      "slug": "b",
+      "subject": "Blk",
+      "commits": [],
+      "family": "g",
+      "famrole": "child",
+      "famgo": "",
+      "famtier": "attend",
+      "famkid": true
+    },
+    {
+      "id": "r",
+      "name": "r",
+      "kind": "attend",
+      "badge": "asked you",
+      "said": "Waiting on an answer.",
+      "chips": [
+        "jump",
+        "wake"
+      ],
+      "frac": null,
+      "meta": "0/0 increments",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "",
+      "dirty": false,
+      "pr": "",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [
+        {
+          "t": "allow",
+          "c": "#4ADE80",
+          "h": "Approve what the agent asked for",
+          "a": "feed-allow"
+        },
+        {
+          "t": "deny",
+          "c": "#F97066",
+          "h": "Refuse it; the agent keeps waiting",
+          "a": "feed-deny"
+        }
+      ],
+      "feedby": 9999999999,
+      "feedgate": "allow",
+      "ref": "",
+      "cwd": "/w/r",
+      "pr_url": "",
+      "slug": "r",
+      "subject": "",
+      "commits": []
+    },
+    {
+      "id": "f",
+      "name": "f PROJ-12",
+      "kind": "wilt",
+      "badge": "check failed",
+      "said": "{{Increment 2's check `test-a` failed.}} It cannot close until the check passes.",
+      "chips": [
+        "plan",
+        "jump",
+        "wake"
+      ],
+      "frac": 0.3333333333333333,
+      "meta": "1/3 increments",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "dev/f",
+      "dirty": false,
+      "pr": "#5",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [
+        {
+          "t": "\u2713 CI",
+          "c": "#4ADE80",
+          "h": "Open the passing checks in your default browser",
+          "a": "checks"
+        },
+        {
+          "t": "\u2713 approved",
+          "c": "#4ADE80",
+          "h": "A reviewer approved this PR"
+        },
+        {
+          "t": "go 2",
+          "c": "#F5A524",
+          "h": "Authorize increment 2 \u2014 until you do, nothing in this worktree can be edited",
+          "a": "go",
+          "x": "2"
+        }
+      ],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/f",
+      "pr_url": "https://x/pull/5",
+      "slug": "f",
+      "subject": "increment 2 \u00b7 test-a",
+      "commits": [
+        {
+          "at": 1,
+          "s": "x"
+        }
+      ]
+    },
+    {
+      "id": "c",
+      "name": "c",
+      "kind": "wilt",
+      "badge": "ci failed",
+      "said": "Checks are red.",
+      "chips": [
+        "checks",
+        "diff",
+        "jump",
+        "wake"
+      ],
+      "frac": null,
+      "meta": "",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "",
+      "dirty": false,
+      "pr": "#9",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [
+        {
+          "t": "\u21e3 stacked",
+          "c": "#859289",
+          "h": "Stacked on a branch that has already merged"
+        },
+        {
+          "t": "\u25a3 sandbox",
+          "c": "#60A5FA",
+          "h": "Running in a Docker sandbox \u2014 click to stop it",
+          "a": "sandbox-down"
+        }
+      ],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/c",
+      "pr_url": "",
+      "slug": "",
+      "subject": "",
+      "commits": []
+    },
+    {
+      "id": "m",
+      "name": "m",
+      "kind": "done",
+      "badge": "merged",
+      "said": "Merged. The worktree can be reclaimed.",
+      "chips": [
+        "reclaim",
+        "jump",
+        "wake"
+      ],
+      "frac": null,
+      "meta": "",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "m",
+      "dirty": false,
+      "pr": "",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/m",
+      "pr_url": "",
+      "slug": "",
+      "subject": "",
+      "commits": []
+    },
+    {
+      "id": "d",
+      "name": "d",
+      "kind": "done",
+      "badge": "plan done",
+      "said": "Every increment is done; the gate has retired.",
+      "chips": [
+        "close plan",
+        "wake"
+      ],
+      "frac": 1.0,
+      "meta": "2/2 increments",
+      "urgency": 0.0,
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "d",
+      "dirty": false,
+      "pr": "",
+      "pr_state": "",
+      "color": "",
+      "selected": false,
+      "signals": [],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/d",
+      "pr_url": "",
+      "slug": "d",
+      "subject": "",
+      "commits": []
+    },
+    {
+      "id": "q",
+      "name": "quiet one",
+      "kind": "quiet",
+      "badge": "pr open",
+      "said": "",
+      "chips": [
+        "jump",
+        "diff",
+        "pr",
+        "archive",
+        "wake"
+      ],
+      "frac": null,
+      "meta": "",
+      "cost": 0,
+      "cost_unpriced": [],
+      "branch": "q",
+      "dirty": true,
+      "pr": "#3",
+      "pr_state": "open",
+      "color": "#123456",
+      "selected": true,
+      "signals": [],
+      "feedby": 0,
+      "feedgate": "",
+      "ref": "",
+      "cwd": "/w/q",
+      "pr_url": "",
+      "slug": "",
+      "subject": "",
+      "commits": []
+    }
+  ],
+  "quietCount": 1,
+  "quiet": "",
+  "stamp": "T",
+  "stale": false,
+  "src": "6 plans",
+  "news": {
+    "hours": 5.0,
+    "lede": "Family {{g}}: {{g}} needs your go-ahead on Gate me; {{k}} waits on its go from the parent, g, for Owned; {{b}} is blocked on Blk.",
+    "items": [
+      {
+        "id": "family:g",
+        "tier": "attend",
+        "family": "g",
+        "text": "Family {{g}}: {{g}} needs your go-ahead on Gate me; {{k}} waits on its go from the parent, g, for Owned; {{b}} is blocked on Blk."
+      },
+      {
+        "id": "r",
+        "tier": "attend",
+        "family": "",
+        "text": "{{r}} is waiting on your answer."
+      },
+      {
+        "id": "f",
+        "tier": "wilt",
+        "family": "",
+        "text": "{{f PROJ-12}} failed a check (increment 2 \u00b7 test-a)."
+      },
+      {
+        "id": "c",
+        "tier": "wilt",
+        "family": "",
+        "text": "{{c}} is red on CI."
+      },
+      {
+        "id": "m",
+        "tier": "done",
+        "family": "",
+        "text": "{{m}} merged and can be reclaimed."
+      },
+      {
+        "id": "d",
+        "tier": "done",
+        "family": "",
+        "text": "{{d}} finished every increment; its plan can be closed."
+      },
+      {
+        "id": "quiet",
+        "tier": "quiet",
+        "family": "",
+        "text": "1 other workspace is quiet."
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+T · 6 plans
+  attend   g                          {{Gate me}} needs your go-ahead.
+  attend   k                          {{Owned}} waits on its go from the parent, g. You can still give it.
+  wilt     b                          {{Blk}} is blocked: None
+  attend   r                          {{Alignment check not taken.}} 0 increments are locked behind it.
+  wilt     f                          {{Increment 2's check `test-a` failed.}}
+  done     d                          Every increment is done; the gate has retired.
+  quiet    cmux unreachable — plan state only, no workspaces
+news · last 5h
+  attend   Family g: g needs your go-ahead on Gate me; k waits on its go from the parent, g, for Owned; b is blocked on Blk.
+  attend   r needs its alignment check taken.
+  wilt     f failed a check (increment 2 · test-a).
+  done     d finished every increment; its plan can be closed.

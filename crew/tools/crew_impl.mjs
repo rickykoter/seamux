@@ -36,9 +36,7 @@ export function seamuxBin() {
   if (process.env.SEAMUX_BIN) return process.env.SEAMUX_BIN;
   const built = path.join(REPO, "app", "target", "debug", "seamux");
   if (executable(built)) return built;
-  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
-    if (dir && executable(path.join(dir, "seamux"))) return path.join(dir, "seamux");
-  }
+  // Never `seamux` on PATH: the installed app's build is not this branch's.
   return null;
 }
 

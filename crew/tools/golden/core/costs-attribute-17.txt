@@ -1,0 +1,3 @@
+{"/w/a": {"today": 7682.672122711866, "week": 7682.672122711866, "unpriced": [], "unpricedToday": []}}
+
+-- exit 0

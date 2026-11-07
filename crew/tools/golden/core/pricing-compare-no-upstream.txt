@@ -1,0 +1,3 @@
+[["note", "no ccusage price cache to compare against (run ccusage once) \u2014 skipped"]]
+
+-- exit 0

@@ -1,0 +1,1 @@
+{"/w/a": {"stuck": true, "urgency": 2.0}, "/w/b": {"stuck": false, "urgency": 0.0}, "/w/c": {"stuck": false, "urgency": 0.0}, "/w/d": {"stuck": true, "urgency": 10.0}, "/w/e": {"stuck": false, "urgency": 0.0}, "": {"stuck": false, "urgency": 0.0}}

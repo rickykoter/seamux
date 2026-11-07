@@ -147,6 +147,10 @@ if os.access(BUILT, os.X_OK):
          lambda a: a.get("argv") == [BUILT, "cmux"])
 else:
     print("  skip the checkout's own build (cargo build --manifest-path app/Cargo.toml -p seamux-cli)")
+# A seamux on PATH is the installed app, not this branch: never picked.
+e = base_env(CREW_IMPL="rust", SEAMUX_BIN=None, PATH=T + os.pathsep + os.environ.get("PATH", ""))
+same("a seamux on PATH is never picked", {"argv": ["crew-color", "/p/crew-color"]}, e,
+     lambda a: bool(a.get("argv")) and a["argv"][0] != STUB)
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

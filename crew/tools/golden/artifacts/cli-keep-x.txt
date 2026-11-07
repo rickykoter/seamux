@@ -1,0 +1,5 @@
+
+-- stderr
+usage: crew-artifacts keep <id>
+
+-- exit 2
