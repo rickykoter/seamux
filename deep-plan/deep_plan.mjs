@@ -929,15 +929,18 @@ function checkDetailHtml(lines, id = "") {
     (how.length ? `<details class="dp-run"><summary>how it runs</summary>` + how.map(l => mdInline(l)).join("<br>") + "</details>" : "");
 }
 
-// The review page's checks: the name and its kind in words, the id in the
-// title and the fold. checkLinesMd's head is the markdown plan's.
+// The review page's checks, in the working page's row shape: glyph, name,
+// kind in words, the id in the title and the fold. Nothing has run at review,
+// so every glyph is the pending ring. checkLinesMd's head is the markdown plan's.
+// A waived increment says so in the same place, on one muted line.
+const waiverHtml = waiver => `<p class="dim dp-checks-none">No checks: ${esc(waiver)}</p>`;
 function checksHtml(list, waiver) {
-  if (!list.length) return waiver ? `<p class="dim">checks: none — waived: ${esc(waiver)}</p>` : "";
-  return `<p class="dim">checks — <code>done</code> is gated on these:</p><ul class="dim dp-checks">` +
+  if (!list.length) return waiver ? waiverHtml(waiver) : "";
+  return `<p class="dim dp-checks-h">Done when these pass:</p><ul class="dim dp-checks dp-checks-st">` +
     list.map(c => {
       const { lines } = checkLinesMd(c);
       const inferred = c.inferred ? ` — inferred: a default recipe in <code>${esc(c.source)}</code> covers this increment's files` : "";
-      return `<li title="check ${esc(c.id)}"><b>${esc(c.name || "")}</b> <span class="dp-kind">· ${esc(checkKindWords(c))}</span>${inferred}` +
+      return `<li title="check ${esc(c.id)}">${CHECK_GLYPH.pending} ${esc(c.name || "")} <span class="dp-kind">· ${esc(checkKindWords(c))}</span>${inferred}` +
         `${checkDetailHtml(lines, c.id)}</li>`;
     }).join("") + "</ul>";
 }
@@ -1314,9 +1317,20 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:12.5px var(--
 .dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
-.dp-act[data-kind="primary"]{background:var(--accent-t);border-color:var(--accent-t);color:var(--bg);font-weight:600}
+/* The app's one neutral primary: text colour on the page ground. On disk it
+   cannot act, but it stays full contrast: it names the next step. */
+.dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
+.dp-act[data-kind="primary"][disabled]{opacity:1}
+details.dp-more{display:inline-block;vertical-align:middle}
+details.dp-more>summary{list-style:none;cursor:pointer;color:var(--dim);padding:0 8px;border-radius:6px;line-height:26px;letter-spacing:.05em}
+details.dp-more>summary::-webkit-details-marker{display:none}
+details.dp-more>summary:hover{color:var(--fg);background:var(--card)}
+details.dp-more>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+details.dp-more[open]{display:inline}
+.dp-more-acts{margin-left:4px}
 .dp-act[data-kind="quiet"]{background:none;border-color:transparent;color:var(--dim);padding:3px 6px}
 .dp-act[data-kind="quiet"]:not([disabled]):hover{color:var(--fg);text-decoration:underline}
+.dp-act[data-kind="quiet"][disabled]{opacity:.8}
 details.dp-run{display:block;margin:2px 0 4px;padding-left:14px}
 details.dp-run>summary{cursor:pointer;width:fit-content;font-size:12.5px;margin-left:-14px}
 .dp-path{color:var(--fg);cursor:default}
@@ -1901,7 +1915,7 @@ const AUTO_REFRESH_JS = `
 
 // The review page's way out is its last section, so a slim bar stays at the
 // bottom of the column: how many quiz questions have an answer, a jump to the
-// next one, and the same Copy for session (it clicks #dp-copyback, so the
+// next one, and Copy for session (it clicks the hidden #dp-copyback, so the
 // blob is built in one place). The count follows change events, which the
 // draft restore in SURFACE_JS fires too.
 function reviewFoot(nq) {
@@ -1931,7 +1945,7 @@ function reviewFoot(nq) {
   }
   document.getElementById("dp-foot-go").addEventListener("click", function () {
     var open = qs().filter(function (q) { return !q.querySelector("input:checked"); })[0];
-    var to = open || document.getElementById("dp-copyback");
+    var to = open || document.querySelector('.dp-note[data-section="general"]');
     show(to);
     var f = open ? open.querySelector("input") : to;
     if (f) setTimeout(function () { f.focus({ preventScroll: true }); }, 300);
@@ -1993,7 +2007,7 @@ function reviewSummaryHtml(spec, adrs, nq) {
 <p class="dp-sum-h">What you're approving</p>
 ${incs ? `<ol>${incs}</ol>` : ""}
 ${counts.length ? `<p class="dim">${counts.join(" · ")}</p>` : ""}
-<p class="dp-sum-go"><a href="#s-alignment-check" id="dp-sum-go">${nq ? `${plural(nq, "question")} to answer` : "Send it back"}</a></p>
+<p class="dp-sum-go"><a href="#s-alignment-check" id="dp-sum-go">${nq ? `${plural(nq, "quiz question")}` : "Send it back"}</a></p>
 <script>
 (function () {
   var box = document.getElementById("dp-sum");
@@ -2049,13 +2063,10 @@ ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).
   // file:// (clipboard falls back to select+execCommand there).
   const COPYBACK = `
 <h2>Send it back</h2>
-<p class="dim">Highlight any text above — mouse or keyboard — then click the
-comment chip, or press <kbd>⌘M</kbd> / <kbd>Ctrl+M</kbd>, to pin a comment to it. It stays
-marked where you left it; click the marked text to edit it. Everything here is kept as a draft
-until you clear it.</p>
+<p class="dim">Select text and press ⌘M to comment on it.</p>
 <div id="dp-quotes"></div>
 <textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)" aria-label="general comments"></textarea>
-<p><button id="dp-copyback" type="button">Copy for session</button>
+<p class="dp-send"><button id="dp-copyback" type="button" hidden>Copy for session</button>
 <span id="dp-copied" class="dim" role="status" aria-live="polite"></span></p>
 <script>
 (function () {
@@ -2119,11 +2130,12 @@ label.opt{cursor:pointer;padding:3px 0}
 .dp-note[hidden]{display:none}
 .inc .dp-note-open{display:block;margin:6px 0 0;padding:0}
 ${DP_RISK_CSS}
-/* The foot bar's Copy is the button; this one builds the blob and reads as a link. */
-#dp-copyback{background:none;color:var(--accent-t,#46f);border:0;padding:6px 0;font:inherit;font-weight:500;
-  cursor:pointer;text-decoration:underline;text-underline-offset:2px}
-kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:3px;padding:0 4px}
-.opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
+/* The foot bar's Copy is the button. #dp-copyback stays in the page, hidden,
+   because it builds the blob; the foot clicks it, so there is one builder. */
+#dp-copyback[hidden]{display:none}
+.dp-send{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:4px 0}
+.dp-send #dp-clear{margin-left:0}
+.opt input:focus-visible,#dp-hl-add:focus-visible,
 .dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
 </style>` + commonBody(spec, adrs, true,
     endStateHtml(map, (spec.deliverables || []).map((d, i) => ({ n: i + 1, title: d.title }))),
@@ -2131,10 +2143,7 @@ kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
-<p class="dim">Pick an answer per question, add comments where you have them, then
-<b>Copy for session</b> in the bar at the bottom puts one paste-back on your clipboard — the slug, a ready
-<code>deep-plan grade</code> line, and your comments. A wrong answer means the plan
-and your model of it disagree — and either one may be the broken one.</p>
+<p class="dim">Answer each question. A miss means the plan and your reading of it disagree.</p>
 ${qs}
 ${COPYBACK}
 ${surfaceClose(reviewFoot((spec.quiz || []).length))}${SURFACE_JS}${AUTO_REFRESH_JS}</body></html>`;
@@ -2313,6 +2322,7 @@ function familyStripHtml(slug) {
   const idx = familyOf(slug);
   const f = idx && familyRow(idx, slug);
   if (!f) return "";
+  const waitsOn = new Set(f.waitingOn.length ? [f.parent] : []);
   const items = f.members.map(m => {
     const me = m.slug === slug;
     const name = me ? `<b>${esc(m.slug)}</b>` :
@@ -2322,10 +2332,16 @@ function familyStripHtml(slug) {
       return `<span class="dp-fam-inc dp-fam-${esc(i.status)}" title="${esc(i.title)} — ${esc(i.status)}">` +
         `${p.status} ${i.n}${[p.checks, p.review, p.by].filter(Boolean).map((x, k) => `${k ? " ·" : ""} <span class="dim">${esc(x)}</span>`).join("")}</span>`;
     }).join("");
-    return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}"><span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
-      ` <span class="dim">· ${esc(m.phase)} · ${m.done}/${m.total} done${m.role === "child" && m.go === "parent" ? " · parent goes" : ""}</span>` +
-      (m.held ? `<div class="dp-fam-wait">held by the parent: ${esc(m.held)}</div>` : "") +
+    const line = `<span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
+      ` <span class="dim">· ${esc(m.phase === "implementing" ? "building" : m.phase)} · ${m.done}/${m.total}${m.role === "child" && m.go === "parent" ? " · parent goes" : ""}</span>`;
+    const held = m.held ? `<div class="dp-fam-wait">held by the parent: ${esc(m.held)}</div>` : "";
+    // This plan's own line and the plan it waits on stay open; every other
+    // member is one line, its increments behind a disclosure.
+    const open = me || waitsOn.has(m.slug);
+    if (open || !incs) return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}">${line}${held}` +
       (incs ? `<div class="dp-fam-incs">${incs}</div>` : "") + `</li>`;
+    return `<li class="dp-fam-m"><details class="dp-fam-more"><summary>${line}</summary>` +
+      `<div class="dp-fam-incs">${incs}</div></details>${held}</li>`;
   }).join("");
   const owns = f.owns.length ? `<p class="dim">this plan owns ${f.owns.map(g => `<code>${esc(g)}</code>`).join(" ")}</p>` : "";
   const waits = f.waitingOn.length
@@ -2341,6 +2357,12 @@ function familyStripHtml(slug) {
 .dp-fam p{margin:4px 0}
 .dp-fam-wait{color:var(--warn,#c80)}
 .dp-fam-link{color:inherit}
+.dp-fam-more>summary{cursor:pointer;list-style:none;width:fit-content}
+.dp-fam-more>summary::-webkit-details-marker{display:none}
+.dp-fam-more>summary::after{content:"";display:inline-block;width:5px;height:5px;margin:0 0 2px 8px;
+  border-right:1.5px solid var(--faint);border-bottom:1.5px solid var(--faint);transform:rotate(-45deg);transition:transform .12s}
+.dp-fam-more[open]>summary::after{transform:rotate(45deg)}
+.dp-fam-more>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>
 <p class="dim">family <b>${esc(f.parent)}</b> · ${f.members.filter(m => m.phase === "done" || (m.total && m.done === m.total)).length}/${f.members.length} plans done</p>
 <ul>${items}</ul>${owns}${waits}
@@ -2367,8 +2389,8 @@ const incActions = status => INC_ALLOWED[status] || ALWAYS;
 const allows = (status, action) => ALWAYS.includes(action) || incActions(status).includes(action);
 
 // The working page's gate as one plain line: the state in bold, why, and a
-// link to the fix when it is on a page. The root and phase sit in a hover
-// title: the folder name is enough to tell worktrees apart. gateView's `why`
+// link to the fix when it is on a page. The root and phase sit in the line's
+// hover title; the page's title already names the plan. gateView's `why`
 // stays as it is for the board.
 const PHASE_WORDS = { review: "waiting on the review", implementing: "building", delivery: "in its delivery review", done: "done", closed: "closed" };
 function gateLineHtml(st, g, next, nextAct) {
@@ -2387,15 +2409,14 @@ function gateLineHtml(st, g, next, nextAct) {
   else why = esc(String(g.why || "").replace(/^./, c => c.toLowerCase()));
   const root = st.root || "";
   const tip = [root, `phase: ${st.phase}${PHASE_WORDS[st.phase] ? " (" + PHASE_WORDS[st.phase] + ")" : ""}`].filter(Boolean).join("\n");
-  const where = `<span class="dim dp-gate-where" title="${esc(tip)}">· in ${esc(path.basename(root) || "?")}</span>`;
-  return `<p class="dp-gate" data-allow="${g.allow ? 1 : 0}">${g.allow ? CHECK_GLYPH.pass : CHECK_GLYPH.fail} ` +
-    `<b>Gate ${g.allow ? "open" : "shut"}</b>: ${why.replace(/\.$/, "")} ${where}</p>`;
+  return `<p class="dp-gate" data-allow="${g.allow ? 1 : 0}" title="${esc(tip)}">${g.allow ? CHECK_GLYPH.pass : CHECK_GLYPH.fail} ` +
+    `<b>Gate ${g.allow ? "open" : "shut"}</b>: ${why.replace(/\.$/, "")}</p>`;
 }
 
 function workingHtml(spec, st, b64) {
   // The plan's next step: the lowest increment not done, and its first allowed
   // move (go, start or done). That one button is primary; block and reset are
-  // quiet everywhere, so five equal buttons no longer hide which one matters.
+  // quiet, so five equal buttons no longer hide which one matters.
   const next = (st.increments || []).find(i => i.status !== "done");
   const nextAct = next && incActions(next.status).find(a => !ALWAYS.includes(a));
   const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : inc === next && a === nextAct ? "primary" : "";
@@ -2404,13 +2425,20 @@ function workingHtml(spec, st, b64) {
     const files = fileTreeHtml(planPaths(d));
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
-    const acts = incActions(inc.status).map(a =>
-      `<button class="dp-act" data-a="${a}" data-n="${inc.n}"${kindOf(inc, a) ? ` data-kind="${kindOf(inc, a)}"` : ""} disabled ` +
-      `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
+    const btn = a => `<button class="dp-act" data-a="${a}" data-n="${inc.n}"${kindOf(inc, a) ? ` data-kind="${kindOf(inc, a)}"` : ""} disabled ` +
+      `title="${a} increment ${inc.n} — available when served">${a}</button>`;
+    // The next increment shows its moves in the open. Any other card shows
+    // only the move an increment that has its go still owes (start or done);
+    // the rest (a go out of order, block, reset) wait behind a small ⋯.
+    const all = incActions(inc.status);
+    const owed = inc !== next && (inc.status === "authorized" || inc.status === "working") ? all.filter(a => !ALWAYS.includes(a)) : [];
+    const shown = inc === next ? all : owed, more = all.filter(a => !shown.includes(a));
+    const acts = shown.map(btn).join("") + (more.length
+      ? `<details class="dp-more"><summary aria-label="more for increment ${inc.n}" title="more for increment ${inc.n}">⋯</summary><span class="dp-more-acts">${more.map(btn).join("")}</span></details>` : "");
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
-    const checks = checksRow(inc, st.slug) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
+    const checks = checksRow(inc, st.slug) || (d.waiver ? waiverHtml(d.waiver) : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
     // Edits the gate let through outside this increment's files (decide.mjs).
@@ -2423,7 +2451,7 @@ ${files}
 ${oos}
 ${dcommits ? `<ul class="dim">${dcommits}</ul>` : ""}
 ${checks}
-<p>${acts}</p></div>`;
+${acts ? `<p class="dp-acts">${acts}</p>` : ""}</div>`;
   }).join("\n");
   const g = gateView(st);
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
@@ -2439,10 +2467,11 @@ ${checks}
 `;
   const body = commonBody(spec, st.adrs || [], true,
     endStateHtml(st.map, (st.increments || []).map(i => ({ n: i.n, title: i.title, status: i.status }))), work);
-  // Every section the spec drew starts folded; Gate, Increments and the
-  // sections after the spec stay open.
+  // Every section the spec drew starts folded, and so do Amend the plan and
+  // the Log: Gate and Increments are the page. A kept amendment draft opens
+  // its section again (SURFACE_JS).
   const specTitles = [...body.slice(body.indexOf("<h2>Context</h2>")).matchAll(/<h2>([^<]*)<\/h2>/g)].map(m => m[1]);
-  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working", specTitles) + AUTO_REFRESH_BOX + `
+  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working", [...specTitles, "Amend the plan", "Log"]) + AUTO_REFRESH_BOX + `
 <script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;

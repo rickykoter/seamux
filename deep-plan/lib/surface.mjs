@@ -67,7 +67,7 @@ export function fileTreeHtml(files) {
   const leaf = f => `<span class="dp-path" data-file="${esc(f)}" title="${esc(f)}">${esc(base(f))}</span>`;
   if (files.length === 1) {
     const dir = files[0].includes("/") ? files[0].slice(0, files[0].lastIndexOf("/") + 1) : "";
-    return `<p class="dp-files1"><span class="dim">file</span> ${leaf(files[0])}${dir ? ` <span class="dim">${esc(dir)}</span>` : ""}</p>`;
+    return `<p class="dp-files1"><span class="dp-files-n">1 file:</span> ${leaf(files[0])}${dir ? ` <span class="dp-files-peek">${esc(dir)}</span>` : ""}</p>`;
   }
   const root = { dirs: new Map(), files: [] };
   for (const f of files) {
@@ -97,7 +97,7 @@ export function fileTreeHtml(files) {
     return rows.join("");
   };
   const peek = files.slice(0, 3).map(base).join(" · ") + (files.length > 3 ? " …" : "");
-  return `<details class="dp-files"><summary><span class="dp-files-n">files <span class="dp-n">${files.length}</span></span> <span class="dp-files-peek">${esc(peek)}</span></summary>` +
+  return `<details class="dp-files"><summary><span class="dp-files-n">${files.length} files</span> <span class="dp-files-peek">${esc(peek)}</span></summary>` +
     `<ul class="dp-tree">${walk(root, 0)}</ul></details>`;
 }
 
@@ -237,9 +237,12 @@ body{max-width:none;margin:0;padding:0}
 #dp-hl-add:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .dp-x{background:transparent;border:0;color:inherit;opacity:.6;cursor:pointer;font:inherit}
 .dp-x:hover{opacity:1}
-#dp-clear{background:none;border:1px solid var(--line2);color:var(--dim);border-radius:6px;padding:8px 12px;
-  font:inherit;font-size:13px;cursor:pointer;margin-left:8px;min-height:40px}
-#dp-clear.sure{border-color:var(--bad);color:var(--bad-t)}
+/* A quiet link: forgetting drafts is rare, and it asks twice. */
+#dp-clear{background:none;border:0;color:var(--dim);padding:4px 0;font:inherit;font-size:13px;cursor:pointer;
+  margin-left:12px;text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:2px}
+#dp-clear:hover{color:var(--fg);text-decoration-color:currentColor}
+#dp-clear:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#dp-clear.sure{color:var(--bad-t);text-decoration-color:currentColor}
 
 /* ---- file trees ---- */
 .dp-files{margin:8px 0;font-size:13.5px}
@@ -248,7 +251,8 @@ body{max-width:none;margin:0;padding:0}
 .dp-files>summary::before,.dp-tree summary::before{content:"";width:5px;height:5px;border-right:1.5px solid var(--faint);
   border-bottom:1.5px solid var(--faint);transform:rotate(-45deg);margin:0 3px 2px 1px;transition:transform .12s;flex:none;align-self:center}
 .dp-files[open]>summary::before,.dp-tree details[open]>summary::before{transform:rotate(45deg);margin-bottom:4px}
-.dp-files-n{font:600 11px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+/* One file inline, two or more folded: both lead with the same "N file(s)" words. */
+.dp-files-n{color:var(--dim);white-space:nowrap}
 .dp-files-peek{font:12.5px/1.3 var(--mono);color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .dp-files[open] .dp-files-peek{display:none}
 .dp-n{font:500 11px/1 var(--mono);color:var(--faint)}
@@ -256,7 +260,7 @@ body{max-width:none;margin:0;padding:0}
 .dp-tree summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;padding:1px 0}
 .dp-dir{font:12.5px/1.5 var(--mono);color:var(--dim)}
 .dp-leaf{font:12.5px/1.6 var(--mono)}
-.dp-files1{font-size:13.5px}
+.dp-files1{font-size:13.5px;margin:8px 0;display:flex;gap:8px;align-items:baseline;min-width:0}
 .dp-files1 .dp-path{font:12.5px/1.5 var(--mono)}
 
 /* ---- diagrams ---- */
@@ -1328,6 +1332,10 @@ export const SURFACE_JS = String.raw`<script>
       f.value = drafts[k];
       f.dispatchEvent(new Event("input", { bubbles: true }));
       f.dispatchEvent(new Event("change", { bubbles: true }));
+      // A draft kept in a section the page folds by default opens it, unless
+      // the reader folded it themselves: a kept amendment should not hide.
+      var hold = f.value.trim() && f.closest(".dp-sec");
+      if (hold && hold.classList.contains("dp-folded") && !Object.prototype.hasOwnProperty.call(folds, hold.id)) setFold(hold, false, true);
     }
   });
   var copyBtn = document.getElementById("dp-copyback") || document.getElementById("dp-amend-copy");
