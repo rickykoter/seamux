@@ -410,6 +410,11 @@ check("…and a subagent's tool use (agent_id) leaves the main agent's ask alone
 hook("pretool", stdin=payload(tool_name="Bash", agent_type="general-purpose"))
 check("…but a main thread started with --agent (agent_type, no agent_id) takes it back",
       not marker("lane-ws-1") and log() == ["workspace status set auto"], log())
+reset()
+touch("lane-ws-1")
+hook("pretool", stdin=payload(tool_name="Bash", tool_input={"command": 'echo \'{"agent_id": "x"}\''}))
+check("…and so does the main agent when agent_id is only inside its tool input",
+      not marker("lane-ws-1") and log() == ["workspace status set auto"], log())
 reset([row(desc="phase:waiting ci:green")])
 touch("lane-ws-1")
 touch("asked-ws-1")
