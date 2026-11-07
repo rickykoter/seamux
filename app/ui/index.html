@@ -49,6 +49,14 @@
       button:focus:not(:focus-visible), select:focus:not(:focus-visible) { outline: none; }
       .tab.on { color: var(--fg); background: var(--on); box-shadow: 0 0 0 1px var(--line); }
       .grow { flex: 1; align-self: stretch; }
+      /* The appearance button (appearance.ts): one click cycles system, light, dark. */
+      #appearance {
+        flex: none; display: grid; place-items: center; width: 26px; height: 26px; margin-right: 6px;
+        padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer;
+      }
+      #appearance:hover { color: var(--fg); background: var(--on); }
+      #appearance:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      #appearance svg { width: 15px; height: 15px; }
       #conn { color: var(--muted); font-size: var(--fs-2); margin-right: 8px; white-space: nowrap; }
       #conn::before {
         content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;

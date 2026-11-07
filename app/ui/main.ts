@@ -14,6 +14,11 @@ import "./panechips.css";
 import { ReviewView } from "./review";
 import "./review.css";
 import { Palette } from "./palette";
+import { appearanceButton } from "./appearance";
+
+// Light, dark or the system's, before anything draws; its button sits just
+// before the connection line.
+document.getElementById("conn")!.before(appearanceButton());
 
 // The shape of `backend_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
