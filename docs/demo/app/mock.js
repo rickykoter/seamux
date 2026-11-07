@@ -426,6 +426,8 @@ function viewsFrame() {
     families: families(),
     pages: pages(),
     levels: {},
+    // Each workspace's branch, as views.rs reads it from its worktree.
+    branches: Object.fromEntries(ws.filter((w) => w.branch).map((w) => [w.id, w.branch])),
     problems: [],
   };
 }

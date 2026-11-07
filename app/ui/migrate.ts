@@ -93,7 +93,7 @@ export class MigrateBanner {
 
   private async refresh(): Promise<void> {
     try {
-      this.offers = await invoke<Offer[]>("migrate_offers");
+      this.offers = (await invoke<Offer[] | null>("migrate_offers")) ?? [];
     } catch (e) {
       this.offers = [];
       console.error("migrate", e);

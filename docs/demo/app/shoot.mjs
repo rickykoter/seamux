@@ -81,9 +81,9 @@ export const VIEWS = {
     // search-index merged: its card is folded; open it, then its reclaim chip.
     const row = page.frameLocator(".dock-board iframe").locator(`.row[data-id="${byKey.search.id}"]`);
     const chip = row.locator(".chip", { hasText: /^reclaim$/ }).first();
-    if (!(await chip.isVisible())) await row.locator('.top[data-a="fold"]').first().click();
+    if (!(await chip.isVisible())) await row.locator('[data-a="fold"]').first().click();
     await chip.click();
-    await page.locator(".reclaim .rc-checks").waitFor();
+    await page.locator(".reclaim .rc-foot button + button").waitFor();
     await settle(page, 600);
   },
   async wake(page) {
