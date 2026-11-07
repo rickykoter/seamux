@@ -1,20 +1,6 @@
-/* The Wake in the app: Desk's look, /artifacts' rows. Kind colours are the
-   page's own hues, kept off the state colours (yellow needs you, red is at
-   risk); the rest are the index.html tokens, light or dark. */
-
-:root {
-  /* Light: the hues deepened, so a kind's label reads on a light page. */
-  --k-plan: #3d7f76; --k-review: #a3577b; --k-ask: #5560a8; --k-artifact: #3f8a52; --k-doc: #5e7a33;
-  --k-temp: #b0562e; --k-image: #3b6aa8; --k-file: #5f6b63; --k-commit: #7d6f4f;
-  --k-pr: #7c5bb4; --k-issue: #3a7d44;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --k-plan: #7fbbb3; --k-review: #d699b6; --k-ask: #a6b0e6; --k-artifact: #83c092; --k-doc: #a7c080;
-    --k-temp: #e69875; --k-image: #8fb8ea; --k-file: #9da9a0; --k-commit: #d3c6aa;
-    --k-pr: #b9a0e6; --k-issue: #8fcf96;
-  }
-}
+/* The Wake in the app: Desk's look, /artifacts' rows. Kinds carry no colour
+   of their own: colour on this page means state (yellow needs you, red at
+   risk), so a kind is told by its word. The rest are the index.html tokens. */
 
 #wake { height: 100%; }
 #wake[hidden] { display: none; }
@@ -40,7 +26,6 @@
   display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; padding: 2px 9px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
 }
-.w-chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--kc, var(--muted)); }
 .w-chip span { color: var(--muted); }
 .w-chip.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .w-chip[hidden] { display: none; }
@@ -93,10 +78,6 @@
 .w-row mark, .w-ph mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 2px; }
 .w-empty { margin: 14vh auto 0; max-width: 420px; text-align: center; color: var(--muted); }
 
-.k-plan { --kc: var(--k-plan); } .k-review { --kc: var(--k-review); } .k-ask { --kc: var(--k-ask); }
-.k-artifact { --kc: var(--k-artifact); } .k-doc { --kc: var(--k-doc); } .k-temp { --kc: var(--k-temp); }
-.k-image { --kc: var(--k-image); } .k-file { --kc: var(--k-file); } .k-commit { --kc: var(--k-commit); }
-.k-pr { --kc: var(--k-pr); } .k-issue { --kc: var(--k-issue); }
 
 .w-help { position: absolute; right: 26px; top: 84px; z-index: 20; padding: 10px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 10px 28px var(--shade); font-size: 12px; }
 .w-help[hidden] { display: none; }

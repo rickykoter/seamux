@@ -7,7 +7,7 @@
 /* ---- the side: a new review, then the list ---- */
 .r-side { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .r-form { padding: 16px 14px 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); }
-.r-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.r-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--section); }
 .r-field { position: relative; }
 .r-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
 .r-opts { display: flex; gap: 6px; }
@@ -16,7 +16,7 @@
 .r-btn { font: inherit; font-size: 12.5px; padding: 5px 11px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg); white-space: nowrap; }
 .r-btn:hover:not(:disabled) { border-color: var(--accent); }
 .r-btn:disabled { opacity: 0.45; cursor: default; }
-.r-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ef-ink); }
+.r-btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .r-btn.quiet { border-color: transparent; color: var(--muted); background: none; }
 .r-btn.quiet:hover:not(:disabled) { color: var(--fg); border-color: var(--line); }
 .r-input:focus-visible, .r-select:focus-visible, .r-btn:focus-visible, .r-item:focus-visible, .r-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

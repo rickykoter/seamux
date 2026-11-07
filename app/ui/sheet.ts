@@ -55,8 +55,8 @@ function tabView(p: Tile): { cls: string; name: string; state: string; tip: stri
     const who = p.agent === "claude" ? "Claude" : p.agent;
     const waiting = p.state === "needs_input";
     const wait = waiting && p.since > 0 ? ageOf(p.since / 1000) : "";
-    const st = waiting ? (wait ? `waiting ${wait}` : "waiting") : "";
-    const said = p.state === "needs_input" ? "waiting on you" : p.state.replace("_", " ");
+    const st = waiting ? (wait ? `needs you · ${wait}` : "needs you") : "";
+    const said = p.state === "needs_input" ? "needs you" : p.state.replace("_", " ");
     return { cls: `agent ${p.state}`, name: who, state: st, tip: `${who} · ${said}${wait ? " for " + wait : ""}${p.topic ? " · " + p.topic : ""}` };
   }
   // cmux's stock title says nothing; the folder it is in does.
@@ -927,7 +927,7 @@ export class Sheet {
       ...this.tabs.map((t) => {
         const b = document.createElement("button");
         b.type = "button";
-        b.className = `sheet-tab tk-${t.kind}` + (t.key === this.active ? " on" : "") + (t.waiting ? " waiting" : "");
+        b.className = "sheet-tab" + (t.key === this.active ? " on" : "") + (t.waiting ? " waiting" : "");
         b.setAttribute("role", "tab");
         b.setAttribute("aria-selected", String(t.key === this.active));
         const key = document.createElement("kbd");
@@ -952,7 +952,7 @@ export class Sheet {
         if (t.waiting) {
           const dot = document.createElement("i");
           dot.className = "sheet-tab-dot";
-          dot.setAttribute("aria-label", "waiting on you");
+          dot.setAttribute("aria-label", "needs you");
           b.append(dot);
         }
         b.title = t.key === WAKE ? "This workspace's Wake (⌘E)" : `${t.label}${t.state ? " · " + t.state : ""}`;

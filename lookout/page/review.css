@@ -271,7 +271,7 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: 1
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical; }
 .buttons { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
-.buttons button.primary { background: var(--ef-text-accent); border-color: var(--ef-text-accent); color: var(--bg); }
+.buttons button.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .actions.folded { padding: 2px 10px 6px; border-top: 0; }
 .buttons.links { gap: 2px; margin-left: -6px; }
 .buttons.links button { background: none; border: 0; padding: 2px 6px; font-size: 12px; color: var(--muted); }
@@ -317,7 +317,7 @@ ul.watch li { margin: 2px 0; }
 .touch { font-size: 11px; border-radius: 10px; padding: 1px 8px; background: var(--hunk); color: var(--fg); }
 .quiz { margin-top: 4px; padding: 8px 10px; border-radius: 6px; background: var(--side); border: 1px solid var(--border);
   display: flex; flex-direction: column; gap: 6px; }
-.quiz .qlead { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--accent-t); }
+.quiz .qlead { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .quiz .qprompt { font-weight: 600; }
 .qopts { display: flex; flex-direction: column; gap: 4px; }
 .qopt { text-align: left; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer; }

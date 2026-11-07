@@ -50,7 +50,7 @@ function dot(r: Row): SVGSVGElement {
   return s;
 }
 
-const STATE_SAID: Record<string, string> = { needs_input: "waiting on you", working: "working", idle: "idle", ended: "ended", shell: "terminal" };
+const STATE_SAID: Record<string, string> = { needs_input: "needs you", working: "working", idle: "idle", ended: "ended", shell: "terminal" };
 
 /** sessions.rs LastExchange. */
 type LastExchange = { prompt: string; reply: string; session: string; at: number };
@@ -94,7 +94,7 @@ export class Palette {
   constructor() {
     this.chip.type = "button";
     this.chip.hidden = true;
-    this.chip.title = "Search sessions, tucked and muted ones too (⌘K)";
+    this.chip.title = "Search sessions, hidden ones too (⌘K)";
     this.chip.addEventListener("click", () => this.open());
     this.el.hidden = true;
     this.card.setAttribute("role", "dialog");
@@ -171,11 +171,13 @@ export class Palette {
   private refresh(): void {
     const tucked = this.views.tucked ?? [];
     const waiting = tucked.some((r) => r.level === "tuck" && r.waiting);
-    this.chip.hidden = tucked.length === 0;
-    this.chip.replaceChildren(document.createTextNode(`Tucked · ${tucked.length}`));
+    // Always there, so search has a way in without knowing ⌘K; the count of
+    // hidden rows rides along when there are any.
+    this.chip.hidden = false;
+    this.chip.replaceChildren(document.createTextNode(tucked.length ? `Search ⌘K · ${tucked.length} hidden` : "Search ⌘K"));
     if (waiting) {
       const d = el("i", "tuck-dot");
-      d.setAttribute("aria-label", "a tucked workspace is waiting on you");
+      d.setAttribute("aria-label", "a hidden workspace needs you");
       this.chip.append(d);
     }
     this.chip.classList.toggle("waiting", waiting);
@@ -236,7 +238,7 @@ export class Palette {
     this.shown.forEach((h, i) => {
       if (h.row.level && !tuckedYet) {
         tuckedYet = true;
-        kids.push(el("div", "search-sect", "tucked and muted"));
+        kids.push(el("div", "search-sect", "hidden"));
       }
       kids.push(this.rowEl(h, i));
     });

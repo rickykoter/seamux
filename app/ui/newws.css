@@ -73,7 +73,7 @@
 .newws-say[hidden] { display: none; }
 .newws-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .newws-keys { flex: 1; color: var(--muted); font-size: 11.5px; }
-.newws-go { background: var(--accent); border-color: var(--accent); color: var(--ef-ink); }
+.newws-go { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .newws .sheet-btn:disabled { opacity: 0.55; cursor: default; }
 
 /* The launch banner under New workspace (migrate.ts). */

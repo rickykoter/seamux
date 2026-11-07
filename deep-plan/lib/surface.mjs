@@ -165,7 +165,7 @@ body{max-width:none;margin:0;padding:0}
   #dp-rail{height:100vh;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:10px;
     border-bottom:0;border-right:1px solid var(--line);padding:14px 10px 24px;overflow-y:auto}
   .dp-rail-head{order:0;flex-wrap:wrap}
-  .dp-rail-label{display:block;font:700 11px/1 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark-t);padding:8px 8px 0}
+  .dp-rail-label{display:block;font:700 11px/1 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);padding:8px 8px 0}
   .dp-toc{flex-direction:column;overflow:visible;gap:1px}
   .dp-toc li{display:block}
   .dp-toc a{white-space:normal}
@@ -187,7 +187,7 @@ body{max-width:none;margin:0;padding:0}
 #dp-foot .dp-foot-n b{color:var(--fg);font-weight:600}
 #dp-foot .dp-foot-n.dp-foot-all b{color:var(--good-t)}
 #dp-foot .dp-tbtn{flex:none;font:500 12px/1 system-ui;white-space:nowrap}
-#dp-foot .dp-foot-copy{background:var(--accent-t);border-color:var(--accent-t);color:var(--bg);font-weight:600}
+#dp-foot .dp-foot-copy{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
 #dp-foot .dp-foot-copy:hover{color:var(--bg);opacity:.9}
 @media (max-width:479px){#dp-foot{padding-left:12px}#dp-foot .dp-foot-long{display:none}}
 @media (min-width:980px){#dp-foot{grid-column:2}}
@@ -318,7 +318,7 @@ body.dp-lb-open{overflow:hidden}
 #dp-help[hidden]{display:none}
 .dp-help-box{background:var(--card2);border:1px solid var(--line2);border-radius:12px;padding:16px 20px;max-width:520px;width:100%;
   max-height:80vh;overflow:auto;box-sizing:border-box}
-.dp-help-box h3{margin:10px 0 6px;font:700 11px system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark-t)}
+.dp-help-box h3{margin:10px 0 6px;font:700 11px system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
 .dp-help-box h3:first-child{margin-top:0}
 .dp-help-box dl{display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;margin:0;font-size:13.5px}
 .dp-help-box dt{font:600 12px/1.6 var(--mono);color:var(--fg)}

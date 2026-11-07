@@ -349,11 +349,11 @@ export class Wake {
     this.chipsEl.replaceChildren(
       all,
       ...KINDS.map((k) => {
-        const b = button("", `w-chip k-${k}${this.kinds.has(k) ? " on" : ""}`);
+        const b = button("", `w-chip${this.kinds.has(k) ? " on" : ""}`);
         // A kind with nothing in it is no filter: hidden, unless it is the one picked.
         b.hidden = !n.get(k) && !this.kinds.has(k);
         b.dataset.k = k;
-        b.append(el("i"), document.createTextNode(`${k} `), el("span", "", String(n.get(k) ?? 0)));
+        b.append(document.createTextNode(`${k} `), el("span", "", String(n.get(k) ?? 0)));
         return b;
       }),
     );
@@ -441,7 +441,7 @@ export class Wake {
   private row(r: Row, i: number, sel: boolean): HTMLElement {
     const li = el("li", `w-row ${r.state}${sel ? " sel" : ""}`);
     li.dataset.i = String(i);
-    li.append(el("span", `w-k k-${r.kind}`, r.kind));
+    li.append(el("span", "w-k", r.kind));
     const t = el("span", "w-t");
     const gh = ghLink(r);
     // A link made with a title shows it; one only named shows owner/repo #n.
