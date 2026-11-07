@@ -3723,9 +3723,65 @@ if (want("end state map: on both plan pages")) {
   delete st.map;
   fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), JSON.stringify(st, null, 2) + "\n");
   cli("rehydrate", "pm-page-plan");
-  ok("a plan with no stored map has no End state section", !fs.readFileSync(rvP, "utf8").includes("End state") && !fs.readFileSync(wkP, "utf8").includes("pm-mount"));
+  ok("a plan with no stored map has no End state section", !fs.readFileSync(rvP, "utf8").includes("<h2>End state</h2>") && !fs.readFileSync(wkP, "utf8").includes("pm-mount"));
   cli("close", "pm-page-plan");
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), { force: true });
+}
+
+// -------------------------------------------------- decision first
+//
+// The review page opens on what the reader approves (a summary card, then
+// the quiz one click away) with the reference sections folded; the working
+// page opens on Gate and Increments with the approved spec folded below.
+// Neither change reaches the copy-back: same boxes, same order.
+if (want("decision first: summary card, default folds, work on top")) {
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "first-plan";
+  s.risks = [...s.risks, { risk: "nobody owns the dashboard" }, "the sweep may race the writer"];
+  r = cli("render", tmpSpec(s));
+  ok("decision first: the plan renders", r.status === 0, r.stderr);
+  const rv = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "first-plan.review.html"), "utf8");
+  const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "first-plan.working.html"), "utf8");
+  const sum = (rv.match(/<div class="dp-sum"[\s\S]*?<\/script>\n<\/div>/) || [""])[0];
+  ok("review: the summary card sits between the plan line and Context",
+    sum && rv.indexOf('<p class="dim">plan <code>first-plan</code></p>') < rv.indexOf(sum) && rv.indexOf(sum) < rv.indexOf("<h2>Context</h2>"));
+  // Context is open right under the card, so the card does not repeat it.
+  ok("review: the card says what is being approved, without repeating the context",
+    sum.includes("What you're approving") && !sum.includes("Deliveries that fail once are currently dropped."));
+  ok("review: the card lists the increments in order",
+    /<ol><li><a href="#inc-1">Retry sweep<\/a><\/li><li><a href="#inc-2">Backoff bookkeeping<\/a><\/li><\/ol>/.test(sum));
+  const counts = sum.replace(/<[^>]+>/g, "");
+  ok("review: the card counts decisions, contracts, risks still open and ADR drafts",
+    counts.includes("2 decisions · 1 contract · 3 risks, 2 not decided · 1 ADR draft"), counts);
+  ok("review: the card leads to the quiz", sum.includes('id="dp-sum-go"') && sum.includes("Go to the quiz (3 questions)"));
+  ok("review: the card holds no comment box or control the copy-back reads",
+    !/dp-note|<input|<textarea|<select|data-section|data-qid/.test(sum));
+  const pageOf = h => JSON.parse(h.match(/window\.DP_PAGE=(\{.*?\});<\/script>/)[1]);
+  ok("review: reference sections start folded; Context, Decisions, Risks, Increments and the quiz do not",
+    JSON.stringify(pageOf(rv).folded) === JSON.stringify(["End state", "Contracts", "Verified facts", "ADRs", "Diagrams", "Verification"]),
+    JSON.stringify(pageOf(rv)));
+  // The copy-back reads every .dp-note in page order: the same list as a page
+  // without the card (the boxes after it, in the order they always had).
+  const notes = h => [...h.matchAll(/class="dp-note"[^>]*data-section="([^"]*)"/g)].map(m => m[1]);
+  ok("review: the comment boxes, in order, are the same as before the card",
+    JSON.stringify(notes(rv)) === JSON.stringify(["adr 1", "increment 1", "increment 2", "general"]), JSON.stringify(notes(rv)));
+  ok("review: Copy for session builds the same paste-back",
+    rv.includes('var parts = ["deep-plan review \\u2014 " + slug];') && rv.includes('parts.push("deep-plan grade " + slug + " " + answers.join(" "));') &&
+    rv.includes('if (notes.length) parts.push("comments:\\n" + notes.join("\\n"));'));
+  const at = t => wk.indexOf(`<h2>${t}</h2>`);
+  ok("working: Gate and Increments come before Context, right under the title",
+    at("Gate") > wk.indexOf('<p class="dim">plan <code>first-plan</code></p>') && at("Gate") < at("Increments") && at("Increments") < at("Context"),
+    JSON.stringify({ gate: at("Gate"), incs: at("Increments"), ctx: at("Context") }));
+  ok("working: the primary go button is above the spec", wk.indexOf('data-kind="primary"') > 0 && wk.indexOf('data-kind="primary"') < at("Context"));
+  ok("working: every spec section starts folded; Gate, Increments and Amend stay open",
+    JSON.stringify(pageOf(wk).folded) === JSON.stringify(["Context", "End state", "Decisions", "Contracts", "Verified facts", "Risks", "ADRs", "Diagrams"]),
+    JSON.stringify(pageOf(wk)));
+  ok("working: the page has no summary card", !wk.includes('class="dp-sum"'));
+  ok("both pages: a remembered fold wins over the default, and an open is remembered too",
+    /folds\[sec\.id\] = on \? 1 : 0/.test(rv) && /hasOwnProperty\.call\(folds, s\.id\) \? !!folds\[s\.id\] : !!byDefault/.test(rv));
+  ok("both pages: find and highlight skip the card, so it never anchors a comment",
+    /\.dp-q-sum,\.dp-sum"\)\) return NodeFilter\.FILTER_REJECT/.test(rv) && /"textarea,input,select,button,\.dp-dg-bar,\.dp-sum"/.test(rv));
+  cli("close", "first-plan");
 }
 
 // -------------------------------------------------- an older plan gets its map

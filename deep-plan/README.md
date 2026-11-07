@@ -65,10 +65,13 @@ detected.
 
 ## The review page
 
-The page opens with the bottom line: the plan's context, its non-goals, and
-the simplest approach the agent turned down and why (the spec's `simpler`;
+The page opens with the bottom line. A short card says what you are
+approving: the plan's goal, its increments, and how many decisions,
+contracts, open risks and ADR drafts it carries, with a button that takes
+you to the quiz. Then come the plan's context, its non-goals, and the
+simplest approach the agent turned down and why (the spec's `simpler`;
 render warns when a plan leaves it out).
-Then comes the **End state map**: the plan's files in the middle, grouped
+Then comes the **End state map**, folded until you open it: the plan's files in the middle, grouped
 by folder and marked new (dashed), changed (~) or removed (struck through),
 with what uses them on the left and what they use on the right. Each folder
 starts folded into one row that keeps its links and badges; click it, or
@@ -84,6 +87,13 @@ Below it the page has the plan's decisions, cited evidence, diagrams and
 increments, with a rail of its sections down the side. Highlight any text
 and press ⌘M to comment on it: the text stays marked, and the comment sits
 beside it in the margin. Click the marked text to edit what you wrote.
+
+The sections you look things up in rather than read (the End state map,
+contracts, verified facts, ADRs, diagrams and verification) start folded.
+The rail still lists them, and a click there or a search hit opens one.
+The page remembers what you opened or folded. The working page puts the
+gate and the increments first, with the button for the next step, and
+folds the plan you already approved below them.
 
 ![the top of a plan's review page: the section rail with a comment count on Context, the context paragraphs with one phrase highlighted, and its comment card in the margin](../docs/img/plan-page.png)
 
