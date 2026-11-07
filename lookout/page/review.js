@@ -251,7 +251,13 @@
   }
 
   const when = iso => { try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
-  function message(m, pill) {
+  function message(m, pill, folded) {
+    // A status change its author made with a reply, at the same moment: its
+    // words ride on that reply's line, not as a second message.
+    if (folded && m === folded.m) return null;
+    if (folded && m === folded.after) return el("div", { class: "msg by-" + m.by }, el("div", { class: "who" }, m.by,
+      el("span", { class: "at" }, " · " + when(m.at)), el("span", { class: "at note", title: `${folded.m.by} marked it ${folded.to}` }, " · " + folded.text)),
+      el("div", { class: "text" }, m.text));
     // The status change the pill already shows: only its words, as its
     // author's message; with no words, nothing.
     if (m === pill) return m.text ? el("div", { class: "msg by-" + m.by }, el("div", { class: "who" }, m.by, el("span", { class: "at" }, " · " + when(m.at))),
@@ -286,12 +292,27 @@
     // The latest status change, when it is the one the pill shows.
     const last = [...thread].reverse().find(m => m.kind === "status");
     const pill = last && last.to === (x.status || "open") && x.status !== "open" ? last : null;
-    return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment") + (x.id === curFinding ? " cur" : ""), "data-item": x.id },
+    // The pill's change folds into the reply just before it when one author
+    // wrote both within two minutes.
+    const prev = pill && pill.text ? thread[thread.indexOf(pill) - 1] : null;
+    const folded = prev && prev.kind !== "status" && prev.by === pill.by &&
+      Math.abs(Date.parse(pill.at) - Date.parse(prev.at)) <= 120000 ? { m: pill, after: prev, to: pill.to, text: pill.text } : null;
+    return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment") + (x.id === curFinding ? " cur" : ""), "data-item": x.id,
+      onclick: e => pickCard(x.id, e) },
       head,
       body && finding ? el("div", { class: "card-body" },
         el("div", { class: "failure" }, el("b", null, "Fails when: "), x.failure_scenario)) : null,
-      body ? el("div", { class: "msgs" }, thread.map(m => message(m, pill))) : null,
+      body ? el("div", { class: "msgs" }, thread.map(m => message(m, pill, folded))) : null,
       body ? actions(x) : null);
+  }
+  // A click on a card picks it, as n/p do, which shows its Reply / Resolve /
+  // Dismiss row. Not a click on a control, and not the end of a text selection.
+  function pickCard(id, e) {
+    if (e.target.closest("button, a, textarea, input") || String(getSelection() || "")) return;
+    curFinding = id;
+    for (const o of document.querySelectorAll(".card.cur")) o.classList.remove("cur");
+    const c = document.querySelector(`[data-item="${CSS.escape(id)}"]`);
+    if (c) c.classList.add("cur");
   }
   // Increment 4's comment channel fills this in when the page is served.
   let actions = () => null;
@@ -849,8 +870,10 @@
     const blocking = open.filter(x => x.severity === "blocker" || x.severity === "major");
     const counts = SEV.map(s => [s, open.filter(x => x.severity === s).length]).filter(([, n]) => n)
       .map(([s, n]) => `${n} ${s}`).join(", ");
-    if (blocking.length) return { cls: "blocked", text: `blocked · ${counts} open` };
-    return { cls: "pass", text: open.length ? `pass · ${counts} open` : "pass · no open findings" };
+    // The pill says how many; its tooltip says which.
+    const detail = open.length ? `${counts} open.` : "";
+    if (blocking.length) return { cls: "blocked", text: `blocked · ${open.length} open`, detail };
+    return { cls: "pass", text: open.length ? `pass · ${open.length} open` : "pass · no open findings", detail };
   }
 
   function drawHeader() {
@@ -896,7 +919,7 @@
   }
   function gateTitle(g) {
     const go = !!(R.findings || []).length;
-    return { go, title: (g.cls === "blocked" ? "Go to the first blocking finding (n goes on). " : go ? "Go to the first finding (n goes on). " : "") +
+    return { go, title: (g.detail ? g.detail + " " : "") + (g.cls === "blocked" ? "Go to the first blocking finding (n goes on). " : go ? "Go to the first finding (n goes on). " : "") +
       ((R.policy && R.policy.agentMayClose) ? "The agent may also close findings on this review."
                                             : "Only you close findings; the agent replies and marks them addressed.") };
   }
