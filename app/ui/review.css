@@ -57,8 +57,8 @@
 /* ---- the main side: head, controls, then the page ---- */
 .r-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .r-mhead:empty, .r-ctl:empty { display: none; }
-.r-mhead { padding: 8px 18px; }
-.r-mhead-row { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.r-mhead { padding: 6px 14px; }
+.r-mhead-row { display: flex; align-items: center; gap: 8px 10px; min-width: 0; flex-wrap: wrap; }
 .r-name { margin: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3ch; flex: 0 1 auto; }
 /* The actions, at the row's end; a narrow window wraps them under the name. */
 .r-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-left: auto; }
@@ -67,12 +67,35 @@
 .r-link { font-size: 12px; color: var(--accent); overflow-wrap: anywhere; }
 .r-chip { font-size: 11px; padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--term); color: var(--muted); }
 .r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
-/* The page's gate pill colour: a blocked review reads as a major does. */
-.r-chip.blocked { background: color-mix(in srgb, var(--ef-text-orange) 16%, transparent); color: var(--ef-text-orange); }
+/* The page's gate pill colour: a blocked review reads as a blocker does. */
+.r-chip.blocked { background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); color: var(--ef-text-red); }
 .r-chip.failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
 .r-chip.running { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 
-.r-ctl { padding: 0 18px 8px; display: flex; flex-direction: column; gap: 8px; }
+/* The framed page's tools on this row (lookout/page/review.js postState):
+   its gate pill, live state and view buttons, drawn the page's way. */
+.r-gate { font: 600 12px system-ui, sans-serif; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.r-gate:hover:not(:disabled) { background: var(--term); }
+.r-gate:disabled { cursor: default; }
+.r-gate.blocked { color: var(--ef-text-red); border-color: var(--ef-text-red); }
+.r-gate.pass { color: var(--good); border-color: var(--good); }
+.r-go { margin-left: 5px; font-weight: 400; opacity: 0.8; }
+.r-mode { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 32ch; }
+.r-mode.live { color: var(--good); }
+.r-mode.live::before { content: "● "; }
+.r-mode.down { color: var(--ef-text-orange); }
+.r-mode.down::before { content: "○ "; }
+.r-busy { flex: 0 1 auto; min-width: 0; max-width: 40ch; }
+.r-sep { width: 1px; align-self: stretch; margin: 3px 2px; background: var(--line); }
+.r-tool[aria-pressed="true"] { color: var(--fg); border-color: var(--line); background: var(--term); }
+.r-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.r-seg-btn { font: inherit; font-size: 12px; padding: 4px 9px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.r-seg-btn + .r-seg-btn { border-left: 1px solid var(--line); }
+.r-seg-btn[aria-pressed="true"] { background: var(--term); color: var(--fg); font-weight: 600; }
+.r-keys { width: 26px; padding-left: 0; padding-right: 0; text-align: center; }
+.r-gate:focus-visible, .r-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.r-ctl { padding: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; }
 .r-detail { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .r-detail.bad { color: var(--bad); }
 .r-now { margin: 0; font: 12px ui-monospace, Menlo, monospace; color: var(--fg); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -115,8 +138,8 @@
   .r-steps li.now .r-mark, .r-dot.running { animation: none; }
 }
 
-.r-log summary { cursor: pointer; font-size: 12px; color: var(--muted); }
-.r-log pre { margin: 6px 0 0; max-height: 180px; overflow: auto; font: 11px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; color: var(--muted); }
+.r-log-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.r-log pre { margin: 4px 0 0; max-height: 180px; overflow: auto; font: 11px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; color: var(--muted); }
 
 .r-frame { flex: 1; min-height: 0; border-top: 1px solid var(--line); }
 .r-frame[hidden] { display: none; }
