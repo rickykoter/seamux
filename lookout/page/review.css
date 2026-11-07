@@ -101,6 +101,11 @@ button { font: inherit; color: inherit; }
 :root[data-embed] .tools { flex: 1; gap: 10px; }
 :root[data-embed] .tools-gap { flex: 1; }
 :root[data-embed] #gate { order: -1; }
+/* Hosted: the app shows these tools on its own header row, so the page's row
+   folds to nothing and the file head is the first band. The key list still
+   opens from here, at the top right. */
+:root[data-host] #top { padding: 0; border: 0; min-height: 0; height: 0; }
+:root[data-host] #top .tools { display: none; }
 .keys-panel { position: absolute; right: 16px; top: calc(100% + 4px); z-index: 30; padding: 8px 12px;
   background: var(--card); border: 1px solid var(--card-border); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .2); font-size: 12px; line-height: 1.9; }
@@ -227,7 +232,10 @@ td.del mark { background: var(--del-mark); color: inherit; border-radius: 2px; }
 .gate:hover:not(:disabled) { background: var(--hover); }
 .gate:disabled { cursor: default; }
 .gate:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.gate.blocked { color: var(--sev-major); border-color: var(--sev-major); }
+/* Blocked reads as a blocker does. */
+.gate.blocked { color: var(--sev-blocker); border-color: var(--sev-blocker); }
+/* The arrow says the pill goes somewhere: to the first blocking finding. */
+.gate .go { margin-left: 5px; font-weight: 400; opacity: .8; }
 .gate.pass { color: var(--st-a); border-color: var(--st-a); }
 .gate.none { color: var(--muted); }
 tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); border-top: 1px solid var(--border);
@@ -246,15 +254,15 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .card-head .fid, .card-head .cat { opacity: 0; transition: opacity .12s; }
 .card:hover .card-head .fid, .card:hover .card-head .cat,
 .card:focus-within .card-head .fid, .card:focus-within .card-head .cat,
-.card.flash .card-head .fid, .card.flash .card-head .cat { opacity: 1; }
+.card.flash .card-head .fid, .card.flash .card-head .cat, .card.cur .card-head .fid, .card.cur .card-head .cat { opacity: 1; }
 @media (hover: none) { .card-head .fid, .card-head .cat { opacity: 1; } }
 .fid + .cat { margin-left: -4px; }
 .card .title { font-weight: 600; flex: 1; min-width: 200px; }
 .card .status { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; }
 .card .status.st-addressed { color: var(--risk-medium); border-color: var(--risk-medium); }
+/* An addressed blocker or major: open, and blocking, until the human resolves it. */
+.card .status.st-addressed.blocks { cursor: help; }
 .card .status.st-resolved { color: var(--st-a); border-color: var(--st-a); }
-/* Under the addressed pill: it stays open, and blocking, until the human resolves it. */
-.card .still-blocks { flex-basis: 100%; text-align: right; margin-top: -4px; font-size: 11px; color: var(--risk-medium); }
 .card-body { padding: 0 10px 8px; }
 .card-body .failure { margin-top: 4px; color: var(--muted); }
 .card-body .failure b { color: var(--fg); font-weight: 600; }
@@ -292,6 +300,12 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: 1
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 .buttons button.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .actions.folded { padding: 2px 10px 6px; border-top: 0; }
+/* Folded, Reply / Resolve / Dismiss show as the card meta does: on hover or
+   focus, on the finding n/p picked, with a draft or a send note, and always on touch. */
+.card > .actions.folded { opacity: 0; transition: opacity .12s; }
+.card:hover > .actions.folded, .card:focus-within > .actions.folded, .card.cur > .actions.folded, .card.flash > .actions.folded,
+.card > .actions.folded.draft, .card > .actions.folded:has(.send-status:not(:empty)) { opacity: 1; }
+@media (hover: none) { .card > .actions.folded { opacity: 1; } }
 /* Quiet buttons: a faint outline that firms up on hover, never a fill. */
 .buttons.links { gap: 6px; }
 .buttons.links button { background: none; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 6px;

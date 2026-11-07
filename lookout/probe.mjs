@@ -1765,19 +1765,45 @@ if (want("page script")) {
      /function firstBlocking\(\) \{[\s\S]{0,400}x\.severity === "blocker" \|\| x\.severity === "major"[\s\S]{0,200}goTo\(list\[0\]\.id\);\s*else stepFinding\(1\);/.test(js));
   ok("page: a card puts its title first and shows a status pill only when it is not open",
      /el\("span", \{ class: "title" \}[^\n]*\n\s*el\("span", \{ class: "fid" \}/.test(js) &&
-     js.includes('(x.status || "open") !== "open" ? el("span", { class: "status st-" + x.status }, x.status) : null'));
+     js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.status)) : null);'));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
   ok("page: the gate pill counts open findings by severity as \"1 blocker, 1 major open\"",
      js.includes('.map(([s, n]) => `${n} ${s}`).join(", ");') && js.includes("text: `blocked · ${counts} open`"));
-  ok("app: the Findings button counts the way the gate pill does, from the same open counts",
+  ok("app: the Findings button says only how many are picked; the gate pill carries the counts",
+     app.includes('const toggle = btn(`Findings${n ? ` · ${n} picked` : ""} ${open ? "▾" : "▸"}`') &&
+     !app.includes("btn(`Findings · ${openSummary(j.open)}"));
+  ok("app: Edit, Fix with commits and Post comments show only while a finding is picked (blockers and majors start picked), with no (n) on each",
+     /bar\.push\(toggle\);\s*\/\/[^\n]*\n\s*if \(n\) \{[\s\S]{0,900}bar\.push\(edit, fix, post\);\s*\}/.test(app) &&
+     app.includes('btn("Edit", ') && app.includes('btn("Fix with commits", ') && app.includes('btn("Post comments", ') &&
+     !app.includes("suffix") && app.includes('if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));'));
+  ok("app: framed, the header leaves the verdict to the page's gate pill; unframed or down, its chip says it with the same counts",
+     app.includes('const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;') &&
+     app.includes('(framed ? null : el("span", `r-chip ${state}`, `${state} · ${openSummary(j.open)}`))') &&
      app.includes('return parts.length ? `${parts.join(", ")} open` : "no open findings";') &&
      app.includes('const SEVERITIES = ["blocker", "major", "minor", "nit"];') && js.includes('const SEV = ["blocker", "major", "minor", "nit"];') &&
-     app.includes("btn(`Findings · ${openSummary(j.open)}"));
-  ok("app: framed, the header leaves the verdict to the page's gate pill; unframed or down, it shows it",
-     app.includes('const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;') &&
-     /state === "blocked" \|\| state === "pass" \? \(framed \? null : el\("span", `r-chip \$\{state\}`, state\)\)/.test(app) &&
      /const down = [\s\S]{0,300}this\.frameDown = rid;/.test(app));
+  ok("app: the log is a Log (n) item in the ⋯ menu that opens the log, not a row of its own",
+     app.includes('const log = btn(`Log (${j.log.length})`') && app.includes("items.push(log);") &&
+     app.includes("if (j.log.length && this.logOpen.get(j.id)) parts.push(this.logBox(j));") &&
+     !app.includes("`log (${j.log.length})`") && !app.includes('el("details", "r-log")'));
+  ok("app: a fix or post underway says what it is doing on the header row, not a row under it",
+     app.includes('status = el("span", "r-now r-busy", j.activity || "starting");') && app.includes("this.headOf(this.title(j), chip, meta, link, acts.buttons, more, status);"));
+  ok("page+app: framed, the page's tools move onto the app's header row after a hello/host handshake, so one band sits above the file",
+     js.includes('window.parent.postMessage({ lookout: "hello", id: R.id }, "*");') &&
+     /if \(d\.lookout === "host"\) \{\s*hosted = true;\s*document\.documentElement\.dataset\.host = "app";/.test(js) &&
+     /function postState\(\) \{\s*if \(!hosted\) return;/.test(js) &&
+     js.includes("if (e.source !== window.parent ||") &&
+     ["drawHeader", "drawLayout", "drawOverviewChrome", "toggleKeys"].every(f => new RegExp(`function ${f}\\(.*\\) \\{[\\s\\S]*?postState\\(\\);\\n  \\}`).test(js)) &&
+     css.includes(":root[data-host] #top { padding: 0; border: 0; min-height: 0; height: 0; }") &&
+     css.includes(":root[data-host] #top .tools { display: none; }") &&
+     app.includes('if (!f || e.source !== f.contentWindow || e.origin !== this.pageOrigin) return;') &&
+     app.includes('if (d.lookout === "hello") f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);') &&
+     app.includes('f.contentWindow?.postMessage({ lookout: "do", op, ...extra }, this.pageOrigin);') &&
+     ["gate", "overview", "map", "layout", "keys"].every(op => app.includes(`this.tell("${op}"`) && js.includes(`d.op === "${op}"`)) &&
+     app.includes("h.append(...tools.state);") && app.includes('acts.append(el("span", "r-sep"), ...tools.view);'));
+  ok("page: unframed, or framed by an app that never answers, the page keeps its own tools row",
+     !/:root\[data-embed\][^{]*\.tools[^{]*\{[^}]*display: none/.test(css) && js.includes("let hosted = false;"));
   ok("app: an open review folds the list away, and Reviews ▸ brings it back, remembered in try/catch",
      app.includes('const folded = this.hasOpen() && !this.listShown;') && app.includes("this.side.hidden = folded;") &&
      /try \{\s*localStorage\.setItem\(LIST_KEY, this\.listShown \? "shown" : "folded"\);\s*\} catch/.test(app) &&
@@ -1787,9 +1813,27 @@ if (want("page script")) {
   ok("page: a card's id, category and verdict show on hover or focus, and stay in the DOM",
      css.includes(".card-head .fid, .card-head .cat { opacity: 0;") && css.includes(".card:focus-within .card-head .fid") &&
      !/\.card-head \.(fid|cat)[^{]*\{[^}]*display: none/.test(css));
-  ok("page: an addressed blocker or major says it still blocks until resolved",
-     js.includes('finding && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major")') &&
-     js.includes('el("span", { class: "still-blocks" }, "Still blocks until you resolve it")'));
+  ok("page: an addressed blocker or major says it still blocks in its pill, with the why as its tooltip",
+     js.includes('const stillBlocks = x => x.id.startsWith("f") && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major");') &&
+     js.includes('title: "Still blocks the gate until you resolve it" }, "addressed · still blocks")') &&
+     !js.includes("still-blocks") && !css.includes(".still-blocks"));
+  ok("page: the status change the pill already shows draws only its author's words, not \"marked it …\"",
+     js.includes('const pill = last && last.to === (x.status || "open") && x.status !== "open" ? last : null;') &&
+     /function message\(m, pill\) \{[\s\S]{0,200}if \(m === pill\) return m\.text \?/.test(js) &&
+     js.includes("thread.map(m => message(m, pill))"));
+  ok("page: folded, Reply / Resolve / Dismiss show on hover, focus, the picked finding or a draft, and always on touch",
+     css.includes(".card > .actions.folded { opacity: 0;") &&
+     css.includes(".card:hover > .actions.folded, .card:focus-within > .actions.folded, .card.cur > .actions.folded") &&
+     css.includes(".card > .actions.folded.draft") &&
+     css.includes("@media (hover: none) { .card > .actions.folded { opacity: 1; } }") &&
+     js.includes('box.classList.toggle("draft", !show && !!draftText(key).trim());') &&
+     js.includes('(x.id === curFinding ? " cur" : "")'));
+  ok("page+app: a blocked gate reads in the blocker colour, and its pill shows an arrow when it jumps",
+     css.includes(".gate.blocked { color: var(--sev-blocker); border-color: var(--sev-blocker); }") &&
+     appCss.includes(".r-chip.blocked { background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); color: var(--ef-text-red); }") &&
+     appCss.includes(".r-gate.blocked { color: var(--ef-text-red);") &&
+     js.includes('$("gate").replaceChildren(g.text, gt.go ? el("span", { class: "go", "aria-hidden": "true" }, "↓") : "");') &&
+     app.includes('const go = el("span", "r-go", "↓");'));
   ok("page: Reply, Resolve and Dismiss are quiet outlined buttons with a focus ring, not plain text",
      /\.buttons\.links button \{[^}]*border: 1px solid[^}]*\}/.test(css) && !/\.buttons\.links button \{[^}]*border: 0/.test(css) &&
      /\.buttons\.links button:focus-visible \{[^}]*outline: 2px solid/.test(css));
