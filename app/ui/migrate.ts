@@ -92,8 +92,9 @@ export class MigrateBanner {
   private doneTimer = 0;
   /** How many moved this launch, by what was done to them, for the closing line. */
   private moved = new Map<string, number>();
-  /** What failed this run, kept so a later success cannot hide it. */
-  private failed: string[] = [];
+  /** What failed this run, by session, kept so a later success cannot hide
+   *  it; a retry replaces its entry, and a retry that works clears it. */
+  private failed = new Map<string, string>();
   /** Later was pressed: the banner stays away until the next launch. */
   private closed = false;
   private review = button("Review", "migrate-review");
@@ -164,7 +165,7 @@ export class MigrateBanner {
   /** A run is over (the banner went): its tally starts again. */
   private reset(): void {
     this.moved.clear();
-    this.failed = [];
+    this.failed.clear();
     this.say.textContent = "";
     this.say.hidden = true;
     this.el.classList.remove("done", "failed");
@@ -182,11 +183,11 @@ export class MigrateBanner {
       // Nothing left. Any failure in the run stays, with Later to dismiss
       // it; a clean run shows briefly, then the banner goes. With nothing
       // said, it goes at once.
-      if (this.failed.length) {
+      if (this.failed.size) {
         this.el.hidden = false;
         this.el.classList.add("done", "failed");
-        this.line.textContent = this.failed.length === 1 ? "1 did not come back" : `${this.failed.length} did not come back`;
-        this.tell(this.failed.join(" · "), true);
+        this.line.textContent = `${this.failed.size} did not come back`;
+        this.tell([...this.failed.values()].join(" · "), true);
         this.all.hidden = true;
         this.review.hidden = true;
         this.later.hidden = false;
@@ -278,12 +279,13 @@ export class MigrateBanner {
       this.tell(done);
       const v = o.kind === "restart" ? "restarted" : o.kind === "revive" ? "brought back" : "moved";
       this.moved.set(v, (this.moved.get(v) ?? 0) + 1);
+      this.failed.delete(k);
       this.queued.delete(k);
     } catch (e) {
       // Busy again (it started a turn): back in the queue.
       if (String(e).includes("busy")) this.queued.add(k);
       else {
-        this.failed.push(`${o.title || o.pane.slice(0, 8)}: ${String(e)}`);
+        this.failed.set(k, `${o.title || o.pane.slice(0, 8)}: ${String(e)}`);
         this.tell(String(e), true);
       }
     } finally {
