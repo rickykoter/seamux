@@ -243,8 +243,8 @@ checks.push(["branch and PR are no longer buried in meta",
 const fChips = (f.match(/<div class="chips">.*?<\/div>/) || [""])[0];
 const fFoot = (f.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
 checks.push(["an actionable signal is a button, a status signal is footer text",
-  /class="chip sig" style="color:#[0-9a-f]{6}" data-a="checks"/.test(fChips) &&
-  /class="sig" style="color:#[0-9a-f]{6}"[^>]*>draft</.test(fFoot) &&
+  /class="chip sig" style="--sg:#[0-9a-f]{6};--sgl:#[0-9a-f]{6}" data-a="checks"/.test(fChips) &&
+  /class="sig" style="--sg:#[0-9a-f]{6};--sgl:#[0-9a-f]{6}"[^>]*>draft</.test(fFoot) &&
   !/data-a=/.test(fFoot.replace(/class="(branch|pr[^"]*|issue)" data-a="[^"]+"/g, ""))]);
 checks.push(["a signal can carry an argument", /data-a="go" data-x="5"/.test(f)]);
 // A linked Jira chip is just a signal wearing the ticket key: actionable,
@@ -385,39 +385,75 @@ const lumOf = (h) => {
 const ratio = (a, b) => { const x = lumOf(a), y = lumOf(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
 const css = (pageHtml.match(/<style>([\s\S]*?)<\/style>/) || ["", ""])[1].replace(/\/\*[\s\S]*?\*\//g, "");
 // Every :root block: the palette's (theme/everforest.css, synced in) and the
-// board's own names, which are hex or var(--ef-…) pointing into it.
-const TOK = {};
-const REF = {};
-for (const root of css.matchAll(/:root\s*\{([^}]*)\}/g)) {
-  for (const m of root[1].matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})/g)) TOK[m[1]] = m[2];
-  for (const m of root[1].matchAll(/--([\w-]+):\s*var\(--([\w-]+)\)/g)) REF[m[1]] = m[2];
-}
-for (let pass = 0; pass < 4; pass++) for (const [k, v] of Object.entries(REF)) if (TOK[v]) TOK[k] = TOK[v];
-const GROUNDS = ["bg", "bg1", "bg-attend"].map((k) => TOK[k]);
-const FILLS = ["attend", "running", "wilt", "done"].map((k) => TOK[k]);
+// board's own names, which are hex or var(--ef-…) pointing into it. Plain
+// :root is dark; :root[data-theme="light"] holds what light changes (the
+// @media blocks repeat it, and theme_sync.py and the probe below hold the two
+// copies to one).
+const tokensOf = (blocks) => {
+  const hex = {}, ref = {};
+  for (const b of blocks) {
+    for (const m of b.matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})/g)) { hex[m[1]] = m[2]; delete ref[m[1]]; }
+    for (const m of b.matchAll(/--([\w-]+):\s*var\(--([\w-]+)\)/g)) { ref[m[1]] = m[2]; delete hex[m[1]]; }
+  }
+  for (let pass = 0; pass < 4; pass++) for (const [k, v] of Object.entries(ref)) if (hex[v]) hex[k] = hex[v];
+  return hex;
+};
+const darkBlocks = [...css.matchAll(/:root\s*\{([^}]*)\}/g)].map((m) => m[1]);
+const lightBlocks = [...css.matchAll(/:root\[data-theme="light"\]\s*\{([^}]*)\}/g)].map((m) => m[1]);
+const lightMedia = [...css.matchAll(/:root:not\(\[data-theme="dark"\]\)\s*\{([^}]*)\}/g)].map((m) => m[1]);
+const TOK = tokensOf(darkBlocks);
+const TOKL = tokensOf(darkBlocks.concat(lightBlocks));
+checks.push(["light: the board has a light palette, and its OS-light copy matches its data-theme copy",
+  lightBlocks.length >= 2 && lightMedia.length === lightBlocks.length &&
+  lightMedia.every((b, i) => b.replace(/\s+/g, "") === lightBlocks[i].replace(/\s+/g, ""))]);
 const lows = [];
 let measured = 0;
-for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-  const sel = rule[1].trim();
-  if (sel.startsWith(":root") || /^(from|to|\d)/.test(sel)) continue;     // tokens, keyframes
-  for (const d of rule[2].matchAll(/(?:^|[;{\s])color:\s*([^;]+)/g)) {
-    const v = d[1].trim();
-    const tok = /^var\(--([\w-]+)\)$/.exec(v);
-    const hex = tok ? TOK[tok[1]] : (/^#[0-9a-fA-F]{6}$/.test(v) ? v : null);
-    if (!hex) {
-      if (!/^(currentColor|inherit)$/.test(v)) lows.push(`${sel}: ${v} is not a measurable colour`);
-      continue;
-    }
-    measured++;
-    for (const g of /\.pri\b/.test(sel) ? FILLS : GROUNDS) {
-      const r = ratio(hex, g);
-      if (r < 4.5) lows.push(`${sel}: ${v} on ${g} is ${r.toFixed(2)}:1`);
+for (const [mode, T] of [["dark", TOK], ["light", TOKL]]) {
+  const GROUNDS = ["bg", "bg1", "bg-attend", "bg-kids"].map((k) => T[k]);
+  const FILLS = ["attend", "running", "wilt", "done"].map((k) => T[k]);
+  for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const sel = rule[1].trim();
+    if (sel.startsWith(":root") || /^(from|to|\d)/.test(sel)) continue;     // tokens, keyframes
+    for (const d of rule[2].matchAll(/(?:^|[;{\s])color:\s*([^;]+)/g)) {
+      const v = d[1].trim();
+      // A signal's own colour, lifted per mode by render.js: measured below.
+      if (/^var\(--sgl?\)$/.test(v)) continue;
+      const tok = /^var\(--([\w-]+)\)$/.exec(v);
+      const hex = tok ? T[tok[1]] : (/^#[0-9a-fA-F]{6}$/.test(v) ? v : null);
+      if (!hex) {
+        if (!/^(currentColor|inherit)$/.test(v)) lows.push(`${sel}: ${v} is not a measurable colour`);
+        continue;
+      }
+      measured++;
+      for (const g of /\.pri\b/.test(sel) ? FILLS : GROUNDS) {
+        const r = ratio(hex, g);
+        if (r < 4.5) lows.push(`${mode} ${sel}: ${v} on ${g} is ${r.toFixed(2)}:1`);
+      }
     }
   }
 }
-checks.push([`every text colour reads at 4.5:1 on every ground (${measured} measured)`,
-  measured > 20 && lows.length === 0]);
+checks.push([`every text colour reads at 4.5:1 on every ground, dark and light (${measured} measured)`,
+  measured > 40 && lows.length === 0]);
 if (lows.length) console.log("    " + lows.join("\n    "));
+// The rail follows the app's appearance, so nothing in its renderer or page
+// may assume a dark ground: each colour that did is a token now. Hex is
+// allowed only in a :root token block, the cat's own pixel art, and the
+// worktree and signal colours the collector sends.
+{
+  const DARK_ONLY = ["#2f3639", "#dfa000", "#323b40", "#374145", "#1e2326", "#171c1f", "#13181c",
+    "#8BA3C7", "#F5A524", "#F5F5F7", "#a7c080", "#e67e80", "#7fbbb3", "#5c6a72", "#3a2a2c", "#f2d4d4",
+    "#4f585e", "#9da9a0", "#dbbc7f", "rgba(255,255,255", "rgba(0,0,0", "rgba(167,192,128", "rgba(223,160,0",
+    "rgba(211,198,170"];
+  const rjs = readFileSync(join(HERE, "render.js"), "utf8").replace(/\/\/.*$/gm, "");
+  const ijs = readFileSync(join(HERE, "intent.js"), "utf8").replace(/\/\/.*$/gm, "");
+  // The page's rules outside :root, and its markup minus the cat's sprite.
+  const rules = css.replace(/:root[^{]*\{[^}]*\}/g, "");
+  const markup = pageHtml.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<svg id="cat"[\s\S]*?<\/svg>/, "");
+  const hits = [];
+  for (const [name, text] of [["render.js", rjs], ["intent.js", ijs], ["board.html rules", rules], ["board.html markup", markup]])
+    for (const lit of DARK_ONLY) if (text.toLowerCase().includes(lit.toLowerCase())) hits.push(name + ": " + lit);
+  checks.push(["light: render.js, intent.js and board.html carry no dark-only colour literal", hits.length === 0, hits.join(", ")]);
+}
 // Opacity was how the old board dimmed quiet rows and small costs, and it is
 // invisible to the measurement above, so it is not allowed on text at all.
 checks.push(["nothing dims text with opacity",
@@ -433,10 +469,13 @@ render({ rows: [{ id: "s", name: "s", kind: "attend", badge: "b", said: "", chip
   signals: SIGCOLS.flatMap((c, i) => [{ t: "a" + i, c, h: "", a: "checks" }, { t: "s" + i, c, h: "" }]
     ).concat([{ t: "bad", c: "red;background:url(x)", h: "", a: "checks" }]) }], quiet: "" });
 const sigOut = els.rows.innerHTML;
-const lifted = [...sigOut.matchAll(/style="color:(#[0-9a-f]{6})"/g)].map((m) => m[1]);
-checks.push(["every collector signal colour is lifted to 4.5:1 on a card",
+const liftedPairs = [...sigOut.matchAll(/style="--sg:(#[0-9a-f]{6});--sgl:(#[0-9a-f]{6})"/g)];
+const lifted = liftedPairs.map((m) => m[1]), liftedL = liftedPairs.map((m) => m[2]);
+const cardsOf = (T) => ["bg", "bg1", "bg-attend", "bg-kids", "bg-hover", "bg-kid-hover"].map((k) => T[k]);
+checks.push(["every collector signal colour is lifted to 4.5:1 on a card, dark and light",
   lifted.length === SIGCOLS.length * 2 &&
-  lifted.every((c) => ratio(c, TOK["bg-attend"]) >= 4.5 && ratio(c, TOK.bg1) >= 4.5)]);
+  lifted.every((c) => cardsOf(TOK).every((g) => ratio(c, g) >= 4.5)) &&
+  liftedL.every((c) => cardsOf(TOKL).every((g) => ratio(c, g) >= 4.5))]);
 checks.push(["...and a bright one comes back unchanged", lifted.includes("#4ade80")]);
 checks.push(["a signal colour that is not a hex never reaches a style attribute",
   !sigOut.includes("url(") && /class="chip sig" data-a="checks"[^>]*>bad</.test(sigOut)]);
@@ -737,7 +776,7 @@ checks.push(["and it has something to say about each",
     skyAt(3) === "night" && skyAt(5) === "dawn" && skyAt(8) === "day" && skyAt(21) === "night"]);
   checks.push(["sky: ...and fades between them after that", !("data-sky-first" in els.shelf.attrs)]);
   checks.push(["sky: every sky keeps the shelf's bottom edge",
-    /#shelf \.sky\{[^}]*box-shadow:inset 0 -1px 0 0 #171c1f/.test(css)]);
+    /#shelf \.sky\{[^}]*box-shadow:inset 0 -1px 0 0 var\(--shelf-edge\)/.test(css)]);
   checks.push(["sky: every hour's layer is in the page and is shown by its data-sky",
     ["dawn", "day", "dusk", "night"].every((k) => pageHtml.includes('<div class="sky ' + k + '">') &&
       css.includes("#shelf[data-sky=" + k + "] .sky." + k))]);
@@ -2369,7 +2408,7 @@ if (live && Array.isArray(live.rows)) {
     const shelfRule = ruleBody("#rows details.away>.row");
     checks.push(["shelf: rows are borderless single lines, the why at the right, the line lifting on hover, the header still the jump",
       /(^|;)border:0(;|$)/.test(shelfRule) && /background:transparent/.test(shelfRule) &&
-      /margin-left:auto/.test(ruleBody("details.away>.row>.top>.why")) && /background:rgba/.test(ruleBody("#rows details.away>.row:hover")) &&
+      /margin-left:auto/.test(ruleBody("details.away>.row>.top>.why")) && /background:var\(--hover-a\)/.test(ruleBody("#rows details.away>.row:hover")) &&
       (render({ rows: [R("tj", { tuck: "tuck", ref: "w" })], quiet: "" }), /data-id="tj"[^>]*><div class="top jumps" data-a="jump"/.test(els.rows.innerHTML)), shelfRule]);
     render({ rows: rowsS, quiet: "" });
   }

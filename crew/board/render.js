@@ -12,7 +12,9 @@
 // carries no cross-push state in `window`, and stashes what it must remember on an
 // element attribute instead. That makes a push self-contained and the page inert HTML.
 function __boardRender(d) {
-  var COL = { attend: "#dfa000", running: "#7fbbb3", wilt: "#e67e80", done: "#a7c080", quiet: "#5c6a72" };
+  // The tiers' colours are board.html's tokens, so they follow its light and
+  // dark palettes; no hex here assumes a ground.
+  var COL = { attend: "var(--attend)", running: "var(--running)", wilt: "var(--wilt)", done: "var(--done)", quiet: "var(--quiet)" };
   var $ = function (id) { return document.getElementById(id); };
   // Tooltips for the small targets. The row itself deliberately has none: a
   // tooltip on the whole row fires whenever the pointer rests anywhere on the
@@ -135,7 +137,7 @@ function __boardRender(d) {
     var indet = frac === null || frac === undefined;
     var head = '<svg class="dial' + (indet ? " pending" : "") +
       '" width="26" height="26" viewBox="0 0 32 32">' +
-      '<circle cx="16" cy="16" r="' + r + '" fill="none" stroke="#2f3639" stroke-width="3"/>';
+      '<circle cx="16" cy="16" r="' + r + '" fill="none" style="stroke:var(--track)" stroke-width="3"/>';
     // A plan with no increments has nothing to fill. Show a dot, not a lying 0%.
     if (indet) {
       // The dot is the resting state. The short arc is added ONLY for a row that
@@ -143,13 +145,13 @@ function __boardRender(d) {
       // "no progress information" -- it reads as a stalled spinner, or worse, as
       // 16% progress. A broken or waiting row gets the bare dot it had before.
       var arc = kind !== "running" ? "" :
-        '<circle class="arc" cx="16" cy="16" r="' + r + '" fill="none" stroke="' + col +
+        '<circle class="arc" cx="16" cy="16" r="' + r + '" fill="none" style="stroke:' + col +
         '" stroke-width="3" stroke-linecap="round" stroke-dasharray="' +
         (c * 0.16).toFixed(2) + " " + (c * 0.84).toFixed(2) + '"/>';
-      return head + '<circle cx="16" cy="16" r="2.5" fill="' + col + '"/>' + arc + "</svg>";
+      return head + '<circle cx="16" cy="16" r="2.5" style="fill:' + col + '"/>' + arc + "</svg>";
     }
     return head.replace("<circle", "<title>" + esc(farOf(frac, meta)) + "</title><circle") +
-      '<circle class="arc" cx="16" cy="16" r="' + r + '" fill="none" stroke="' + col + '" stroke-width="3"' +
+      '<circle class="arc" cx="16" cy="16" r="' + r + '" fill="none" style="stroke:' + col + '" stroke-width="3"' +
       ' stroke-linecap="round" stroke-dasharray="' + c.toFixed(2) + '"' +
       ' stroke-dashoffset="' + (c * (1 - frac)).toFixed(2) + '" transform="rotate(-90 16 16)"/></svg>';
   }
@@ -368,10 +370,14 @@ function __boardRender(d) {
   // The signals carry the Swift sidebar's palette, which was picked for a
   // near-black ground. On a card some of it falls under 4.5:1 -- the red is
   // 3.8, the draft grey 3.2 -- so each colour is mixed toward white just far
-  // enough to pass against the lightest card ground. The bright ones come back
-  // unchanged. Anything that is not a plain hex comes back empty, and the
-  // signal inherits the footer's grey: the value lands in a style attribute.
-  var CARD = [59, 65, 54];                       // --bg-attend, the lightest card
+  // enough to pass against the lightest dark card ground, and toward black
+  // just far enough to pass against the darkest light one. The page shows the
+  // one its palette is in (board.html's .sig rules: --sg dark, --sgl light).
+  // A colour that already passes comes back unchanged. Anything that is not
+  // a plain hex comes back empty, and the signal inherits the footer's grey:
+  // the value lands in a style attribute.
+  var CARD = [59, 65, 54];                       // dark --bg-attend, the lightest card
+  var CARD_L = [230, 225, 200];                  // light --bg-kid-hover, the darkest
   function lum(c) {
     var v = c.map(function (x) {
       x /= 255;
@@ -379,19 +385,24 @@ function __boardRender(d) {
     });
     return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
   }
+  function hexOf(c) {
+    return "#" + c.map(function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("");
+  }
+  // to: 255 mixes toward white, 0 toward black.
+  function mixTo(c, ground, to) {
+    var g = lum(ground);
+    for (var k = 0; k <= 20; k++) {
+      var t = k / 20, mix = c.map(function (x) { return Math.round(x + (to - x) * t); });
+      var l = lum(mix), r = to ? (l + 0.05) / (g + 0.05) : (g + 0.05) / (l + 0.05);
+      if (r >= 4.6) return hexOf(mix);
+    }
+    return to ? "#ffffff" : "#000000";
+  }
   function lift(hex) {
     var m = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
     if (!m) return "";
     var n = parseInt(m[1], 16), c = [n >> 16, (n >> 8) & 255, n & 255];
-    var ground = lum(CARD);
-    for (var k = 0; k <= 20; k++) {
-      var t = k / 20, mix = c.map(function (x) { return Math.round(x + (255 - x) * t); });
-      if ((lum(mix) + 0.05) / (ground + 0.05) >= 4.6) {
-        return k ? "#" + mix.map(function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("")
-                 : "#" + m[1].toLowerCase();
-      }
-    }
-    return "#ffffff";
+    return "--sg:" + mixTo(c, CARD, 255) + ";--sgl:" + mixTo(c, CARD_L, 0);
   }
 
   function chipTip(c) {
@@ -413,7 +424,7 @@ function __boardRender(d) {
     (a.signals || []).forEach(function (e) {
       if (!e.a) return;
       var col = lift(e.c);
-      out.push('<span class="chip sig"' + (col ? ' style="color:' + col + '"' : "") +
+      out.push('<span class="chip sig"' + (col ? ' style="' + col + '"' : "") +
         ' data-a="' + esc(e.a) + '"' +
         (e.x !== undefined && e.x !== null && e.x !== "" ? ' data-x="' + esc(e.x) + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>");
@@ -522,7 +533,7 @@ function __boardRender(d) {
     (a.signals || []).forEach(function (e) {
       if (e.a) return;
       var col = lift(e.c);
-      out += '<span class="sig"' + (col ? ' style="color:' + col + '"' : "") +
+      out += '<span class="sig"' + (col ? ' style="' + col + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
     });
     if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
@@ -641,7 +652,7 @@ function __boardRender(d) {
   // Pixel confetti for a card that just turned done. Every bit's spot, drift,
   // delay and colour come from the row id through a small LCG, so the same card
   // throws the same handful and the probe can count it.
-  var CONFETTI = ["#a7c080", "#dfa000", "#7fbbb3", "#e69875", "#d699b6", "#F5F5F7"];
+  var CONFETTI = ["var(--ef-green)", "var(--attend)", "var(--ef-blue)", "var(--ef-orange)", "var(--ef-purple)", "var(--spark)"];
   function confetti(id, n) {
     var h = 7;
     for (var i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 2147483647;
