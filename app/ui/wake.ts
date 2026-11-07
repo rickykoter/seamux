@@ -507,7 +507,8 @@ export class Wake {
     for (const sec of out) {
       const hid = sec.querySelectorAll(".w-grp.later .w-row").length;
       if (!hid) continue;
-      const more = button(`show ${hid} more`, "w-more");
+      // Not "w-more": that is the kind chips' own "more N".
+      const more = button(`show ${hid} more`, "w-daymore");
       const dk = sec.dataset.day ?? "";
       more.addEventListener("click", () => {
         this.dayAll.add(dk);

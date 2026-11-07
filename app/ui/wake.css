@@ -116,8 +116,8 @@
 /* A long day shows its newest things; the rest wait behind "show N more". */
 .w-grp.later { display: none; }
 .w-day.all .w-grp.later { display: block; }
-.w-more { all: unset; cursor: pointer; display: block; margin: 6px 12px 10px; font-size: var(--fs-2); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
-.w-more:hover, .w-more:focus-visible { color: var(--fg); }
+.w-daymore { all: unset; cursor: pointer; display: block; margin: 6px 12px 10px; font-size: var(--fs-2); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+.w-daymore:hover, .w-daymore:focus-visible { color: var(--fg); }
 .w-dayrisk { color: var(--bad-t, var(--bad)); }
 .w-chip.w-more { border-style: dashed; }
 .w-prompt.same { display: none; }
