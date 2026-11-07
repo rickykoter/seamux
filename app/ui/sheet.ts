@@ -545,6 +545,18 @@ type Tab = {
 
 const WAKE = "wake";
 
+/** Whether the Dock shows the Wake beside the terminal when no page is up.
+ *  Off by default, so the terminal gets the width; ⌘E (or the header's Wake
+ *  button) opens it, and the choice is remembered on this machine. */
+const WAKE_OPEN_KEY = "seamux.dock.wakeOpen";
+function wakeOpenPref(): boolean {
+  try {
+    return localStorage.getItem(WAKE_OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 /** A sheet over the current view: the page beside its agent's live chat.
  *  The page side has tabs: the workspace's Wake, then its open plan, lookout
  *  reviews and asks, then anything else opened here. ⌘E shows the Wake and
@@ -575,6 +587,9 @@ export class Sheet {
   private wakeRoots: string[] = [];
   /** The tab before the Wake, for ⌘E to go back to. */
   private back = "";
+  /** The Dock's Wake beside the terminal: shown, or folded away (wakeOpenPref). */
+  private wakeOpen = wakeOpenPref();
+  private wakeBtn = document.createElement("button");
   private pages: NowPage[] = [];
   /** Every page seen so far, as ws + path: a page not in it just opened. */
   private seen = new Set<string>();
@@ -615,7 +630,14 @@ export class Sheet {
     close.append(mark("M2.5 2.5l5 5M7.5 2.5l-5 5"));
     close.addEventListener("click", () => this.close());
     close.hidden = embedded;
-    head.append(this.titleEl, this.say, cmux, close);
+    // The Dock folds the Wake away until asked: this brings it back.
+    this.wakeBtn.type = "button";
+    this.wakeBtn.className = "sheet-btn sheet-wake-btn";
+    this.wakeBtn.title = "Show what this workspace left behind beside the terminal (⌘E)";
+    this.wakeBtn.textContent = "Wake ⌘E";
+    this.wakeBtn.hidden = true;
+    this.wakeBtn.addEventListener("click", () => this.setWakeOpen(true));
+    head.append(this.titleEl, this.say, this.wakeBtn, cmux, close);
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
     this.tabsEl.className = "sheet-tabs";
@@ -823,6 +845,7 @@ export class Sheet {
   private drawChat(): void {
     const t = this.tile();
     this.body.classList.toggle("with-chat", !!t);
+    this.fold();
     if (t) this.chat.show(t, this.paneTiles());
   }
 
@@ -964,12 +987,40 @@ export class Sheet {
     this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
 
-  /** ⌘E: the Wake, or back to the tab before it. */
+  /** ⌘E: the Wake, or back to the tab before it. In the Dock, with no page
+   *  to go back to, it folds the Wake away (and opens it when folded). */
   private toggleWake(): void {
+    if (this.embedded && this.active === WAKE && (!this.wakeOpen || !this.tabs.some((t) => t.key !== WAKE))) {
+      this.setWakeOpen(!this.wakeOpen);
+      return;
+    }
     if (this.active === WAKE) {
       const back = this.tabs.find((t) => t.key === this.back) ?? this.tabs.find((t) => t.key !== WAKE);
       if (back) this.select(back.key);
-    } else this.select(WAKE);
+    } else {
+      if (this.embedded && !this.wakeOpen) this.setWakeOpen(true);
+      this.select(WAKE);
+    }
+  }
+
+  private setWakeOpen(on: boolean): void {
+    this.wakeOpen = on;
+    try {
+      localStorage.setItem(WAKE_OPEN_KEY, on ? "1" : "0");
+    } catch {
+      // A private window: the choice lasts this session.
+    }
+    this.fold();
+  }
+
+  /** The Dock's page column folds away while it would show only the Wake and
+   *  the Wake is closed: the terminal takes the width. A page (a plan, a
+   *  review, an ask) always shows. */
+  private fold(): void {
+    // With no terminal to widen (a workspace before its first pane), the Wake stays.
+    const folded = this.embedded && this.active === WAKE && !this.wakeOpen && this.body.classList.contains("with-chat");
+    this.body.classList.toggle("page-folded", folded);
+    this.wakeBtn.hidden = !folded;
   }
 
   private step(by: number): void {
@@ -1000,6 +1051,7 @@ export class Sheet {
       this.wakeView().showDir(this.wakeDir, this.wakeRoots);
     }
     this.drawTabs();
+    this.fold();
   }
 
   /** A workspace picked before its first tile came (a new one) has no

@@ -130,6 +130,10 @@
         border-right: 1px solid var(--line); background: var(--bg);
       }
       .sheet-body.with-chat .sheet-divider { display: block; flex: 0 0 9px; margin: 0 -4px; z-index: 2; }
+      /* The Dock with the Wake folded away: the terminal takes the width. */
+      .sheet-body.page-folded .sheet-page, .sheet-body.page-folded .sheet-divider { display: none; }
+      .sheet-body.with-chat.page-folded .sheet-chat { flex: 1 1 auto; }
+      .sheet-wake-btn[hidden] { display: none; }
       /* Every resize handle (splitter.ts): a 9px target, a line on hover, focus or drag. */
       .split-handle { position: relative; outline: none; touch-action: none; }
       .split-handle.split-x { cursor: col-resize; }
