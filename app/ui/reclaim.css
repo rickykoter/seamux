@@ -32,9 +32,14 @@
 @keyframes rc-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .rc-spin { animation: none; border-top-color: var(--line); } }
 
-.rc-facts { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 3px 10px; margin: 0; font-size: var(--fs-3); }
+.rc-facts { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: var(--fs-3); }
 .rc-facts dt { color: var(--muted); }
-.rc-facts dd { margin: 0; overflow-wrap: anywhere; }
+/* One line a fact: the value (a long path ellipsizes, its tooltip whole),
+   then its note, muted, beside it. */
+.rc-facts dd { margin: 0; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.rc-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-facts .rc-note { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-facts .rc-note::before { content: "· "; }
 .mono { font: var(--fs-2) ui-monospace, Menlo, monospace; }
 
 .rc-checks { list-style: none; margin: 0; padding: 8px 10px; background: var(--term); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
@@ -53,11 +58,7 @@
 .rc-verdict.bad { color: var(--bad); }
 .rc-error { margin: 0; color: var(--bad); font-size: var(--fs-3); overflow-wrap: anywhere; }
 .rc-sub { margin: 4px 0 0; font-size: var(--fs-2); font-weight: 600; }
-.rc-remove { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-3); }
-.rc-remove li { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 0 10px; }
-.rc-what { color: var(--muted); }
-.rc-target { overflow-wrap: anywhere; }
-.rc-note { grid-column: 2; color: var(--muted); font-size: var(--fs-2); }
+.rc-note { color: var(--muted); font-size: var(--fs-2); }
 
 /* The checks that passed, folded to one line; open, the same list as above. */
 .rc-passed { font-size: var(--fs-3); }
