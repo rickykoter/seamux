@@ -73,7 +73,8 @@
 .newws-card { border-color: var(--line2); }
 .newws-more { border-top-color: var(--line2); }
 .newws input[type="checkbox"] { accent-color: var(--accent); }
-.newws .sheet-btn { border-color: var(--line2); }
+.newws .sheet-btn { background: none; border-color: var(--line2); }
+.newws .sheet-btn:hover:not(:disabled) { border-color: var(--fg); }
 .newws .sheet-btn:focus-visible, .newws summary:focus-visible, .newws input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .newws .newws-base { font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-3); }
 
@@ -97,45 +98,68 @@
 .newws-say.bad { color: var(--bad-t); }
 .newws-say[hidden] { display: none; }
 .newws-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
-.newws-go { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.newws .newws-go { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
+.newws .newws-go:hover:not(:disabled) { border-color: var(--primary); }
 .newws .sheet-btn:disabled { opacity: 0.55; cursor: default; }
 
 /* The launch banner under New workspace (migrate.ts). */
-/* A card that stands out from the rail: the accent's tint and edge, a mark,
-   and the one-click button filled with the shared primary. Once everything
-   is moved it goes quiet, then away (migrate.ts DONE_MS). */
-.migrate { flex: none; display: flex; flex-direction: column; gap: 6px; margin: 8px 10px 4px; padding: 9px 10px;
+/* One line in the rail whatever it says: the mark, what waits, the one-click
+   button (the shared filled primary), Review and Later (outlined). Its tint
+   and edge set it apart from the board; once everything is moved it goes
+   quiet, then away (migrate.ts DONE_MS). Where the rail is too narrow for
+   the words, migrate.ts says them shorter ("8 stopped"); the line never
+   wraps, so the board under it never moves. */
+.migrate { flex: none; display: flex; align-items: center; gap: 5px; margin: 8px 6px 4px; padding: 4px 3px 4px 7px; min-height: 34px; box-sizing: border-box;
   border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 13%, var(--bg)); font-size: var(--fs-3); color: var(--fg); }
-.migrate.done { border-color: var(--line); background: none; }
-.migrate-mark { flex: none; width: 16px; height: 16px; color: var(--accent); }
-.migrate.done .migrate-mark { color: var(--muted); }
-.migrate-head .migrate-line { font-weight: 600; }
-.migrate .migrate-all, .migrate .migrate-retry { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
-.migrate .sheet-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.migrate-all[hidden] { display: none; }
 .migrate[hidden] { display: none; }
-.migrate-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
-.migrate-line { flex: 1; min-width: 0; }
-.migrate-acts { flex-basis: 100%; display: flex; gap: 6px; padding-left: 24px; }
-/* Done, the buttons go; failed, Try again and Dismiss stay. */
-.migrate.done:not(.failed) .migrate-acts { display: none; }
+.migrate.done { border-color: var(--line2); background: none; }
 .migrate.failed { border-color: color-mix(in srgb, var(--bad) 55%, transparent); background: color-mix(in srgb, var(--bad) 8%, var(--bg)); }
+.migrate-mark { flex: none; width: 14px; height: 14px; color: var(--accent); }
+.migrate.done .migrate-mark { color: var(--muted); }
 .migrate.failed .migrate-mark { color: var(--bad); }
-.migrate-review[hidden], .migrate-acts > [hidden] { display: none; }
-/* About five rows, then the list scrolls on its own: the rail stays put. */
-.migrate-list { display: flex; flex-direction: column; gap: 4px; max-height: calc(5 * 26px + 4 * 4px); overflow-y: auto; overscroll-behavior: contain; margin-right: -4px; padding-right: 4px; }
-.migrate-list[hidden] { display: none; }
-.migrate-row { display: flex; align-items: center; gap: 8px; min-height: 26px; flex: none; }
-.migrate-row b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.migrate-state, .migrate-where, .migrate-wait { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
+.migrate-line { flex: 1 1 auto; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.migrate.done .migrate-line { font-weight: 400; color: var(--muted); }
+.migrate-acts { flex: none; display: flex; gap: 3px; margin-left: auto; }
+.migrate-acts:not(:has(> :not([hidden]))) { display: none; }
+.migrate-acts > [hidden] { display: none; }
+.migrate .sheet-btn { padding: 3px 5px; background: none; border-color: var(--line2); white-space: nowrap; }
+.migrate .sheet-btn:hover { border-color: var(--fg); }
+.migrate .migrate-all, .migrate .migrate-retry { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 500; }
+/* Later is the quiet way out: words only, an edge on hover. */
+.migrate .migrate-later { border-color: transparent; padding: 3px 4px; color: var(--muted); }
+.migrate .migrate-later:hover { color: var(--fg); border-color: var(--line2); }
+.migrate .migrate-review.on { background: var(--on); border-color: var(--fg); }
+.migrate .sheet-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Review's list: a popover on the body, under the banner, over the rail and
+   the terminal; the board does not move. Rows are whole: the list is cut on
+   them (migrate.ts ROW_H) and snaps to them, fading at the foot while more
+   wait below. */
+.migrate-pop { position: fixed; z-index: 44; display: flex; flex-direction: column; gap: 4px; padding: 8px 6px 6px; box-sizing: border-box;
+  background: var(--card); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 14px 36px var(--shade); font-size: var(--fs-3); color: var(--fg); }
+.migrate-pop[hidden] { display: none; }
+.migrate-pop-head { margin: 0; padding: 0 8px 2px; font-size: var(--fs-2); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.migrate-list { display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y mandatory; }
+.migrate-list.more { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); }
+.migrate-row { flex: none; height: 30px; box-sizing: border-box; scroll-snap-align: start; display: flex; align-items: center; gap: 8px; padding: 0 2px 0 8px; border-radius: 6px; cursor: pointer; outline: none; }
+.migrate-row:hover, .migrate-row:focus-visible { background: var(--on); }
+.migrate-row:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.migrate-row[aria-disabled="true"] { cursor: default; }
+.migrate-row b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+.migrate-state, .migrate-where { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .migrate-state.busy { color: var(--accent-t); }
-.migrate-state.bad { color: var(--bad-t); }
-.migrate-go { border-color: var(--accent); }
-/* A row's × shows on hover or keyboard focus; it keeps its place meanwhile. */
-.migrate-no { padding: 0 7px; opacity: 0; transition: opacity 0.12s; }
-.migrate-row:hover .migrate-no, .migrate-row:focus-within .migrate-no { opacity: 1; }
-@media (hover: none) { .migrate-no { opacity: 1; } }
-.migrate-say { margin: 0; font-size: var(--fs-2); color: var(--muted); }
-.migrate-say.bad { color: var(--bad-t); }
+/* A failure's reason, on its own row, cut to it (whole in the tooltip). */
+.migrate-why { flex: 1 1 0; min-width: 0; color: var(--bad-t); font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* What the row does: quiet words at its right edge, shown on hover or focus
+   for a ready row, always for a failure (try again) or a wait. */
+.migrate-hint { margin-left: auto; flex: none; color: var(--muted); font-size: var(--fs-2); white-space: nowrap; opacity: 0; transition: opacity 0.12s; }
+.migrate-row:hover .migrate-hint, .migrate-row:focus-visible .migrate-hint, .migrate-hint.on { opacity: 1; }
+.migrate-row.bad .migrate-hint { color: var(--fg); text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
+.migrate-row.bad:hover .migrate-hint, .migrate-row.bad:focus-visible .migrate-hint { text-decoration-color: currentColor; }
+.migrate-why + .migrate-hint { margin-left: 0; }
+@media (hover: none) { .migrate-hint { opacity: 1; } }
+.migrate .migrate-no, .migrate-pop .migrate-no { flex: none; padding: 0 7px; height: 22px; background: none; border-color: transparent; color: var(--muted); }
+.migrate-pop .migrate-no:hover { color: var(--fg); border-color: var(--line2); }
+.migrate-say { margin: 0; padding: 2px 8px 0; font-size: var(--fs-2); color: var(--bad-t); }
 .migrate-say[hidden] { display: none; }
