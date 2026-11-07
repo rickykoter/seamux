@@ -236,6 +236,24 @@ checks.push(["the whole branch survives in the tooltip",
   /title="Open this worktree in VS Code — dev\/PROJ-1039-prelim/.test(f)]);
 checks.push(["the PR number is its own target", /class="pr open" data-a="pr"/.test(f)]);
 checks.push(["uncommitted work is marked", f.includes('class="dirty"')]);
+// The mark is a hollow ring drawn by CSS, not a "●" glyph: beside a signal's
+// dot it read as two states, and its amber was "needs you"'s.
+const fFoot0 = (f.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
+checks.push(["the uncommitted mark is a ring with its tooltip, not a dot",
+  /<span class="dirty" role="img" aria-label="Uncommitted changes" title="Uncommitted changes in this worktree"><\/span>/.test(fFoot0) &&
+  !fFoot0.includes("\u25cf")]);
+checks.push(["the increments count sits in the footer after the branch, where it can share its line",
+  fFoot0.indexOf('class="branch"') < fFoot0.indexOf('class="meta"') && !/class="foot one"/.test(fFoot0)]);
+render({ rows: [{ id: "lk", name: "lk", kind: "running", badge: "b", said: "", chips: [], frac: 0.33,
+  meta: "1/3 increments", branch: "sam/coupons-api", dirty: true, ref: "workspace:3", cwd: "/tmp/wt",
+  signals: [{ t: "\u25cf lookout", c: "#F5A524", h: "A lookout review of this branch is running" },
+            { t: "\u2713 approved", c: "#4ADE80", h: "A reviewer approved this PR" }] }], quiet: "" });
+{
+  const lk = (els.rows.innerHTML.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
+  checks.push(["a status signal reads as its word in its colour, with no bare dot before it",
+    /class="sig" style="--sg:#[0-9a-f]{6};--sgl:#[0-9a-f]{6}" title="A lookout review[^"]*">lookout<\/span>/.test(lk) &&
+    !lk.includes("\u25cf") && />\u2713 approved<\/span>/.test(lk), lk]);
+}
 checks.push(["branch and PR are no longer buried in meta",
   /<span class="meta">2\/4 increments<\/span>/.test(f)]);
 // Actionable signals are buttons in the button row; status signals are text in
@@ -456,6 +474,36 @@ if (lows.length) console.log("    " + lows.join("\n    "));
 }
 // Opacity was how the old board dimmed quiet rows and small costs, and it is
 // invisible to the measurement above, so it is not allowed on text at all.
+// Round 11. The dial's track is a graphic: it has to be seen on a card in dark
+// too (it was 1.1:1), yet stay under every tier's arc.
+{
+  const arcs = ["attend", "running", "wilt", "done"];
+  const trackOk = (T) => ratio(T.track, T.bg1) >= 2.4 && ratio(T.track, T.bg) >= 2.9 &&
+    arcs.every((k) => ratio(T[k], T.bg1) > ratio(T.track, T.bg1) && ratio(T[k], T.track) >= 1.5);
+  checks.push(["dark: the dial's track reads on a card (about 3:1) and stays under every arc",
+    trackOk(TOK), `${ratio(TOK.track, TOK.bg1).toFixed(2)}:1 on a card`]);
+  checks.push(["light: the dial's track still sits under every arc",
+    arcs.every((k) => ratio(TOKL[k], TOKL.bg1) > ratio(TOKL.track, TOKL.bg1))]);
+}
+// The footer's own colours point into the palette, and the uncommitted mark is
+// a neutral, never attend's amber.
+{
+  const rb = (sel) => { for (const [, x, b] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) if (x.trim() === sel) return b; return ""; };
+  const root = darkBlocks.join(";");
+  checks.push(["--pr-open and --dirty are palette tokens, the same names in both modes",
+    /--pr-open:\s*var\(--ef-[\w-]+\)/.test(root) && /--dirty:\s*var\(--ef-[\w-]+\)/.test(root) &&
+    !lightBlocks.concat(lightMedia).some((b) => /--(pr-open|dirty):/.test(b))]);
+  checks.push(["the uncommitted mark is a neutral, not attend's amber, in either mode",
+    TOK.dirty && TOK.dirty !== TOK.attend && TOKL.dirty !== TOKL.attend &&
+    !["#F5A524", "#dfa000", "#dbbc7f"].includes(TOK.dirty.toLowerCase()) &&
+    /border:[^;]*currentColor/.test(rb(".dirty::before")) && /border-radius:50%/.test(rb(".dirty::before"))]);
+  checks.push(["the footer's words (signals, increments) are in the sans; the branch stays mono",
+    /sans-serif/.test(rb(".foot>.meta,.foot>.sig")) && /monospace/.test(rb(".foot"))]);
+  const rawPx = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, , b]) =>
+    /(?:^|;)font-size:\s*\d/.test(b) || /(?:^|;)font:[^;]*\b\d+(?:\.\d+)?px/.test(b)).map(([, sel]) => sel.trim());
+  checks.push(["every font size in board.html is on the --fs-* scale (11px is the floor)",
+    rawPx.length === 0, rawPx.join(", ")]);
+}
 checks.push(["nothing dims text with opacity",
   ![...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(([, sel, body]) =>
     /(^|;)opacity:\s*\.\d/.test(body) && !/#cat|\.zz|@keyframes|^\s*(\d|from|to)/.test(sel))]);

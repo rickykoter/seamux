@@ -60,7 +60,7 @@ actually last said. It costs a socket call per row, which is why it is opt-in.
 ▾ ◔ checkout-flow                  NEEDS YOU        header = jump · ▾ = fold · ◔ = progress
   Gate shut: Coupon at capture needs your go-ahead. the reason, then what was said, 2 lines
   [ go 3 ] ( diff ) ( jump ) ( ● CI )               28px buttons; the first is filled
-  ● dev/checkout-flow ● #142 ✓ approved   $4.20    mono footer: worktree colour, links, spend
+  dev/checkout-flow ○ #142 ✓ approved 1/4 increments   footer: links in mono, words in sans
 ```
 
 No edge stripe. The tier is on the badge, the dial and the filled button, and the
@@ -86,9 +86,13 @@ so its buttons stay ghosts: filling every card's first button made the board a
 wall of colour. Actionable signals (`● CI`, `allow`, `deny`, a Jira key, the
 sandbox) follow as ghosts in their own colour. Every button is at least 28px tall.
 
-The **footer** is what you recognise the row by: branch, the dirty dot, PR, issue,
-status signals (`✓ approved`, `draft`, `⚠ conflicts`), progress and spend, in one
-mono line that wraps. Branch, PR and issue are links, at least 24px tall. The footer
+The **footer** is what you recognise the row by: branch, the uncommitted ring, PR,
+issue, status signals (`✓ approved`, `draft`, `⚠ conflicts`) and progress, in one
+line that wraps only when it must. Branch, PR and issue are code tokens in mono and
+links, at least 24px tall; the signals and the increments count are words in the
+UI's sans. Uncommitted work is a small hollow ring in the neutral text colour, not
+an amber dot: amber is "needs you". A status signal reads as its word in its colour,
+with no dot before it (the collector's `● lookout` shows as `lookout`). The footer
 shows only on an open card, the expanded view, and shows all of it at rest, in the
 card's flow: nothing waits for hover, so hovering moves no row and covers none. A
 folded card shows no footer; its header's tooltip carries the branch, progress and
@@ -781,7 +785,7 @@ list is the sixteen call sites of `onTapGesture` / `openURL` / `chipRPC` /
 | — | a card's caret, `button.caret` `data-a=fold` (the header too, with no workspace); a folded card | folds / unfolds in place; sends nothing |
 | sync clock (:1020) | `#stamp` | forces a reconcile |
 
-Also carried over, though not clickable: the dirty dot, the whole signals
+Also carried over, though not clickable: the uncommitted ring, the whole signals
 vocabulary (review, conflicts, draft, stack, **jira**), and the worktree's identity
 colour, which the card wears as a dot before its branch — the same hex Peacock paints its
 VS Code title bar with.

@@ -137,13 +137,18 @@
      3.9:1 on a card, so where it is text it uses its lighter twin. */
   --attend:#dfa000; --running:var(--ef-blue); --wilt:var(--ef-red); --done:var(--ef-green); --quiet:var(--ef-grey0);
   --wilt-tx:#f0a0a0;
-  /* The footer's own colours: an open PR, a linked issue, uncommitted work. */
-  --pr-open:#4ADE80; --issue:#b9a5fb; --dirty:#F5A524;
+  /* The footer's own colours: an open PR, a linked issue, uncommitted work.
+     An open PR is the palette's green and uncommitted work its neutral text
+     tier, both pointing into it, so light needs no copy of its own. The
+     uncommitted mark stays away from attend's amber: it is not a call. */
+  --pr-open:var(--ef-text-green); --issue:#b9a5fb; --dirty:var(--ef-text-dim);
   /* Text on a filled button, measured against each tier colour instead. */
   --ink:var(--ef-ink);
-  /* Lifts and shades. Hover grounds sit under text (--gnd); the rest are
+  /* The dial's track is a graphic, not a ground: 2.5:1 on a card and 3:1 on
+     the page, so the ring reads, while each tier's arc sits about 2:1 above it.
+     Lifts and shades. Hover grounds sit under text (--gnd); the rest are
      washes over whatever ground is there. */
-  --bg-hover:#2f3639; --bg-press:#374145; --bg-kid-hover:#323b40; --track:#2f3639; --sel:#dbbc7f;
+  --bg-hover:#2f3639; --bg-press:#374145; --bg-kid-hover:#323b40; --track:#727d76; --sel:#dbbc7f;
   --hover-a:rgba(255,255,255,.05); --hover-b:rgba(255,255,255,.07); --hover-c:rgba(255,255,255,.1);
   --hover-fg:rgba(211,198,170,.07); --shadow:rgba(0,0,0,.35);
   /* intent.js's: a delegated go chip, and the toast that says why a click failed. */
@@ -170,7 +175,7 @@
   --grey:#55625a;
   --attend:#8a5d00; --running:#296a8d; --wilt:#ae3b39; --done:#5d6a01; --quiet:#7f8b80;
   --wilt-tx:#ae3b39;
-  --pr-open:#1f6f35; --issue:#5f4bb6; --dirty:#9a4e18;
+  --issue:#5f4bb6;
   --bg-hover:#ebe6cd; --bg-press:#e4dfc5; --bg-kid-hover:#e6e1c8; --track:#dcd8c0; --sel:#c08000;
   --hover-a:rgba(60,50,20,.05); --hover-b:rgba(60,50,20,.07); --hover-c:rgba(60,50,20,.1);
   --hover-fg:rgba(92,106,114,.08); --shadow:rgba(60,50,20,.16);
@@ -189,7 +194,7 @@
   --grey:#55625a;
   --attend:#8a5d00; --running:#296a8d; --wilt:#ae3b39; --done:#5d6a01; --quiet:#7f8b80;
   --wilt-tx:#ae3b39;
-  --pr-open:#1f6f35; --issue:#5f4bb6; --dirty:#9a4e18;
+  --issue:#5f4bb6;
   --bg-hover:#ebe6cd; --bg-press:#e4dfc5; --bg-kid-hover:#e6e1c8; --track:#dcd8c0; --sel:#c08000;
   --hover-a:rgba(60,50,20,.05); --hover-b:rgba(60,50,20,.07); --hover-c:rgba(60,50,20,.1);
   --hover-fg:rgba(92,106,114,.08); --shadow:rgba(60,50,20,.16);
@@ -330,8 +335,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 #cat.pace .facing{animation:face 16s steps(1,end) infinite}
 
 /* Three z's, drifting up and fading on staggered phases. */
-#cat .zz{fill:var(--zz);font:italic 700 8px/1 system-ui;opacity:0}
-#cat .z1{font-size:10px} #cat .z2{font-size:12px}
+#cat .zz{fill:var(--zz);font:italic 700 var(--fs-1)/1 system-ui;opacity:0}
+#cat .z1{font-size:var(--fs-2)} #cat .z2{font-size:var(--fs-3)}
 @keyframes drift{0%{opacity:.75;transform:translateY(0)}
   100%{opacity:0;transform:translateY(-12px)}}
 #cat.nap .zz{animation:drift 6s linear infinite}
@@ -547,7 +552,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 
 /* --- the footer -------------------------------------------------------- */
 /* Branch, uncommitted work, PR, issue, status signals, progress, spend: the
-   facts you recognise a row by, in one mono line that wraps. The links are
+   facts you recognise a row by, in one line that wraps only when it must
+   (code tokens in mono, words in sans). The links are
    24px tall -- smaller than a button, still a target -- and underlined, because
    that is what says "this opens something". Status signals are plain text in
    their own colour and do not react. */
@@ -564,7 +570,14 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pr.open{color:var(--pr-open)}
 .issue{color:var(--issue);text-decoration-color:currentColor}
 .pr:hover,.issue:hover{filter:brightness(1.25)}
-.dirty{color:var(--dirty);font-size:var(--fs-1)}
+/* Uncommitted work: a small hollow ring in the neutral text tier. Not a dot
+   and not amber, so it is not read as a status or as "needs you". */
+.foot>.dirty{display:inline-flex;align-items:center;color:var(--dirty)}
+.dirty::before{content:"";flex:none;width:7px;height:7px;box-sizing:border-box;
+  border:1.5px solid currentColor;border-radius:50%}
+/* Words are in the UI's sans: the progress count and the status signals. Mono
+   is for the code tokens (branch, PR, issue). */
+.foot>.meta,.foot>.sig{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif}
 /* The worktree's colour, before its branch. */
 .cost{margin-left:auto;color:var(--fg2)}
 .cost.small{color:var(--grey)}
@@ -588,7 +601,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    resident timer, and nothing to go stale between pushes. */
 @keyframes drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
 .feed{margin-top:7px;height:3px;border-radius:2px;background:var(--bg2);overflow:hidden}
-.feedbar{display:block;height:100%;border-radius:2px;background:var(--dirty);
+.feedbar{display:block;height:100%;border-radius:2px;background:var(--attend);
   transform-origin:left center;animation:drain linear 1 forwards}
 
 /* --- a quiet row ------------------------------------------------------- */
