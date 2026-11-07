@@ -166,31 +166,49 @@ export class ReclaimWizard {
 
   private review(r: Report): void {
     const body = this.frame("review", `Reclaim ${r.branch ?? this.name}`);
+    // With nothing blocking, "Would remove" below names the worktree, branch
+    // and workspace: the facts keep only what it does not say.
+    const named = new Set(r.blockers > 0 ? [] : r.remove.map((x) => x.what));
+    const said = r.blockers > 0 ? "" : r.remove.map((x) => `${x.target} ${x.note}`).join(" ");
     const facts = el("dl", "rc-facts");
     const fact = (k: string, v: string | null | undefined, mono = false) => {
-      if (!v) return;
+      if (!v || named.has(k)) return;
       facts.append(el("dt", "", k), el("dd", mono ? "mono" : "", v));
     };
     fact("worktree", tidy(r.worktree, this.home), true);
     fact("branch", r.branch, true);
-    fact("size", r.size);
+    if (!r.size || !said.includes(r.size)) fact("size", r.size);
     fact("workspace", r.workspace?.name);
     fact("plan", r.plan);
     fact("sandbox", r.sandbox);
-    body.append(facts);
+    if (facts.childElementCount) body.append(facts);
 
-    const list = el("ul", "rc-checks");
-    // Blockers first: they are what the person has to act on.
-    const order = { fail: 0, warn: 1, pass: 2, skip: 3 } as const;
-    for (const c of [...r.checks].sort((a, b) => order[a.kind] - order[b.kind])) {
+    const row = (c: Check) => {
       const li = el("li", `rc-check ${c.kind}`);
       const text = el("div", "rc-text");
       text.append(el("span", "", c.text));
       if (c.hint) text.append(el("span", "rc-hint", c.hint));
       li.append(mark(c.kind), text);
-      list.append(li);
+      return li;
+    };
+    // Blockers, then warnings, open: they are what the person has to read.
+    const loud = r.checks.filter((c) => c.kind === "fail" || c.kind === "warn").sort((a, b) => (a.kind === "fail" ? 0 : 1) - (b.kind === "fail" ? 0 : 1));
+    if (loud.length) {
+      const list = el("ul", "rc-checks");
+      list.append(...loud.map(row));
+      body.append(list);
     }
-    body.append(list);
+    // Every check that passed (or had nothing to check) folds into one line.
+    const quiet = r.checks.filter((c) => c.kind === "pass" || c.kind === "skip");
+    if (quiet.length) {
+      const fold = el("details", "rc-passed");
+      const sum = el("summary");
+      sum.append(mark("pass"), el("span", "", `${quiet.length} check${quiet.length === 1 ? " passes" : "s pass"}`));
+      const list = el("ul", "rc-checks");
+      list.append(...quiet.map(row));
+      fold.append(sum, list);
+      body.append(fold);
+    }
 
     if (r.blockers > 0) {
       body.append(el("p", "rc-verdict bad", `${r.blockers} blocker${r.blockers === 1 ? "" : "s"}. Nothing will change.`));
