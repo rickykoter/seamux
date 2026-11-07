@@ -765,6 +765,11 @@ export class Wake {
     if (!this.visible() || e.ctrlKey || e.altKey) return;
     // The Wake tab yields to the sheet; the sheet's own Wake has the keys there.
     if (!!document.querySelector(".sheet:not([hidden])") !== this.embedded) return;
+    // Only keys meant for the Wake: focus in it, or nowhere in particular.
+    // The Dock's terminal (a textarea), a framed page or any other control
+    // keeps its own keys, so Space and j/k typed there stay there.
+    const at = document.activeElement;
+    if (at && at !== document.body && !this.root.contains(at)) return;
     const inQ = document.activeElement === this.q;
     if (e.key === "Escape") {
       if (!this.help.hidden) {
