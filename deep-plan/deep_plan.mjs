@@ -1416,13 +1416,15 @@ function risksHtml(spec, withNotes = false) {
     const opts = `<option value="">— a deliverable in this plan —</option>` + titles.map(t =>
       `<option value="${esc(t)}"${o.deliverableRef === t ? " selected" : ""}>${esc(t)}</option>`).join("");
     // One line until asked: the text, a chip for the disposition, and a
-    // "change" button that shows the controls (DP_EDITOR_JS opens a card
-    // whose controls differ from these defaults, e.g. a restored draft).
+    // "change" button that shows the controls. The markup shows the controls;
+    // DP_EDITOR_JS folds them and shows the button, so a page without the
+    // script still has them. It leaves open a card whose controls differ from
+    // these defaults, e.g. a restored draft.
     const chip = `<span class="dp-risk-chip${v.disposition ? "" : " dp-risk-none"}">${esc(v.disposition || "not decided")}</span>` +
       `<span class="dim dp-risk-pay">${v.payload ? " " + esc(v.payload) : ""}</span>`;
     return `<li class="dp-risk" data-n="${n}" data-disposition="${esc(v.disposition)}" data-payload="${esc(v.payload)}">${esc(v.risk)} ${chip}
-<button type="button" class="dp-risk-change" aria-expanded="false" aria-label="change risk ${n}">change</button>
-<div class="dp-risk-ctl" hidden>${radios}
+<button type="button" class="dp-risk-change" aria-expanded="false" aria-label="change risk ${n}" hidden>change</button>
+<div class="dp-risk-ctl">${radios}
 <select class="dp-risk-deliv" aria-label="deliverable that mitigates risk ${n}">${opts}</select>
 <input class="dp-risk-ticket" type="text" value="${esc(o.ticketRef || "")}" placeholder="or a filed ticket (URL or key)" aria-label="ticket that mitigates risk ${n}">
 <input class="dp-risk-note" type="text" value="${esc(o.note || "")}" placeholder="note (what settles a spike; context for a ticket)" aria-label="note on risk ${n}">
@@ -1609,8 +1611,8 @@ function dpMd(src) {
   }
   document.querySelectorAll(".dp-risk").forEach(function (card) {
     riskSync(card);
-    if (riskMoved(card)) riskOpen(card);
-    var b = card.querySelector(".dp-risk-change");
+    var b = card.querySelector(".dp-risk-change"), ctl = card.querySelector(".dp-risk-ctl");
+    if (ctl && b && !riskMoved(card)) { ctl.hidden = true; b.hidden = false; }
     if (b) b.addEventListener("click", function () { riskOpen(card, true); });
     card.addEventListener("change", function () { riskSync(card); if (riskMoved(card)) riskOpen(card); });
     card.addEventListener("input", function () { if (riskMoved(card)) riskOpen(card); });

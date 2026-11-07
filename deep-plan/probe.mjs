@@ -781,11 +781,13 @@ ok("mermaid theme follows the page theme",
     rgh.includes("ticket PROJ-12") &&
     rgh.includes('<span class="dp-risk-chip">spike</span><span class="dim dp-risk-pay"> run the sweep'));
   // One line per risk until asked: a chip, a "change" button, and the
-  // controls hidden; the page opens a card whose controls left their defaults.
-  ok("each risk is one line: a chip, a change button, the controls hidden until asked",
-    (rgh.match(/class="dp-risk-change"/g) || []).length === 5 &&
-    (rgh.match(/<div class="dp-risk-ctl" hidden>/g) || []).length === 5 &&
-    rgh.includes("function riskMoved(card)") && rgh.includes("if (riskMoved(card)) riskOpen(card)"));
+  // controls. The markup shows the controls (a page without the script keeps
+  // them); the script folds each card whose controls sit at their defaults.
+  ok("each risk is one line: a chip, a change button, the controls folded by the script",
+    (rgh.match(/class="dp-risk-change"[^>]* hidden>/g) || []).length === 5 &&
+    (rgh.match(/<div class="dp-risk-ctl">/g) || []).length === 5 &&
+    rgh.includes("function riskMoved(card)") && rgh.includes("!riskMoved(card)) { ctl.hidden = true; b.hidden = false; }") &&
+    rgh.includes("if (riskMoved(card)) riskOpen(card)"));
   const rgk = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "risk-good-plan.key.json"), "utf8"));
   ok("the key lists no undispositioned risk", (rgk.undispositionedRisks || []).length === 0);
   // Editing surfaces carry a card per risk with its defaults as data
