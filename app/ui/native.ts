@@ -61,7 +61,10 @@ function cmuxLook(): Promise<Look | null> {
   if (!looks.has(dark)) {
     looks.set(dark, invoke<Look>("term_look", { dark })
       .catch(() => null)
-      .then((l) => (l && (l.background || Object.keys(l.palette ?? {}).length) ? l : everforest(dark))));
+      // No colours configured: Everforest's, keeping any font the config names.
+      .then((l) => (l && (l.background || Object.keys(l.palette ?? {}).length)
+        ? l
+        : { ...everforest(dark), fontFamily: l?.fontFamily, fontSize: l?.fontSize })));
   }
   return looks.get(dark)!;
 }

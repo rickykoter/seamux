@@ -473,7 +473,7 @@ ok("theme: framed follows the scheme and hides ◐; standalone keeps the saved c
   const head = (review.match(/<script>\n\/\/ Theme, resolved before first paint[\s\S]*?<\/script>/) || [""])[0].replace(/^<script>|<\/script>$/g, "");
   const run = (framed, saved, light, opts = {}) => {
     const attrs = {}, mq = { matches: light, on: null, addEventListener: (k, f) => { if (k === "change") mq.on = f; } };
-    const self = {}, top = framed ? {} : self, loc = { reloads: 0, reload() { loc.reloads++; } };
+    const self = {}, top = framed ? {} : self, loc = { reloads: 0, reload() { loc.reloads++; }, ancestorOrigins: opts.ancestors };
     new Function("window", "localStorage", "matchMedia", "document", "location", head)(
       { self, top, matchMedia: () => mq },
       { getItem: () => saved },
@@ -489,6 +489,11 @@ ok("theme: framed follows the scheme and hides ◐; standalone keeps the saved c
     [run(false, null, true).theme, "light"], [run(false, null, false).theme, "dark"],
     [run(false, "dark", true).theme, "dark"], [run(false, "light", false).theme, "light"],
     [run(true, null, true).framed, true], [run(false, null, true).framed, false],
+    // Only the app's frame counts: another tool's frame keeps the saved ◐.
+    [run(true, "dark", true, { ancestors: ["tauri://localhost"] }).theme, "light"],
+    [run(true, "dark", true, { ancestors: ["http://127.0.0.1:7777", "https://tauri.localhost"] }).theme, "light"],
+    [run(true, "dark", true, { ancestors: ["https://example.com"] }).theme, "dark"],
+    [run(true, "dark", true, { ancestors: ["https://example.com"] }).framed, false],
   ];
   ok("theme: framed follows the scheme light and dark and ignores a saved choice; standalone saved choice, else OS",
     !!head && cases.every(([got, want]) => got === want), JSON.stringify(cases.map(c => c[0])));

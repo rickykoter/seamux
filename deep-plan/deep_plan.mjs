@@ -1235,7 +1235,7 @@ function htmlHead(title, b64) {
 <title>${esc(title)}</title>
 <script>
 // Theme, resolved before first paint so neither mode flashes the other.
-// Framed by the seamux app, the page follows prefers-color-scheme alone: the
+// Framed by the seamux app (its top frame is tauri://), the page follows prefers-color-scheme alone: the
 // app's appearance toggle sets its window theme, which the webview reports
 // there, live. A saved ◐ choice is ignored and the ◐ button hidden, so the
 // app's toggle is the one control. Standalone, the saved choice wins, else
@@ -1245,6 +1245,11 @@ function htmlHead(title, b64) {
   var mq = window.matchMedia ? matchMedia("(prefers-color-scheme: light)") : null;
   var os = function () { return mq && mq.matches ? "light" : "dark"; };
   try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  // The seamux app's frame only (its pages are tauri://); another tool's
+  // frame keeps the page's own ◐. Where ancestorOrigins is missing, any
+  // frame counts.
+  var anc = location.ancestorOrigins;
+  if (framed && anc && anc.length) { var top = anc[anc.length - 1]; framed = top.indexOf("tauri:") === 0 || top.indexOf("://tauri.localhost") > 0; }
   if (!framed) { try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {} }
   d.setAttribute("data-theme", t || os());
   if (!framed || !mq) return;
