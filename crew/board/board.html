@@ -133,10 +133,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    headline, then what else is going on, counted. The second is the cat talking,
    with the timestamp at its end. Both wrap rather than collide: nothing here is
    worth printing on top of anything else. */
-/* One line whatever shows: the tally wraps inside itself, and "collapse all"
-   keeps its room while hidden, so opening a card never moves the rows below. */
-.hud{display:flex;align-items:baseline;gap:2px 10px;flex-wrap:nowrap;min-width:0}
-.hud>#need{flex:none}
+.hud{display:flex;align-items:baseline;gap:2px 10px;flex-wrap:wrap;min-width:0}
 #need{font:700 var(--fs-2)/1.35 system-ui;letter-spacing:.08em;text-transform:uppercase;
   color:var(--fg);white-space:nowrap;flex:none}
 #need.on{color:var(--attend)}
@@ -310,7 +307,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    here either: the "quiet · N" divider in the list says it where it applies.
    Only non-zero states appear: the absence of "broken" reads faster than
    "0 broken". */
-#tally{display:inline-flex;flex-wrap:wrap;gap:2px 9px;flex:1;min-width:0;
+#tally{display:inline-flex;flex-wrap:wrap;gap:2px 9px;
   font:500 var(--fs-1)/1.35 system-ui;color:var(--grey)}
 #tally:empty{display:none}
 /* Shown while any card is open (render.js, intent.js): folds them all. */
@@ -318,6 +315,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
   font:500 var(--fs-1)/1.35 system-ui;color:var(--grey);text-decoration:underline;text-decoration-color:var(--edge);
   text-underline-offset:3px}
 #foldall:hover,#foldall:focus-visible{color:var(--fg);text-decoration-color:currentColor}
+/* Hidden, it keeps its room: the row wraps the same whether it shows or not,
+   so opening or folding a card never moves the rows below. */
 #foldall[hidden]{display:inline-block;visibility:hidden}
 .tl{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .tl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dot);flex:none}
