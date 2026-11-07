@@ -100,7 +100,7 @@ export class Palette {
   constructor() {
     this.chip.type = "button";
     this.chip.hidden = true;
-    this.chip.title = "Search sessions, hidden ones too (⌘K)";
+    this.chip.title = "Search sessions (⌘K)";
     this.chip.addEventListener("click", () => this.open());
     this.el.hidden = true;
     this.card.setAttribute("role", "dialog");
@@ -177,10 +177,15 @@ export class Palette {
   private refresh(): void {
     const tucked = this.views.tucked ?? [];
     const waiting = tucked.some((r) => r.level === "tuck" && r.waiting);
-    // Always there, so search has a way in without knowing ⌘K; the count of
-    // hidden rows rides along when there are any.
+    // Always there, so search has a way in without knowing ⌘K. The count of
+    // hidden rows is in its tooltip, not on it: these are the app's muted,
+    // snoozed and tucked worktrees, while the Dock rail's "Hidden" shelf
+    // counts snoozed, tucked and merged-and-idle rows (muted ones stay in the
+    // list, dimmed), so two "N hidden" side by side would disagree.
     this.chip.hidden = false;
-    this.chip.replaceChildren(document.createTextNode(tucked.length ? `Search ⌘K · ${tucked.length} hidden` : "Search ⌘K"));
+    this.chip.replaceChildren(document.createTextNode("Search ⌘K"));
+    const n = tucked.length;
+    this.chip.title = n ? `Search sessions, ${n} hidden ${n === 1 ? "one" : "ones"} too (⌘K)` : "Search sessions (⌘K)";
     if (waiting) {
       const d = el("i", "tuck-dot");
       d.setAttribute("aria-label", "a hidden workspace needs you");
@@ -261,11 +266,14 @@ export class Palette {
   }
 
   /** The keys that do something now: ⌘↵ only on a hidden row, ⇧⌘↵ only
-   *  while some row is hidden until it needs you (all it brings back). */
+   *  while some row is hidden until it needs you. ⇧⌘↵ (tuck_unmute_all)
+   *  brings back only those, so it says "all" only when they are all the
+   *  hidden rows, and otherwise names them as their rows do. */
   private drawFoot(sel: Row | undefined): void {
     const keys = ["↵ jump"];
     if (sel?.level) keys.push("⌘↵ show again");
-    if (this.rows.some((r) => r.level === "mute")) keys.push("⇧⌘↵ show all hidden until needed");
+    const muted = this.rows.filter((r) => r.level === "mute").length;
+    if (muted) keys.push(muted === this.rows.filter((r) => r.level).length ? "⇧⌘↵ unhide all" : "⇧⌘↵ unhide “until needed”");
     keys.push("esc");
     this.foot.textContent = keys.join(" · ");
   }
