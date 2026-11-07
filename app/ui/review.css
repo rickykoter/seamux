@@ -24,7 +24,7 @@
 .r-btn.quiet { border-color: transparent; color: var(--muted); background: none; }
 .r-btn.quiet:hover:not(:disabled) { color: var(--fg); border-color: var(--line); }
 .r-input:focus-visible, .r-select:focus-visible, .r-btn:focus-visible, .r-item:focus-visible, .r-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.r-err { margin: 0; color: var(--bad); font-size: var(--fs-2); overflow-wrap: anywhere; }
+.r-err { margin: 0; color: var(--bad-t); font-size: var(--fs-2); overflow-wrap: anywhere; }
 .r-err:empty { display: none; }
 
 /* suggestions under the input */
@@ -69,13 +69,13 @@
 .r-acts { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; margin-left: auto; flex: none; }
 .r-meta { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .r-grow { flex: 1; }
-.r-link { font-size: var(--fs-2); color: var(--accent); overflow-wrap: anywhere; }
+.r-link { font-size: var(--fs-2); color: var(--accent-t); overflow-wrap: anywhere; }
 .r-chip { font-size: var(--fs-1); padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--term); color: var(--muted); }
-.r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good-t); }
 /* The page's gate pill colour: a blocked review reads as a blocker does. */
 .r-chip.blocked { background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); color: var(--ef-text-red); }
-.r-chip.failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
-.r-chip.running { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.r-chip.failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad-t); }
+.r-chip.running { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-t); }
 
 /* The framed page's tools on this row (lookout/page/review.js postState):
    its gate pill, live state and view buttons, drawn the page's way. */
@@ -83,10 +83,10 @@
 .r-gate:hover:not(:disabled) { background: var(--term); }
 .r-gate:disabled { cursor: default; }
 .r-gate.blocked { color: var(--ef-text-red); border-color: var(--ef-text-red); }
-.r-gate.pass { color: var(--good); border-color: var(--good); }
+.r-gate.pass { color: var(--good-t); border-color: var(--good); }
 .r-go { margin-left: 5px; font-weight: 400; opacity: 0.8; }
 .r-mode { font-size: var(--fs-1); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 32ch; }
-.r-mode.live { color: var(--good); }
+.r-mode.live { color: var(--good-t); }
 .r-mode.down { color: var(--ef-text-orange); }
 /* Live or disconnected is only its dot at every width, the words in its tooltip. */
 .r-mode.only { overflow: visible; }
@@ -99,7 +99,7 @@
 
 .r-ctl { padding: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; }
 .r-detail { margin: 0; font-size: var(--fs-2); color: var(--muted); overflow-wrap: anywhere; }
-.r-detail.bad { color: var(--bad); }
+.r-detail.bad { color: var(--bad-t); }
 .r-now { margin: 0; font: var(--fs-2) ui-monospace, Menlo, monospace; color: var(--fg); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the ⋯ menu */
 .r-more { position: relative; }
