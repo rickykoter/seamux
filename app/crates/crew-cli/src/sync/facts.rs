@@ -351,13 +351,12 @@ pub fn default_base(cwd: &str) -> Option<String> {
     None
 }
 
+/// The branch shipped: it is contained in the default branch and it ever held
+/// work. The sweep's rule (crew_core::workspaces::merged), so a branch cut a
+/// minute ago for a session still planning, which is trivially contained in
+/// its base, is not reported as merged.
 pub fn merged_already(cwd: &str) -> bool {
-    let b = branch(cwd);
-    if b.is_empty() || b == "master" || b == "main" {
-        return false;
-    }
-    let Some(base) = default_base(cwd) else { return false };
-    git(&["-C", cwd, "merge-base", "--is-ancestor", "HEAD", &base], 10).is_some_and(|r| r.code == 0)
+    crew_core::workspaces::merged(cwd)
 }
 
 // --- json caches ----------------------------------------------------------------
@@ -1090,6 +1089,38 @@ pub fn plan(p: &Paths, sid: &str) -> Option<Plan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh branch for a session still planning sits on its base: it is
+    /// contained in it but held no work, so it is not merged. Once it holds a
+    /// commit that its base then takes, it is.
+    #[test]
+    fn a_fresh_branch_is_not_merged_until_its_work_lands() {
+        let root = std::env::temp_dir().join(format!("crew-merged-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (origin, wt) = (root.join("origin.git"), root.join("wt"));
+        fs::create_dir_all(&root).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            let ok = std::process::Command::new("git").current_dir(dir).args(args)
+                .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
+                .output().unwrap().status.success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&root, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+        run(&root, &["clone", "-q", origin.to_str().unwrap(), wt.to_str().unwrap()]);
+        run(&wt, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        run(&wt, &["push", "-q", "origin", "HEAD:main"]);
+        run(&wt, &["fetch", "-q", "origin"]);
+        run(&wt, &["remote", "set-head", "origin", "main"]);
+        run(&wt, &["checkout", "-q", "-b", "dev/plan", "origin/main"]);
+        let cwd = wt.to_string_lossy().to_string();
+        assert!(!merged_already(&cwd), "a branch cut from main with no work is not merged");
+        run(&wt, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        assert!(!merged_already(&cwd), "unmerged work is not merged");
+        run(&wt, &["push", "-q", "origin", "HEAD:main"]);
+        run(&wt, &["fetch", "-q", "origin"]);
+        assert!(merged_already(&cwd), "work its base took is merged");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn every_session_of_a_workspace_is_seen_the_active_one_first() {

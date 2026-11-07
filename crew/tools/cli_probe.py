@@ -694,8 +694,9 @@ check("crew-sync renames a worktree after its ticket, publishes its plan, phase 
       and "rename-workspace --workspace ws-y PROJ-3 · tidy" in log
       and "set-progress 0.5000 --label 1/2 · Doing b --workspace ws-y" in log
       and 'todo set [{"text":"a","state":"completed"},{"text":"b","state":"in-progress"}] --workspace ws-y' in log
-      # gone:merged: the new branch has no commits of its own, so it is contained in origin's
-      and desc.startswith("workspace-action --action set-description --description phase:working gone:merged synced:")
+      # no gone:merged: the new branch has no commits of its own and was never pushed, so it
+      # is a session just starting (contained in origin's main), not a branch that shipped
+      and desc.startswith("workspace-action --action set-description --description phase:working synced:")
       and any(l.startswith("workspace-action --action set-color --color #") for l in log),
       f"rc={r.returncode}\n       " + "\n       ".join(log) + r.stderr[-300:])
 

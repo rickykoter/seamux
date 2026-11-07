@@ -155,6 +155,8 @@ export class Wake {
   /** Days the person folded or opened by hand, over the default (older days
    *  fold when the list is long). */
   private dayFold = new Map<string, boolean>();
+  /** Long days the person asked to see in full ("show N more"). */
+  private dayAll = new Set<string>();
   private vis: Row[] = [];
   private sel = -1;
   private home = "";
@@ -402,6 +404,7 @@ export class Wake {
     // The branch and session of the group above: a header that repeats them
     // shows them only on hover, so each card leads with its prompt.
     let lastBr = "";
+    let shownToday = 0;
     let lastSess = "";
     const keyOf = (r: Row) => {
       const dk = dayKey(local(r.created_at));
@@ -433,6 +436,7 @@ export class Wake {
         // A long list (over 20 things) folds every day but the newest.
         const folded = !this.query && (this.dayFold.get(dk) ?? (dk !== newest && this.vis.length > 20));
         section = el("section", `w-day${folded ? " folded" : ""}`);
+        section.dataset.day = dk;
         const h = el("h2", "");
         const n = perDay.get(dk) ?? 0;
         const tog = button(`${folded ? "▸" : "▾"} ${dayLabel(d)}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
@@ -448,6 +452,7 @@ export class Wake {
         section.append(h);
         out.push(section);
         day = dk;
+        shownToday = 0;
         group = "";
         lastBr = "";
         lastSess = "";
@@ -455,7 +460,10 @@ export class Wake {
       if (gk !== group) {
         run++;
         const solo = runs[run] === 1;
-        const g = el("div", `w-grp${solo ? " solo" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
+        // A long day (over 15 things) shows its newest groups up to about 10
+        // rows; the rest are "later", behind a "show N more" at the day's end.
+        const later = !this.query && (perDay.get(dk) ?? 0) > 15 && shownToday >= 10 && !this.dayAll.has(dk);
+        const g = el("div", `w-grp${solo ? " solo" : ""}${later ? " later" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
         const ph = el("div", "w-ph");
         // A card of one row whose prompt is its title says it once.
         const same = solo && !!r.prompt && r.prompt.trim() === (r.title ?? "").trim();
@@ -484,6 +492,7 @@ export class Wake {
         group = gk;
       }
       ul!.append(this.row(r, i, r.id === keepId));
+      if (!ul!.parentElement?.classList.contains("later")) shownToday++;
     });
     if (!this.vis.length) {
       const e = el("div", "w-empty");
@@ -494,11 +503,24 @@ export class Wake {
           : "no workspace yet.";
       out.push(e);
     }
+    // A long day's later groups wait behind one "show N more" at its end.
+    for (const sec of out) {
+      const hid = sec.querySelectorAll(".w-grp.later .w-row").length;
+      if (!hid) continue;
+      // Not "w-more": that is the kind chips' own "more N".
+      const more = button(`show ${hid} more`, "w-daymore");
+      const dk = sec.dataset.day ?? "";
+      more.addEventListener("click", () => {
+        this.dayAll.add(dk);
+        this.draw();
+      });
+      sec.append(more);
+    }
     this.list.classList.toggle("searching", !!this.query);
     this.list.replaceChildren(...out);
     this.sel = keepId === undefined ? -1 : this.vis.findIndex((r) => r.id === keepId);
     // A pick whose day was just folded is out of sight: Enter must not open it.
-    if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded")) this.sel = -1;
+    if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded, .w-grp.later")) this.sel = -1;
   }
 
   private row(r: Row, i: number, sel: boolean): HTMLElement {
@@ -636,7 +658,7 @@ export class Wake {
   private step(by: 1 | -1): void {
     const els = this.list.querySelectorAll<HTMLElement>(".w-row");
     let i = this.sel + by;
-    while (i >= 0 && i < els.length && els[i].closest(".w-day.folded")) i += by;
+    while (i >= 0 && i < els.length && els[i].closest(".w-day.folded, .w-grp.later")) i += by;
     if (i < 0 && by < 0) return this.select(-1, true);
     if (i >= els.length) return;
     this.select(i, true);

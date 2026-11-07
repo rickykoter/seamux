@@ -173,6 +173,12 @@ function since(t: number, cls = "r-clock"): HTMLElement {
  * Open findings by severity, worded as the page's gate pill words them
  * (lookout/page/review.js gateText): "1 blocker, 1 major open".
  */
+/** "3 open", as the gate pill says it; openSummary is the breakdown for its tooltip. */
+function openCount(open: Record<string, number>): string {
+  const n = SEVERITIES.reduce((t, s) => t + (open[s] ?? 0), 0);
+  return n ? `${n} open` : "no open findings";
+}
+
 function openSummary(open: Record<string, number>): string {
   const parts = SEVERITIES.filter((s) => open[s]).map((s) => `${open[s]} ${s}`);
   return parts.length ? `${parts.join(", ")} open` : "no open findings";
@@ -345,7 +351,7 @@ export class ReviewView {
     this.findings.delete(id);
     this.pickerOpen.delete(id);
     this.confirm.delete(id);
-    if (this.moreOpen === id) this.moreOpen = null;
+    if (this.moreOpen === id || this.moreOpen === `act:${id}`) this.moreOpen = null;
   }
 
   private async loadOthers(): Promise<void> {
@@ -661,25 +667,33 @@ export class ReviewView {
 
   /** A small menu for what is used less: the review's settings, Re-review, Remove. */
   private more(j: Job, meta: string, items: HTMLButtonElement[]): HTMLElement {
-    const wrap = el("div", "r-more");
-    const open = this.moreOpen === j.id;
     const b = el("button", "r-btn quiet r-more-btn");
-    b.type = "button";
     b.append(dots());
     b.setAttribute("aria-label", "More");
+    return this.menu(j.id, b, items, meta);
+  }
+
+  /**
+   * A button that opens a small menu under it. One menu is open at a time,
+   * `this.moreOpen` holding its key; a click elsewhere or Escape closes it.
+   */
+  private menu(key: string, b: HTMLButtonElement, items: HTMLButtonElement[], meta = ""): HTMLElement {
+    const wrap = el("div", "r-more");
+    const open = this.moreOpen === key;
+    b.type = "button";
     b.setAttribute("aria-haspopup", "menu");
     b.setAttribute("aria-expanded", String(open));
     b.addEventListener("click", () => {
       // The current state, not the one drawn: the menu may have closed in place.
-      this.moreOpen = this.moreOpen === j.id ? null : j.id;
+      this.moreOpen = this.moreOpen === key ? null : key;
       this.render(true);
-      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role=menuitem]")?.focus();
+      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role=menuitem]:not(:disabled)")?.focus();
     });
     wrap.append(b);
     if (open) {
       const m = el("div", "r-menu");
       m.setAttribute("role", "menu");
-      m.append(el("p", "r-menu-meta", meta));
+      if (meta) m.append(el("p", "r-menu-meta", meta));
       for (const it of items) {
         it.setAttribute("role", "menuitem");
         it.addEventListener("click", () => (this.moreOpen = null), { capture: true });
@@ -711,7 +725,8 @@ export class ReviewView {
     // Framed, the page's gate pill carries the verdict and its counts: no
     // second one here. Unframed or down, this chip says both.
     const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;
-    const chip = state === "blocked" || state === "pass" ? (framed ? null : el("span", `r-chip ${state}`, `${state} · ${openSummary(j.open)}`)) : el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
+    const chip = state === "blocked" || state === "pass" ? (framed ? null : el("span", `r-chip ${state}`, `${state} · ${openCount(j.open)}`)) : el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
+    if (chip && !framed && (state === "blocked" || state === "pass")) chip.title = openSummary(j.open);
     const meta = `${j.depth} · ${j.model || "default model"}${j.base ? ` · against ${j.base}` : ""}`;
     // The ⋯ menu: Re-review and Remove once it is idle, and the log any time.
     const items: HTMLButtonElement[] = [];
@@ -862,16 +877,18 @@ export class ReviewView {
 
     const bar: HTMLElement[] = [];
     const open = this.pickerOpen.has(j.id);
-    // The gate pill counts what is open; this button says only how many are picked.
-    const toggle = btn(`Findings${n ? ` · ${n} picked` : ""} ${open ? "▾" : "▸"}`, () => {
+    // The gate pill counts what is open, and the Act button how many are picked.
+    const toggle = btn(`Findings ${open ? "▾" : "▸"}`, () => {
       if (!this.pickerOpen.delete(j.id)) this.pickerOpen.add(j.id);
       this.render(true);
     }, "r-btn pickbtn");
     toggle.setAttribute("aria-expanded", String(open));
     toggle.disabled = !rows.length;
-    toggle.title = n ? "Pick which findings Edit, Fix and Post act on" : "Pick findings to edit, fix or post";
+    toggle.title = n ? `Pick which findings Edit, Fix and Post act on (${n} picked)` : "Pick findings to edit, fix or post";
     bar.push(toggle);
-    // Edit, Fix and Post act on the picked findings: they show once one is.
+    // Edit, Fix and Post act on the picked findings, and Push on the commits:
+    // one menu once anything is picked, so the row keeps one button for them.
+    const menu: HTMLButtonElement[] = [];
     if (n) {
       const edit = btn("Edit", () => void this.run(j, "review_fix", { ids: picked, commit: false }));
       edit.title = `The reviewer's session changes files in the worktree for the ${n} picked. Nothing is committed.`;
@@ -884,7 +901,7 @@ export class ReviewView {
       post.title = j.pr ? `The ${n} picked as one review on PR #${j.pr}` : "This branch has no open pull request";
       edit.disabled = fix.disabled = busy;
       post.disabled = busy || !j.pr;
-      bar.push(edit, fix, post);
+      menu.push(edit, fix, post);
     }
     if (j.ahead || j.dirty) {
       const push = btn(`Push ${j.ahead} commit${j.ahead === 1 ? "" : "s"}`, () => {
@@ -893,7 +910,14 @@ export class ReviewView {
       });
       push.disabled = busy || j.cross || j.dirty || !j.ahead || j.pushed;
       push.title = j.cross ? "A pull request from a fork: the fixes stay local" : j.dirty ? "Uncommitted edits: commit them with Fix, or leave them" : `To ${j.branch}`;
-      bar.push(push);
+      if (n) menu.push(push);
+      else bar.push(push);
+    }
+    if (n) {
+      for (const it of menu) it.className = "r-btn quiet";
+      const act = el("button", "r-btn primary r-act-btn", `Act on ${n} picked ▾`);
+      act.title = "Edit, fix or post the picked findings";
+      bar.push(this.menu(`act:${j.id}`, act, menu));
     }
 
     if (open && rows.length) out.push(this.picker(j, rows, ticked, busy));

@@ -543,7 +543,18 @@ def merged_already(cwd):
             return False
         r = subprocess.run(["git", "-C", cwd, "merge-base", "--is-ancestor", "HEAD", base],
                            capture_output=True, timeout=10)
-        return r.returncode == 0
+        if r.returncode != 0:
+            return False
+        # A branch cut a minute ago (a session still planning) is contained in
+        # its base too. It shipped only if it ever held work: it moved after it
+        # was created, or was pushed under its own name. The sweep's rule
+        # (hooks/workspaces.py merged), so the board and the sweep agree.
+        lg = subprocess.run(["git", "-C", cwd, "reflog", "show", "--format=%H", "refs/heads/" + b],
+                            capture_output=True, text=True, timeout=10)
+        moved = lg.returncode == 0 and len(lg.stdout.splitlines()) > 1
+        pushed = subprocess.run(["git", "-C", cwd, "show-ref", "--verify", "--quiet", "refs/remotes/origin/" + b],
+                                capture_output=True, timeout=10).returncode == 0
+        return moved or pushed
     except Exception:
         return False
 

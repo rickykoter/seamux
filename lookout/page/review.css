@@ -305,12 +305,14 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: v
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 .buttons button.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .actions.folded { padding: 2px 10px 6px; border-top: 0; }
-/* Folded, Reply / Resolve / Dismiss show as the card meta does: on hover or
-   focus, on the finding n/p picked, with a draft or a send note, and always on touch. */
-.card > .actions.folded { opacity: 0; transition: opacity .12s; }
-.card:hover > .actions.folded, .card:focus-within > .actions.folded, .card.cur > .actions.folded, .card.flash > .actions.folded,
-.card > .actions.folded.draft, .card > .actions.folded:has(.send-status:not(:empty)) { opacity: 1; }
-@media (hover: none) { .card > .actions.folded { opacity: 1; } }
+/* Folded, Reply / Resolve / Dismiss take no room until wanted: on the card
+   picked by a click or n/p, with focus in it, a draft or a send note, and
+   always on touch. Hover moves nothing; the card's edge firms up instead. */
+.card > .actions.folded { display: none; }
+.card.cur > .actions.folded, .card:focus-within > .actions.folded,
+.card > .actions.folded.draft, .card > .actions.folded:has(.send-status:not(:empty)) { display: flex; }
+@media (hover: none) { .card > .actions.folded { display: flex; } }
+body.served .card:not(.cur):hover { border-color: color-mix(in srgb, var(--accent-t) 45%, var(--card-border)); }
 /* Quiet buttons: a faint outline that firms up on hover, never a fill. */
 .buttons.links { gap: 6px; }
 .buttons.links button { background: none; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 6px;

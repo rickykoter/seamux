@@ -1768,18 +1768,30 @@ if (want("page script")) {
      js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.status)) : null);'));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
-  ok("page: the gate pill counts open findings by severity as \"1 blocker, 1 major open\"",
-     js.includes('.map(([s, n]) => `${n} ${s}`).join(", ");') && js.includes("text: `blocked · ${counts} open`"));
-  ok("app: the Findings button says only how many are picked; the gate pill carries the counts",
-     app.includes('const toggle = btn(`Findings${n ? ` · ${n} picked` : ""} ${open ? "▾" : "▸"}`') &&
+  ok("page: the gate pill says how many are open (\"blocked · 3 open\"); its tooltip, mirrored in the app, gives the breakdown by severity",
+     js.includes('.map(([s, n]) => `${n} ${s}`).join(", ");') && js.includes("text: `blocked · ${open.length} open`, detail }") &&
+     js.includes("text: open.length ? `pass · ${open.length} open` : \"pass · no open findings\", detail }") &&
+     js.includes('const detail = open.length ? `${counts} open.` : "";') &&
+     js.includes('return { go, title: (g.detail ? g.detail + " " : "") +') && !js.includes("`blocked · ${counts} open`") &&
+     js.includes("gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go }") && app.includes("gate.title = p.gate.title;"));
+  ok("app: the Findings button carries no count; the gate pill counts what is open and the Act button what is picked",
+     app.includes('const toggle = btn(`Findings ${open ? "▾" : "▸"}`') && !app.includes("` · ${n} picked`") &&
      !app.includes("btn(`Findings · ${openSummary(j.open)}"));
-  ok("app: Edit, Fix with commits and Post comments show only while a finding is picked (blockers and majors start picked), with no (n) on each",
-     /bar\.push\(toggle\);\s*\/\/[^\n]*\n\s*if \(n\) \{[\s\S]{0,900}bar\.push\(edit, fix, post\);\s*\}/.test(app) &&
+  ok("app: picked, Edit, Fix with commits, Post comments (and Push) sit in one \"Act on n picked ▾\" menu, so the header row keeps one button for them",
+     /bar\.push\(toggle\);[\s\S]{0,300}const menu: HTMLButtonElement\[\] = \[\];\s*if \(n\) \{[\s\S]{0,900}menu\.push\(edit, fix, post\);\s*\}/.test(app) &&
+     app.includes("if (n) menu.push(push);\n      else bar.push(push);") &&
+     app.includes('const act = el("button", "r-btn primary r-act-btn", `Act on ${n} picked ▾`);') &&
+     app.includes("bar.push(this.menu(`act:${j.id}`, act, menu));") && !app.includes("bar.push(edit, fix, post)") &&
+     app.includes('private menu(key: string, b: HTMLButtonElement, items: HTMLButtonElement[], meta = ""): HTMLElement {') &&
+     app.includes("return this.menu(j.id, b, items, meta);") &&
+     app.includes('.r-menu [role=menuitem]:not(:disabled)")?.focus()') &&
+     app.includes("if (this.moreOpen === id || this.moreOpen === `act:${id}`) this.moreOpen = null;") &&
      app.includes('btn("Edit", ') && app.includes('btn("Fix with commits", ') && app.includes('btn("Post comments", ') &&
      !app.includes("suffix") && app.includes('if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));'));
   ok("app: framed, the header leaves the verdict to the page's gate pill; unframed or down, its chip says it with the same counts",
      app.includes('const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;') &&
-     app.includes('(framed ? null : el("span", `r-chip ${state}`, `${state} · ${openSummary(j.open)}`))') &&
+     app.includes('(framed ? null : el("span", `r-chip ${state}`, `${state} · ${openCount(j.open)}`))') &&
+     app.includes("chip.title = openSummary(j.open);") && app.includes('return n ? `${n} open` : "no open findings";') &&
      app.includes('return parts.length ? `${parts.join(", ")} open` : "no open findings";') &&
      app.includes('const SEVERITIES = ["blocker", "major", "minor", "nit"];') && js.includes('const SEV = ["blocker", "major", "minor", "nit"];') &&
      /const down = [\s\S]{0,300}this\.frameDown = rid;/.test(app));
@@ -1826,13 +1838,23 @@ if (want("page script")) {
      !js.includes("still-blocks") && !css.includes(".still-blocks"));
   ok("page: the status change the pill already shows draws only its author's words, not \"marked it …\"",
      js.includes('const pill = last && last.to === (x.status || "open") && x.status !== "open" ? last : null;') &&
-     /function message\(m, pill\) \{[\s\S]{0,200}if \(m === pill\) return m\.text \?/.test(js) &&
-     js.includes("thread.map(m => message(m, pill))"));
-  ok("page: folded, Reply / Resolve / Dismiss show on hover, focus, the picked finding or a draft, and always on touch",
-     css.includes(".card > .actions.folded { opacity: 0;") &&
-     css.includes(".card:hover > .actions.folded, .card:focus-within > .actions.folded, .card.cur > .actions.folded") &&
+     /function message\(m, pill, folded\) \{[\s\S]{0,700}if \(m === pill\) return m\.text \?/.test(js) &&
+     js.includes("thread.map(m => message(m, pill, folded))"));
+  ok("page: a status change its author made with a reply, within two minutes, rides on that reply's line instead of a second message",
+     js.includes("const prev = pill && pill.text ? thread[thread.indexOf(pill) - 1] : null;") &&
+     js.includes('prev.kind !== "status" && prev.by === pill.by &&') &&
+     js.includes("Math.abs(Date.parse(pill.at) - Date.parse(prev.at)) <= 120000 ? { m: pill, after: prev, to: pill.to, text: pill.text } : null;") &&
+     js.includes("if (folded && m === folded.m) return null;") &&
+     js.includes('el("span", { class: "at note", title: `${folded.m.by} marked it ${folded.to}` }, " · " + folded.text)'));
+  ok("page: folded, Reply / Resolve / Dismiss take no room until the card is picked (click or n/p), focused or has a draft; always on touch; hover moves nothing",
+     css.includes(".card > .actions.folded { display: none; }") &&
+     css.includes(".card.cur > .actions.folded, .card:focus-within > .actions.folded,") &&
      css.includes(".card > .actions.folded.draft") &&
-     css.includes("@media (hover: none) { .card > .actions.folded { opacity: 1; } }") &&
+     css.includes("@media (hover: none) { .card > .actions.folded { display: flex; } }") &&
+     !/\.card:hover[^{]*\.actions/.test(css) && !css.includes(".card > .actions.folded { opacity") &&
+     css.includes("body.served .card:not(.cur):hover { border-color:") &&
+     js.includes("onclick: e => pickCard(x.id, e) },") &&
+     /function pickCard\(id, e\) \{\s*if \(e\.target\.closest\("button, a, textarea, input"\) \|\| String\(getSelection\(\) \|\| ""\)\) return;\s*curFinding = id;/.test(js) &&
      js.includes('box.classList.toggle("draft", !show && !!draftText(key).trim());') &&
      js.includes('(x.id === curFinding ? " cur" : "")'));
   ok("page+app: a blocked gate reads in the blocker colour, and its pill shows an arrow when it jumps",
