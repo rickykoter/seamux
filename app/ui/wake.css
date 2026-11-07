@@ -41,6 +41,17 @@
 .wake.embedded .w-badges { flex-wrap: wrap; min-width: 0; }
 .wake.embedded .w-act, .wake.embedded .w-st { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .w-day h2 { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--section); margin: 14px 0 6px; }
+/* The day heading folds its day: a folded day is its heading and a count. */
+.w-dayh { all: unset; cursor: pointer; }
+.w-dayh:hover { color: var(--fg); }
+.w-dayh:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.w-day.folded > :not(h2) { display: none; }
+/* A row's ⋯ and publish wait for the pointer, the keyboard or the pick; keep
+   (at risk) always shows, in red, since it is the one thing that can't wait. */
+@media (hover: hover) {
+  .w-row:not(:hover):not(.sel):not(:focus-within) .w-acts .tuck-wrap,
+  .w-row:not(:hover):not(.sel):not(:focus-within) .w-act.pub { visibility: hidden; }
+}
 /* Visible overflow, so a row's ⋯ menu is not cut off; the last row rounds itself. */
 .w-grp { margin: 0 0 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
 .w-rows > .w-row:last-child { border-radius: 0 0 11px 11px; }
@@ -97,3 +108,5 @@
 /* A keyboard ring on everything the Wake lets you Tab to. */
 .wake :is(button, input, select, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .w-toast { transition: none; } }
+/* At risk: the keep button is the row's one signal, in red (after .w-act's own rules). */
+.w-row .w-acts .w-act.risk, .w-row .w-acts .w-act.risk:hover { color: var(--bad-t, var(--bad)); border-color: var(--bad); }

@@ -150,6 +150,9 @@ export class Wake {
   private query = "";
   private kinds = new Set<string>();
   private openGroups = new Set<string>();
+  /** Days the person folded or opened by hand, over the default (older days
+   *  fold when the list is long). */
+  private dayFold = new Map<string, boolean>();
   private vis: Row[] = [];
   private sel = -1;
   private home = "";
@@ -327,7 +330,7 @@ export class Wake {
     const tuckedOpts = this.data.workspaces.filter(isTucked).map(option);
     if (tuckedOpts.length) {
       const g = el("optgroup");
-      g.label = "Tucked";
+      g.label = "Hidden";
       g.append(...tuckedOpts);
       opts.push(g);
     }
@@ -369,7 +372,8 @@ export class Wake {
     if (gone) bits.push(` · ${gone} gone`);
     if (this.data.truncated) bits.push(` · newest ${this.data.limit} shown; search to reach older`);
     this.stats.replaceChildren(...bits);
-    this.keepAllBtn.hidden = !risk || !!this.query;
+    // One at-risk file has its own keep button: keep all is for two or more.
+    this.keepAllBtn.hidden = risk < 2 || !!this.query;
     if (!this.keepAllBtn.classList.contains("sure")) this.keepAllBtn.textContent = `keep all ${risk}`;
     this.keepAllBtn.dataset.n = String(risk);
 
@@ -391,6 +395,14 @@ export class Wake {
     };
     // How many rows each card holds (a run of rows with one key; the same
     // prompt later in the day is a new card): a card of one drops its band.
+    const perDay = new Map<string, number>();
+    for (const r of this.vis) {
+      const k = dayKey(local(r.created_at));
+      perDay.set(k, (perDay.get(k) ?? 0) + 1);
+    }
+    const yd = new Date();
+    yd.setDate(yd.getDate() - 1);
+    const yesterday = dayKey(yd);
     const runs: number[] = [];
     this.vis.forEach((r, i) => {
       if (i > 0 && keyOf(r) === keyOf(this.vis[i - 1])) runs[runs.length - 1]++;
@@ -402,8 +414,21 @@ export class Wake {
       const dk = dayKey(d);
       const gk = keyOf(r);
       if (dk !== day) {
-        section = el("section", "w-day");
-        section.append(el("h2", "", dayLabel(d)));
+        // A long list folds the days before yesterday to a count; a search
+        // never folds (its matches are the point). A click toggles.
+        const old = dk < yesterday;
+        const folded = !this.query && (this.dayFold.get(dk) ?? (old && this.vis.length > 30));
+        section = el("section", `w-day${folded ? " folded" : ""}`);
+        const h = el("h2", "");
+        const n = perDay.get(dk) ?? 0;
+        const tog = button(`${dayLabel(d)}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
+        tog.setAttribute("aria-expanded", String(!folded));
+        tog.addEventListener("click", () => {
+          this.dayFold.set(dk, !folded);
+          this.draw();
+        });
+        h.append(tog);
+        section.append(h);
         out.push(section);
         day = dk;
         group = "";
@@ -427,7 +452,7 @@ export class Wake {
         if (r.branch) ph.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
         if (r.session_id) {
           // Said as what it does: a bare id read as a commit's sha.
-          const s = button("resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
+          const s = button("copy resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
           s.title = `copy the command that resumes session ${r.session_id.slice(0, 8)}`;
           s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
           ph.append(s);
@@ -467,8 +492,10 @@ export class Wake {
     t.append(marked(title, this.query));
     li.append(t);
     const badges = el("span", "w-badges");
-    if (r.state === "risk") badges.append(el("span", "w-st risk", "at risk"));
-    else if (r.state === "kept") badges.append(el("span", "w-st kept", "kept"));
+    // At risk is said by the row's red keep button, not a second pill.
+    if (r.state === "risk") {
+      // nothing here
+    } else if (r.state === "kept") badges.append(el("span", "w-st kept", "kept"));
     else if (r.state === "gone") badges.append(el("span", "w-st", "gone"));
     if (r.published) badges.append(el("span", "w-st pub", "claude.ai"));
     if (r.kind === "commit" && r.sha) badges.append(el("span", "w-st", r.sha));
@@ -528,7 +555,7 @@ export class Wake {
       },
     };
     const primary = r.state === "risk" ? keep : r.publishable && !r.published ? publish : null;
-    if (primary === keep) shown(keep.label, keep.title ?? "", () => void this.keep(r));
+    if (primary === keep) shown(keep.label, keep.title ?? "", () => void this.keep(r)).classList.add("risk");
     else if (primary === publish) shown(pubLabel, pubTitle, (b) => void this.publish(r, b)).classList.add("pub");
     if (r.kind === "plan") {
       items.push(
