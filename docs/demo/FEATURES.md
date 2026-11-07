@@ -149,7 +149,7 @@ code. Each row names the shot that covers it: a screenshot in
 | Reclaim wizard: guard checks, what goes, Reclaim | reclaim.ts | S-app-reclaim |
 | Wake tab | wake.ts | S-app-wake |
 | Lookout tab: review jobs with live steps, findings | review.ts | S-app-lookout |
-| Tucked chip, ⌘K palette, undo toast | palette.ts, tuck.ts | S-app-palette |
+| Search chip, ⌘K palette, undo toast | palette.ts, tuck.ts | S-app-palette |
 | Pane chips `[plan]` / `[outside]`; links open in VS Code, Dock, PR hover cards | panechips.ts, panelinks.ts | S-app-dock (card) |
 
 ## Team rollout (docs/ADOPTING.md)

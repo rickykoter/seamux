@@ -16,7 +16,7 @@ const POLL_MS = 3000;
 
 const STATE: Record<string, string> = {
   working: "working",
-  needs_input: "waiting on you",
+  needs_input: "needs you",
   idle: "idle",
   ended: "ended",
   "": "stopped",
