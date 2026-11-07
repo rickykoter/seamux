@@ -84,7 +84,7 @@
 .w-st.kept { color: var(--good-t); }
 /* A row's path shows when the row is picked, or while searching (a match can
    be in it); otherwise it is in the title's tooltip. A was-path always shows. */
-.w-list:not(.searching) .w-row:not(.sel) .w-p:not(.was) { display: none; }
+.w-row:not(.sel) .w-p:not(.was):not(.hit) { display: none; }
 .w-p { grid-column: 2 / 4; font: 11px ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-p.was { opacity: 0.7; }
 .w-acts { grid-column: 4; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
@@ -110,3 +110,8 @@
 @media (prefers-reduced-motion: reduce) { .w-toast { transition: none; } }
 /* At risk: the keep button is the row's one signal, in red (after .w-act's own rules). */
 .w-row .w-acts .w-act.risk, .w-row .w-acts .w-act.risk:hover { color: var(--bad-t, var(--bad)); border-color: var(--bad); }
+/* A card of one row is a plain row under its caption: no box. */
+.w-grp.solo { border-color: transparent; background: none; }
+.w-dayrisk { color: var(--bad-t, var(--bad)); }
+.w-chip.w-more { border-style: dashed; }
+.w-prompt.same { display: none; }

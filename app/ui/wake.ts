@@ -149,6 +149,8 @@ export class Wake {
   private picked = false;
   private query = "";
   private kinds = new Set<string>();
+  /** The kind chips past the five busiest, shown after "more". */
+  private allChips = false;
   private openGroups = new Set<string>();
   /** Days the person folded or opened by hand, over the default (older days
    *  fold when the list is long). */
@@ -341,7 +343,8 @@ export class Wake {
       opts.unshift(o);
     }
     this.picker.replaceChildren(...opts);
-    this.title.replaceChildren(document.createTextNode("the wake"), el("span", "w-dot", " · "), document.createTextNode(this.ws.split("/").pop() ?? ""));
+    // The picker beside it names the workspace.
+    this.title.replaceChildren(document.createTextNode("the wake"));
 
     // Chips: all, then each kind with its count.
     const rows = this.data.rows;
@@ -350,16 +353,26 @@ export class Wake {
     const all = button("", `w-chip${this.kinds.size ? "" : " on"}`);
     all.dataset.k = "";
     all.append(document.createTextNode("all "), el("span", "", String(rows.length)));
+    // The five busiest kinds show; the rest wait behind "more" (a picked one
+    // always shows), so the filter row stays one short line.
+    const busy = KINDS.filter((k) => n.get(k)).sort((a, b) => (n.get(b) ?? 0) - (n.get(a) ?? 0));
+    // Six or fewer fit on the line: all show. Past that, the five busiest.
+    const top = new Set(busy.length > 6 ? busy.slice(0, 5) : busy);
+    const extra = busy.length - top.size;
+    const more = button(this.allChips ? "fewer" : `more ${extra}`, "w-chip w-more");
+    more.dataset.k = "\u0000more";
+    more.hidden = extra <= 0;
     this.chipsEl.replaceChildren(
       all,
       ...KINDS.map((k) => {
         const b = button("", `w-chip${this.kinds.has(k) ? " on" : ""}`);
         // A kind with nothing in it is no filter: hidden, unless it is the one picked.
-        b.hidden = !n.get(k) && !this.kinds.has(k);
+        b.hidden = (!n.get(k) || (!this.allChips && !top.has(k))) && !this.kinds.has(k);
         b.dataset.k = k;
         b.append(document.createTextNode(`${k} `), el("span", "", String(n.get(k) ?? 0)));
         return b;
       }),
+      more,
     );
 
     // Stats and keep all.
@@ -396,13 +409,13 @@ export class Wake {
     // How many rows each card holds (a run of rows with one key; the same
     // prompt later in the day is a new card): a card of one drops its band.
     const perDay = new Map<string, number>();
+    const riskPerDay = new Map<string, number>();
     for (const r of this.vis) {
       const k = dayKey(local(r.created_at));
       perDay.set(k, (perDay.get(k) ?? 0) + 1);
+      if (r.state === "risk") riskPerDay.set(k, (riskPerDay.get(k) ?? 0) + 1);
     }
-    const yd = new Date();
-    yd.setDate(yd.getDate() - 1);
-    const yesterday = dayKey(yd);
+    const newest = this.vis.length ? dayKey(local(this.vis[0].created_at)) : "";
     const runs: number[] = [];
     this.vis.forEach((r, i) => {
       if (i > 0 && keyOf(r) === keyOf(this.vis[i - 1])) runs[runs.length - 1]++;
@@ -414,14 +427,17 @@ export class Wake {
       const dk = dayKey(d);
       const gk = keyOf(r);
       if (dk !== day) {
-        // A long list folds the days before yesterday to a count; a search
-        // never folds (its matches are the point). A click toggles.
-        const old = dk < yesterday;
-        const folded = !this.query && (this.dayFold.get(dk) ?? (old && this.vis.length > 30));
+        // A long list folds older days to a count; a search never folds (its
+        // matches are the point). A click toggles.
+        // A long list (over 20 things) folds every day but the newest.
+        const folded = !this.query && (this.dayFold.get(dk) ?? (dk !== newest && this.vis.length > 20));
         section = el("section", `w-day${folded ? " folded" : ""}`);
         const h = el("h2", "");
         const n = perDay.get(dk) ?? 0;
-        const tog = button(`${dayLabel(d)}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
+        const tog = button(`${folded ? "▸" : "▾"} ${dayLabel(d)}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
+        // A folded day still says when something in it is at risk.
+        const atRisk = riskPerDay.get(dk) ?? 0;
+        if (folded && atRisk) tog.append(el("span", "w-dayrisk", ` · ${atRisk} at risk`));
         tog.setAttribute("aria-expanded", String(!folded));
         tog.addEventListener("click", () => {
           this.dayFold.set(dk, !folded);
@@ -440,7 +456,9 @@ export class Wake {
         const solo = runs[run] === 1;
         const g = el("div", `w-grp${solo ? " solo" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
         const ph = el("div", "w-ph");
-        const prompt = el("span", `w-prompt${r.prompt ? "" : " none"}`);
+        // A card of one row whose prompt is its title says it once.
+        const same = solo && !!r.prompt && r.prompt.trim() === (r.title ?? "").trim();
+        const prompt = el("span", `w-prompt${r.prompt ? "" : " none"}${same ? " same" : ""}`);
         prompt.title = r.prompt;
         prompt.append(r.prompt ? marked(r.prompt, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
         prompt.addEventListener("click", () => {
@@ -508,7 +526,7 @@ export class Wake {
     if (w) t.title += `\n${w}`;
     if (w) {
       // Cut by whole folders, the full path on hover; a search shows it whole.
-      const p = el("span", "w-p");
+      const p = el("span", `w-p${this.query && w.toLowerCase().includes(this.query.toLowerCase()) ? " hit" : ""}`);
       p.title = w;
       p.append(marked(this.query ? w : shortPath(w), this.query));
       li.append(p);
@@ -594,6 +612,11 @@ export class Wake {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>(".w-chip");
     if (!b) return;
     const k = b.dataset.k ?? "";
+    if (k === "\u0000more") {
+      this.allChips = !this.allChips;
+      this.draw();
+      return;
+    }
     if (!k) this.kinds.clear();
     else if (e.shiftKey) {
       if (this.kinds.has(k)) this.kinds.delete(k);
