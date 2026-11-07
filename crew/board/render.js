@@ -497,7 +497,7 @@ function __boardRender(d) {
   // The footer: what you recognise a row by, in one mono line. Branch, PR and
   // issue are targets; status signals, progress and spend are read, not
   // clicked, so they do not react.
-  function foot(a, bare) {
+  function foot(a) {
     var out = "";
     // A footer of only the plain facts (no PR, issue or signal) keeps to one line.
     var one = !a.pr && !a.issue && !(a.signals || []).some(function (e) { return !e.a; });
@@ -694,7 +694,8 @@ function __boardRender(d) {
   function factsOf(a) {
     var c = typeof a.cost === "number" ? a.cost : 0, unpriced = Array.isArray(a.cost_unpriced) && a.cost_unpriced.length;
     return [a.branch ? a.branch + (a.dirty ? " (uncommitted changes)" : "") : a.dirty ? "uncommitted changes" : "",
-      a.meta || "", c > 0 || unpriced ? "$" + (c >= 100 ? Math.round(c) : c.toFixed(2)) + (unpriced ? "+" : "") + " today" : ""]
+      a.meta || "", c > 0 || unpriced ? "$" + (c >= 100 ? Math.round(c) : c.toFixed(2)) + (unpriced ? "+" : "") + " today" +
+        (unpriced ? " (at least: no price for " + a.cost_unpriced.join(", ") + ")" : "") : ""]
       .filter(Boolean).join(" \u00b7 ");
   }
   // A card that has something to fold carries .fd, its open state, and its
@@ -825,7 +826,7 @@ function __boardRender(d) {
     var qb = acts.length || arm ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     }).join("") + arm + "</span>" : "";
-    var more = foot(a, true);
+    var more = foot(a);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       topOpen(a, "", !!more) + nameOf(a) +
       (a.dirty ? DIRTY : "") + (shelf ? "" : slotOf(a, acts.length || arm ? "" : badgeOf(a))) + (acts.length || arm ? qb + limPill(a) : "") +

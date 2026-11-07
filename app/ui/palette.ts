@@ -14,7 +14,7 @@ const untilOf = (r: Row): string =>
 /** A hidden row's until in a word or two, for the row itself: "until 3 PM",
  *  "until needed", "hidden". The row's tooltip and the preview say it in full. */
 const untilShort = (r: Row): string =>
-  r.level === "snooze" ? (r.until ? `until ${wakesAt(r.until).replace(":00 ", " ")}` : "for now") : r.level === "mute" ? "until needed" : "hidden";
+  r.level === "snooze" ? (r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : "for now") : r.level === "mute" ? "until needed" : "hidden";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);

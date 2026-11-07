@@ -2359,7 +2359,7 @@ function familyStripHtml(slug) {
     // gives its go, and whether it waits on the parent.
     const words = [FAM_PHASE[m.phase] || m.phase, `${m.done} of ${m.total} done`];
     if (m.role === "child" && m.go === "parent") words.push("the parent gives its go");
-    if (!me && waitingOn(m.slug).length) words.push("waits on the parent");
+    if (!me && m.role === "child" && waitingOn(m.slug).length) words.push("waits on the parent");
     const line = `<span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
       ` <span class="dim">· ${words.map(esc).join(" · ")}</span>`;
     const held = m.held ? `<div class="dp-fam-wait">held by the parent: ${esc(m.held)}</div>` : "";

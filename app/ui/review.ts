@@ -320,9 +320,15 @@ export class ReviewView {
 
     // A narrower window folds the header's lesser tools into ⋯; a wider one
     // brings them back. Only a change of width refits.
+    // One refit a frame while the window is dragged, not one per resize event.
+    let fitFrame = 0;
     new ResizeObserver(() => {
-      const w = this.head.clientWidth;
-      if (w && w !== this.fitWidth) this.render(true);
+      if (fitFrame) return;
+      fitFrame = requestAnimationFrame(() => {
+        fitFrame = 0;
+        const w = this.head.clientWidth;
+        if (w && w !== this.fitWidth) this.render(true);
+      });
     }).observe(this.head);
     // The page's keys work from the header too, for a tool folded into ⋯
     // after the reader clicked a header button (the page has the keys otherwise).

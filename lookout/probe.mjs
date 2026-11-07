@@ -1810,7 +1810,7 @@ if (want("page script")) {
      /this\.fold = 0;\s*draw\(\);\s*while \(this\.fold < FOLDS\.length && this\.overflows\(\)\) \{\s*this\.fold\+\+;\s*draw\(\);\s*\}/.test(app) &&
      app.includes("return row.scrollWidth > row.clientWidth + 1 || squeezed;") &&
      app.includes("name.scrollWidth > name.clientWidth && name.clientWidth < TITLE_MIN") &&
-     /new ResizeObserver\(\(\) => \{\s*const w = this\.head\.clientWidth;\s*if \(w && w !== this\.fitWidth\) this\.render\(true\);\s*\}\)\.observe\(this\.head\);/.test(app) &&
+     /new ResizeObserver\(\(\) => \{\s*if \(fitFrame\) return;\s*fitFrame = requestAnimationFrame\(\(\) => \{\s*fitFrame = 0;\s*const w = this\.head\.clientWidth;\s*if \(w && w !== this\.fitWidth\) this\.render\(true\);\s*\}\);\s*\}\)\.observe\(this\.head\);/.test(app) &&
      app.includes("for (const t of tools.view) if (folds.has(t.fold)) folded.push(t.item);") &&
      app.includes('folds.has("github") ? "Open on GitHub" : "GitHub"') &&
      appCss.includes(".r-mhead-row { display: flex; align-items: center; gap: 8px 10px; min-width: 0; flex-wrap: nowrap; }") &&

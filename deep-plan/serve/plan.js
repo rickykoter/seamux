@@ -27,10 +27,9 @@
     var b = acts[i];
     if (!allowed(b)) { b.hidden = true; continue; }
     b.title = (b.title || "").replace(/ — available when.*$/, "");
-    // A held go (the plan is still in review) stays disabled: the engine
-    // would refuse it, and its title already says why. The grade that opens
-    // the gate rewrites the page, and the reload draws it live.
-    if (b.getAttribute("data-kind") === "held") continue;
+    // A held go (the plan is still in review) still enables: it is drawn quiet
+    // and its title says why, but a page that has not reloaded since a grade
+    // in the terminal must not stay stuck. The engine refuses it while in review.
     b.disabled = false;
   }
 
@@ -120,7 +119,7 @@
       b.classList.add(ok ? "dp-ok" : "dp-bad");
       say(b, text, !ok);
       if (ok) return;
-      for (var i = 0; i < all.length; i++) if (!all[i].hidden && all[i].getAttribute("data-kind") !== "held") all[i].disabled = false;
+      for (var i = 0; i < all.length; i++) if (!all[i].hidden) all[i].disabled = false;
     }
     var q = "/inc?t=" + encodeURIComponent(T) + "&slug=" + encodeURIComponent(SLUG) +
             "&n=" + encodeURIComponent(n) + "&a=" + encodeURIComponent(a) +
