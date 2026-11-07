@@ -463,7 +463,7 @@ export class Wake {
         // A long day (over 15 things) shows its newest groups up to about 10
         // rows; the rest are "later", behind a "show N more" at the day's end.
         const later = !this.query && (perDay.get(dk) ?? 0) > 15 && shownToday >= 10 && !this.dayAll.has(dk);
-        const g = el("div", `w-grp${solo ? " solo" : ""}${later ? " later" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
+        const g = el("div", `w-grp${later ? " later" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
         const ph = el("div", "w-ph");
         // A card of one row whose prompt is its title says it once.
         const same = solo && !!r.prompt && r.prompt.trim() === (r.title ?? "").trim();
@@ -476,22 +476,20 @@ export class Wake {
           g.classList.toggle("open");
         });
         ph.append(el("time", "", hm(d)), prompt);
-        // A group of one row is one line: time and prompt, the row, then the
-        // branch and session at the end (CSS lays it out; embedded keeps two).
-        const tail = solo && !this.embedded ? el("div", "w-ph w-tail") : ph;
-        if (r.branch) tail.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
+        // Every group is a caption over its rows, so titles line up down the
+        // column. Branch and session wait for hover, focus or the pick (wake.css).
+        if (r.branch) ph.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
         if (r.session_id) {
           // Said as what it does: a bare id read as a commit's sha.
           const s = button("copy resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
           s.title = `copy the command that resumes session ${r.session_id.slice(0, 8)}`;
           s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
-          tail.append(s);
+          ph.append(s);
         }
         lastBr = r.branch ?? "";
         lastSess = r.session_id ?? "";
         ul = el("ul", "w-rows");
         g.append(ph, ul);
-        if (tail !== ph) g.append(tail);
         section!.append(g);
         group = gk;
       }
@@ -513,6 +511,9 @@ export class Wake {
       if (!hid) continue;
       // Not "w-more": that is the kind chips' own "more N".
       const more = button(`show ${hid} more`, "w-daymore");
+      // Like a folded day's heading, it says when what it hides is at risk.
+      const risk = sec.querySelectorAll(".w-grp.later .w-row.risk").length;
+      if (risk) more.append(el("span", "w-dayrisk", ` · ${risk} at risk`));
       const dk = sec.dataset.day ?? "";
       more.addEventListener("click", () => {
         this.dayAll.add(dk);
