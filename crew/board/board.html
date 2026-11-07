@@ -315,7 +315,9 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
   font:500 var(--fs-1)/1.35 system-ui;color:var(--grey);text-decoration:underline;text-decoration-color:var(--edge);
   text-underline-offset:3px}
 #foldall:hover,#foldall:focus-visible{color:var(--fg);text-decoration-color:currentColor}
-#foldall[hidden]{display:none}
+/* Hidden, it keeps its room: the row wraps the same whether it shows or not,
+   so opening or folding a card never moves the rows below. */
+#foldall[hidden]{display:inline-block;visibility:hidden}
 .tl{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .tl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dot);flex:none}
 .tl b{font-weight:700;font-variant-numeric:tabular-nums;color:var(--fg)}
