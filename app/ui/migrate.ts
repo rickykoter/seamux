@@ -385,17 +385,18 @@ export class MigrateBanner {
    *  cut on whole rows to fit the window. */
   private place(): void {
     const r = this.el.getBoundingClientRect();
-    const rail = (this.el.closest(".dock-board") ?? this.el).getBoundingClientRect();
+    const board = this.el.closest(".dock-board");
+    const rail = board ? board.getBoundingClientRect() : null;
     // Wide enough for a failure's reason beside its name.
     const want = this.failed.size ? 560 : 420;
-    const beside = window.innerWidth - rail.right - 16 >= Math.min(want, 360);
-    const left = beside ? rail.right + 8 : r.left;
+    // Beside only a rail that is there and measured; else under the banner.
+    const beside = !!rail && rail.width > 0 && window.innerWidth - rail.right - 16 >= Math.min(want, 360);
+    const left = beside && rail ? rail.right + 8 : r.left;
     const top = beside ? r.top : r.bottom + 4;
     const w = Math.min(beside ? want : Math.max(r.width, want), window.innerWidth - left - 8);
     this.pop.style.left = `${Math.round(left)}px`;
     this.pop.style.top = `${Math.round(top)}px`;
     this.pop.style.width = `${Math.round(w)}px`;
-    this.pop.classList.toggle("beside", beside);
     const room = window.innerHeight - top - 16 - this.popHead.offsetHeight - (this.say.hidden ? 0 : this.say.offsetHeight) - 16;
     const fit = Math.max(2, Math.min(MAX_ROWS, Math.floor(room / ROW_H)));
     this.list.style.maxHeight = `${fit * ROW_H}px`;
@@ -477,7 +478,7 @@ export class MigrateBanner {
       };
     }
     r.append(el("span", `migrate-hint${always ? " on" : ""}`, hint));
-    r.setAttribute("aria-label", `${nameOf(o)}: ${hint}`);
+    r.setAttribute("aria-label", `${nameOf(o)}: ${hint}. Delete forgets it.`);
     if (act) {
       const go = act;
       r.addEventListener("click", () => go());
@@ -486,6 +487,17 @@ export class MigrateBanner {
     no.title = o.kind === "restart" ? "Don't restart it, and forget it" : o.kind === "revive" ? "Leave it in cmux" : "Leave it where it is";
     no.setAttribute("aria-label", no.title);
     no.addEventListener("click", () => void this.decline(o));
+    // One Tab stop a row: the row's action. Delete or Backspace on it does
+    // what × does, so the keyboard can forget a session too.
+    no.tabIndex = -1;
+    r.setAttribute("aria-keyshortcuts", "Delete");
+    if (!r.title) r.title = "Enter or a click restarts it · Delete forgets it";
+    r.addEventListener("keydown", (e) => {
+      if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        void this.decline(o);
+      }
+    });
     row.append(no);
     return row;
   }
