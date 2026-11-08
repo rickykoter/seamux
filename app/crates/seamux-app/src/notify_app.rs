@@ -55,6 +55,16 @@ pub enum NoteKind {
 }
 
 impl NoteKind {
+    /// The log's kind (crew_core::notifications).
+    pub fn key(self) -> &'static str {
+        match self {
+            NoteKind::Waiting => "waiting",
+            NoteKind::Reminder => "reminder",
+            NoteKind::Finished => "finished",
+            NoteKind::Blocked => "blocked",
+        }
+    }
+
     pub fn sound(self) -> &'static str {
         match self {
             NoteKind::Waiting => "Ping",
@@ -254,6 +264,9 @@ pub struct Notifier {
     held: Vec<Note>,
     held_first: u64,
     held_last: u64,
+    /// Banners not posted because their pane was on screen, for the log;
+    /// `take_skipped` empties it.
+    skipped: Vec<Note>,
 }
 
 impl Notifier {
@@ -279,7 +292,9 @@ impl Notifier {
                     self.waits.insert(p.id.clone(), Wait { since: now, reminded: false });
                     // A question right after a finished turn says it all.
                     self.held.retain(|n| n.pane != p.id);
-                    if !seen(&p.id) {
+                    if seen(&p.id) {
+                        self.skipped.push(waiting(p));
+                    } else {
                         out.push(waiting(p));
                     }
                 } else if let Some(w) = self.waits.get_mut(&p.id) {
@@ -294,7 +309,10 @@ impl Notifier {
                 if p.state == "working" {
                     self.held.retain(|n| n.pane != p.id);
                 }
-                if p.state == "idle" && was == Some("working") && !seen(&p.id) {
+                if p.state == "idle" && was == Some("working") && seen(&p.id) {
+                    self.held.retain(|n| n.pane != p.id);
+                    self.skipped.push(finished(p));
+                } else if p.state == "idle" && was == Some("working") {
                     if self.held.is_empty() {
                         self.held_first = now;
                     }
@@ -306,13 +324,35 @@ impl Notifier {
         }
         self.waits.retain(|id, _| panes.iter().any(|p| &p.id == id));
         // Looked at while held: you saw it finish.
-        self.held.retain(|n| !seen(&n.pane));
+        let (looked, kept): (Vec<Note>, Vec<Note>) = std::mem::take(&mut self.held).into_iter().partition(|n| seen(&n.pane));
+        self.held = kept;
+        self.skipped.extend(looked);
         if !self.held.is_empty()
             && (now.saturating_sub(self.held_last) >= SETTLE_MS || now.saturating_sub(self.held_first) >= SETTLE_MAX_MS)
         {
             out.append(&mut self.held);
         }
         out
+    }
+
+    /// The banners skipped since the last call (a pane on screen), oldest first.
+    pub fn take_skipped(&mut self) -> Vec<Note> {
+        std::mem::take(&mut self.skipped)
+    }
+}
+
+/// The log's line for a note: shown, or skipped because its pane was on screen.
+pub fn entry(n: &Note, shown: bool) -> crew_core::notifications::Entry {
+    crew_core::notifications::Entry {
+        at: 0,
+        ws: n.ws.clone(),
+        pane: n.pane.clone(),
+        kind: n.kind.key().into(),
+        title: n.title.clone(),
+        body: n.body.clone(),
+        shown,
+        why: if shown { String::new() } else { crew_core::notifications::ON_SCREEN.into() },
+        source: "app".into(),
     }
 }
 
@@ -430,7 +470,9 @@ fn answer(app: &AppHandle, n: &Note, k: u32) {
         jump(app, n);
         let label = n.title.split(" · ").next().unwrap_or("Claude");
         let title = format!("{label} · couldn't answer");
-        post(app, &Note { kind: NoteKind::Blocked, title, body: why, options: Vec::new(), asked_at: None, ..n.clone() });
+        let note = Note { kind: NoteKind::Blocked, title, body: why, options: Vec::new(), asked_at: None, ..n.clone() };
+        crew_core::notifications::record(entry(&note, true));
+        post(app, &note);
     };
     let Some(label) = n.options.get(k as usize - 1) else { return fail(format!("there is no option {k}")) };
     let open = crew_core::status::read(&crew_core::home::home_cache(), &n.pane)
@@ -518,9 +560,19 @@ pub fn start(app: AppHandle) {
                 .collect();
             let on_screen = looking().lock().unwrap_or_else(|p| p.into_inner()).clone().filter(|_| crate::shell::in_front(&app));
             let mut notes = n.tick(crew_core::history::now_ms(), &views, on_screen.as_deref());
+            let mut skipped = n.take_skipped();
             let find = |id: &str| views.iter().find(|v| v.id.eq_ignore_ascii_case(id)).cloned();
             let here = |n: &Note| on_screen.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(&n.pane));
-            notes.extend(take_blocked(&state, &find).into_iter().filter(|n| !here(n)));
+            let (seen, blocked): (Vec<Note>, Vec<Note>) = take_blocked(&state, &find).into_iter().partition(|n| here(n));
+            notes.extend(blocked);
+            skipped.extend(seen);
+            // One line per pane, before merge: "3 agents finished" is three.
+            for note in &skipped {
+                crew_core::notifications::record(entry(note, false));
+            }
+            for note in &notes {
+                crew_core::notifications::record(entry(note, true));
+            }
             for note in merge(notes) {
                 post(&app, &note);
             }
@@ -642,6 +694,45 @@ mod tests {
         assert!(n.tick(1_000, &[pane("P1", "idle")], None).is_empty());
         assert!(n.tick(2_000, &[pane("P1", "idle")], Some("P1")).is_empty(), "looked at while held");
         assert!(n.tick(9_000, &[pane("P1", "idle")], None).is_empty(), "and dropped");
+    }
+
+    #[test]
+    fn what_is_skipped_on_screen_is_kept_for_the_log_and_what_is_superseded_is_not() {
+        // An ask on screen and a finish on screen are skipped; one off screen is posted.
+        let mut n = primed(&[pane("P1", "working"), pane("P2", "working")]);
+        let out = n.tick(1_000, &[pane("P1", "needs_input"), pane("P2", "idle")], Some("P1"));
+        assert!(out.is_empty());
+        let s = n.take_skipped();
+        assert_eq!(s.iter().map(|n| (n.pane.as_str(), n.kind)).collect::<Vec<_>>(), [("P1", NoteKind::Waiting)]);
+        assert!(n.take_skipped().is_empty(), "taken once");
+        // Held, then looked at: skipped.
+        assert!(n.tick(1_500, &[pane("P1", "needs_input"), pane("P2", "idle")], Some("P2")).is_empty());
+        assert_eq!(n.take_skipped().iter().map(|n| n.kind).collect::<Vec<_>>(), [NoteKind::Finished]);
+        // Finished while on screen: skipped at once.
+        let mut n = primed(&[pane("P1", "working")]);
+        n.tick(1_000, &[pane("P1", "idle")], Some("P1"));
+        assert_eq!(n.take_skipped().iter().map(|n| n.kind).collect::<Vec<_>>(), [NoteKind::Finished]);
+        // Superseded by a question, or back to work: neither posted nor kept.
+        let mut n = primed(&[pane("P1", "working")]);
+        n.tick(1_000, &[pane("P1", "idle")], None);
+        n.tick(1_500, &[pane("P1", "working")], None);
+        assert!(n.tick(20_000, &[pane("P1", "working")], None).is_empty());
+        assert!(n.take_skipped().is_empty());
+        // A reminder while you look is retried, not kept.
+        let mut n = primed(&[pane("P1", "working")]);
+        n.tick(0, &[pane("P1", "needs_input")], None);
+        n.tick(REMIND_MS, &[pane("P1", "needs_input")], Some("P1"));
+        assert!(n.take_skipped().is_empty());
+    }
+
+    #[test]
+    fn a_note_logs_as_its_kind_shown_or_skipped_on_screen() {
+        let w = waiting(&ask(pane("P1", "needs_input"), one_question()));
+        let e = entry(&w, true);
+        assert_eq!((e.kind.as_str(), e.pane.as_str(), e.shown, e.why.as_str(), e.source.as_str()), ("waiting", "P1", true, "", "app"));
+        assert_eq!(e.title, w.title);
+        let s = entry(&w, false);
+        assert_eq!((s.shown, s.why.as_str()), (false, "on screen"));
     }
 
     #[test]

@@ -387,6 +387,10 @@ impl Hook {
     pub fn notify(&mut self, subtitle: &str, body: &str) {
         let title = self.label();
         self.cli(&["notify", "--title", &title, "--subtitle", subtitle, "--body", body]);
+        // On tmux there is no cmux client and the app posts (and logs) instead.
+        if self.cmux.is_some() {
+            crew_core::notifications::record(note_entry(&title, subtitle, body, &self.ws, &surface()));
+        }
     }
 
     // ---- spawns --------------------------------------------------------------
@@ -879,9 +883,43 @@ fn payload_name(ws: &str, sid: &str) -> String {
     if who.is_empty() { format!("asked-payload-{ws}-{pid}") } else { format!("asked-payload-{ws}-{who}-{pid}") }
 }
 
+/// The log's line for a hook's banner. Titles read as the app's do
+/// ("api · waiting on you"); crew:turn is logged as not shown, since triage
+/// strips its banner on cmux.
+pub fn note_entry(label: &str, subtitle: &str, body: &str, ws: &str, pane: &str) -> crew_core::notifications::Entry {
+    let (kind, said) = match subtitle {
+        "crew:turn" => ("turn", "done"),
+        "crew:limit" => ("limit", "stopped"),
+        "crew:blocked" => ("blocked", "waiting on you"),
+        other => (other.strip_prefix("crew:").unwrap_or(other), ""),
+    };
+    let title = if said.is_empty() { label.to_string() } else { format!("{label} · {said}") };
+    let shown = subtitle != "crew:turn";
+    crew_core::notifications::Entry {
+        at: 0,
+        ws: ws.into(),
+        pane: pane.into(),
+        kind: kind.into(),
+        title,
+        body: body.into(),
+        shown,
+        why: if shown { String::new() } else { crew_core::notifications::NO_BANNER_ON_CMUX.into() },
+        source: "hook".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hook_banner_becomes_a_log_entry_and_a_turn_is_not_shown() {
+        let e = note_entry("api", "crew:blocked", "Merge now?", "W", "P");
+        assert_eq!((e.kind.as_str(), e.title.as_str(), e.shown, e.source.as_str()), ("blocked", "api · waiting on you", true, "hook"));
+        let t = note_entry("api", "crew:turn", "Turn complete", "W", "P");
+        assert_eq!((t.kind.as_str(), t.title.as_str(), t.shown, t.why.as_str()), ("turn", "api · done", false, "no banner on cmux"));
+        assert_eq!(note_entry("api", "crew:limit", "Stopped", "W", "").title, "api · stopped");
+    }
 
     #[test]
     fn only_a_top_level_agent_id_is_a_subagent() {

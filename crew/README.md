@@ -835,15 +835,13 @@ crew-digest --hours 4
 crew-digest --week
 crew-digest --size       include the disk total (adds ~12s; du walks 20GB)
 crew-digest --notify     post a one-line summary as a notification
-crew-digest --paragraph  only where things stand, as one plain paragraph
 ```
 
-It opens with **where things stand**: the Dock board's news footer, read from
-`crew-board state --fast --json`. That is one sentence per workspace or family,
-in the board's priority order, covering every cmux workspace in any repo, not
-only the main checkout's worktrees. The wording lives in `seamux news`, so the
-terminal and the Dock never disagree (see `board/README.md`, "The news
-footer").
+It opens with **what pinged you**: the notification log's last five hours,
+newest first, the same entries as the Dock board's footer. Each is a banner
+seamux posted, or one it skipped because you were looking at that pane, marked
+"not shown". It reads `~/.claude/crew/notifications` directly, so it works with
+the board closed (see `board/README.md`, "The notifications footer").
 
 The rest are sections, each degrading to silence rather than failing the run: commits grouped
 by branch, PRs merged / red / approved / awaiting review, sessions still sitting

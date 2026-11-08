@@ -8,11 +8,3 @@ T · 6 plans
   done     m                          Merged. The worktree can be reclaimed.
   done     d                          Every increment is done; the gate has retired.
   quiet    quiet one                  
-news · last 5h
-  attend   Family g: g needs your go-ahead on Gate me; k waits on its go from the parent, g, for Owned; b is blocked on Blk.
-  attend   r is waiting on your answer.
-  wilt     f PROJ-12 failed a check (increment 2 · test-a).
-  wilt     c is red on CI.
-  done     m merged and can be reclaimed.
-  done     d finished every increment; its plan can be closed.
-  quiet    1 other workspace is quiet.

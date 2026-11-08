@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crew_core::history;
+use crew_core::{history, notifications};
 use seamux_app::views::{Feed, GapFill, Inputs, ViewsFrame};
 use seamux_app::wall::Frame;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -43,6 +43,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         // The first frame should already carry the plans and the Wake.
         feed.prime(Duration::from_secs(20));
         let _ = history::prune(feed.history_dir(), history::now_ms(), history::KEEP_DAYS);
+        let _ = notifications::prune(&notifications::dir(), history::now_ms(), notifications::KEEP_DAYS);
         let mut sent: Option<ViewsFrame> = None;
         // The panes last seen: the wall forgets its frame when an emit fails
         // (so it resends), and decisions must not vanish meanwhile.
@@ -53,6 +54,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             gaps().flush(feed.history_dir(), now);
             if pruned.elapsed() >= Duration::from_secs(3600) {
                 let _ = history::prune(feed.history_dir(), now, history::KEEP_DAYS);
+                let _ = notifications::prune(&notifications::dir(), now, notifications::KEEP_DAYS);
                 pruned = std::time::Instant::now();
             }
             if let Some(f) = crate::wall_app::last_frame() {

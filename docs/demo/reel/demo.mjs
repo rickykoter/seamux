@@ -619,9 +619,8 @@ async function v5() {
     const s = await snap(page)
     Object.assign(s.rows.find((r) => r.id === 'checkout-flow'), { kind: 'running', badge: 'working',
       said: '{{Coupon at capture}} in progress.', chips: ['diff', 'jump'], meta: '2/4 increments' })
-    s.news.items = [{ tier: 'attend', text: '{{payments-idem}} asked you a question.' },
-      { tier: 'running', text: '{{checkout-flow}} is on increment 3 of 4.' }, ...s.news.items.slice(1)]
-    s.news.lede = s.news.items[0].text
+    s.notes = [{ at: Date.now(), ws: 'payments-idem', pane: '', kind: 'waiting', title: 'payments-idem · waiting on you',
+      body: 'Key the retry on the order or the payment?', shown: true, why: '', source: 'app' }, ...(s.notes || [])]
     await rec.wait(700)
     await push(page, s)
     await rec.wait(2600)
@@ -629,10 +628,10 @@ async function v5() {
     await rec.click('.row.kid[data-id="billing-ledger"] >> nth=0').catch(() => {})
     await rec.wait(2600)
     await shot(page, 'crew-family', '.row[data-id="billing-revamp"]').catch(() => {})
-    say('The footer says it in sentences.')
+    say('The footer lists what seamux told you.')
     await rec.click('#news summary')
     await rec.wait(3000)
-    await shot(page, 'crew-news', '#news')
+    await shot(page, 'crew-notifications', '#news')
   })
   const { mockUsage } = await import('./record.mjs')
   const usageFile = (data, name) => {

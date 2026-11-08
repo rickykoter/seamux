@@ -512,6 +512,26 @@ function __boardIntent(cfg) {
     foldAll.setAttribute("data-intent", V);
   }
 
+  // A notification in the footer: show its workspace with its pane, as a
+  // card's pane row does. Framed, the app does it; in cmux's Dock, the pane
+  // verb (which needs the workspace to be a row on the board).
+  var newsEl = document.getElementById("news");
+  if (newsEl && newsEl.getAttribute("data-intent") !== V) {
+    newsEl.addEventListener("click", function (ev) {
+      if (newsEl.getAttribute("data-intent") !== V) return;
+      var it = ev.target.closest && ev.target.closest(".ni");
+      if (!it || !it.getAttribute("data-ws")) return;
+      var ws = it.getAttribute("data-ws") || "", pane = it.getAttribute("data-pane") || "";
+      if (framed()) {
+        tell(pane ? { crew: "select", ws: ws, show: "any", pane: pane } : { crew: "select", ws: ws, show: "any" });
+        mark(ws);
+        return;
+      }
+      fire(pane ? { a: "pane", x: pane, el: it } : { a: "jump", x: "", el: it }, ws);
+    });
+    newsEl.setAttribute("data-intent", V);
+  }
+
   // The stamp's click has never changed, and its listener carries no version
   // check (v3's did not, and it cannot be retired from here). So it is
   // installed once per page, whatever version got there first: re-installing

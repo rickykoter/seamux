@@ -133,14 +133,13 @@ export function boardCast(nowSec) {
     src: "demo",
     stamp: new Date(nowSec * 1000).toTimeString().slice(0, 8),
     stale: false,
-    news: {
-      hours: 3,
-      lede: "{{checkout-flow}} asked you a question.",
-      items: [
-        { tier: "attend", text: "{{checkout-flow}} asked you a question." },
-        { tier: "running", text: "{{coupons-api}} started increment 2." },
-        { tier: "done", text: "{{search-index}} merged as PR #41." },
-      ],
-    },
+    notes: [
+      { at: nowSec * 1000 - 120000, ws: "checkout-flow", pane: "", kind: "waiting", title: "checkout-flow · waiting on you",
+        body: "Capture the coupon at checkout or at order?", shown: true, why: "", source: "app" },
+      { at: nowSec * 1000 - 540000, ws: "coupons-api", pane: "", kind: "finished", title: "coupons-api · done",
+        body: "Finished its turn · changes to review", shown: false, why: "on screen", source: "app" },
+      { at: nowSec * 1000 - 1500000, ws: "search-index", pane: "", kind: "finished", title: "search-index · done",
+        body: "Finished its turn · nothing new to review", shown: true, why: "", source: "app" },
+    ],
   };
 }
