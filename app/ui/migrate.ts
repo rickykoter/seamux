@@ -28,6 +28,8 @@ const DONE_MS = 4000;
 const ROW_H = 30;
 /** The most rows the list shows before it scrolls. */
 const MAX_ROWS = 6;
+/** The "+N more" line's height (newws.css .migrate-more), kept out of the list's room. */
+const MORE_H = 18;
 
 const STATE: Record<string, string> = {
   working: "working",
@@ -97,6 +99,8 @@ export class MigrateBanner {
   private popHead = el("p", "migrate-pop-head");
   private list = el("div", "migrate-list");
   private say = el("p", "migrate-say");
+  /** Under the list while rows wait below it: how many. */
+  private more = el("p", "migrate-more");
   private offers: Offer[] = [];
   /** Hidden from this launch's list: declined with ×. */
   private skipped = new Set<string>();
@@ -147,9 +151,11 @@ export class MigrateBanner {
     this.pop.setAttribute("role", "dialog");
     this.pop.setAttribute("aria-label", "Sessions to restart");
     this.say.hidden = true;
+    this.more.hidden = true;
+    this.more.setAttribute("aria-hidden", "true");
     this.list.setAttribute("role", "list");
     this.list.addEventListener("scroll", () => this.fade());
-    this.pop.append(this.popHead, this.list, this.say);
+    this.pop.append(this.popHead, this.list, this.more, this.say);
     this.pop.addEventListener("keydown", (e) => this.key(e));
     document.body.append(this.pop);
     // Esc anywhere, and a click outside, close the list. A click in the
@@ -398,15 +404,23 @@ export class MigrateBanner {
     this.pop.style.top = `${Math.round(top)}px`;
     this.pop.style.width = `${Math.round(w)}px`;
     const room = window.innerHeight - top - 16 - this.popHead.offsetHeight - (this.say.hidden ? 0 : this.say.offsetHeight) - 16;
-    const fit = Math.max(2, Math.min(MAX_ROWS, Math.floor(room / ROW_H)));
+    // A list that cannot show every row gives up the "+N more" line's room.
+    const n = this.list.children.length;
+    const cut = n > Math.min(MAX_ROWS, Math.floor(room / ROW_H));
+    const fit = Math.max(2, Math.min(MAX_ROWS, Math.floor((room - (cut ? MORE_H + 4 : 0)) / ROW_H)));
     this.list.style.maxHeight = `${fit * ROW_H}px`;
     this.fade();
   }
 
-  /** The list's foot fades while more rows wait below it. */
+  /** The list's foot fades while more rows wait below it, and a muted line
+   *  under it counts them; at the bottom both go. */
   private fade(): void {
     const l = this.list;
-    l.classList.toggle("more", l.scrollTop + l.clientHeight < l.scrollHeight - 1);
+    const foot = l.scrollTop + l.clientHeight;
+    const below = [...l.children].filter((c) => (c as HTMLElement).offsetTop - l.offsetTop + ROW_H / 2 > foot).length;
+    l.classList.toggle("more", below > 0);
+    this.more.hidden = below === 0;
+    this.more.textContent = below ? `+${below} more` : "";
   }
 
   /** ↑ and ↓ walk the rows; Enter and Space act on the one in focus. */

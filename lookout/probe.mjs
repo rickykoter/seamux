@@ -1775,8 +1775,9 @@ if (want("page script")) {
      js.includes('const detail = open.length ? `${counts} open.` : "";') &&
      js.includes('return { go, title: (g.detail ? g.detail + " " : "") +') && !js.includes("`blocked · ${counts} open`") &&
      js.includes("gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go }") && app.includes("gate.title = p.gate.title;"));
-  ok("app: one findings control, \"N findings ▾\" or \"N findings · M picked ▾\": no Findings ▸ beside an Act ▾, and the gate pill keeps the counts by severity",
-     app.includes('const words = total ? `${total} finding${total === 1 ? "" : "s"}${n ? ` · ${n} picked` : ""}` : "No open findings";') &&
+  ok("app: one findings control, \"N open ▾\" or \"N open · M picked ▾\": no Findings ▸ beside an Act ▾, and the gate pill keeps the counts by severity",
+     app.includes('const words = total ? `${total} open${n ? ` · ${n} picked` : ""}` : "No open findings";') &&
+     !app.includes('`${total} finding${total === 1 ? "" : "s"}') &&
      app.includes('} else toggle.textContent = `${words} ▾`;') &&
      !app.includes("`Findings ${open ? \"▾\" : \"▸\"}`") && !app.includes("r-act-btn") && !app.includes("Act on ${n} picked") &&
      !app.includes("btn(`Findings · ${openSummary(j.open)}"));
@@ -1828,6 +1829,21 @@ if (want("page script")) {
   ok("app: a View menu that would hold one item (under 900px, only Keyboard shortcuts) is no menu: the item goes in ⋯",
      app.includes('const viewInMore = tools.view.length === 1 || folds.has("view");') &&
      app.includes('if (tools.view.length && !viewInMore) acts.append(this.viewMenu(tools.view));'));
+  // The pill and the button count one set (not resolved, not dismissed) in one
+  // word, "open", and a resolve in the framed page moves both.
+  ok("page+app: the gate pill and the findings button count the same open set, say \"open\", and give the breakdown by severity in their tooltips",
+     js.includes('for (const x of (R.findings || []).filter(isOpen)) open[x.severity] = (open[x.severity] || 0) + 1;') &&
+     js.includes("gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go }, open,") &&
+     app.includes("open?: Record<string, number>;") &&
+     app.includes("const pageOpen = j.review_id && j.review_id === this.framed ? this.pageState?.open ?? null : null;") &&
+     app.includes("${JSON.stringify(pageOpen)}") &&
+     app.includes('const rows = all.filter((f) => f.status !== "resolved" && f.status !== "dismissed");') &&
+     app.includes('toggle.title = (total ? `${openSummary(bySev)}. ` : "") +'));
+  ok("app: a picker row leads with its severity chip and place, and its title wraps to two lines, clamped, not cut mid-word on one",
+     app.includes('text.append(el("span", `r-sev ${f.severity}`, f.severity), " ", el("span", "r-loc", `${f.file.split("/").pop()}:${f.line}`), " ", el("span", "r-sum", f.summary));') &&
+     app.includes("label.append(cb, text);") &&
+     /\.r-findings \.r-find-text \{[^}]*-webkit-line-clamp: 2;[^}]*overflow: hidden;/.test(appCss) &&
+     !appCss.includes(".r-findings .r-sum { white-space: nowrap;"));
   ok("app: Overview, Map, Split or Unified and ? sit in one View ▾ menu, each item showing its key, a check while on; o, m, v and ? work from the header as in the page",
      ['"o", () => this.tell("overview"), p.overview', '"m", () => this.tell("map"), p.map', '"v", () => this.tell("layout", { layout: v }), p.layout === v, "menuitemradio"', '"?", () => this.tell("keys"), p.keys'].every(k => app.includes(k)) &&
      app.includes('b.append(mark, el("span", "r-tool-name", text), el("kbd", "r-kbd", key));') && app.includes('b.setAttribute("aria-checked", String(on));') &&

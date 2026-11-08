@@ -1169,8 +1169,12 @@
   function postState() {
     if (!hosted) return;
     const g = gateText(), gt = gateTitle(g);
+    // The open findings by severity, as the pill counts them: the app's
+    // findings button counts the same set, and reloads its list when they move.
+    const open = {};
+    for (const x of (R.findings || []).filter(isOpen)) open[x.severity] = (open[x.severity] || 0) + 1;
     window.parent.postMessage({ lookout: "state", id: R.id,
-      gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go },
+      gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go }, open,
       mode: { cls: $("mode").className.replace("mode ", ""), text: $("mode").textContent, title: $("mode").title },
       layout, auto: cramped(), overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden,
       // The list's own Overview row: while it shows, the app needs no Overview button.

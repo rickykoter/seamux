@@ -74,11 +74,14 @@ tree (single-child folders folded together), one file's diff on the right.
   accent edge on its left, and its head adds the category and verdict in
   plain words ("correctness · confirmed"); the title's tooltip names them
   with the finding's id.
-- **In the seamux app** the header row has one findings button, "N
-  findings ▾" or "N findings · M picked ▾", filled only while something is
-  picked. It opens one panel: Pick all, Blockers and majors and Clear over
-  the list of open findings, then Edit, Fix with commits and Post comments
-  on the picks, and Push. A picked finding has a check at its card's left.
+- **In the seamux app** the header row has one findings button, "N open ▾"
+  or "N open · M picked ▾", filled only while something is picked. N is
+  the number the gate pill counts ("blocked · N open"): every finding not
+  resolved or dismissed. Both tooltips give the breakdown by severity, and
+  a resolve on the page moves both. The button opens one panel: Pick all,
+  Blockers and majors and Clear over the list of open findings (each row
+  its severity, place and title, wrapped to two lines), then Edit, Fix
+  with commits and Post comments on the picks, and Push. A picked finding has a check at its card's left.
   Overview, Map, Split or Unified and the keys sit in one **View** menu,
   each with its key; when only one of them applies (a narrow window
   without a map), it sits in ⋯ instead.

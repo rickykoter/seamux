@@ -138,7 +138,12 @@
 .r-findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; max-height: min(320px, 45vh); overflow-y: auto; }
 .r-findings label { display: flex; gap: 8px; align-items: baseline; font-size: var(--fs-3); cursor: pointer; padding: 3px 6px; border-radius: 6px; }
 .r-findings label:hover { background: var(--term); }
-.r-findings .r-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* One flowing line of chip, place and title, wrapped to two and clamped: the
+   title gets the width after the chip and place, and is never cut mid-word on line one. */
+.r-findings .r-find-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; line-height: 1.35; overflow-wrap: break-word; }
+.r-findings .r-find-text .r-sev { display: inline-block; line-height: 1.5; vertical-align: 1px; }
+.r-findings .r-find-text .r-loc { margin-right: 2px; }
+.r-findings input { flex: none; align-self: flex-start; margin-top: 3px; }
 .r-sev { font-size: var(--fs-1); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); flex: none; }
 /* The page's severity colours (lookout/page/review.css --sev-*): a pale tint, the word in its text shade. */
 .r-sev.blocker { color: var(--ef-text-red); background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); }

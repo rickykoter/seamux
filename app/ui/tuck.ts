@@ -75,9 +75,10 @@ export function say(text: string, action?: { label: string; run: () => void }, b
 export const UNTIL: Record<Exclude<Level, "snooze">, string> = { mute: "until it needs you", tuck: "until you bring it back" };
 
 /** The same, cut to a narrow column (search's right edge), where the section
- *  heading already says hidden: a plain hide says nothing more. The full
- *  words above go in the row's tooltip. */
-export const UNTIL_SHORT: Record<Exclude<Level, "snooze">, string> = { mute: "until needed", tuck: "" };
+ *  heading already says hidden. Each starts "until", like a snooze's
+ *  "until 3 PM", so the column reads as one set. The full words above go in
+ *  the row's tooltip. */
+export const UNTIL_SHORT: Record<Exclude<Level, "snooze">, string> = { mute: "until needed", tuck: "until you ask" };
 
 /** "until it needs you", "until 3:00 PM", "until you bring it back". */
 export function untilSaid(level: Level, until?: number, now = new Date()): string {
