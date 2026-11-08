@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { sheet, type Sheet, type Shown } from "./sheet";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
+import { fileUrl, mediaOf, PREVIEW, previewable, Viewer } from "./wakeview";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -26,8 +27,6 @@ export type Row = {
 type Ws = { ws: string; n: number; last: string; name: string; here: boolean };
 type Data = { ws: string; rows: Row[]; limit: number; truncated: boolean; workspaces: Ws[] };
 
-/** The files the sheet shows itself (wake_app.rs show_kind). */
-const VIEWABLE = /\.(png|jpe?g|gif|webp|svg|html?|pdf)$/i;
 
 export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit", "turn", "pr", "issue"];
 
@@ -139,6 +138,8 @@ export class Wake {
   private list = el("div", "w-list");
   private toastEl = el("div", "w-toast");
   private help = el("div", "w-help");
+  /** The preview pane, beside or under the list. */
+  private viewer: Viewer;
   private data: Data = { ws: "", rows: [], limit: 0, truncated: false, workspaces: [] };
   private ws = "";
   /** More directories read with `ws`: the sheet's workspace's page roots.
@@ -208,7 +209,11 @@ export class Wake {
       ...[
         ["/", "search · Esc clears"],
         ["j k", "next · previous row"],
-        ["Enter", "open the row (⌘ in cmux)"],
+        ["Enter", "preview a picture, video or page; open the rest (⌘ in cmux)"],
+        ["← →", "flip through the previews"],
+        ["v", "preview beside · under the list"],
+        ["f", "fill the Wake with the preview"],
+        ["Esc", "close the preview"],
         ["Space", "show the whole prompt"],
         ["K", "keep an at-risk file"],
         ["c", "copy the path"],
@@ -232,8 +237,25 @@ export class Wake {
     const bar = el("div", "w-bar");
     bar.append(this.q, keys);
     this.toastEl.setAttribute("role", "status");
-    root.replaceChildren(head, bar, this.chipsEl, this.list, this.help, this.toastEl);
+    const main = el("div", "w-main");
+    main.append(head, bar, this.chipsEl, this.list);
+    this.viewer = new Viewer(root, {
+      pick: (r) => this.reveal(r),
+      openElsewhere: (r, e) => void this.open(r, "", e, true),
+      closed: () => this.list.querySelector<HTMLElement>(".w-row.sel")?.scrollIntoView({ block: "nearest" }),
+      when: (r) => {
+        const d = local(r.created_at);
+        return [r.kind, d ? `${dayLabel(d)} ${hm(d)}` : "", r.prompt || SOURCE[r.source] || ""].filter(Boolean).join(" · ");
+      },
+    });
+    root.replaceChildren(main, this.viewer.gripX, this.viewer.gripY, this.viewer.el, this.help, this.toastEl);
     this.chipsEl.addEventListener("click", (e) => this.chip(e));
+    // A click in the Wake gives it the keys: a tab button or the Dock's
+    // terminal focused elsewhere would keep j/k and ← → otherwise.
+    root.addEventListener("pointerdown", () => {
+      const at = document.activeElement;
+      if (at instanceof HTMLElement && at !== document.body && !root.contains(at)) at.blur();
+    });
     document.addEventListener("keydown", (e) => this.key(e));
   }
 
@@ -541,6 +563,22 @@ export class Wake {
     this.sel = keepId === undefined ? -1 : this.vis.findIndex((r) => r.id === keepId);
     // A pick whose day was just folded is out of sight: Enter must not open it.
     if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded, .w-grp.later")) this.sel = -1;
+    if (this.viewer.open) this.viewer.setRows(this.vis.filter(previewable));
+  }
+
+  /** Pick `r` in the list, opening its day if it was folded: the pane
+   *  flipped to it. Its row stays in sight beside the pane. */
+  private reveal(r: Row): void {
+    let i = this.vis.findIndex((x) => x.id === r.id);
+    if (i < 0) return this.viewer.render(r);
+    if (this.list.querySelectorAll(".w-row")[i]?.closest(".w-day.folded, .w-grp.later")) {
+      const dk = dayKey(local(r.created_at));
+      this.dayFold.set(dk, false);
+      this.dayAll.add(dk);
+      this.draw();
+      i = this.vis.findIndex((x) => x.id === r.id);
+    }
+    this.select(i, true);
   }
 
   private row(r: Row, i: number, sel: boolean, tail?: HTMLElement): HTMLElement {
@@ -710,9 +748,13 @@ export class Wake {
       at.classList.add("sel");
       if (scroll) at.scrollIntoView({ block: "nearest" });
     }
+    // An open pane follows the pick.
+    if (this.viewer.open) this.viewer.show(this.vis.filter(previewable), this.vis[this.sel] ?? null);
   }
 
-  private async open(r: Row, sub: string, e?: MouseEvent | KeyboardEvent): Promise<void> {
+  /** Open row `r`. A picture, video or page previews in the pane, unless
+   *  `elsewhere` (the pane's own "open in a tab") or ⌘ sends it on. */
+  private async open(r: Row, sub: string, e?: MouseEvent | KeyboardEvent, elsewhere = false): Promise<void> {
     // Open in cmux, as /artifacts does: beside the workspace in front.
     const toCmux = async () => {
       const o = await invoke<{ detail: string }>("wake_open", { id: r.id, sub, here: false });
@@ -720,9 +762,20 @@ export class Wake {
     };
     try {
       if (e?.metaKey) return await toCmux();
-      if (r.path && VIEWABLE.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind)) {
+      if (!elsewhere && !sub && previewable(r)) {
+        const i = this.vis.findIndex((x) => x.id === r.id);
+        if (i >= 0 && i !== this.sel) this.select(i);
+        this.viewer.show(this.vis.filter(previewable), r);
+        // The pane took room from the list: keep the picked row in sight.
+        requestAnimationFrame(() => this.list.querySelector(".w-row.sel")?.scrollIntoView({ block: "nearest" }));
+        return;
+      }
+      if (r.path && PREVIEW.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind)) {
         try {
-          const shown = await invoke<Shown>("wake_file", { id: r.id });
+          // A video streams from the app's wakefile: scheme, too big for a data: URL.
+          const shown: Shown = mediaOf(r.path) === "video"
+            ? { kind: "video", title: r.path.split("/").pop() || r.title, data: fileUrl(r) }
+            : await invoke<Shown>("wake_file", { id: r.id });
           return this.host ? this.host.show(shown, toCmux, this.host.here()) : sheet().show(shown, toCmux, { dir: r.ws });
         } catch (err) {
           this.toast(`${String(err)} · opening it in cmux`, true);
@@ -823,7 +876,10 @@ export class Wake {
   private key(e: KeyboardEvent): void {
     if (!this.visible() || e.ctrlKey || e.altKey) return;
     // The Wake tab yields to the sheet; the sheet's own Wake has the keys there.
-    if (!!document.querySelector(".sheet:not([hidden])") !== this.embedded) return;
+    // Only an overlay sheet counts: the Dock's own sheet is always there,
+    // hidden or not by its view, and visible() already covers that.
+    const overlay = document.querySelector(".sheet:not(.embedded):not([hidden])");
+    if (overlay ? !overlay.contains(this.root) : false) return;
     // Only keys meant for the Wake: focus in it, or nowhere in particular.
     // The Dock's terminal (a textarea), a framed page or any other control
     // keeps its own keys, so Space and j/k typed there stay there.
@@ -833,6 +889,8 @@ export class Wake {
     if (e.key === "Escape") {
       if (!this.help.hidden) {
         this.help.hidden = true;
+      } else if (this.viewer.open && !inQ) {
+        this.viewer.close();
       } else if (this.q.value || inQ) {
         this.q.value = "";
         this.query = "";
@@ -853,8 +911,18 @@ export class Wake {
     }
     const focused = document.activeElement;
     if (focused instanceof HTMLSelectElement || focused instanceof HTMLInputElement) return;
-    // A focused button takes its own Enter and Space.
+    // A focused button takes its own Enter and Space; a video its own arrows.
     if (focused instanceof HTMLButtonElement && (e.key === "Enter" || e.key === " ")) return;
+    if (focused instanceof HTMLMediaElement) return;
+    if (this.viewer.open && !e.metaKey && !e.shiftKey) {
+      const flip = e.key === "ArrowLeft" || e.key === "h" ? -1 : e.key === "ArrowRight" || e.key === "l" ? 1 : 0;
+      if (flip) {
+        e.preventDefault();
+        return this.viewer.step(flip);
+      }
+      if (e.key === "f") return this.viewer.toggleFull();
+      if (e.key === "v") return this.viewer.flipLayout();
+    }
     const r = this.vis[this.sel];
     if (e.metaKey) {
       if (e.key === "Enter" && r) {
