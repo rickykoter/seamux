@@ -65,21 +65,18 @@ function colours(): (ITheme & { background: string }) | null {
   if (!Object.values(theme).every(Boolean)) return null;
   const ext = Array.from({ length: 240 }, (_, i) => std256(i + 16));
   for (let n = 16; n < 256; n++) ext[n - 16] = v(String(n)) || ext[n - 16];
-  return { ...theme, background: theme.background, extendedAnsi: ext };
+  return { ...theme, extendedAnsi: ext } as ITheme & { background: string };
 }
 
 /** The font a Ghostty or cmux config names, if any: the one thing seamux
- *  takes from it. Asked once per appearance, as the config can differ. */
+ *  takes from it. Asked once: a font does not change with the appearance. */
 type Font = { fontFamily?: string; fontSize?: number };
-const fonts = new Map<boolean, Promise<Font | null>>();
+let font: Promise<Font | null> | null = null;
 function configFont(): Promise<Font | null> {
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  if (!fonts.has(dark)) {
-    fonts.set(dark, invoke<Font>("term_look", { dark })
-      .then((l) => ({ fontFamily: l?.fontFamily, fontSize: l?.fontSize }))
-      .catch(() => null));
-  }
-  return fonts.get(dark)!;
+  font ??= invoke<Font>("term_look")
+    .then((l) => ({ fontFamily: l?.fontFamily, fontSize: l?.fontSize }))
+    .catch(() => null);
+  return font;
 }
 
 /** Command keys a Mac terminal turns into line editing, as iTerm and

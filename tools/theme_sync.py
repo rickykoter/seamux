@@ -105,7 +105,7 @@ TERM_KEYS = {"bg", "text", "cursor", "cursor-text", "selection", "selection-text
 # off the ground by its floor and hold the words (text, white) at 4.5:1;
 # the bands hold the quiet grey (bright black) too.
 TERM_TINTS = {"22": "line", "52": "line", "28": "word", "88": "word", "236": "band", "237": "band"}
-TINT_FLOOR = {"line": 1.2, "word": 1.4, "band": 1.05}
+TINT_FLOOR = {"line": 1.2, "word": 1.4, "band": 1.08}
 TERM_KEYS |= set(TERM_TINTS)
 # Slots programs paint as grounds rather than print words in: black in dark
 # (Claude Code's dark-ansi theme fills its bash and inverse text with it),
@@ -287,6 +287,8 @@ C_BANDS = ["userMessageBackground", "userMessageBackgroundHover", "bashMessageBa
 BAND_WORDS = ["text", "inactive", "subtle"]
 C_UNDER_TEXT = ["selectionBg", "diffAdded", "diffRemoved", "diffAddedDimmed", "diffRemovedDimmed",
                 "diffAddedWord", "diffRemovedWord"]
+# A band, or the selection, must stand off the ground too, or it doesn't show.
+BAND_FLOOR = TINT_FLOOR["band"]
 DIFF_FLOORS = {"diffAdded": 1.2, "diffRemoved": 1.2, "diffAddedDimmed": 1.08, "diffRemovedDimmed": 1.08,
                "diffAddedWord": 1.4, "diffRemovedWord": 1.4}
 C_FREE = ["promptBorder", "promptBorderShimmer", "rate_limit_empty", "clawd_background"]
@@ -318,8 +320,8 @@ EXACT = {
     "success": "role:done-t", "error": "role:broken-t", "warning": "role:attend-t",
     "promptBorder": "role:edge", "promptBorderShimmer": "ef:dim",
     "userMessageBackground": "term:236", "userMessageBackgroundHover": "term:237",
-    "composerSidebarBackground": "term:236", "bashMessageBackgroundColor": "mix:ef:bg-visual:term:bg:60",
-    "memoryBackgroundColor": "mix:ef:bg-blue:term:bg:60", "selectionBg": "term:selection",
+    "composerSidebarBackground": "term:236", "bashMessageBackgroundColor": "mix:ef:purple:term:bg:12",
+    "memoryBackgroundColor": "mix:ef:blue:term:bg:12", "selectionBg": "term:selection",
     "diffAdded": "term:22", "diffRemoved": "term:52",
     "diffAddedDimmed": "mix:term:22:term:bg:60", "diffRemovedDimmed": "mix:term:52:term:bg:60",
     "diffAddedWord": "term:28", "diffRemovedWord": "term:88",
@@ -486,6 +488,11 @@ def theme_failures(over: dict[str, str], mode: str) -> list[tuple[str, str]]:
             r = ratio(c[d], g)
             if r < floor:
                 out.append((d, f"{d} {c[d]} is {r:.2f}:1 on the terminal ground, under {floor}:1: changed lines won't show"))
+    for b in C_BANDS + ["selectionBg"]:
+        if b in c:
+            r = ratio(c[b], g)
+            if r < BAND_FLOOR:
+                out.append((b, f"{b} {c[b]} is {r:.2f}:1 on the terminal ground, under {BAND_FLOOR}:1: the band won't show"))
     for word, line in (("diffAddedWord", "diffAdded"), ("diffRemovedWord", "diffRemoved")):
         if word in c and line in c and ratio(c[word], g) <= ratio(c[line], g):
             out.append((word, f"{word} {c[word]} stands off the ground no further than {line} {c[line]}"))

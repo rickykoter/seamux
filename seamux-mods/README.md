@@ -47,8 +47,12 @@ Diff tints are held off the terminal ground (1.2:1 for a line, 1.4:1 for a
 changed word, in every theme and mode), so changed lines show.
 
 Foam has one known limit: the word on a coloured chip is bright white, which
-is faint on dark mode's light chips. Outside seamux's terminal, foam's
-256-colour slots take that terminal's own colours.
+is faint on dark mode's light chips. Foam leans on seamux's palette for more
+than the 256-colour slots: its text is the white slot and its quiet text
+bright black, which seamux makes the words' colour and a quiet grey in both
+modes. In another terminal every slot takes that terminal's colours, and in
+a light one the white slot can be near invisible; seamux dark and seamux
+light are the themes to use there.
 
 ## How it finds things
 

@@ -274,11 +274,11 @@ mod url_tests {
 }
 
 
-/// cmux's terminal look (theme palette, colors, font) for the light or dark
-/// appearance: the native terminal draws with it.
+/// The terminal font a Ghostty or cmux config names, if any: the one thing
+/// the native terminal takes from it (its colours are seamux's own).
 #[tauri::command]
-pub async fn term_look(dark: bool) -> seamux_app::ghostty::Look {
-    tauri::async_runtime::spawn_blocking(move || seamux_app::ghostty::look(dark)).await.unwrap_or_default()
+pub async fn term_look() -> seamux_app::ghostty::Look {
+    tauri::async_runtime::spawn_blocking(seamux_app::ghostty::look).await.unwrap_or_default()
 }
 
 #[cfg(test)]
