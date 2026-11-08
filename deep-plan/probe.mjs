@@ -1224,7 +1224,7 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("working surface: in review no card draws a go; the next card says when it opens",
     nextI >= 0 && prim.length === 0 && !/data-a="go"/.test(working) && !working.includes('data-kind="held"') &&
     waits.filter(Boolean).length === 1 && waits[nextI] &&
-    working.includes('<a class="dp-gate-fix" href=') && working.includes(".dp-gate-fix{display:inline-block;background:var(--fg);color:var(--bg)"),
+    working.includes('<a class="dp-gate-fix" href=') && working.includes(".dp-gate-fix{display:inline-block;background:var(--primary);color:var(--on-primary)"),
     JSON.stringify({ prim: prim.map(m => m.slice(1)), waits }));
   ok("working surface: block and reset are quiet on every increment",
     blocks.every(b => [...b.matchAll(/data-a="(block|reset)" data-n="\d+"( data-kind="quiet")?/g)].every(m => m[2])));
@@ -1303,7 +1303,7 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
     /<button type="button" class="dp-tbtn dp-foot-copy" id="dp-foot-copy">/.test(review) &&
     review.includes('go.classList.toggle("dp-primary", n < all.length);') &&
     review.includes('copy.classList.toggle("dp-primary", n === all.length);') &&
-    review.includes("#dp-foot .dp-tbtn.dp-primary{background:var(--fg)") && !review.includes("#dp-foot .dp-foot-copy{background"));
+    review.includes("#dp-foot .dp-tbtn.dp-primary{background:var(--primary)") && !review.includes("#dp-foot .dp-foot-copy{background"));
   // Go to quiz leaves once every question has an answer, and while the quiz
   // is in view; Copy, once primary, says where the copy goes.
   ok("review surface: Go to quiz hides once answered or while the quiz is in view; primary Copy carries its hint",
@@ -1316,10 +1316,17 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
     review.includes('if (!cur) cur = navLinks.filter('));
   // One filled button style: the page's text colour with the ground as its
   // text. Amber and green are for status, never a button fill.
-  ok("surfaces: every filled button is the neutral fg-on-bg primary",
-    working.includes("#dp-amend-copy{background:var(--fg);color:var(--bg);") &&
-    review.includes("#dp-hl-add{position:absolute;z-index:40;background:var(--fg);color:var(--bg);") &&
-    !/button[^{]*\{[^}]*background:var\(--(accent|good|warn)[,)]/.test(working + review));
+  ok("surfaces: every filled button is the primary colour role with its ink, and the roles back --primary",
+    working.includes("#dp-amend-copy{background:var(--primary);color:var(--on-primary);") &&
+    review.includes("#dp-hl-add{position:absolute;z-index:40;background:var(--primary);color:var(--on-primary);") &&
+    !/button[^{]*\{[^}]*background:var\(--(accent|good|warn)[,)]/.test(working + review) &&
+    working.includes("--primary:var(--role-primary);--on-primary:var(--role-on-primary);") &&
+    working.includes("--fg:var(--role-text);") && working.includes("--accent:var(--role-focus);") &&
+    working.includes("--warn:var(--role-attend);") && working.includes("--mark:var(--role-attend);"));
+  // Amber is needs-you: an authorized increment is the agent's turn, so its
+  // pill and rail glyph wear the accent.
+  ok("surfaces: an authorized increment's pill and rail glyph are not amber",
+    working.includes(".st-authorized{color:var(--accent-t)}") && working.includes('authorized: "var(--accent)", blocked:'));
   // Send it back is one line and the general box; the foot bar is the only
   // Copy. With every question answered, the foot's go lands on the box.
   const send = (review.match(/<h2>Send it back<\/h2>[\s\S]*?<script>/) || [""])[0];
@@ -1349,8 +1356,8 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("working surface: in review no card shows a move in the open",
     blocks.every(b => (lead2(b).match(/class="dp-act"/g) || []).length === 0),
     JSON.stringify(blocks.map(lead2).map(b => b.slice(-300))));
-  ok("working surface: the primary is text colour on the page ground, and stays full contrast disabled",
-    working.includes('.dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg)') &&
+  ok("working surface: the primary is the primary colour role with its ink, and stays full contrast disabled",
+    working.includes('.dp-act[data-kind="primary"]{background:var(--primary);border-color:var(--primary);color:var(--on-primary)') &&
     working.includes('.dp-act[data-kind="primary"][disabled]{opacity:1}'));
   const carried = (working.match(/window\.DP_INC_ALLOWED = (\{[^;]*\});/) || [])[1];
   const eng = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
@@ -1440,6 +1447,9 @@ ok("export-artifact is deterministic (byte-identical on re-run)",
   fs.readFileSync(artPath, "utf8") === art1);
 ok("exported page has no base64 mermaid embed", !/data:text\/javascript;base64/.test(art1));
 ok("exported page uses native pre.mermaid", art1.includes('<pre class="mermaid">'));
+ok("exported page wears the synced palette and roles, with no raw palette of its own",
+  art1.includes("/* everforest:start */") && art1.includes("--primary:var(--role-primary)") &&
+  !/:root\{--bg:#/.test(art1) && !/--(accent|good|warn):#[0-9a-f]{6}/.test(art1));
 ok("exported page carries the Contracts section",
   art1.includes("<h2>Contracts</h2>") && art1.includes("outbox table (attempt_count"));
 ok("exported page has no ADR editor (share is read-only)",
@@ -4254,6 +4264,11 @@ if (want("quiz.txt, widget, cutover bundle")) {
   // ---- widget.html
   const w = read("art-plan.widget.html");
   ok("widget.html is written", w.length > 0);
+  ok("widget.html: the host's tokens first, the synced roles when there is no host, never a raw hex",
+    w.includes("/* everforest:start */") && w.includes("var(--text-primary,var(--role-text))") &&
+    !/var\(--[\w-]+,#[0-9a-fA-F]{3,6}\)/.test(w) &&
+    // ...scoped to its own box: the host may inject it into its document.
+    w.includes(":root .dpwrap {") && !/:root(\[[^\]]*\]|:not\([^)]*\))*\s*\{/.test(w));
   // A fragment: the host injects it into its own document, so a doctype or a
   // <head> would either be ignored or break the surrounding page.
   ok("the widget is a fragment, not a document",

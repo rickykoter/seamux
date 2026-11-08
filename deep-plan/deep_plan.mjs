@@ -1296,44 +1296,9 @@ function setup(force) {
 // One <head> shared by both HTML surfaces. Mermaid is inlined as base64 so the
 // file works opened from disk; the intent server swaps that src for its cached
 // /mermaid.min.js on the way out (regex: src="data:text/javascript;base64,…").
-function htmlHead(title, b64) {
-  return `<!doctype html><html><head><meta charset="utf-8">
-<title>${esc(title)}</title>
-<script>
-// Theme, resolved before first paint so neither mode flashes the other.
-// Framed by the seamux app (its top frame is tauri://), the page follows prefers-color-scheme alone: the
-// app's appearance toggle sets its window theme, which the webview reports
-// there, live. A saved ◐ choice is ignored and the ◐ button hidden, so the
-// app's toggle is the one control. Standalone, the saved choice wins, else
-// the OS preference.
-(function () {
-  var t = "", framed = false, d = document.documentElement;
-  var mq = window.matchMedia ? matchMedia("(prefers-color-scheme: light)") : null;
-  var os = function () { return mq && mq.matches ? "light" : "dark"; };
-  try { framed = window.self !== window.top; } catch (e) { framed = true; }
-  // The seamux app's frame only (its pages are tauri://); another tool's
-  // frame keeps the page's own ◐. Where ancestorOrigins is missing, any
-  // frame counts.
-  var anc = location.ancestorOrigins;
-  if (framed && anc && anc.length) { var top = anc[anc.length - 1]; framed = top.indexOf("tauri:") === 0 || top.indexOf("://tauri.localhost") > 0; }
-  if (!framed) { try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {} }
-  d.setAttribute("data-theme", t || os());
-  if (!framed || !mq) return;
-  d.setAttribute("data-framed", "");
-  // A live switch restyles in place; mermaid bakes its colours into the
-  // drawn SVGs, so a page with diagrams reloads to redraw them.
-  var on = function () {
-    var n = os();
-    if (n === d.getAttribute("data-theme")) return;
-    d.setAttribute("data-theme", n);
-    if (document.querySelector(".mermaid")) location.reload();
-  };
-  if (mq.addEventListener) mq.addEventListener("change", on); else if (mq.addListener) mq.addListener(on);
-})();
-</script>
-<script src="data:text/javascript;base64,${b64}"></script>
-<style>
-/* everforest:start */
+// seamux's palette and its colour roles (theme/everforest.css), written here
+// by tools/theme_sync.py. The plan page, its export and its widget all wear it.
+const EVERFOREST_CSS = `/* everforest:start */
 :root {
   --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
   --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
@@ -1418,14 +1383,59 @@ function htmlHead(title, b64) {
   --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
   --role-link: #22675f; --role-focus: #2a8079;
 }
-/* everforest:end */
-:root{--bg:var(--ef-bg);--fg:var(--ef-text);--dim:var(--ef-text-dim);--faint:var(--ef-text-faint);--line:var(--ef-line);--line2:var(--ef-line2);--accent:var(--ef-accent);
---good:var(--ef-good);--warn:var(--ef-warn);--bad:var(--ef-bad);--mark:var(--ef-mark);
---good-t:var(--ef-text-good);--warn-t:var(--ef-text-warn);--bad-t:var(--ef-text-bad);--mark-t:var(--ef-text-mark);--accent-t:var(--ef-text-accent);--card:var(--ef-card);--card2:var(--ef-card2);--card3:var(--ef-card3);
---hl:rgba(167,192,128,.26);--hl-on:rgba(167,192,128,.5);--find:rgba(219,188,127,.32);--find-on:var(--ef-orange);
+/* everforest:end */`;
+
+const DP_ALIASES = `/* deep-plan's names for the palette: what a colour means is its colour
+   role (--role-*). Amber (--mark, --warn) is needs-you. */
+:root{--bg:var(--ef-bg);--fg:var(--role-text);--dim:var(--role-text-quiet);--faint:var(--ef-text-faint);--line:var(--role-line);--line2:var(--role-edge);--accent:var(--role-focus);
+--good:var(--role-done);--warn:var(--role-attend);--bad:var(--role-broken);--mark:var(--role-attend);
+--good-t:var(--role-done-t);--warn-t:var(--role-attend-t);--bad-t:var(--role-broken-t);--mark-t:var(--role-attend-t);--accent-t:var(--role-link);--card:var(--ef-card);--card2:var(--ef-card2);--card3:var(--ef-card3);
+--primary:var(--role-primary);--on-primary:var(--role-on-primary);
+--hl:rgba(167,192,128,.26);--hl-on:rgba(167,192,128,.5);--find:color-mix(in srgb,var(--role-focus) 30%,transparent);--find-on:var(--ef-orange);
 --mono:var(--ef-mono)}
-:root[data-theme="light"]{--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);--find:rgba(223,160,0,.28);color-scheme:light}
+:root[data-theme="light"]{--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);color-scheme:light}
 :root[data-theme="dark"]{color-scheme:dark}
+`;
+
+function htmlHead(title, b64) {
+  return `<!doctype html><html><head><meta charset="utf-8">
+<title>${esc(title)}</title>
+<script>
+// Theme, resolved before first paint so neither mode flashes the other.
+// Framed by the seamux app (its top frame is tauri://), the page follows prefers-color-scheme alone: the
+// app's appearance toggle sets its window theme, which the webview reports
+// there, live. A saved ◐ choice is ignored and the ◐ button hidden, so the
+// app's toggle is the one control. Standalone, the saved choice wins, else
+// the OS preference.
+(function () {
+  var t = "", framed = false, d = document.documentElement;
+  var mq = window.matchMedia ? matchMedia("(prefers-color-scheme: light)") : null;
+  var os = function () { return mq && mq.matches ? "light" : "dark"; };
+  try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  // The seamux app's frame only (its pages are tauri://); another tool's
+  // frame keeps the page's own ◐. Where ancestorOrigins is missing, any
+  // frame counts.
+  var anc = location.ancestorOrigins;
+  if (framed && anc && anc.length) { var top = anc[anc.length - 1]; framed = top.indexOf("tauri:") === 0 || top.indexOf("://tauri.localhost") > 0; }
+  if (!framed) { try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {} }
+  d.setAttribute("data-theme", t || os());
+  if (!framed || !mq) return;
+  d.setAttribute("data-framed", "");
+  // A live switch restyles in place; mermaid bakes its colours into the
+  // drawn SVGs, so a page with diagrams reloads to redraw them.
+  var on = function () {
+    var n = os();
+    if (n === d.getAttribute("data-theme")) return;
+    d.setAttribute("data-theme", n);
+    if (document.querySelector(".mermaid")) location.reload();
+  };
+  if (mq.addEventListener) mq.addEventListener("change", on); else if (mq.addListener) mq.addListener(on);
+})();
+</script>
+<script src="data:text/javascript;base64,${b64}"></script>
+<style>
+${EVERFOREST_CSS}
+${DP_ALIASES}
 body{background:var(--bg);color:var(--fg);font:var(--fs-4)/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
 -webkit-font-smoothing:antialiased;max-width:860px;margin:0 auto;padding:28px 20px 80px}
 h1{font:600 var(--fs-6)/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
@@ -1437,7 +1447,7 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:var(--fs-3) v
 .dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:var(--fs-2);padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
-.st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--warn-t)}
+.st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--accent-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-checks-st{list-style:none;padding-left:0;margin-bottom:4px}
 .dp-run-c{display:block;margin:8px 0 0}.dp-run-c>b{display:block;font-weight:600;color:var(--fg)}
@@ -1449,7 +1459,7 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
 /* The app's one neutral primary: text colour on the page ground. On disk it
    cannot act, but it stays full contrast: it names the next step. */
-.dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
+.dp-act[data-kind="primary"]{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
 .dp-act[data-kind="primary"][disabled]{opacity:1}
 /* In review no card draws a go; the next one says when it opens. */
 .dp-go-wait{font-size:var(--fs-3);margin-right:10px}
@@ -1458,7 +1468,7 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-shared{margin:4px 0 2px}.dp-shared-c{white-space:nowrap}
 .dp-shared+details.dp-run{margin-bottom:10px}
 .dp-shared-sum{margin:2px 0 4px}
-.dp-gate-fix{display:inline-block;background:var(--fg);color:var(--bg);font-weight:600;text-decoration:none;
+.dp-gate-fix{display:inline-block;background:var(--primary);color:var(--on-primary);font-weight:600;text-decoration:none;
 border-radius:6px;padding:3px 12px;margin-left:2px}
 .dp-gate-fix:hover{opacity:.9}
 .dp-drift{color:var(--warn-t)}
@@ -1809,17 +1819,17 @@ function dpMd(src) {
 // Risk card styling, shared by the review and working stylesheets.
 const DP_RISK_CSS = `.dp-risk-ctl{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin:6px 0 10px;font-size:.9em}
 .dp-risk-opt{cursor:pointer;white-space:nowrap}
-.dp-risk-deliv,.dp-risk-ticket,.dp-risk-note{background:transparent;color:inherit;border:1px solid var(--dim,#888);
+.dp-risk-deliv,.dp-risk-ticket,.dp-risk-note{background:transparent;color:inherit;border:1px solid var(--dim);
   border-radius:4px;padding:4px 6px;font:inherit;font-size:.95em;max-width:100%}
 .dp-risk-note{flex:1 1 240px}
 .dp-risk-deliv,.dp-risk-ticket{display:none}
 .dp-risk-mitigate .dp-risk-deliv,.dp-risk-mitigate .dp-risk-ticket{display:inline-block}
 .dp-risk-ctl[hidden],.dp-risk-change[hidden],.dp-note-open[hidden]{display:none}
-.dp-risk-chip{display:inline-block;font-size:.8em;line-height:1.5;padding:0 8px;border-radius:10px;border:1px solid var(--line,#888);white-space:nowrap}
-.dp-risk-none{border-style:dashed;color:var(--dim,#888)}
+.dp-risk-chip{display:inline-block;font-size:.8em;line-height:1.5;padding:0 8px;border-radius:10px;border:1px solid var(--line);white-space:nowrap}
+.dp-risk-none{border-style:dashed;color:var(--dim)}
 .dp-risk-change,.dp-note-open{background:none;border:0;padding:0 2px;margin-left:6px;font:inherit;font-size:.85em;
-  color:var(--accent-t,#46f);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
-.dp-risk-change:focus-visible,.dp-note-open:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
+  color:var(--accent-t);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.dp-risk-change:focus-visible,.dp-note-open:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* "change" shows when the row is hovered or holds focus, so a list of decided
    risks reads as text. Tab still reaches it (opacity keeps it focusable); an
    undecided risk keeps it in view, since it needs a decision; and a screen
@@ -1986,26 +1996,30 @@ function widgetHtml(spec, b64) {
   }).join("\n");
   return `<h2 class="dpsr">${summary}</h2>
 <style>
+${EVERFOREST_CSS.replace(/(:root[^{]*?)\s*\{/g, "$1 .dpwrap {")}
+/* The host's own tokens first; outside a host, the colour roles. The
+   palette above is scoped to .dpwrap: the host may inject this fragment
+   into its own document, whose :root it must not restyle. */
 .dpsr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .dpwrap{padding:1rem 0}
 .dpfig{margin:0 0 var(--gap-md,16px)}
-.dpcap{font-size:var(--fs-3,13px);color:var(--text-muted,#666);margin-bottom:6px}
-.mermaid{background:var(--surface-1,#f6f6f6);border:1px solid var(--border,#ddd);
+.dpcap{font-size:var(--fs-3,13px);color:var(--text-muted,var(--role-text-quiet));margin-bottom:6px}
+.mermaid{background:var(--surface-1,var(--ef-bg1));border:1px solid var(--border,var(--role-edge));
   border-radius:var(--radius,8px);padding:12px;overflow-x:auto}
-.dpq{border:1px solid var(--border,#ddd);border-radius:12px;padding:var(--pad-md,14px);
-  margin:0 0 var(--gap-md,16px);background:var(--surface-1,#fafafa)}
-.dpq legend{font-size:var(--fs-3,13px);color:var(--text-muted,#666);padding:0 6px}
-.dps{font-size:var(--fs-4,15px);line-height:1.6;margin:0 0 12px;color:var(--text-primary,#111)}
+.dpq{border:1px solid var(--border,var(--role-edge));border-radius:12px;padding:var(--pad-md,14px);
+  margin:0 0 var(--gap-md,16px);background:var(--surface-1,var(--ef-bg1))}
+.dpq legend{font-size:var(--fs-3,13px);color:var(--text-muted,var(--role-text-quiet));padding:0 6px}
+.dps{font-size:var(--fs-4,15px);line-height:1.6;margin:0 0 12px;color:var(--text-primary,var(--role-text))}
 .dpo{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;
-  border:1px solid var(--border,#ddd);border-radius:var(--radius,8px);margin-bottom:7px;
-  cursor:pointer;background:var(--surface-2,#fff)}
-.dpo:hover{border-color:var(--border-strong,#999)}
+  border:1px solid var(--border,var(--role-edge));border-radius:var(--radius,8px);margin-bottom:7px;
+  cursor:pointer;background:var(--surface-2,var(--ef-bg))}
+.dpo:hover{border-color:var(--border-strong,var(--role-text-quiet))}
 .dpo input{margin-top:3px;flex:none}
-.dpo span{font-size:var(--fs-4,15px);line-height:1.5;color:var(--text-primary,#111)}
+.dpo span{font-size:var(--fs-4,15px);line-height:1.5;color:var(--text-primary,var(--role-text))}
 .dpbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-top:4px}
 .dpgo{font:500 var(--fs-4,15px) var(--font-sans,system-ui);padding:8px 16px;
-  border-radius:var(--radius,8px);border:1px solid var(--border-strong,#999);
-  background:var(--surface-2,#fff);color:var(--text-primary,#111);cursor:pointer}
+  border-radius:var(--radius,8px);border:1px solid var(--border-strong,var(--role-text-quiet));
+  background:var(--surface-2,var(--ef-bg));color:var(--text-primary,var(--role-text));cursor:pointer}
 .dpgo[disabled]{cursor:default;opacity:.6}
 </style>
 <div class="dpwrap">
@@ -2013,8 +2027,8 @@ ${diagBlocks}
 ${quizBlocks}
 ${qs.length ? `<div class="dpbar">
 <button class="dpgo" id="dpgo" type="button">Send answers for grading</button>
-<span id="dpmeta" style="font-size:var(--fs-3,13px);color:var(--text-secondary,#555)">0 of ${qs.length} answered</span>
-<span id="dperr" style="font-size:var(--fs-3,13px);color:var(--text-danger,#b00)" role="status"></span>
+<span id="dpmeta" style="font-size:var(--fs-3,13px);color:var(--text-secondary,var(--role-text-quiet))">0 of ${qs.length} answered</span>
+<span id="dperr" style="font-size:var(--fs-3,13px);color:var(--text-danger,var(--role-broken-t))" role="status"></span>
 </div>` : ""}
 </div>
 ${diagrams.length ? `<script src="data:text/javascript;base64,${b64}"></script>
@@ -2304,7 +2318,7 @@ ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).
   return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review", reviewFolded(spec)) + AUTO_REFRESH_BOX + `<style>
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
-  color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
+  color:inherit;border:1px solid var(--dim);border-radius:4px;padding:6px;font:inherit}
 .dp-note[hidden]{display:none}
 .inc .dp-note-open{display:block;margin:6px 0 0;padding:0}
 ${DP_RISK_CSS}
@@ -2314,7 +2328,7 @@ ${DP_RISK_CSS}
 .dp-send{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:4px 0}
 .dp-send #dp-clear{margin-left:0}
 .opt input:focus-visible,#dp-hl-add:focus-visible,
-.dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
+.dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` + commonBody(spec, adrs, true,
     endStateHtml(map, (spec.deliverables || []).map((d, i) => ({ n: i + 1, title: d.title }))),
     reviewSummaryHtml(spec, adrs, (spec.quiz || []).length)) + `
@@ -2413,7 +2427,7 @@ const CHECK_GLYPH = {
 // Showing the detail only while it matters keeps a finished increment short.
 // Ticks each running check's elapsed time once a second, amber past its
 // timeout. The time comes from the page's clock against the runner's start.
-const ELAPSED_TICK = `<style>.dp-elapsed.dp-late{color:var(--warn-t,#b45309);font-weight:600}</style>
+const ELAPSED_TICK = `<style>.dp-elapsed.dp-late{color:var(--warn-t);font-weight:600}</style>
 <script>(function () {
   function fmt(s) { var m = Math.floor(s / 60), h = Math.floor(m / 60); return h ? h + "h " + (m % 60) + "m" : m ? m + "m " + (s % 60) + "s" : s + "s"; }
   function tick() {
@@ -2571,7 +2585,7 @@ function familyStripHtml(slug) {
     : (f.after.length ? `<p class="dim">its parent's increments ${f.after.join(", ")} are done: free to go</p>` : "");
   return `<section class="dp-fam" aria-label="plan family">
 <style>
-.dp-fam{border:1px solid var(--line,#8884);border-radius:8px;padding:8px 12px;margin:4px 0 14px}
+.dp-fam{border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:4px 0 14px}
 .dp-fam ul{list-style:none;margin:4px 0;padding:0;display:flex;flex-direction:column;gap:6px}
 .dp-fam-incs{display:flex;flex-wrap:wrap;gap:2px 14px;margin:2px 0 0 1.2em;font-size:.92em}
 .dp-fam-inc{white-space:nowrap}
@@ -2581,12 +2595,12 @@ function familyStripHtml(slug) {
 .dp-fam-help[open]{float:none;display:block;margin:0}
 .dp-fam-help[open]>summary{float:right;margin:1px 0 0 10px}
 .dp-fam-help>summary{list-style:none;cursor:pointer;display:inline-block;width:18px;height:18px;line-height:16px;text-align:center;
-  border:1px solid var(--line,#8884);border-radius:50%;font-size:.8em;color:var(--dim)}
+  border:1px solid var(--line);border-radius:50%;font-size:.8em;color:var(--dim)}
 .dp-fam-help>summary::-webkit-details-marker{display:none}
 .dp-fam-help>summary:hover,.dp-fam-help[open]>summary{color:var(--fg);border-color:var(--dim)}
 .dp-fam-help>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .dp-fam .dp-fam-key{margin:0 0 6px;font-size:.88em;max-width:56ch}
-.dp-fam-wait{color:var(--warn-t,#c80)}
+.dp-fam-wait{color:var(--warn-t)}
 .dp-fam-link{color:inherit}
 .dp-fam-more>summary{cursor:pointer;list-style:none;width:fit-content}
 .dp-fam-more>summary::-webkit-details-marker{display:none}
@@ -2754,9 +2768,9 @@ ${acts ? `<div class="dp-acts">${acts}</div>` : ""}</div>`;
 <script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
-  color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
+  color:inherit;border:1px solid var(--dim);border-radius:4px;padding:6px;font:inherit}
 ${DP_RISK_CSS}
-#dp-amend-copy{background:var(--fg);color:var(--bg);border:0;border-radius:6px;font-weight:600;
+#dp-amend-copy{background:var(--primary);color:var(--on-primary);border:0;border-radius:6px;font-weight:600;
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
@@ -3380,13 +3394,10 @@ ${checksHtml(planChecks(spec, i), d.waiver)}</div>`).join("\n");
 
   const html = `<title>${esc(spec.title)}</title>
 <style>
-:root{--bg:#f6f5f1;--card:#ffffff;--ink:#232a2e;--muted:#68727a;--line:#d9d6cd;
---accent:#3a6ea5;--good:#2e7d4f;--warn:#a06a00}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
---bg:#20262b;--card:#2a3138;--ink:#d7dce1;--muted:#8b969e;--line:#3a434b;
---accent:#7aa7d8;--good:#69c08c;--warn:#e0b25c}}
-:root[data-theme="dark"]{--bg:#20262b;--card:#2a3138;--ink:#d7dce1;--muted:#8b969e;
---line:#3a434b;--accent:#7aa7d8;--good:#69c08c;--warn:#e0b25c}
+${EVERFOREST_CSS}
+${DP_ALIASES}
+/* The export's own names, on the plan page's. */
+:root{--card:var(--ef-bg1);--ink:var(--fg);--muted:var(--dim)}
 body{background:var(--bg);color:var(--ink);font:var(--fs-4)/1.55 -apple-system,system-ui,"Segoe UI",sans-serif;
 max-width:760px;margin:0 auto;padding:28px 20px 80px}
 h1{font-size:var(--fs-6);letter-spacing:-.01em}h2{font-size:var(--fs-4);margin-top:2em;
@@ -3399,7 +3410,7 @@ code{background:color-mix(in srgb,var(--ink) 8%,transparent);border-radius:4px;p
 .annot input[type=text]{background:var(--bg);color:var(--ink);border:1px solid var(--line);
 border-radius:6px;padding:7px 10px;font:var(--fs-4) system-ui;width:55%}
 .annot select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px}
-.annot button{background:var(--ink);color:var(--bg);border:0;border-radius:6px;padding:7px 14px;
+.annot button{background:var(--primary);color:var(--on-primary);border:0;border-radius:6px;padding:7px 14px;
 font:600 var(--fs-3) system-ui;cursor:pointer}
 .annot button:focus-visible,.annot input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 ul.alist{padding-left:0;list-style:none}

@@ -208,8 +208,8 @@ body{max-width:none;margin:0;padding:0}
 #dp-foot .dp-foot-n b{color:var(--fg);font-weight:600}
 #dp-foot .dp-foot-n.dp-foot-all b{color:var(--good-t)}
 #dp-foot .dp-tbtn{flex:none;font:500 var(--fs-2)/1 system-ui;white-space:nowrap}
-#dp-foot .dp-tbtn.dp-primary{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
-#dp-foot .dp-tbtn.dp-primary:hover{color:var(--bg);opacity:.9}
+#dp-foot .dp-tbtn.dp-primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:600}
+#dp-foot .dp-tbtn.dp-primary:hover{color:var(--on-primary);opacity:.9}
 #dp-foot [hidden]{display:none}
 #dp-foot .dp-foot-hint{flex:none;white-space:nowrap;font-weight:400}
 @media (max-width:599px){#dp-foot .dp-foot-hint{display:none}}
@@ -250,7 +250,7 @@ body{max-width:none;margin:0;padding:0}
 .dp-q-sum .where{font:500 var(--fs-2)/1.3 var(--mono);color:var(--faint);flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dp-q-sum .what{flex:1;min-width:0}
 .dp-q-sum q{color:var(--dim);font-style:italic}
-#dp-hl-add{position:absolute;z-index:40;background:var(--fg);color:var(--bg);border:0;border-radius:999px;
+#dp-hl-add{position:absolute;z-index:40;background:var(--primary);color:var(--on-primary);border:0;border-radius:999px;
   padding:5px 12px 5px 10px;font:600 var(--fs-3)/1.2 system-ui;cursor:pointer;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,.35)}
 #dp-hl-add svg{vertical-align:-3px;margin-right:5px}
 #dp-hl-add:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -395,9 +395,10 @@ export const SURFACE_JS = String.raw`<script>
     fit: svgIcon("M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"),
     one: svgIcon("M5 4.5L7 3v10M5 13h4")
   };
-  // Status glyphs for the rail, drawn rather than typed (no emoji).
+  // Status glyphs for the rail, drawn rather than typed (no emoji). An
+  // authorized increment is the agent's turn, not the person's: no amber.
   function glyph(status) {
-    var c = { done: "var(--good)", working: "var(--accent)", authorized: "var(--warn)", blocked: "var(--bad)" }[status] || "var(--faint)";
+    var c = { done: "var(--good)", working: "var(--accent)", authorized: "var(--accent)", blocked: "var(--bad)" }[status] || "var(--faint)";
     var inner = "";
     if (status === "done") inner = '<circle cx="6" cy="6" r="5" fill="' + c + '"/><path d="M3.6 6.2l1.6 1.6 3.2-3.4" fill="none" stroke="var(--bg)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
     else if (status === "working") inner = '<circle cx="6" cy="6" r="4.6" fill="none" stroke="' + c + '" stroke-width="1.4"/><path d="M6 1.4a4.6 4.6 0 0 1 0 9.2z" fill="' + c + '"/>';
@@ -1552,7 +1553,7 @@ export const SURFACE_JS = String.raw`<script>
       tertiaryColor: v("--card2"), tertiaryTextColor: v("--fg"), tertiaryBorderColor: v("--dg-stroke"),
       lineColor: v("--dim"), textColor: v("--fg"), mainBkg: v("--card3"), nodeBorder: v("--dg-stroke"),
       clusterBkg: v("--card"), clusterBorder: v("--dg-stroke"), titleColor: v("--fg"), edgeLabelBackground: v("--card2"),
-      noteBkgColor: v("--card"), noteTextColor: v("--fg"), noteBorderColor: v("--mark"),
+      noteBkgColor: v("--card"), noteTextColor: v("--fg"), noteBorderColor: v("--dg-stroke"),
       actorBkg: v("--card3"), actorBorder: v("--dg-stroke"), actorTextColor: v("--fg"), signalColor: v("--dim"), signalTextColor: v("--fg")
     } });
     Promise.resolve(M.run({ querySelector: "#dp-main pre.mermaid", suppressErrors: true }))

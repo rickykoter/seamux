@@ -1986,8 +1986,8 @@ if (want("page script")) {
      css.includes(".card.cur { border-color: color-mix(in srgb, var(--accent) 60%, var(--card-border)); box-shadow: inset 3px 0 0 var(--accent); }") &&
      !/\.card\.picked[^{]*\{[^}]*(border|box-shadow|background)/.test(css) && lookoutPageMd.includes("accent edge on its left"));
   ok("page: in light mode a selected row is an accent tint and hover a shade darker than the side list; the minor and nit gutter dots get a darker ring",
-     [/@media \(prefers-color-scheme: light\) \{\s*:root:not\(\[data-theme="dark"\]\) \{\s*--sel: color-mix\(in srgb, var\(--ef-accent\) 22%, var\(--ef-bg-dim\)\); --hover: var\(--ef-bg3\);\s*--gdot-nit: var\(--ef-dim\); --gdot-edge-minor: var\(--ef-text-faint\);/,
-      /:root\[data-theme="light"\] \{\s*--sel: color-mix\(in srgb, var\(--ef-accent\) 22%, var\(--ef-bg-dim\)\); --hover: var\(--ef-bg3\);\s*--gdot-nit: var\(--ef-dim\); --gdot-edge-minor: var\(--ef-text-faint\);/].every(r => r.test(css.slice(css.indexOf("/* everforest:end */")))) &&
+     [/@media \(prefers-color-scheme: light\) \{\s*:root:not\(\[data-theme="dark"\]\) \{\s*--sel: color-mix\(in srgb, var\(--role-focus\) 22%, var\(--ef-bg-dim\)\); --hover: var\(--ef-bg3\);\s*--gdot-nit: var\(--ef-dim\); --gdot-edge-minor: var\(--ef-text-faint\);/,
+      /:root\[data-theme="light"\] \{\s*--sel: color-mix\(in srgb, var\(--role-focus\) 22%, var\(--ef-bg-dim\)\); --hover: var\(--ef-bg3\);\s*--gdot-nit: var\(--ef-dim\); --gdot-edge-minor: var\(--ef-text-faint\);/].every(r => r.test(css.slice(css.indexOf("/* everforest:end */")))) &&
      css.includes(".gdot.sev-minor { box-shadow: inset 0 0 0 1px var(--gdot-edge-minor, transparent), 0 0 0 1.5px var(--bg); }"));
   ok("page: a file's status letter spells itself out in its tooltip (modified, added, deleted, renamed), in the tree, the risk list and the file header",
      js.includes('const ST_NAMES = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", T: "type changed" };') &&
@@ -2019,11 +2019,23 @@ if (want("page script")) {
      css.includes(".card.closed .sev { --sev: var(--muted); }") &&
      css.includes(".card.closed .status { color: var(--muted);") && !css.includes(".card .status.st-resolved {") &&
      !/\.card\.closed[^{]*\{[^}]*opacity/.test(css));
-  ok("page+app: amber is for status only: a minor chip is neutral grey on the page and in the findings panel, and the one filled primary is Everforest's fg with ink words in both",
+  ok("page+app: amber is for status only: a minor chip is neutral grey on the page and in the findings panel, and the one filled primary is the primary role with its ink in both",
      css.includes("--sev-minor: var(--ef-text-dim);") && !css.includes("--sev-minor: var(--ef-text-yellow)") &&
      appCss.includes(".r-sev.minor { color: var(--ef-text-dim);") && !/\.r-sev\.minor \{[^}]*yellow/.test(appCss) &&
-     css.includes(".buttons button.primary { background: var(--ef-fg); border-color: var(--ef-fg); color: var(--ef-ink); }") &&
-     css.includes("--sev-blocker: var(--ef-text-red); --sev-major: var(--ef-text-orange);"));
+     css.includes(".buttons button.primary { background: var(--role-primary); border-color: var(--role-primary); color: var(--role-on-primary); }") &&
+     css.includes("--sev-blocker: var(--role-broken-t); --sev-major: var(--ef-text-orange);"));
+  {
+    // Amber is the colour role for "needs you", and nothing on the review
+    // page is a call: no state token, and no rule outside the synced block,
+    // wears the palette's yellow, its mark or the attend role. Syntax
+    // highlighting (--hl-*) is a palette of its own and may.
+    const own = css.slice(css.indexOf("/* everforest:end */")).replace(/\/\*[\s\S]*?\*\//g, "");
+    const amber = own.split(/[;{}]/).filter((d) => /--ef-(text-)?(yellow|mark|warn)\b|--ef-bg-yellow|--role-attend/.test(d) && !/^\s*--hl-/.test(d));
+    ok("page: no state wears amber: medium risk, addressed, stale notes, modified files and the find flash moved off it",
+       amber.length === 0 && /--risk-medium: var\(--ef-text-orange\)/.test(own) && /\.card \.status\.st-addressed \{ color: var\(--addressed\)/.test(own) &&
+       /\.nmark\.stale \{ color: var\(--muted\); border-style: dashed; \}/.test(own) && /--flash: var\(--ef-bg-blue\)/.test(own) &&
+       /--st-m: var\(--ef-text-blue\)/.test(own), amber.join(" | "));
+  }
   {
     // The Overview: a folded list, one row per group, nothing open by default.
     const ov = js.slice(js.indexOf("function ovSection(key) {"), js.indexOf("  // The Map view:"));
