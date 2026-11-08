@@ -215,3 +215,36 @@ fn the_builtins_are_adapters_like_any_other() {
     assert_eq!(names, vec!["claude-subagents", "claude-workflow"]);
     assert!(matches!(&crew_core::runs::builtins()[1], Adapter::Builtin { recognizes, .. } if recognizes == &["workflow"]));
 }
+
+#[test]
+fn the_template_adapters_output_validates() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crew/adapters");
+    let (adapters, bad) = host::load(&dir);
+    assert!(bad.is_empty(), "{bad:?}");
+    assert_eq!(adapters.iter().map(|a| a.name().to_string()).collect::<Vec<_>>(), vec!["template"]);
+    let c = Context { session_dir: fixture("s-done"), session: "s-done".into(), background: vec![task("teammate", "t1", "helper")], ..Default::default() };
+    let rep = host::report(&c, &adapters, false);
+    assert!(rep.notices.is_empty(), "{:?}", rep.notices);
+    let [r] = rep.runs.as_slice() else { panic!("{:?}", rep.runs) };
+    assert_eq!((r.name.as_str(), r.source.as_str(), r.task.as_deref(), r.agents[0].state.as_str()),
+               ("helper", "template", Some("t1"), "running"));
+}
+
+#[test]
+fn the_drafted_prompt_carries_the_sample() {
+    let c = Context { session_dir: fixture("s-done"), session: "s-done".into(),
+                      background: vec![task("teammate", "t1", "helper"), task("subagent", "a9", "other")], ..Default::default() };
+    let missing = host::Notice { kind: "missing".into(), adapter: None, task_type: Some("teammate".into()), count: 1, why: "no adapter".into() };
+    let p = crew_core::runs::draft::prompt(&c, &missing, Path::new("/crew/adapters/template"));
+    assert!(p.contains("background work of type `teammate` that no seamux adapter reads"), "{p}");
+    assert!(p.contains("docs/adapters.md") && p.contains("docs/RUNS.md") && p.contains("/crew/adapters/template"));
+    assert!(p.contains("~/.config/seamux/adapters/teammate/") && p.contains("[\"teammate\"]"));
+    assert!(p.contains(r#""id":"t1""#) && !p.contains(r#""id":"a9""#), "only the type's tasks: {p}");
+    assert!(p.contains("workflows/wf_f7b371f3-6f2.json") && p.contains("subagents/"), "the folder listing: {p}");
+    assert!(p.contains("seamux runs s-done --all"));
+    let failed = host::Notice { kind: "failed".into(), adapter: Some("mine".into()), task_type: None, count: 1,
+                                why: "runs[0].status: \"x\" is not one of running".into() };
+    let f = crew_core::runs::draft::prompt(&c, &failed, Path::new("/t"));
+    assert!(f.starts_with("The seamux adapter `mine` failed: runs[0].status"), "a broken adapter's prompt names the check: {f}");
+    assert!(crew_core::runs::draft::listing(&fixture("s-done")).len() <= crew_core::runs::draft::LIST_MAX + 1);
+}

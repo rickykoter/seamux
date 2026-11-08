@@ -207,7 +207,7 @@ pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, (u6
             all.extend(rows_for(p, rep.as_ref(), since));
             for n in rep.iter().flat_map(|r| r.notices.iter()) {
                 notices.push(json!({"surface": p.surface, "session": p.session, "kind": n.kind, "text": n.text(),
-                                    "taskType": n.task_type, "adapter": n.adapter}));
+                                    "taskType": n.task_type, "adapter": n.adapter, "why": n.why, "count": n.count}));
             }
         }
         let Some(m) = r.as_object_mut() else { continue };

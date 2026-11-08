@@ -17,6 +17,7 @@
 
 pub mod claude_subagents;
 pub mod claude_workflow;
+pub mod draft;
 pub mod host;
 pub mod model;
 

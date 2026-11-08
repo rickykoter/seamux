@@ -31,7 +31,8 @@ function __boardRender(d) {
     "archive": "Close this workspace and remember it; crew-resume brings it back",
     "close plan": "Retire this plan's gate",
     "go": "Authorize this increment",
-    "wake": "Open the Wake: what this workspace's sessions left behind"
+    "wake": "Open the Wake: what this workspace's sessions left behind",
+    "adapter": "Open a new session in this worktree that writes a seamux adapter for this work"
   };
 
   function esc(s) {
@@ -568,9 +569,13 @@ function __boardRender(d) {
         (what ? '<span class="aw">' + esc(what) + "</span>" : "") + agentTime(e) +
         (e.badge ? '<span class="ab">' + esc(e.badge) + "</span>" : "") + "</div>";
     }).join("") + ns.map(function (n) {
+      // Create adapter: a new session here that writes (or fixes) one.
+      var key = n.kind === "failed" ? n.adapter : n.taskType;
       return '<div class="ag note' + (n.kind === "failed" ? " bad" : "") + '" title="' + esc(n.text) + '">' +
         '<svg class="amk" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path class="ai" d="M6 3.2v3.6M6 8.6v.2"/></svg>' +
-        '<span class="aw">' + esc(n.text) + "</span></div>";
+        '<span class="aw">' + esc(n.text) + "</span>" +
+        (key ? '<span class="ptag mk" data-a="adapter" data-x="' + esc(key) + '" title="' + esc(TIP.adapter) + '">' +
+          (n.kind === "failed" ? "Fix adapter" : "Create adapter") + "</span>" : "") + "</div>";
     }).join("");
   }
   function agentMore(a) {

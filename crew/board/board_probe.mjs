@@ -2453,7 +2453,7 @@ if (live && Array.isArray(live.rows)) {
   ];
   const R = (id, extra) => ({ id, name: id, kind: "running", badge: "working", said: "Mid-turn.", chips: ["jump"],
     frac: null, meta: "", ref: "workspace:1", cwd: "/w/" + id, panes, agents, ...extra });
-  render({ rows: [R("ag", { agentsMore: 2, agentNotices: [{ surface: "S-B", kind: "missing", text: "2 background tasks from teammate: no adapter" }] })], quiet: "" });
+  render({ rows: [R("ag", { agentsMore: 2, agentNotices: [{ surface: "S-B", kind: "missing", taskType: "teammate", text: "2 background tasks from teammate: no adapter" }] })], quiet: "" });
   const h = els.rows.innerHTML;
   const rowsOf = [...h.matchAll(/<div class="ag ([^"]*)"( data-a="(agent|run)" data-x="([^"]*)" data-path="([^"]*)")?[^>]*>(.*?)<\/div>/g)];
   const byId = (x) => rowsOf.find((m) => m[4] === x) || [];
@@ -2472,6 +2472,8 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["agents: a run with no word is dashed, not running", /^unk/.test(byId("a3")[1] || "") && /stroke-dasharray="2 2"/.test(byId("a3")[6] || "")]);
   checks.push(["agents: past four rows the card says +N more, and a notice row says what no adapter reads",
     /class="ag more"><span class="aw">\+2 more</.test(h) && /class="ag note"[^>]*><svg[^]*?2 background tasks from teammate: no adapter/.test(h)]);
+  checks.push(["agents: a notice row offers Create adapter, named by its task type",
+    /<span class="ptag mk" data-a="adapter" data-x="teammate"[^>]*>Create adapter</.test(h), h.slice(h.indexOf('class="ag note'), h.indexOf('class="ag note') + 500)]);
   render({ rows: [R("ag", { agents })], quiet: "" });
   checks.push(["agents: pushing the same rows again draws no arrival animation", !/class="ag [^"]*\bnew\b/.test(els.rows.innerHTML)]);
   render({ rows: [R("ag", { agents: agents.concat([ag("a9", { label: "late" })]) })], quiet: "" });
@@ -3276,6 +3278,9 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     }
     // A sub-agent or run row opens only an id the row lists, as the kind it is.
     {
+      const notice = await press("adapter", U, "workflow");
+      checks.push(["agents: Create adapter for a notice the row does not carry is refused, cmux untouched",
+        notice.res.ok === false && notice.cmux.length === 0, JSON.stringify(notice)]);
       const stray = await press("agent", U, "a-elsewhere"), wrong = await press("run", U, "a1");
       checks.push(["agents: an agent the row does not list, or a lone agent asked for as a run, is refused, cmux untouched",
         stray.res.ok === false && wrong.res.ok === false && stray.cmux.length === 0 && wrong.cmux.length === 0,
