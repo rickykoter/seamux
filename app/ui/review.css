@@ -73,7 +73,7 @@
 .r-chip { font-size: var(--fs-1); padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--term); color: var(--muted); }
 .r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good-t); }
 /* The page's gate pill colour: a blocked review reads as a blocker does. */
-.r-chip.blocked { background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); color: var(--ef-text-red); }
+.r-chip.blocked { background: color-mix(in srgb, var(--bad-t) 16%, transparent); color: var(--bad-t); }
 .r-chip.failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad-t); }
 .r-chip.running { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-t); }
 
@@ -82,7 +82,7 @@
 .r-gate { font: 600 var(--fs-2) system-ui, sans-serif; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .r-gate:hover:not(:disabled) { background: var(--term); }
 .r-gate:disabled { cursor: default; }
-.r-gate.blocked { color: var(--ef-text-red); border-color: var(--ef-text-red); }
+.r-gate.blocked { color: var(--bad-t); border-color: var(--bad-t); }
 .r-gate.pass { color: var(--good-t); border-color: var(--good); }
 .r-go { margin-left: 5px; font-weight: 400; opacity: 0.8; }
 .r-mode { font-size: var(--fs-1); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 32ch; }

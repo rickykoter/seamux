@@ -94,11 +94,11 @@
   margin: 8px 10px 3px; padding-top: 6px; border-top: 1px solid var(--line);
   font-size: var(--fs-1); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
 }
-/* The tier colours, as the board wears them: waiting is the accent, working
-   the running blue, the rest grey; a tucked or muted one is a hollow ring. */
+/* The tier colours, as the board wears them: the needs-you and working
+   roles, the rest grey; a tucked or muted one is a hollow ring. */
 .search-dot { flex: none; width: 10px; height: 10px; fill: var(--muted); }
 .search-dot.needs_input { fill: var(--ask); }
-.search-dot.working { fill: var(--ef-blue, var(--good)); }
+.search-dot.working { fill: var(--working); }
 .search-dot.away { fill: none; stroke: var(--muted); stroke-width: 1.4; }
 .search-preview { overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .search-p-head { display: flex; align-items: center; gap: 7px; font-size: var(--fs-4); margin-bottom: 2px; }

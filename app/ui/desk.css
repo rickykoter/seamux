@@ -1,20 +1,14 @@
 /* Desk: every decision waiting on you, as the canvas's Desk board draws it.
-   Colours are the index.html tokens plus a chip tint per kind, each with a
-   dark twin, so the page follows the system appearance. */
+   Colours are the index.html tokens: a chip per kind is a tint of its
+   colour role (a question needs you; a gate or a family is work under way)
+   with the role's word colour, so both modes come from theme/everforest.css.
+   A review keeps the palette's purple: it is a kind, not a state. */
 
 :root {
-  --chip-ask-bg: #f6ecd9; --chip-ask-fg: #7a4f10;
-  --chip-gate-bg: #e6eef8; --chip-gate-fg: #24507f;
-  --chip-look-bg: #efe9f8; --chip-look-fg: #5b3d8a;
-  --ask-tint: #fdf6ea;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --chip-ask-bg: #3a2f1c; --chip-ask-fg: #f2c462;
-    --chip-gate-bg: #1d2a3a; --chip-gate-fg: #8fb8ea;
-    --chip-look-bg: #2b2238; --chip-look-fg: #c9b3f5;
-    --ask-tint: #2e2a20;
-  }
+  --chip-ask-bg: color-mix(in srgb, var(--ask) 16%, transparent); --chip-ask-fg: var(--ask-t);
+  --chip-gate-bg: color-mix(in srgb, var(--working) 16%, transparent); --chip-gate-fg: var(--accent-t);
+  --chip-look-bg: color-mix(in srgb, var(--ef-purple) 16%, transparent); --chip-look-fg: var(--ef-text-purple);
+  --ask-tint: color-mix(in srgb, var(--ask) 10%, var(--bg));
 }
 
 #desk { height: 100%; }

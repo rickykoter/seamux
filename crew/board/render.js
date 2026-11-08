@@ -74,13 +74,15 @@ function __boardRender(d) {
     return "stopped: " + l.label + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : " \u00b7 reset time unknown");
   }
   var AMBER = COL.attend;
+  // Amber as words: the tier's word twin, which holds 4.5:1 where the fill does not.
+  var AMBER_T = "var(--attend-t)";
   // The pill takes the badge's place: the limit is why the row needs you.
   // It names the limit and when it lifts, in plain words.
   function limPill(a) {
     if (!a.limited) return "";
     // Which limit is in its tooltip and the said line; here, when it lifts.
     var l = a.limited, word = l.error === "billing_error" ? "spend limit" : l.label;
-    return '<span class="badge lim" style="color:' + AMBER + ";border-color:" + AMBER + '" title="' +
+    return '<span class="badge lim" style="color:' + AMBER_T + ";border-color:" + AMBER + '" title="' +
       esc(stopText(a)) + '">' + esc(l.resets_at ? "back " + clockOf(l.resets_at) : word) + "</span>";
   }
   // A card that needs you says so on its badge, the headline's words; why it
@@ -96,7 +98,7 @@ function __boardRender(d) {
   }
   // What a card says under its head: the stop, while a limit holds it.
   function saidOf(a) {
-    if (a.limited) return '<span class="lim" style="color:' + AMBER + '">' + esc(stopText(a)) + "</span>";
+    if (a.limited) return '<span class="lim" style="color:' + AMBER_T + '">' + esc(stopText(a)) + "</span>";
     var why = reasonOf(a);
     if (!why) return said(a.said);
     return '<span class="rsn">' + esc(why) + (a.said ? ":</span> " + said(a.said) : "</span>");
@@ -116,7 +118,7 @@ function __boardRender(d) {
     } else {
       text = "resumes at reset"; tip = "No reset time is known: it waits for you";
     }
-    return '<span class="chip sig armed" data-a="resume" data-x="off" style="color:' + COL.running + '" title="' +
+    return '<span class="chip sig armed" data-a="resume" data-x="off" style="color:var(--running-t)" title="' +
       esc(tip + ". Click to stop resuming this worktree.") + '">' + CLOCK + esc(text) + " \u00d7</span>";
   }
 

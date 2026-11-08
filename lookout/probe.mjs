@@ -1951,8 +1951,8 @@ if (want("page script")) {
      js.includes('(x.id === curFinding ? " cur" : "")'));
   ok("page+app: a blocked gate reads in the blocker colour, and its pill shows an arrow when it jumps",
      css.includes(".gate.blocked { color: var(--sev-blocker); border-color: var(--sev-blocker); }") &&
-     appCss.includes(".r-chip.blocked { background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); color: var(--ef-text-red); }") &&
-     appCss.includes(".r-gate.blocked { color: var(--ef-text-red);") &&
+     appCss.includes(".r-chip.blocked { background: color-mix(in srgb, var(--bad-t) 16%, transparent); color: var(--bad-t); }") &&
+     appCss.includes(".r-gate.blocked { color: var(--bad-t);") &&
      js.includes('$("gate").replaceChildren(g.text, gt.go ? el("span", { class: "go", "aria-hidden": "true" }, "↓") : "");') &&
      app.includes('const go = el("span", "r-go", "↓");'));
   ok("page: Reply, Resolve and Dismiss are quiet outlined buttons with a focus ring, not plain text",
