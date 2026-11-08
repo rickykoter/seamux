@@ -15,6 +15,9 @@ import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
 import { Tray } from "./tray";
+
+/** A sub-agent's transcript page or a run's page, as the board names them. */
+const AGENT_PAGE = /^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/;
 import { setLevel, setResume, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./tiles";
 
@@ -124,6 +127,15 @@ export class DockView {
       const u = d as { on?: unknown; name?: unknown } | null;
       if (d?.crew === "resume" && typeof d.ws === "string" && d.ws && typeof u?.on === "boolean") {
         void setResume(d.ws, typeof u.name === "string" ? u.name : d.ws, u.on);
+      }
+      // A sub-agent or run row: its page in the Sheet, beside that
+      // workspace's terminal. Only an /agent/ or /run/ path is opened; the
+      // intent server serves it only for an agent an adapter listed.
+      const g = d as { path?: unknown; title?: unknown } | null;
+      if (d?.crew === "page" && typeof d.ws === "string" && d.ws && typeof g?.path === "string" && AGENT_PAGE.test(g.path)) {
+        const ws = d.ws;
+        this.select(ws, true);
+        void this.sheet.open({ path: g.path, title: typeof g.title === "string" && g.title ? g.title : "Agent", workspace: ws });
       }
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;
@@ -257,7 +269,7 @@ export class DockView {
   private tell(): void {
     const peek = !!this.peek && this.peek === this.ws;
     if (this.frame?.contentWindow && this.origin)
-      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites"], peek, sprite: sprite.get() }, this.origin);
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents"], peek, sprite: sprite.get() }, this.origin);
   }
 
   private draw(): void {

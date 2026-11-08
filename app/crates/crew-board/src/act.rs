@@ -19,11 +19,51 @@ use crate::plans::{plan_page, uuid_ok};
 use crate::server::{crew_file, current, log, quote};
 use crate::state::state_dir;
 
-pub const ACTIONS: [&str; 23] = [
+pub const ACTIONS: [&str; 26] = [
     "jump", "pane", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
     "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
-    "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake",
+    "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake", "agent", "run", "adapter",
 ];
+
+/// The notice row a Create adapter click names: by its task type, or by
+/// the adapter that failed.
+pub fn notice_of(row: &Map<String, Value>, key: &str) -> Option<Value> {
+    if key.is_empty() {
+        return None;
+    }
+    row.get("agentNotices").and_then(Value::as_array)?.iter().find(|n| {
+        n.get("taskType").and_then(Value::as_str).or_else(|| n.get("adapter").and_then(Value::as_str)) == Some(key)
+    }).cloned()
+}
+
+fn notice_from(n: &Value) -> crew_core::runs::Notice {
+    let s = |k: &str| n.get(k).and_then(Value::as_str).map(str::to_string);
+    crew_core::runs::Notice {
+        kind: s("kind").unwrap_or_else(|| "missing".into()),
+        adapter: s("adapter"),
+        task_type: s("taskType"),
+        count: n.get("count").and_then(Value::as_u64).unwrap_or(0) as usize,
+        why: s("why").unwrap_or_default(),
+    }
+}
+
+/// A sub-agent or run row's page, when the row lists it: /agent/<session>/<id>
+/// for a lone agent, /run/<session>/<id> for a run of many. Only a row the
+/// card itself carries is opened, never an id the request made up.
+pub fn agent_path(row: &Map<String, Value>, action: &str, id: &str) -> Option<String> {
+    let e = row.get("agents").and_then(Value::as_array)?.iter()
+        .find(|e| e.get("id").and_then(Value::as_str) == Some(id) && !id.is_empty())?;
+    let session = e.get("session").and_then(Value::as_str).unwrap_or("");
+    let plain = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if !plain(session) || !plain(id) || id.starts_with('.') {
+        return None;
+    }
+    let kind = e.get("kind").and_then(Value::as_str).unwrap_or("agent");
+    let want = if kind == "workflow" { "run" } else { "agent" };
+    // A lone agent's page is its agent's id, when the adapter gave one apart.
+    let page = e.get("agent").and_then(Value::as_str).filter(|a| plain(a) && !a.starts_with('.')).unwrap_or(id);
+    (action == want).then(|| format!("/{want}/{session}/{page}"))
+}
 
 /// Run a child to completion within `timeout`: Some((code, stdout, stderr)),
 /// or None when it could not start or ran out of time (then killed).
@@ -471,6 +511,47 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
                 None => (false, "intent server not answering".into()),
             }
         }
+        // A sub-agent or run row: its page beside the workspace, as a plan's is.
+        "agent" | "run" => {
+            let Some(path) = agent_path(row, action, extra.trim()) else {
+                return (false, format!("that {action} is not this row's"));
+            };
+            let Some((port, _)) = current() else { return (false, "intent server not answering".into()) };
+            let url = format!("http://127.0.0.1:{port}{path}");
+            if uuid_ok(&wsid) {
+                match crate::companion::open(&url, &format!("{action}-{}", extra.trim()), &wsid, "", true) {
+                    Ok(sid) => (true, format!("focused {sid}")),
+                    Err(e) => (false, e),
+                }
+            } else {
+                (run_ok("open", &[&url], None), url)
+            }
+        }
+        // A notice row's Create adapter ("no adapter", "adapter failed"):
+        // a new session in this row's worktree, started on a prompt that
+        // carries what there is to read. Only a notice the row carries.
+        "adapter" => {
+            let Some(n) = notice_of(row, extra.trim()) else {
+                return (false, "that notice is not this row's".into());
+            };
+            if cwd.is_empty() {
+                return (false, "no workspace directory on this row".into());
+            }
+            let session = n.get("session").and_then(Value::as_str).unwrap_or("");
+            let Some(ctx) = crew_core::runs::context_for(session, &cwd) else {
+                return (false, "that session's folder is gone".into());
+            };
+            let notice = notice_from(&n);
+            let prompt = crew_core::runs::draft::prompt(&ctx, &notice, &crew_core::crew_home().join("adapters/template"));
+            let Some(exe) = crew_core::upgrade::exe() else { return (false, "no seamux binary to open a session with".into()) };
+            let mut cmd = Command::new(exe);
+            cmd.args(["workspace-open", &cwd, "--prompt", &prompt]).stdin(Stdio::null());
+            match spawn_wait(cmd, Duration::from_secs(30)) {
+                Some((0, out, _)) => (true, out.trim().to_string()),
+                Some((rc, _, err)) => (false, format!("workspace-open exited {rc}: {}", err.trim())),
+                None => (false, "workspace-open did not finish".into()),
+            }
+        }
         "wake" => {
             // The Wake for this row's workspace, in one tab kept like a plan's:
             // a tap on another row moves it there, switching workspace with it.
@@ -597,5 +678,33 @@ mod tests {
     fn jira_keys_are_checked_like_the_python() {
         assert!(jira_key_ok("PROJ-1039") && jira_key_ok("A1-2"));
         assert!(!jira_key_ok("P-1") && !jira_key_ok("proj-1") && !jira_key_ok("PROJ-") && !jira_key_ok("PROJ-1a"));
+    }
+
+    #[test]
+    fn an_agent_or_run_click_opens_only_a_row_the_card_lists() {
+        let row = serde_json::json!({"agents": [
+            {"id": "a1", "kind": "agent", "session": "9c328a5c-81d2"},
+            {"id": "wf_f7b371f3-6f2", "kind": "workflow", "session": "9c328a5c-81d2"},
+            {"id": "x", "kind": "agent", "session": "../etc"},
+            {"id": "run-7", "kind": "agent", "agent": "ag-7", "session": "9c328a5c-81d2"}]});
+        let row = row.as_object().unwrap();
+        assert_eq!(agent_path(row, "agent", "a1").as_deref(), Some("/agent/9c328a5c-81d2/a1"));
+        assert_eq!(agent_path(row, "run", "wf_f7b371f3-6f2").as_deref(), Some("/run/9c328a5c-81d2/wf_f7b371f3-6f2"));
+        assert_eq!(agent_path(row, "run", "a1"), None, "a lone agent opens as an agent");
+        assert_eq!(agent_path(row, "agent", "nope"), None, "an id the card does not list");
+        assert_eq!(agent_path(row, "agent", "x"), None, "a session that is not a plain id");
+        assert_eq!(agent_path(row, "agent", "run-7").as_deref(), Some("/agent/9c328a5c-81d2/ag-7"), "a lone agent's page is its agent's id");
+        assert!(ACTIONS.contains(&"agent") && ACTIONS.contains(&"run") && ACTIONS.contains(&"adapter"));
+    }
+
+    #[test]
+    fn create_adapter_answers_only_a_notice_the_row_carries() {
+        let row = serde_json::json!({"agentNotices": [
+            {"kind": "missing", "taskType": "teammate", "session": "s1", "count": 2, "why": "no adapter"},
+            {"kind": "failed", "adapter": "mine", "session": "s1", "why": "timed out after 300 ms"}]});
+        let row = row.as_object().unwrap();
+        assert_eq!(notice_of(row, "teammate").and_then(|n| n["count"].as_u64()), Some(2));
+        assert_eq!(notice_from(&notice_of(row, "mine").unwrap()).why, "timed out after 300 ms");
+        assert!(notice_of(row, "workflow").is_none() && notice_of(row, "").is_none());
     }
 }

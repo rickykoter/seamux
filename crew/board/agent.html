@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent transcript</title>
+<!--
+  A sub-agent's transcript, read-only, beside the terminal. The intent server
+  serves it at /agent/<session>/<id> (crew-board's agent_page.rs) only for an
+  agent an adapter listed, with its token in the boot data, and its view at
+  .../data. Answer first: a sticky header (label, model, state, elapsed,
+  tokens), then the answer (or, while it runs, its latest step), then the
+  prompt and every step as a folded timeline, one line per tool call. A
+  running agent is asked again every 3 seconds; new steps are appended and
+  an open step stays open.
+-->
+<style>
+/* everforest:start */
+:root {
+  --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
+  --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
+  --ef-line: #3d484d; --ef-line2: #4f5b58; --ef-card: #3a464c; --ef-card2: #343f44; --ef-card3: #424e54;
+  --ef-red: #e67e80; --ef-orange: #e69875; --ef-yellow: #dbbc7f; --ef-green: #a7c080;
+  --ef-aqua: #83c092; --ef-blue: #7fbbb3; --ef-purple: #d699b6;
+  --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
+  --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
+  --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #bac2bc; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
+  --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
+  --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
+  /* roles: what a colour means, the same on every surface. A page maps its
+     own names onto these and never picks a hue for a state itself. Each state
+     has a fill (rings, dots, borders: 3:1) and a word colour (-t: 4.5:1).
+     A role names a palette token where one passes; a raw hex is a palette
+     hue made darker or lighter to pass. Amber is needs-you and nothing else;
+     working, links and focus share the teal accent in both modes (in light,
+     a teal of their own: --ef-accent stays Everforest's blue, a palette
+     colour that means nothing). Lines and edges are separators, held to no floor. */
+  --role-attend: #dfa000; --role-attend-t: var(--ef-text-mark);
+  --role-working: var(--ef-blue); --role-working-t: var(--ef-text-accent);
+  --role-done: var(--ef-green); --role-done-t: var(--ef-text-green);
+  --role-broken: var(--ef-red); --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: var(--ef-text-accent); --role-focus: var(--ef-accent);
+  /* terminal: the app's terminals draw with these in every mode, whatever a
+     cmux or Ghostty config names (that config sets only the font). Ground,
+     words, cursor and selection, then the 16 ANSI slots (0-7 black, red,
+     green, yellow, blue, magenta, cyan, white; 8-15 their brights). Dark is
+     Ghostty's Everforest Dark Hard. Each slot a program prints words in is
+     4.5:1 or better on --term-bg (theme_sync.py --check); the slots it paints
+     as grounds are held to nothing (TERM_GROUND_SLOTS). Six 256-colour
+     slots keep their usual sense but take seamux's tints per mode, so a
+     Claude theme on slots (seamux foam) gets tints that follow the flip:
+     22 and 52 diff lines, 28 and 88 changed words (dark green and red),
+     236 and 237 raised bands (a grey a step off the ground). */
+  --term-bg: #1e2326; --term-text: #d3c6aa; --term-cursor: #e69875; --term-cursor-text: #4c3743;
+  --term-selection: #4c3743; --term-selection-text: #d3c6aa;
+  --term-0: #7a8478; --term-1: #e67e80; --term-2: #a7c080; --term-3: #dbbc7f; --term-4: #7fbbb3; --term-5: #d699b6; --term-6: #83c092; --term-7: #f2efdf;
+  --term-8: #a6b0a0; --term-9: #f85552; --term-10: #8da101; --term-11: #dfa000; --term-12: #3a94c5; --term-13: #df69ba; --term-14: #35a77c; --term-15: #fffbef;
+  --term-22: #384532; --term-52: #5f3538; --term-28: #425237; --term-88: #753c3f; --term-236: #343f44; --term-237: #2d353b;
+  --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* type scale: every page sizes words with these, never a px value of its own.
+     1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
+     3 body and UI default · 4 emphasis, card titles · 5 section and page titles
+     6 the plan page's h1 alone */
+  --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
+}
+/* light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+    --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+    --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+    --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+    --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+    --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+    --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+    --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+    --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+    --role-working: #2a8079; --role-working-t: #22675f;
+    --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+    --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+    --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+    --role-line: #ddd8bf; --role-edge: #b9bea6;
+    --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+    --role-link: #22675f; --role-focus: #2a8079;
+    /* terminal, light: Light Med's hues are 2:1 as words on its cream, so
+       each slot is the palette's light word colour, the brights a shade
+       deeper. The words are the palette's text, darker than Light Med's, so a
+       tint can sit a step off the ground and still hold them at 4.5:1; black
+       is darker still, white is the words' colour, bright black the quiet
+       grey, and bright white stays light, since programs print it as a
+       ground. */
+    --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+    --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
+    --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+    --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+    --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
+  }
+}
+:root[data-theme="light"] {
+  --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+  --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+  --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+  --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+  --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+  --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+  --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+  --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+  --role-working: #2a8079; --role-working-t: #22675f;
+  --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+  --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: #ddd8bf; --role-edge: #b9bea6;
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: #22675f; --role-focus: #2a8079;
+  --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+  --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
+  --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+  --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+  --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
+}
+/* everforest:end */
+:root{
+  --bg:var(--ef-bg); --card:var(--ef-bg1); --line:var(--ef-line); --ink:var(--ef-text); --muted:var(--ef-text-dim);
+  --faint:var(--ef-text-faint); --run:var(--role-working); --run-t:var(--role-working-t); --ok:var(--role-done);
+  --ok-t:var(--role-done-t); --bad:var(--role-broken); --bad-t:var(--role-broken-t); --hover:var(--ef-bg2);
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:980px;margin:0 auto;padding:0 18px 48px}
+header{position:sticky;top:0;z-index:2;background:var(--bg);padding:14px 18px 10px;margin:0 -18px;border-bottom:1px solid var(--line)}
+h1{font:600 17px/1.25 system-ui;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+.back{display:inline-block;margin-bottom:4px;color:var(--role-link,var(--run-t));font-size:12.5px;text-decoration:none}
+.back:hover{text-decoration:underline}
+.back[hidden]{display:none}
+.pill{font-weight:600;padding:0 7px;border-radius:999px;border:1px solid currentColor}
+.pill.running{color:var(--run-t)} .pill.done{color:var(--ok-t)} .pill.failed,.pill.cancelled{color:var(--bad-t)}
+.pill.queued,.pill.unknown{color:var(--muted)}
+section{margin-top:16px}
+h2{font:600 12px/1 system-ui;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.answer{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;white-space:pre-wrap;
+  overflow-wrap:anywhere}
+.answer.wip{color:var(--muted);font-style:italic}
+.answer code,.out{font:12.5px/1.45 var(--mono)}
+ol{list-style:none;margin:0;padding:0}
+li{border-radius:6px}
+li>button{all:unset;display:flex;align-items:baseline;gap:10px;width:100%;box-sizing:border-box;padding:3px 8px;
+  cursor:pointer;border-radius:6px;min-width:0}
+li>button:hover{background:var(--hover)}
+li>button:focus-visible{outline:2px solid var(--role-focus);outline-offset:-2px}
+.tm{flex:none;width:62px;color:var(--faint);font:12px/1.5 var(--mono);font-variant-numeric:tabular-nums}
+.kd{flex:none;min-width:64px;font-weight:600}
+li.text .kd{color:var(--muted);font-weight:500}
+li.err .kd{color:var(--bad-t)}
+.sm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font:12.5px/1.5 var(--mono)}
+li.text .sm{font:13px/1.5 system-ui}
+.car{flex:none;width:10px;height:10px;margin-left:auto;align-self:center;stroke:var(--faint);fill:none;stroke-width:1.5;
+  stroke-linecap:round;stroke-linejoin:round;transition:transform .12s}
+li.open .car{transform:rotate(90deg)}
+.body{display:none;margin:2px 8px 8px 80px;padding:8px 10px;border-left:2px solid var(--line);white-space:pre-wrap;
+  overflow-wrap:anywhere}
+li.open .body{display:block}
+li.err .body{border-left-color:var(--bad)}
+.out{color:var(--ink)}
+.in{font:12.5px/1.45 var(--mono);color:var(--muted);padding-bottom:6px;margin-bottom:6px;border-bottom:1px dashed var(--line)}
+.note{color:var(--muted);font-size:13px;margin:10px 8px}
+pre.plain{font:12.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.gone{margin:40px auto;max-width:520px;color:var(--muted);text-align:center}
+@media (prefers-reduced-motion:reduce){.car{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <a class="back" id="back" hidden></a>
+    <h1 id="name">Agent</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+  <section id="ans" hidden><h2 id="ansh">Answer</h2><div class="answer" id="answer"></div></section>
+  <section id="tl" hidden><h2 id="tlh">Steps</h2><p class="note" id="dropped" hidden></p><ol id="steps"></ol></section>
+  <section id="plain" hidden><pre class="plain" id="text"></pre></section>
+  <p class="gone" id="gone" hidden></p>
+</main>
+<script id="boot" type="application/json">__BOOT__</script>
+<script>
+(function () {
+  var boot = {};
+  try { boot = JSON.parse(document.getElementById("boot").textContent); } catch (e) { boot = {}; }
+  var $ = function (id) { return document.getElementById(id); };
+  var CAR = '<svg class="car" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 2 6.5 5 3.5 8"/></svg>';
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  // "1:05 PM", as the board says a time.
+  function clock(ms) {
+    if (!(ms > 0)) return "";
+    var d = new Date(ms), h = d.getHours(), m = d.getMinutes();
+    return (h % 12 || 12) + ":" + (m < 10 ? "0" : "") + m + " " + (h < 12 ? "AM" : "PM");
+  }
+  function took(ms) {
+    var s = Math.floor(Math.max(0, ms) / 1000), m = Math.floor(s / 60);
+    return s < 60 ? s + "s" : m < 60 ? m + "m" : Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "");
+  }
+  function tokens(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n); }
+  // An answer's code fences in monospace; everything else as written.
+  function rich(t) {
+    return esc(t).replace(/```[a-z]*\n?([\s\S]*?)```/g, function (_, c) { return "<code>" + c + "</code>"; })
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  }
+
+  // Opened from a run page's bar: a way back to it.
+  var back = "";
+  try { back = new URLSearchParams(location.search).get("back") || ""; } catch (e) { back = ""; }
+  if (/^\/run\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(back)) {
+    $("back").href = back;
+    $("back").hidden = false;
+    $("back").textContent = "\u2190 The run";
+  }
+  var state = { running: true, agent: null, since: 0, steps: {}, prompt: "", lastText: null, dropped: 0 };
+  function header(v) {
+    var a = v.agent || {}, r = v.run || {};
+    state.agent = a;
+    document.title = (a.label || boot.title || "Agent") + " · transcript";
+    $("name").textContent = a.label || boot.title || "Agent";
+    var end = a.end || (a.state === "running" ? Date.now() : 0);
+    var bits = ['<span class="pill ' + esc(a.state || "unknown") + '">' + esc(a.state || "unknown") + "</span>"];
+    if (a.model) bits.push(esc(a.model));
+    if (a.start > 0 && end) bits.push('<span id="el">' + took(end - a.start) + "</span>");
+    if (a.tokens > 0) bits.push(tokens(a.tokens) + " tokens");
+    if (r.kind === "workflow" && r.name) bits.push("in " + esc(r.name) + (a.phase ? " · " + esc(a.phase) : ""));
+    if (!$("back").hidden && r.name) $("back").textContent = "\u2190 " + r.name;
+    $("meta").innerHTML = bits.join("");
+  }
+  function stepRow(s, i) {
+    var li = document.createElement("li");
+    li.className = s.kind + (s.error ? " err" : "");
+    li.setAttribute("data-i", String(i));
+    var kind = s.kind === "tool" ? s.name : s.kind === "prompt" ? "Prompt" : "said";
+    var line = s.kind === "tool" ? s.summary : String(s.text || "").split("\n")[0];
+    var given = s.kind === "tool" && s.input && s.input !== s.summary ? '<div class="in">' + esc(s.input) + "</div>" : "";
+    var body = s.kind === "tool" ? given + (s.result != null ? '<div class="out">' + esc(s.result || "(no output)") + "</div>" : '<div class="note">running…</div>')
+      : '<div>' + rich(s.text || "") + "</div>";
+    li.innerHTML = '<button type="button" aria-expanded="false"><span class="tm">' + clock(s.at) + '</span><span class="kd">' + esc(kind) +
+      '</span><span class="sm">' + esc(line) + "</span>" + CAR + '</button><div class="body">' + body + "</div>";
+    li.setAttribute("data-key", (s.result != null ? "r" : "") + (s.error ? "e" : ""));
+    return li;
+  }
+  $("steps").addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("li>button");
+    if (!b) return;
+    var li = b.parentNode, open = !li.classList.contains("open");
+    li.classList.toggle("open", open);
+    b.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  function draw(v) {
+    header(v);
+    state.running = (v.agent || {}).state === "running";
+    if (v.format !== "claude-jsonl") {
+      $("plain").hidden = false;
+      $("text").textContent = v.text || "";
+      return;
+    }
+    // A reply carries the steps from `since` on: merged into what is held,
+    // by each step's place in the whole transcript (n).
+    (v.steps || []).forEach(function (s) { state.steps[s.n] = s; });
+    if (v.prompt) state.prompt = v.prompt;
+    if ("lastText" in v) state.lastText = v.lastText;
+    state.dropped = v.dropped || 0;
+    var ns = Object.keys(state.steps).map(Number).filter(function (n) { return n >= state.dropped; }).sort(function (a, b) { return a - b; });
+    var steps = ns.map(function (n) { return state.steps[n]; });
+    // The next ask starts at the first tool still waiting on its result
+    // among the newest 20 steps (an older one that never got its result
+    // holds nothing back), else after the last.
+    var wait = steps.slice(-20).filter(function (s) { return s.kind === "tool" && s.result == null; })[0];
+    state.since = wait ? wait.n : (ns.length ? ns[ns.length - 1] + 1 : 0);
+    var all = (state.prompt ? [{ kind: "prompt", text: state.prompt, at: (v.agent || {}).start, n: -1 }] : []).concat(steps);
+    // The answer: the last thing it said once it is done; while it runs, its latest step.
+    var last = steps[steps.length - 1];
+    $("ans").hidden = false;
+    if (state.running) {
+      $("ansh").textContent = "Working";
+      $("answer").className = "answer wip";
+      $("answer").textContent = last ? (last.kind === "tool" ? last.name + "  " + last.summary : String(last.text).split("\n")[0]) : "Starting…";
+    } else {
+      $("ansh").textContent = "Answer";
+      $("answer").className = "answer";
+      $("answer").innerHTML = state.lastText ? rich(state.lastText) : '<span class="note">No answer in the transcript.</span>';
+    }
+    $("tl").hidden = !all.length;
+    $("tlh").textContent = "Steps · " + steps.filter(function (s) { return s.kind === "tool"; }).length + " tool calls";
+    $("dropped").hidden = !(state.dropped > 0);
+    $("dropped").textContent = state.dropped > 0 ? state.dropped + " earlier steps are not shown." : "";
+    // Keyed by each step's place: a step already drawn is redrawn only when
+    // its result arrives, so an open step stays open and nothing flickers;
+    // a step dropped from the front leaves.
+    var ol = $("steps"), held = {};
+    for (var c = ol.firstChild; c; c = c.nextSibling) held[c.getAttribute("data-i")] = c;
+    var keep = {};
+    for (var i = 0; i < all.length; i++) {
+      var k = String(all[i].n);
+      keep[k] = 1;
+      var have = held[k], row = stepRow(all[i], all[i].n);
+      if (!have) ol.appendChild(row);
+      else if (have.getAttribute("data-key") !== row.getAttribute("data-key")) {
+        if (have.classList.contains("open")) { row.classList.add("open"); row.firstChild.setAttribute("aria-expanded", "true"); }
+        ol.replaceChild(row, have);
+      }
+    }
+    Object.keys(held).forEach(function (k) { if (!keep[k]) ol.removeChild(held[k]); });
+  }
+  // A refusal or an error is said, and asked again more slowly: the
+  // adapters can lag a moment behind a new agent, and a server restarts.
+  var retry = 0;
+  function gone(why) {
+    $("gone").hidden = false;
+    $("gone").textContent = why;
+    retry = retry ? Math.min(30000, retry * 2) : 2000;
+  }
+  function load() {
+    var url = "/agent/" + encodeURIComponent(boot.session || "") + "/" + encodeURIComponent(boot.id || "") +
+      "/data?t=" + encodeURIComponent(boot.t || "") + (state.since > 0 ? "&since=" + state.since : "");
+    fetch(url, { cache: "no-store" }).then(function (r) {
+      if (r.status === 404) return gone("No adapter lists this agent's transcript any more.");
+      if (!r.ok) return gone("The transcript could not be read (" + r.status + ").");
+      return r.json().then(function (v) { retry = 0; draw(v); $("gone").hidden = true; });
+    }).catch(function () {
+      gone("The intent server is not answering.");
+    }).then(function () {
+      if (retry) setTimeout(load, retry);
+      else if (state.running) setTimeout(load, 3000);
+    });
+  }
+  // Elapsed time between asks.
+  setInterval(function () {
+    var a = state.agent, el = $("el");
+    if (el && a && a.state === "running" && a.start > 0) el.textContent = took(Date.now() - a.start);
+  }, 1000);
+  load();
+})();
+</script>
+</body>
+</html>

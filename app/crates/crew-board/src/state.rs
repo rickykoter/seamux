@@ -823,6 +823,10 @@ pub fn build(o: &Opts) -> Value {
     // which has wandered past the pin.
     if let Some((live, files)) = &panes {
         mark_panes(&mut all, &plan_by_root, &wss, live, files);
+        // Under each pane, the background sub-agents and runs it started.
+        if o.fixture.is_none() {
+            crate::agents::mark_agents(&mut all, files);
+        }
     }
     let n = plan_by_root.len();
     let mut d = Map::new();

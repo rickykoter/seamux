@@ -54,6 +54,14 @@ pub fn get(req: &mut Request) {
     if let Some(p) = crate::proxy::owner_get(&path) {
         return crate::proxy::get(req, p);
     }
+    // A sub-agent's transcript page and its data (agent_page.rs).
+    if path.starts_with("/agent/") && crate::agent_page::get(req) {
+        return;
+    }
+    // A run's page, its data and its event feed (run_page.rs).
+    if path.starts_with("/run/") && crate::run_page::get(req) {
+        return;
+    }
     match path.as_str() {
         "/health" => return req.reply(200, crate::server::health_body().as_bytes()),
         "/usage" => {

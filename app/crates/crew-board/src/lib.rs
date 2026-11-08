@@ -10,6 +10,8 @@
 //! the served pages instead, and the rest point at /board (state.rs).
 
 pub mod act;
+pub mod agent_page;
+pub mod agents;
 pub mod ask;
 pub mod backend;
 pub mod board_feed;
@@ -21,6 +23,7 @@ pub mod proxy;
 pub mod pyval;
 pub mod rank;
 pub mod review;
+pub mod run_page;
 pub mod routes;
 pub mod selftest;
 pub mod server;

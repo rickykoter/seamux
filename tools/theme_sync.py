@@ -68,6 +68,8 @@ TARGETS = [
     ("crew/board/board.html", "both"),
     ("crew/board/usage.tmpl.html", "both"),
     ("crew/board/artifacts.tmpl.html", "both"),
+    ("crew/board/agent.html", "both"),
+    ("crew/board/run.html", "both"),
 ]
 
 

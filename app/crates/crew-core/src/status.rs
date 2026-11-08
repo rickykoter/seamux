@@ -48,6 +48,133 @@ pub struct Pane {
     /// The turn was stopped by a usage limit (a StopFailure of rate_limit or
     /// billing_error), until the pane works again.
     pub limited: Option<Limited>,
+    /// Background sub-agents and workflows the session still runs, from
+    /// Claude Code's Stop and SubagentStop payloads (background_tasks).
+    pub background: Vec<Background>,
+    /// The main turn ended and only background work keeps the pane working,
+    /// so the silent and interrupt checks leave it alone. A prompt, an
+    /// answer, a new session or the last task's finish clears it.
+    pub bg_only: bool,
+}
+
+/// The background task types that keep a pane working: agents, which
+/// finish on their own and start a main turn when they do. A background
+/// shell or monitor (a dev server, a log tail) can run for hours and is not
+/// the session at work, unless a sub-agent started it (see from_payload).
+pub const BACKGROUND_KINDS: [&str; 3] = ["subagent", "workflow", "teammate"];
+
+/// One background task, as Claude Code's background_tasks lists it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Background {
+    /// Claude Code's task type: subagent, workflow, shell, monitor and so on.
+    pub kind: String,
+    pub id: String,
+    /// The workflow's name, else the task's description, else its agent type.
+    pub label: String,
+    /// When this pane first saw it, in ms since the epoch.
+    pub at: u64,
+    /// The agents of this task stopped on a permission prompt (Claude
+    /// Code's PermissionRequest, by agent_id): the sub-agent itself, or a
+    /// workflow's agents. Cleared when the agent moves on.
+    pub waiting: Vec<String>,
+}
+
+impl Background {
+    pub fn to_json(&self) -> Value {
+        let mut v = json!({"kind": self.kind, "id": self.id, "label": self.label, "at": self.at});
+        if !self.waiting.is_empty() {
+            v["waiting"] = json!(self.waiting);
+        }
+        v
+    }
+
+    pub fn from_json(v: &Value) -> Option<Background> {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let id = s("id");
+        let waiting = v.get("waiting").and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        (!id.is_empty()).then(|| Background { kind: s("kind"), id, label: s("label"), at: v.get("at").and_then(Value::as_u64).unwrap_or(0), waiting })
+    }
+
+    /// The agent tasks (BACKGROUND_KINDS) in a hook payload's
+    /// background_tasks that still run, less `except` (a SubagentStop lists
+    /// its own agent as running). A task this pane already knows keeps its
+    /// start; a new one starts at `now_ms`.
+    ///
+    /// A sub-agent that stops while a shell it put in the background still
+    /// runs drops off the list, and Claude Code (2.1.319) lists only the
+    /// shell, with no owner. So a shell counts when a sub-agent started it:
+    /// its id is in `owned`, the shell ids the departing agents' own
+    /// transcripts name (shells_owned). Once adopted it counts until it
+    /// ends. Any other shell (the main agent's dev server) never does.
+    pub fn from_payload(payload: &Value, except: &str, known: &[Background], owned: &[String], now_ms: u64) -> Vec<Background> {
+        let Some(tasks) = payload.get("background_tasks").and_then(Value::as_array) else { return Vec::new() };
+        let s = |t: &Value, k: &str| t.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        tasks.iter().filter_map(|t| {
+            let id = s(t, "id");
+            let status = s(t, "status");
+            let kind = s(t, "type");
+            let agent = BACKGROUND_KINDS.contains(&kind.as_str());
+            let shell = kind == "shell" && (known.iter().any(|b| b.id == id) || owned.contains(&id));
+            if id.is_empty() || id == except || !(agent || shell)
+                || !(status.is_empty() || status == "running" || status == "pending") {
+                return None;
+            }
+            let label = [s(t, "name"), s(t, "description"), s(t, "agent_type"), s(t, "type")]
+                .into_iter().find(|l| !l.is_empty()).unwrap_or_default();
+            let had = known.iter().find(|b| b.id == id);
+            let at = had.map(|b| b.at).unwrap_or(now_ms);
+            let waiting = had.map(|b| b.waiting.clone()).unwrap_or_default();
+            Some(Background { kind, id, label, at, waiting })
+        }).collect()
+    }
+
+    /// The agents this pane knew that a payload no longer lists: they
+    /// stopped (and may have left a shell running).
+    pub fn agents_left(payload: &Value, known: &[Background]) -> Vec<String> {
+        let listed: Vec<&str> = payload.get("background_tasks").and_then(Value::as_array).into_iter().flatten()
+            .filter_map(|t| t.get("id").and_then(Value::as_str)).collect();
+        known.iter().filter(|b| b.kind == "subagent" && !listed.contains(&b.id.as_str())).map(|b| b.id.clone()).collect()
+    }
+
+    /// The payload's shell ids that these transcripts name: Claude Code
+    /// writes "Command running in background with ID: <id>" into the
+    /// transcript of the agent that started it. Each transcript is read
+    /// line by line, keeping only the lines that say so.
+    pub fn shells_owned(payload: &Value, transcripts: &[PathBuf]) -> Vec<String> {
+        use std::io::BufRead;
+        let ids: Vec<String> = payload.get("background_tasks").and_then(Value::as_array).into_iter().flatten()
+            .filter(|t| t.get("type").and_then(Value::as_str) == Some("shell"))
+            .filter_map(|t| t.get("id").and_then(Value::as_str).filter(|i| !i.is_empty()).map(str::to_string)).collect();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let mut text = String::new();
+        for t in transcripts {
+            let Ok(f) = fs::File::open(t) else { continue };
+            let mut r = std::io::BufReader::new(f);
+            let mut raw = Vec::new();
+            loop {
+                raw.clear();
+                match r.read_until(b'\n', &mut raw) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let line = String::from_utf8_lossy(&raw);
+                if line.contains("background with ID: ") {
+                    text.push_str(&line);
+                }
+            }
+        }
+        // The id must end where the text's does: a prefix of another id is no match.
+        let named = |id: &str| {
+            let pat = format!("background with ID: {id}");
+            text.match_indices(&pat).any(|(i, _)| {
+                text[i + pat.len()..].chars().next().is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+            })
+        };
+        ids.into_iter().filter(|id| named(id)).collect()
+    }
 }
 
 /// Why a pane's turn stopped on a limit, and when it may go again. Times are
@@ -105,6 +232,8 @@ impl Pane {
             review: false,
             at: 0,
             limited: None,
+            background: Vec::new(),
+            bg_only: false,
         }
     }
 
@@ -117,17 +246,66 @@ impl Pane {
     /// hot path tests the hold marker this keeps. A limit stop is one: the
     /// pane at work again is no longer stopped.
     pub fn holds(&self) -> bool {
-        self.state == "needs_input" || self.review || self.asked.is_some() || self.limited.is_some()
+        self.state == "needs_input" || self.review || self.asked.is_some() || self.limited.is_some() || self.waiting()
     }
 
-    /// The file's JSON. `limited` is written only while set, so a pane no
-    /// limit stopped reads as it always did.
+    /// A background agent of this pane is stopped on a permission prompt.
+    pub fn waiting(&self) -> bool {
+        self.background.iter().any(|b| !b.waiting.is_empty())
+    }
+
+    /// Mark (or clear) `agent` as stopped on a permission prompt: on its own
+    /// entry, else on the one workflow entry it may belong to. True when
+    /// something changed.
+    pub fn mark_waiting(&mut self, agent: &str, on: bool) -> bool {
+        self.mark_waiting_in(agent, on, true)
+    }
+
+    /// mark_waiting, with `workflow_ok` false when `agent` is known not to
+    /// be a workflow's (a foreground sub-agent's prompt is the main
+    /// terminal's, not a workflow's).
+    pub fn mark_waiting_in(&mut self, agent: &str, on: bool, workflow_ok: bool) -> bool {
+        if agent.is_empty() {
+            return false;
+        }
+        if !on {
+            let mut changed = false;
+            for b in self.background.iter_mut() {
+                let n = b.waiting.len();
+                b.waiting.retain(|a| a != agent);
+                changed |= b.waiting.len() != n;
+            }
+            return changed;
+        }
+        let i = self.background.iter().position(|b| b.id == agent)
+            .or_else(|| {
+                let flows: Vec<usize> = self.background.iter().enumerate().filter(|(_, b)| b.kind == "workflow").map(|(i, _)| i).collect();
+                (workflow_ok && flows.len() == 1).then(|| flows[0])
+            });
+        match i {
+            Some(i) if !self.background[i].waiting.iter().any(|a| a == agent) => {
+                self.background[i].waiting.push(agent.to_string());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The file's JSON. `limited`, `background` and `bg_only` are written
+    /// only while set, so a pane without them reads as it always did.
     pub fn to_json(&self) -> Value {
         let mut v = json!({"ws": self.ws, "surface": self.surface, "session": self.session, "state": self.state,
                "question": self.question, "asked": self.asked, "review": self.review, "at": self.at});
         if let Some(l) = &self.limited {
             v["limited"] = l.to_json();
         }
+        if !self.background.is_empty() {
+            v["background"] = Value::Array(self.background.iter().map(Background::to_json).collect());
+        }
+        if self.bg_only {
+            v["bg_only"] = Value::Bool(true);
+        }
+
         v
     }
 
@@ -144,6 +322,9 @@ impl Pane {
             review: v.get("review").and_then(Value::as_bool).unwrap_or(false),
             at: v.get("at").and_then(Value::as_u64).unwrap_or(0),
             limited: v.get("limited").and_then(Limited::from_json),
+            background: v.get("background").and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Background::from_json).collect()).unwrap_or_default(),
+            bg_only: v.get("bg_only").and_then(Value::as_bool).unwrap_or(false),
         })
     }
 }
@@ -165,6 +346,14 @@ pub fn hold_path(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("hold-{key}"))
 }
 
+/// The bgonly-<key> marker, kept while only background work keeps the pane
+/// working (bg_only): the main turn a background finish starts fires no
+/// prompt hook, so pretool's hot path hands the main agent's first tool use
+/// to the binary to end it. A sub-agent's tool use passes on, as without.
+pub fn bgonly_path(dir: &Path, key: &str) -> PathBuf {
+    dir.join(format!("bgonly-{key}"))
+}
+
 pub fn read(dir: &Path, key: &str) -> Option<Pane> {
     let text = fs::read_to_string(path(dir, key)).ok()?;
     Pane::from_json(&serde_json::from_str(&text).ok()?)
@@ -182,13 +371,14 @@ fn write_whole(p: &Path, text: &str) {
 pub fn write(dir: &Path, p: &Pane) {
     let _ = fs::create_dir_all(dir);
     write_whole(&path(dir, p.key()), &format!("{}\n", p.to_json()));
-    let hold = hold_path(dir, p.key());
-    if p.holds() {
-        if !hold.exists() {
-            let _ = fs::write(&hold, "");
+    for (path, on) in [(hold_path(dir, p.key()), p.holds()), (bgonly_path(dir, p.key()), p.bg_only)] {
+        if on {
+            if !path.exists() {
+                let _ = fs::write(&path, "");
+            }
+        } else {
+            let _ = fs::remove_file(&path);
         }
-    } else {
-        let _ = fs::remove_file(&hold);
     }
 }
 
@@ -196,6 +386,7 @@ pub fn write(dir: &Path, p: &Pane) {
 pub fn remove(dir: &Path, key: &str) {
     let _ = fs::remove_file(path(dir, key));
     let _ = fs::remove_file(hold_path(dir, key));
+    let _ = fs::remove_file(bgonly_path(dir, key));
 }
 
 /// Every pane file in `dir`, whichever workspace.
@@ -233,10 +424,12 @@ pub fn activity(dir: &Path, key: &str) -> (u64, u64) {
 /// started after the last tool ended (and after the pane's last write) is
 /// in flight: such a pane is InTool by how long that tool has run. Any other
 /// is Silent by how long since its last sign of life (a write, a tool start
-/// or end). `activity` gives a pane's (tool start, tool end) marks.
+/// or end). `activity` gives a pane's (tool start, tool end) marks. A pane
+/// whose main turn ended while background work runs (bg_only) is busy,
+/// never quiet: its sub-agents' tool use leaves no marks of its own.
 pub fn quiet<'a>(panes: &'a [Pane], now_ms: u64, threshold_ms: u64, activity: &dyn Fn(&Pane) -> (u64, u64)) -> Vec<(&'a Pane, Quiet)> {
     let mut out: Vec<(&Pane, Quiet, u64)> = Vec::new();
-    for p in panes.iter().filter(|p| p.state == "working" && p.at > 0) {
+    for p in panes.iter().filter(|p| p.state == "working" && p.at > 0 && !p.bg_only) {
         let (act, done) = activity(p);
         if act > done && act >= p.at {
             let age = now_ms.saturating_sub(act);
@@ -593,16 +786,18 @@ pub fn screen_asks(screen: &str) -> bool {
 /// failed) proves nothing. `activity` is the pane's (tool start, tool end).
 pub fn interrupted(p: &Pane, activity: (u64, u64), screen: &str, now_ms: u64) -> bool {
     let last = p.at.max(activity.0).max(activity.1);
-    p.state == "working" && p.at > 0 && now_ms.saturating_sub(last) >= INTERRUPT_QUIET_MS
+    p.state == "working" && p.at > 0 && !p.bg_only && now_ms.saturating_sub(last) >= INTERRUPT_QUIET_MS
         && !screen.trim().is_empty() && !screen_busy(screen) && !screen_asks(screen)
 }
 
 /// The working panes worth a screen read now: quiet past INTERRUPT_QUIET_MS.
 /// A caller reads each one's screen and passes it to `settle_interrupted`.
+/// A pane whose main turn already ended (bg_only) is none: no spinner is
+/// expected while its sub-agents run.
 pub fn interrupt_suspects(dir: &Path, now_ms: u64) -> Vec<Pane> {
     all(dir).into_iter().filter(|p| {
         let a = activity(dir, p.key());
-        p.state == "working" && p.at > 0 && now_ms.saturating_sub(p.at.max(a.0).max(a.1)) >= INTERRUPT_QUIET_MS
+        p.state == "working" && p.at > 0 && !p.bg_only && now_ms.saturating_sub(p.at.max(a.0).max(a.1)) >= INTERRUPT_QUIET_MS
     }).collect()
 }
 
@@ -618,8 +813,16 @@ pub fn settle_interrupted(dir: &Path, hist: &Path, seen: &Pane, screen: &str, no
     }
     let _l = lock(dir);
     let Some(mut p) = read(dir, &k) else { return false };
-    if p.state != "working" || p.at != seen.at {
+    if p.state != "working" || p.at != seen.at || p.bg_only {
         return false;
+    }
+    // Background agents outlive an interrupted turn: the main turn is over,
+    // and the pane stays working on them.
+    if !p.background.is_empty() {
+        p.bg_only = true;
+        p.at = now_ms;
+        write(dir, &p);
+        return true;
     }
     p.state = "idle".into();
     p.at = now_ms;
@@ -857,5 +1060,107 @@ mod tests {
         let h = crate::history::read_since(&hist, 0);
         assert!(h.iter().any(|e| e.source == "interrupt" && e.state == "idle"), "{h:?}");
         assert!(interrupt_suspects(&dir, now + 600).is_empty());
+    }
+
+    fn bg(id: &str) -> Background {
+        Background { kind: "subagent".into(), id: id.into(), label: "judge".into(), at: 1, ..Default::default() }
+    }
+
+    #[test]
+    fn a_background_agent_on_a_permission_prompt_is_marked_and_held_until_it_moves_on() {
+        let mut p = pane("S1", "working", 1);
+        p.background = vec![bg("a1"), Background { kind: "workflow".into(), id: "w1".into(), label: "review".into(), at: 1, ..Default::default() }];
+        assert!(!p.holds());
+        assert!(p.mark_waiting("a1", true) && p.waiting() && p.holds(), "its own entry; the pane holds so its next tool use is seen");
+        assert!(p.mark_waiting("x9", true), "an agent not on the list is a workflow's");
+        assert_eq!(p.background[1].waiting, vec!["x9".to_string()]);
+        assert_eq!(Pane::from_json(&p.to_json()), Some(p.clone()), "round-trips");
+        assert!(p.mark_waiting("a1", false) && p.mark_waiting("x9", false) && !p.waiting());
+        assert!(!p.mark_waiting("a1", false), "nothing left to clear");
+        assert!(!p.mark_waiting_in("f1", true, false), "a foreground sub-agent's prompt is not a workflow's");
+        p.bg_only = true;
+        assert!(!p.holds(), "background-only is its own marker (bgonly-<key>), not a hold");
+    }
+
+    #[test]
+    fn quiet_and_settle_interrupted_skip_a_pane_with_background_work() {
+        // A pane whose main turn ended while two sub-agents run: no tool of
+        // its own in flight and nothing written for an hour.
+        let mut p = Pane::new("W1", "S1");
+        p.state = "working".into();
+        p.at = 1_000;
+        p.background = vec![bg("a1"), bg("a2")];
+        p.bg_only = true;
+        let hour = 1_000 + 3_600_000;
+        assert!(quiet(std::slice::from_ref(&p), hour, 600_000, &|_| (0, 0)).is_empty(), "background work is busy, not silent");
+        assert!(!interrupted(&p, (0, 0), DONE, hour), "no spinner while sub-agents run");
+
+        let dir = tmp("background");
+        let hist = dir.join("history");
+        let (_, _, seen) = update(&dir, "W1", "S1", "s", 1_000, |q| {
+            q.state = "working".into();
+            q.background = vec![bg("a1")];
+            q.bg_only = true;
+        });
+        assert!(interrupt_suspects(&dir, hour).is_empty());
+        let mut plain = seen.clone();
+        plain.bg_only = false;
+        assert!(!settle_interrupted(&dir, &hist, &plain, DONE, hour), "the file's own flag stands");
+        assert_eq!(read(&dir, "S1").unwrap().state, "working");
+
+        // The person's own turn runs beside the background work: Esc still
+        // counts, and ends only the main turn.
+        let (_, _, mine) = update(&dir, "W1", "S1", "s", 2_000, |q| q.bg_only = false);
+        let later = 2_000 + INTERRUPT_QUIET_MS;
+        assert!(!quiet(std::slice::from_ref(&mine), later + 600_000, 600_000, &|_| (0, 0)).is_empty(), "a turn of its own can go silent");
+        assert_eq!(interrupt_suspects(&dir, later).len(), 1);
+        assert!(settle_interrupted(&dir, &hist, &mine, DONE, later));
+        let after = read(&dir, "S1").unwrap();
+        assert_eq!((after.state.as_str(), after.bg_only, after.background.len()), ("working", true, 1));
+    }
+
+    #[test]
+    fn the_background_list_round_trips_and_reads_a_payload() {
+        let mut p = pane("S1", "working", 5);
+        p.background = vec![bg("a1")];
+        p.bg_only = true;
+        assert_eq!(Pane::from_json(&p.to_json()), Some(p.clone()));
+        let none = pane("S2", "idle", 5).to_json();
+        assert!(none.get("background").is_none() && none.get("bg_only").is_none(), "unset, nothing is written");
+
+        // Stop and SubagentStop as Claude Code 2.1.319 sends them.
+        let payload = serde_json::json!({"background_tasks": [
+            {"id": "a1", "type": "subagent", "status": "running", "description": "judge", "agent_type": "general-purpose"},
+            {"id": "w1", "type": "workflow", "status": "running", "description": "tiny", "name": "spike-wf"},
+            {"id": "s1", "type": "shell", "status": "completed", "description": "ls"},
+            {"id": "s2", "type": "shell", "status": "running", "description": "npm run dev"},
+            {"id": "m1", "type": "monitor", "status": "running", "description": "tail"}]});
+        let got = Background::from_payload(&payload, "", &[Background { at: 1, ..bg("a1") }], &[], 99);
+        let ids: Vec<(&str, &str, &str, u64)> = got.iter().map(|b| (b.kind.as_str(), b.id.as_str(), b.label.as_str(), b.at)).collect();
+        assert_eq!(ids, vec![("subagent", "a1", "judge", 1), ("workflow", "w1", "spike-wf", 99)], "a known task keeps its start; a finished one, a shell and a monitor are not on it");
+        assert_eq!(Background::from_payload(&payload, "a1", &[], &[], 99).len(), 1, "a SubagentStop's own agent is left out");
+        assert!(Background::from_payload(&serde_json::json!({}), "", &[], &[], 99).is_empty());
+
+        // A sub-agent that stops with its own shell still running, as
+        // Claude Code 2.1.319 lists it: the shell is the sub-agent's when
+        // the sub-agent's transcript names its id.
+        let dir = tmp("owned");
+        let tr = dir.join("agent-a1.jsonl");
+        fs::write(&tr, "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"Command running in background with ID: b3. Output is being written to: /x\"}]}}\n").unwrap();
+        let shell = serde_json::json!({"id": "b3", "type": "shell", "status": "running", "description": "Sleep in background", "command": "sleep 20"});
+        let dev = serde_json::json!({"id": "d1", "type": "shell", "status": "running", "description": "npm run dev"});
+        let agent = serde_json::json!({"id": "a1", "type": "subagent", "status": "running", "description": "nested sleeper"});
+        let sub_stop = serde_json::json!({"background_tasks": [agent, shell, dev]});
+        let owned = Background::shells_owned(&sub_stop, std::slice::from_ref(&tr));
+        assert_eq!(owned, vec!["b3".to_string()], "only the shell the agent's transcript names; the main agent's dev server is not");
+        let after = Background::from_payload(&sub_stop, "a1", &[bg("a1")], &owned, 5);
+        assert_eq!(after.iter().map(|b| (b.kind.as_str(), b.id.as_str())).collect::<Vec<_>>(), vec![("shell", "b3")], "adopted from a SubagentStop");
+        let only = serde_json::json!({"background_tasks": [shell, dev]});
+        assert_eq!(Background::agents_left(&only, &[bg("a1")]), vec!["a1".to_string()], "a Stop where the agent just left");
+        assert_eq!(Background::from_payload(&only, "", &after, &[], 5).len(), 1, "once adopted it counts until it ends");
+        assert!(Background::from_payload(&only, "", &[], &[], 5).is_empty(), "a shell no agent's transcript names never counts");
+        assert!(Background::shells_owned(&only, &[dir.join("missing.jsonl")]).is_empty());
+        let pre = serde_json::json!({"background_tasks": [{"id": "b", "type": "shell", "status": "running"}]});
+        assert!(Background::shells_owned(&pre, std::slice::from_ref(&tr)).is_empty(), "b is a prefix of b3, not a match");
     }
 }

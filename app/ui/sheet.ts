@@ -9,9 +9,9 @@ import { familyOf, memberState, type FamilyBrief } from "./family";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
-/** An intent-server page: a plan, a review or an ask. */
+/** An intent-server page: a plan, a review, an ask, a sub-agent's transcript or a run. */
 export type Page = {
-  /** /plan/<slug>, /review/<id> or /ask/<id>. */
+  /** /plan/<slug>, /review/<id>, /ask/<id>, /agent/<session>/<id> or /run/<session>/<id>. */
   path: string;
   title: string;
   /** The cmux workspace it belongs to: its agent's chat shows beside the page, and Open in cmux goes there. */
@@ -1270,7 +1270,8 @@ export class Sheet {
 }
 
 function kindOf(path: string): string {
-  return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan" : "page";
+  return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan"
+    : path.startsWith("/agent/") ? "agent" : path.startsWith("/run/") ? "run" : "page";
 }
 
 /** Open the worktree `dir` is in, in VS Code; `say` gets an error to show. */

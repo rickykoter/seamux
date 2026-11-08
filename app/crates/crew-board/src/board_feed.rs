@@ -61,6 +61,12 @@ pub fn feed() -> &'static Feed {
 }
 
 impl Feed {
+    /// Something the board shows changed outside the files the feed watches
+    /// (a run report, crate::agents): build again.
+    pub fn poke(&self) {
+        self.mark_dirty();
+    }
+
     fn mark_dirty(&self) {
         *self.dirty.lock().unwrap_or_else(|p| p.into_inner()) = true;
         self.woke.notify_all();
