@@ -514,6 +514,68 @@ function __boardRender(d) {
   }
   var PST = { needs_input: ["wait", "needs you"], working: ["work", "working"], idle: ["idle", "idle"], ended: ["end", "ended"] };
   var CHEV = '<svg class="pg" viewBox="0 0 8 8" width="8" height="8" aria-hidden="true"><path d="M2.5 1.5 5.5 4 2.5 6.5"/></svg>';
+  // Background sub-agents and runs, under the pane that started them: a
+  // mark, the label, then the model (an agent) or its phase and k/n (a run),
+  // how long it has run or ran, and a finished agent's badge. Clicking one
+  // opens its transcript, or the run page, beside the terminal. The mark is
+  // one function so a sprite can stand in for the ring later.
+  var AST = { running: ["run", "running"], done: ["ok", "done"], failed: ["bad", "failed"],
+    cancelled: ["unk", "cancelled"], unknown: ["unk", "no word"] };
+  function agentMark(e) {
+    var st = (AST[e.state] || AST.unknown)[0];
+    var C = 2 * Math.PI * 4.5;
+    var frac = e.state !== "running" ? 1 : e.n > 0 ? Math.max(0.08, Math.min(1, (e.k || 0) / e.n)) : 0.3;
+    var arc = st === "unk" ? '<circle cx="6" cy="6" r="4.5" class="ar" stroke-dasharray="2 2"/>'
+      : '<circle cx="6" cy="6" r="4.5" class="ar" stroke-dasharray="' + (frac * C).toFixed(2) + " " + C.toFixed(2) + '" transform="rotate(-90 6 6)"/>';
+    return '<svg class="amk" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">' +
+      (st === "run" ? '<circle cx="6" cy="6" r="4.5" class="at0"/>' : "") + arc + "</svg>";
+  }
+  // A duration in the largest units that fit: "<1m", "4m", "1h 3m".
+  function took(ms) {
+    var m = Math.floor(Math.max(0, ms) / 60000);
+    return m < 1 ? "<1m" : m < 60 ? m + "m" : Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "");
+  }
+  function agentTime(e) {
+    if (typeof e.start !== "number" || !(e.start > 0)) return "";
+    var end = typeof e.end === "number" && e.end > 0 ? e.end : 0;
+    return '<span class="aw at" data-t0="' + e.start + '"' + (end ? ' data-t1="' + end + '"' : "") + ">" +
+      took((end || Date.now()) - e.start) + "</span>";
+  }
+  // The rows the last push drew (on #rows, read when first needed: host is
+  // set further down).
+  var seenAg = null, nextAg = {};
+  function agentRows(a, surface) {
+    if (!seenAg) {
+      try { seenAg = JSON.parse(host.getAttribute("data-ag-seen") || "{}"); } catch (e) { seenAg = {}; }
+    }
+    var up = String(surface).toUpperCase();
+    var es = (a.agents || []).filter(function (e) { return e && e.id && String(e.surface || "").toUpperCase() === up; });
+    var ns = (a.agentNotices || []).filter(function (n) { return n && String(n.surface || "").toUpperCase() === up; });
+    if (!es.length && !ns.length) return "";
+    return es.map(function (e) {
+      var st = AST[e.state] || AST.unknown;
+      var run = e.kind === "workflow";
+      var what = run ? [e.phase || "", typeof e.n === "number" && e.n > 0 ? (e.k || 0) + "/" + e.n : ""].filter(Boolean).join(" · ")
+        : String(e.model || "");
+      var key = a.id + "/" + e.id;
+      nextAg[key] = 1;
+      // Only a row that just arrived animates in: a push redraws the list.
+      var fresh = !seenAg[key] && host.getAttribute("data-pushed") === "1";
+      var tip = (run ? "Run " : "Sub-agent ") + (e.label || e.id) + ", " + st[1] + ": open its " + (run ? "run page" : "transcript");
+      return '<div class="ag ' + st[0] + (fresh ? " new" : "") + '" data-a="' + (run ? "run" : "agent") + '" data-x="' + esc(e.id) +
+        '" data-path="/' + (run ? "run" : "agent") + "/" + esc(e.session || "") + "/" + esc(e.id) + '" title="' + esc(tip) + '">' +
+        agentMark(e) + '<span class="ak">' + esc(e.label || e.id) + "</span>" +
+        (what ? '<span class="aw">' + esc(what) + "</span>" : "") + agentTime(e) +
+        (e.badge ? '<span class="ab">' + esc(e.badge) + "</span>" : "") + "</div>";
+    }).join("") + ns.map(function (n) {
+      return '<div class="ag note' + (n.kind === "failed" ? " bad" : "") + '" title="' + esc(n.text) + '">' +
+        '<svg class="amk" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path class="ai" d="M6 3.2v3.6M6 8.6v.2"/></svg>' +
+        '<span class="aw">' + esc(n.text) + "</span></div>";
+    }).join("");
+  }
+  function agentMore(a) {
+    return a.agentsMore > 0 ? '<div class="ag more"><span class="aw">+' + Number(a.agentsMore) + " more</span></div>" : "";
+  }
   function paneList(a) {
     if (isMuted(a)) return "";
     var ps = (a.panes || []).filter(function (p) { return p && p.surface; });
@@ -532,8 +594,8 @@ function __boardRender(d) {
         '<span class="pk">' + esc(who) + "</span>" + (what ? '<span class="pw">' + esc(what) + "</span>" : "") +
         (p.plan ? '<span class="ptag plan" title="' + esc("Owns plan " + p.plan) + '">plan</span>' : "") +
         (p.outside ? '<span class="ptag outside" title="Has left the workspace\'s worktree">outside</span>' : "") +
-        "</div>";
-    }).join("") + "</div>";
+        "</div>" + agentRows(a, p.surface);
+    }).join("") + agentMore(a) + "</div>";
   }
 
   // Today's spend, when known and non-zero. Dimmer under a dollar: the point
@@ -1081,6 +1143,17 @@ function __boardRender(d) {
   // it. Echoing it there put the same sentence on the page twice.
   var tail = rows.length ? (d.quiet || "") : "";
   host.setAttribute("data-prev", JSON.stringify(next));
+  host.setAttribute("data-ag-seen", JSON.stringify(nextAg));
+  // A running row's elapsed time is drawn here, not pushed: one ticker for
+  // the page, installed once (its mark is on the DOM, which outlives pushes).
+  var docEl = document.documentElement;
+  if (docEl && docEl.getAttribute("data-ag-tick") !== "1" && typeof setInterval === "function") {
+    docEl.setAttribute("data-ag-tick", "1");
+    setInterval(function () {
+      var els = document.querySelectorAll(".ag .at[data-t0]:not([data-t1])");
+      for (var i = 0; i < els.length; i++) els[i].textContent = took(Date.now() - Number(els[i].getAttribute("data-t0")));
+    }, 15000);
+  }
   slide(was);
 
   var cat = $("cat");

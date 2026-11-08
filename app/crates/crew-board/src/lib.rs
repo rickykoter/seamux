@@ -10,6 +10,7 @@
 //! the served pages instead, and the rest point at /board (state.rs).
 
 pub mod act;
+pub mod agents;
 pub mod ask;
 pub mod backend;
 pub mod board_feed;

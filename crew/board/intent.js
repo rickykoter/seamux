@@ -18,6 +18,8 @@
 //   the sync clock       crew:sync-now                     -> a=sync
 //   resume when it resets the framing app's resume_set      -> a=resume&x=on|off
 //                        (the ⋯ menu item, and the armed chip's disarm)
+//   sub-agent / run row  its transcript or run page           -> a=agent|run&x=<id>
+//                        (framed by an app that says it can: its Sheet)
 //
 // One verb never leaves the page: a=fold, on a card's caret. It folds or
 // unfolds the card in place and sends nothing. Where a click lands decides
@@ -521,6 +523,19 @@ function __boardIntent(cfg) {
       if (framed() && t.a === "pane" && t.x) {
         tell({ crew: "select", ws: rid, show: "any", pane: t.x });
         mark(rid);
+        return;
+      }
+      // A sub-agent or run row, framed by an app that opens those pages
+      // itself: the page in its Sheet, beside that workspace's terminal.
+      // Anywhere else the server's agent and run actions open it.
+      if (framed() && (t.a === "agent" || t.a === "run") && t.x &&
+          (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" agents ") >= 0) {
+        var path = t.el.getAttribute("data-path") || "";
+        if (/^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(path)) {
+          var lab = t.el.querySelector(".ak");
+          tell({ crew: "page", ws: rid, path: path, title: lab ? lab.textContent : t.x });
+          mark(rid);
+        }
         return;
       }
       if (framed() && SHOWN[t.a]) {

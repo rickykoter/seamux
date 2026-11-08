@@ -2437,6 +2437,50 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["panes: a Claude that asked you at turn end reads as waiting",
     /class="pn agent wait"[^>]*>.*?asked you · 4m</.test(els.rows.innerHTML), els.rows.innerHTML.slice(0, 900)]);
 }
+// ---- a pane's background sub-agents and runs ------------------------------
+{
+  const start = Date.now() - 7 * 60 * 1000;
+  const panes = [
+    { surface: "S-A", kind: "claude", state: "working", since: start, asked: false, what: "" },
+    { surface: "S-B", kind: "claude", state: "idle", since: start, asked: false, what: "" },
+  ];
+  const ag = (id, extra) => ({ surface: "S-A", session: "sess-1", id, kind: "agent", label: id, state: "running", start, end: null, ...extra });
+  const agents = [
+    ag("a1", { label: "Lookout <review>", model: "sonnet" }),
+    ag("wf_1", { kind: "workflow", label: "review-changes", phase: "Verify", k: 3, n: 8 }),
+    ag("a2", { surface: "s-b", label: "judge", state: "done", end: start + 90 * 1000, badge: "8" }),
+    ag("a3", { label: "gone quiet", state: "unknown" }),
+  ];
+  const R = (id, extra) => ({ id, name: id, kind: "running", badge: "working", said: "Mid-turn.", chips: ["jump"],
+    frac: null, meta: "", ref: "workspace:1", cwd: "/w/" + id, panes, agents, ...extra });
+  render({ rows: [R("ag", { agentsMore: 2, agentNotices: [{ surface: "S-B", kind: "missing", text: "2 background tasks from teammate: no adapter" }] })], quiet: "" });
+  const h = els.rows.innerHTML;
+  const rowsOf = [...h.matchAll(/<div class="ag ([^"]*)"( data-a="(agent|run)" data-x="([^"]*)" data-path="([^"]*)")?[^>]*>(.*?)<\/div>/g)];
+  const byId = (x) => rowsOf.find((m) => m[4] === x) || [];
+  checks.push(["agents: each sub-agent and run is a row under the pane that started them, in the order given",
+    h.indexOf('data-x="S-A"') < h.indexOf('data-x="a1"') && h.indexOf('data-x="a1"') < h.indexOf('data-x="wf_1"') &&
+    h.indexOf('data-x="wf_1"') < h.indexOf('data-x="S-B"') && h.indexOf('data-x="S-B"') < h.indexOf('data-x="a2"'), h.slice(0, 1500)]);
+  checks.push(["agents: a label is escaped, and a lone agent shows its model and opens its transcript",
+    /Lookout &lt;review&gt;/.test(byId("a1")[6] || "") && /class="aw">sonnet</.test(byId("a1")[6] || "") &&
+    byId("a1")[3] === "agent" && byId("a1")[5] === "/agent/sess-1/a1" && !/<review>/.test(h)]);
+  checks.push(["agents: a run shows its phase and k/n, its ring drawn to k of n, and opens the run page",
+    byId("wf_1")[3] === "run" && byId("wf_1")[5] === "/run/sess-1/wf_1" && /class="aw">Verify · 3\/8</.test(byId("wf_1")[6] || "") &&
+    /class="at0"/.test(byId("wf_1")[6] || "") && /stroke-dasharray="10\.60 28\.27"/.test(byId("wf_1")[6] || ""), byId("wf_1")[6]]);
+  checks.push(["agents: running rows tick their own elapsed time; a finished one shows how long it ran and its badge",
+    /class="aw at" data-t0="\d+">7m</.test(byId("a1")[6] || "") && /data-t1="\d+">1m</.test(byId("a2")[6] || "") &&
+    /class="ab">8</.test(byId("a2")[6] || "") && /^ok/.test(byId("a2")[1] || ""), byId("a2")[6]]);
+  checks.push(["agents: a run with no word is dashed, not running", /^unk/.test(byId("a3")[1] || "") && /stroke-dasharray="2 2"/.test(byId("a3")[6] || "")]);
+  checks.push(["agents: past four rows the card says +N more, and a notice row says what no adapter reads",
+    /class="ag more"><span class="aw">\+2 more</.test(h) && /class="ag note"[^>]*><svg[^]*?2 background tasks from teammate: no adapter/.test(h)]);
+  render({ rows: [R("ag", { agents })], quiet: "" });
+  checks.push(["agents: pushing the same rows again draws no arrival animation", !/class="ag [^"]*\bnew\b/.test(els.rows.innerHTML)]);
+  render({ rows: [R("ag", { agents: agents.concat([ag("a9", { label: "late" })]) })], quiet: "" });
+  const h2 = els.rows.innerHTML;
+  checks.push(["agents: only a row that just arrived animates in",
+    /class="ag run new" data-a="agent" data-x="a9"/.test(h2) && /class="ag run" data-a="agent" data-x="a1"/.test(h2), h2.slice(0, 1200)]);
+  render({ rows: [R("am", { tuck: "mute" })], quiet: "" });
+  checks.push(["agents: a muted card draws no rows", !/class="ag /.test(els.rows.innerHTML)]);
+}
 // The Rust board lists them from cmux's pane list and crew's pane files.
 {
   const t = (s, label, agents) => ({ kind: "terminal", lifecycle: "running", cwd: "/w/a", label, agents,
@@ -3138,7 +3182,8 @@ if (live && Array.isArray(live.rows)) {
     const U = "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1";
     runTool("crew-board", ["write-targets"], { env: ienv, input: JSON.stringify({ rows: [
       { id: U, ref: "workspace:9", cwd: HERE, name: "n", slug: "s",
-        panes: [{ surface: "S-PANE-A", kind: "claude" }, { surface: "S-PANE-T", kind: "term" }] },
+        panes: [{ surface: "S-PANE-A", kind: "claude" }, { surface: "S-PANE-T", kind: "term" }],
+        agents: [{ surface: "S-PANE-A", session: "sess-1", id: "a1", kind: "agent" }, { surface: "S-PANE-A", session: "sess-1", id: "wf_1", kind: "workflow" }] },
       { id: "not-a-uuid", ref: "workspace:9", cwd: HERE, name: "n", slug: "s" }] }) });
     const LK = join(HOME, "fake-lookout"), lkLog = join(HOME, "lookout.jsonl"), slow = join(HOME, "slow");
     fs.mkdirSync(LK);
@@ -3194,6 +3239,13 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
         term.res.ok === true && JSON.stringify(term.cmux[0]) === JSON.stringify(["workspace", "select", U]) &&
         JSON.stringify(term.cmux.slice(1)).includes("S-PANE-T") &&
         stray.res.ok === false && stray.cmux.length === 0, JSON.stringify({ term, stray })]);
+    }
+    // A sub-agent or run row opens only an id the row lists, as the kind it is.
+    {
+      const stray = await press("agent", U, "a-elsewhere"), wrong = await press("run", U, "a1");
+      checks.push(["agents: an agent the row does not list, or a lone agent asked for as a run, is refused, cmux untouched",
+        stray.res.ok === false && wrong.res.ok === false && stray.cmux.length === 0 && wrong.cmux.length === 0,
+        JSON.stringify({ stray, wrong })]);
     }
     const unk = await req("GET", `/do?a=rm&r=${U}&t=${encodeURIComponent(token)}`);
     checks.push(["buttons: an action outside the allowlist is refused, and archive is in it",

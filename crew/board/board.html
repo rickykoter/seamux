@@ -45,7 +45,9 @@
   .rsn, its reason),
   .feed > .feedbar, .pns > .pn (a pane, data-a="pane": + .agent or .term and
   its state, .wait/.work/.idle/.end/.unk/.sh, holding .pg, .pk, .pw and
-  .ptag.plan/.outside), .chips > .chip (+ .pri, the one filled button; + .sig, an
+  .ptag.plan/.outside), .pns > .ag (a pane's background sub-agent or run,
+  data-a="agent" or "run" with data-path; + .run/.ok/.bad/.unk, + .new on
+  arrival, + .note or .more; holding svg.amk, .ak, .aw, .at and .ab), .chips > .chip (+ .pri, the one filled button; + .sig, an
   actionable signal, + .acc when the collector sent it amber; + .pane on a muted card, its panes' tags), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
   .end > .cost (the spend, held at the right end; also at the end of a quiet
   row's .top),
@@ -595,6 +597,29 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pn>.pw+.ptag.outside,.pn>.pk+.ptag.outside{margin-left:auto}
 .ptag.plan+.ptag.outside{margin-left:0}
 .ptag.outside{border-style:dashed;color:var(--fg2)}
+/* A pane's background sub-agents and runs, one thinner row each under it:
+   a ring (.amk: a track and an arc, k of n for a run; full when done; dashed
+   when no word came), the label, the model or a run's phase and k/n, the
+   elapsed time (render.js ticks it) and a finished agent's badge. Indented
+   under the pane's dot. A notice row (.note) says no adapter reads the work,
+   or one failed. Only a row new on this push fades in. */
+.ag{display:flex;align-items:center;gap:6px;min-height:22px;padding:0 6px 0 20px;margin:0 -6px;
+  border-radius:5px;font:var(--fs-1)/1.3 system-ui;color:var(--fg);cursor:pointer;min-width:0;--ac:var(--quiet)}
+.ag:hover{background:var(--hover-fg)}
+.ag.run{--ac:var(--running)} .ag.ok{--ac:var(--done)} .ag.bad{--ac:var(--wilt)}
+.ag>.amk{flex:none;fill:none;stroke-width:1.6;stroke-linecap:round}
+.ag>.amk>.at0{stroke:color-mix(in srgb,var(--ac) 30%,transparent)} .ag>.amk>.ar{stroke:var(--ac)}
+.ag>.amk>.ai{stroke:var(--ac)}
+.ag>.ak{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ag>.aw{flex:none;color:var(--grey);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ag>.at{margin-left:auto}
+.ag>.ab{flex:none;font:600 var(--fs-1)/1 system-ui;padding:2px 5px;border-radius:4px;
+  background:var(--hover-fg);color:var(--done-t);font-variant-numeric:tabular-nums}
+.ag.note,.ag.more{cursor:default}
+.ag.note:hover,.ag.more:hover{background:none}
+.ag.note>.aw{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:normal}
+.ag.new{animation:ag-in .28s ease-out}
+@keyframes ag-in{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
 
 /* --- the footer -------------------------------------------------------- */
 /* Branch, uncommitted work, PR, issue, status signals, progress, spend: the
@@ -837,7 +862,8 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
   #cat.hop .heart,#cat.nap .zz,#cat.nap.hop .zz,#cat.nap.perk .zz,#cat.nap.stretch .zz,
   /* The board. */
   .row.up,.row.attend .chip.pri,.row.running>.top>.dial.pending .arc,.row.ripple,
-  .row.famdone,.row.up.ripple,.row.up.famdone,.confetti i,#shelf[data-sky=night] .stars{animation:none}
+  .row.famdone,.row.up.ripple,.row.up.famdone,.confetti i,#shelf[data-sky=night] .stars,
+  .ag.new{animation:none}
   #shelf .sky,#shelf .orb{transition:none}
 }
 

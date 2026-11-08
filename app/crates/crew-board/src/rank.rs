@@ -553,7 +553,9 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             said = if is_none_str(branch) { "Checks are red.".into() }
                    else { format!("Checks are red on `{}`.", py_str(branch)) };
             chips = vec!["checks".into(), "diff".into(), "jump".into()];
-        } else if let Some(f) = failed {
+        } else if let Some(f) = failed.filter(|_| bg.is_empty()) {
+            // While background agents run, a failed check waits on them: a
+            // review with no reviewer yet, or a test an agent is fixing.
             (kind, badge) = (Some("wilt"), "check failed");
             let how = if get(f, "status") == "lost" { "lost its runner" } else { "failed" };
             said = format!("{{{{Increment {}'s check `{}` {}.}}}} It cannot close until the check passes.",
@@ -603,7 +605,13 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
                 !surf.is_empty() && crew_core::status::read(&crate::state::state_dir(), surf).is_some_and(|pane| pane.state != "working")
             });
             let open = plan.filter(|_| !owner_idle).map(|p| get(progress(p), "open")).filter(|o| truthy(o)).and_then(Value::as_array);
+            let waits = failed.filter(|_| !bg.is_empty()).map(|f| {
+                let n = bg.len();
+                format!("{{{{Increment {}'s check `{}`}}}} waits on {} background agent{}.",
+                        py_str(get(f, "n")), py_str(get(f, "id")), n, if n == 1 { "" } else { "s" })
+            });
             match open.and_then(|o| o.first()) {
+                _ if waits.is_some() => said = waits.unwrap_or_default(),
                 Some(o0) => said = format!("{{{{{}}}}} in progress.", py_str(&o0["title"])),
                 None if !bg.is_empty() => said = match bg.len() {
                     1 => "One background task still running.".into(),
@@ -900,6 +908,23 @@ mod tests {
         assert_eq!(m.get("W1"), Some(&Quiet::Silent(1_199_999)));
         let m = quiet_by_ws(&[pane("tool")], 1_200_000, 600_000, &marks);
         assert_eq!(m.get("W1"), Some(&Quiet::InTool(1_199_998)));
+    }
+
+    #[test]
+    fn a_failed_check_waits_while_background_agents_run_and_shows_once_they_finish() {
+        use crew_core::status::Background;
+        let wss = vec![json!({"id": "w-p", "title": "p", "cwd": "/w/p", "desc": "phase:working", "running": true})];
+        let mut plans = Map::new();
+        plans.insert("/w/p".into(), json!({"slug": "p", "phase": "implementing", "gate": {"allow": true},
+            "checksOutstanding": [{"n": 2, "id": "review-code-review", "status": "fail"}],
+            "progress": {"open": [{"title": "Runs"}]}}));
+        let mut bg = std::collections::HashMap::new();
+        bg.insert("W-P".to_string(), vec![Background { kind: "subagent".into(), id: "a1".into(), label: "Lookout review".into(), at: 1 }]);
+        let (rows, _) = rank_with(&wss, &plans, false, Default::default(), bg);
+        assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("running"), Some("working · Lookout review")));
+        assert_eq!(rows[0]["said"], "{{Increment 2's check `review-code-review`}} waits on 1 background agent.");
+        let (rows, _) = rank_with(&wss, &plans, false, Default::default(), Default::default());
+        assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("wilt"), Some("check failed")), "the agents are done: it shows");
     }
 
     #[test]
