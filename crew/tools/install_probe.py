@@ -326,6 +326,11 @@ check("dry run with the crew plugin not enabled: says the legacy hook would be k
 r = run(["bash", os.path.join(CREW, "bin", "crew"), "apply"], env=APPLY_ENV)
 out = r.stdout + r.stderr
 check("apply runs", "rendered cmux.json" in out and os.path.isfile(os.path.join(CMUXD, "crew", "bin", "crew")), out)
+LIVE_T = os.path.join(CMUXD, "crew")
+check("the probes' Python stays out of the live tree, the adapters' programs do not",
+      not os.path.exists(os.path.join(LIVE_T, "tools", "install_probe.py"))
+      and all(os.path.isfile(os.path.join(LIVE_T, "adapters", a, "adapter.py")) for a in ("lookout", "template")),
+      repr(sorted(os.listdir(os.path.join(LIVE_T, "adapters"))) if os.path.isdir(os.path.join(LIVE_T, "adapters")) else "no adapters"))
 gb, pb = glob.glob(GDOCK + ".pre-crew.*.bak"), glob.glob(PDOCK + ".pre-crew.*.bak")
 check("the global and project Docks crew did not write are backed up, timestamped",
       len(gb) == 1 and open(gb[0]).read() == MINE_G and len(pb) == 1 and open(pb[0]).read() == MINE_P,
