@@ -163,5 +163,8 @@
 @media (hover: none) { .migrate-hint { opacity: 1; } }
 .migrate .migrate-no, .migrate-pop .migrate-no { flex: none; padding: 0 7px; height: 22px; background: none; border-color: transparent; color: var(--muted); }
 .migrate-pop .migrate-no:hover { color: var(--fg); border-color: var(--line2); }
+/* How many rows wait below the cut list; gone at its foot (migrate.ts MORE_H). */
+.migrate-more { margin: 0; padding: 0 8px; height: 18px; line-height: 18px; font-size: var(--fs-2); color: var(--muted); }
+.migrate-more[hidden] { display: none; }
 .migrate-say { margin: 0; padding: 2px 8px 0; font-size: var(--fs-2); color: var(--bad-t); }
 .migrate-say[hidden] { display: none; }
