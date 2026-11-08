@@ -3252,6 +3252,33 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       unk.status === 400 && sent.archive.res.ok === true]);
     fs.rmSync(join(HOME, ".claude", "lookout"), { recursive: true, force: true });
 
+    // ---- a sub-agent's transcript page: /agent/<session>/<id> --------------
+    // Served only for an agent an adapter lists, from a file under the
+    // projects folder: the fixture session is a background agent's real files.
+    {
+      const proj = join(HOME, ".claude", "projects", "-w-repo");
+      fs.mkdirSync(proj, { recursive: true });
+      fs.cpSync(join(HERE, "..", "..", "app", "crates", "crew-core", "tests", "fixtures", "runs", "projects", "-w-repo", "s-done"),
+        join(proj, "s-done"), { recursive: true });
+      const A = "afbf7fe6ed7060d9e";
+      const page = await req("GET", `/agent/s-done/${A}`);
+      const data = await req("GET", `/agent/s-done/${A}/data?t=${encodeURIComponent(token)}`);
+      const v = (() => { try { return JSON.parse(data.body); } catch (e) { return {}; } })();
+      checks.push(["agent page: a listed agent's page carries the token and its ids, framed like the board",
+        page.status === 200 && page.body.includes('"t": "' + token + '"') && page.body.includes('"id": "' + A + '"') &&
+        /^frame-ancestors 'self' /.test(String(page.headers["content-security-policy"] || "")), page.status + " " + page.body.slice(0, 300)]);
+      checks.push(["agent page: its data is the prompt, the steps with each tool's result, and the answer",
+        data.status === 200 && v.format === "claude-jsonl" && /sleep 15/.test(v.prompt || "") && v.lastText === "done" &&
+        (v.steps || []).some((x) => x.kind === "tool" && x.name === "Bash" && x.result === "(Bash completed with no output)") &&
+        v.agent && v.agent.state === "done" && v.agent.transcript === null, data.body.slice(0, 400)]);
+      const noTok = await req("GET", `/agent/s-done/${A}/data`), stray = await req("GET", "/agent/s-done/not-listed/data?t=" + encodeURIComponent(token));
+      const climb = await req("GET", "/agent/..%2F..%2Fetc/hosts"), deep = await req("GET", "/agent/s-done/x/../../y");
+      const fg = await req("GET", "/agent/s-done/f0f0f0f0f0f0f0f0f");
+      checks.push(["agent page: no token, an unlisted id, a foreground agent no adapter reports, and a path are refused",
+        noTok.status === 403 && stray.status === 404 && fg.status === 404 && [404, 400].includes(climb.status) && [404, 400].includes(deep.status),
+        JSON.stringify([noTok.status, stray.status, fg.status, climb.status, deep.status])]);
+    }
+
     // ---- the served board: /board and its /board/events feed ---------------
     // Last in this server's life: once a page subscribes, the feed rebuilds on
     // every heartbeat (1s here) and its cmux reads would land in the log the
