@@ -45,7 +45,7 @@ pub fn mark_live(rows: &mut [Value], files: &[crew_core::status::Pane]) {
     mark(rows, crew_core::history::now_ms(), hours(), of);
 }
 
-/// A row put away (snoozed) or finished (settled): it stays off the news.
+/// A row put away (snoozed) or finished (settled): it stays out of the tallies.
 pub fn away(r: &Value) -> bool {
     get(r, "tuck").as_str() == Some("snooze") || get(r, "settled").as_bool() == Some(true)
 }

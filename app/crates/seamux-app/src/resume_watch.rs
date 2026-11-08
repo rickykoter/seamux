@@ -214,7 +214,12 @@ fn tick(app: &AppHandle, dir: &Path, resumed: &mut HashMap<String, (u32, u64)>) 
         let key = p.key().to_string();
         let give_up = |why: String| {
             if status::update_limited(dir, &key, &l, |x| x.gave_up = Some(why.clone())) {
-                notify(app, &format!("{name} · didn't resume"), &format!("It waits for you: {why}."));
+                let (title, body) = (format!("{name} · didn't resume"), format!("It waits for you: {why}."));
+                crew_core::notifications::record(crew_core::notifications::Entry {
+                    ws: tile.workspace.clone(), pane: p.surface.clone(), kind: "resume".into(),
+                    title: title.clone(), body: body.clone(), shown: true, source: "app".into(), ..Default::default()
+                });
+                notify(app, &title, &body);
             }
         };
         match plan(&l, usage, before, now) {

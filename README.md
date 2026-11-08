@@ -264,22 +264,16 @@ its session.
 
 https://github.com/user-attachments/assets/f692dd27-cedc-48f2-8510-f6e0fd9f5789
 
-#### News
+#### Notifications
 
-The board's footer says what the rows say, as sentences: one per workspace,
-or one per family, in the board's order. Shut gates and untaken alignment
-checks come first, then red CI, work in progress with its increment count,
-finished and merged plans, and quiet workspaces that committed in the last
-five hours. Collapsed, it shows the first sentence. Open, it shows them all.
-
-![the board's news footer, open beneath a family card: one sentence for the demo-auth family and one for a working workspace, each on its tier's color](docs/img/news.png)
-
-It is rebuilt on every push from the same rows, so it can't disagree with the
-cards above it, and no model writes it. `crew-digest` opens with the same
-sentences in the terminal, and `crew-digest --paragraph` prints them as one
-line to paste. Inside a [plan family](deep-plan/README.md#families-parallel-workstreams-with-one-goal),
-each session also hears what changed at its next prompt. More in
-[the board README](crew/board/README.md#the-news-footer).
+The board's footer lists what seamux told you in the last five hours, newest
+first: each question, block, finished turn, limit stop and resume that gave up.
+Banners seamux skipped because you were already looking at that pane are there
+too, greyed, so you can tell what you missed. Collapsed, it shows the newest.
+Click one to go to its pane. The app's search (⌘K) shows the newest three as
+well, and `crew-digest` opens with them. They all read one log in
+`~/.claude/crew/notifications`, and no model writes it. More in
+[the board README](crew/board/README.md#the-notifications-footer).
 
 #### Hide, settle and resume when the limit resets
 
@@ -306,7 +300,7 @@ in one collapsed "hidden" shelf at the foot of the rail, each saying why.
   changes the text. Reset times come from crew's status line, so with
   another status line a stop has no reset time and nothing is typed.
 
-Snoozed and settled rows stay out of the tallies and the news footer.
+Snoozed and settled rows stay out of the tallies.
 
 #### Usage
 

@@ -34,7 +34,7 @@ const crewTool = (name, args, opts = {}) => {
     { encoding: "utf8", ...opts, env: crewImpl.env(opts.env || process.env) });
 };
 // The argv that runs one board tool, as [cmd, ...args]: the one place this
-// probe names crew-board, crew-board-intent, news, judgments and cat_poses.
+// probe names crew-board, crew-board-intent, judgments and cat_poses.
 // Through crew_impl, as `seamux <basename>`.
 const tool = (name) => crewImpl.argv(name.replace(/\.py$/, ""));
 // The env any board tool or the server it starts runs in.
@@ -1829,6 +1829,8 @@ if (live && Array.isArray(live.rows)) {
     fetch: (url) => { fetched.push(url); return answer(); },
   };
   const APP = "tauri://localhost";
+  byId.news = mk("details", { id: "news" });
+  byId.news.parentElement = body;
   createContext(box);
   runInContext(readFileSync(join(HERE, "intent.js"), "utf8"), box);
   box.__boardIntent({ port: 4242, token: "t", parents: [APP, "http://tauri.localhost"] });
@@ -1888,6 +1890,22 @@ if (live && Array.isArray(live.rows)) {
   const ps = posted.filter(([x]) => x.crew === "select").pop();
   checks.push(["intent: framed, a pane row asks the app to show its workspace with that pane up, not cmux",
     fetched.length === nf2 && !!ps && ps[0].ws === "WS-1" && ps[0].pane === "S-PANE-B" && ps[1] === APP, JSON.stringify(ps)]);
+  // A notification in the footer, framed: the app shows its workspace with its pane.
+  {
+    const ni = mk("p", { class: "ni attend", "data-ws": "WS-9", "data-pane": "S-PANE-9" }, [mk("b", {}, [], "api · waiting on you")]);
+    const bare = mk("p", { class: "ni done" }, [], "no workspace");
+    const newsEl = byId.news;
+    newsEl.appendChild(ni);
+    newsEl.appendChild(bare);
+    const nf4 = fetched.length, np4 = posted.length;
+    newsEl.listeners.forEach((fn) => fn({ target: ni.children[0] }));
+    const sel = posted.slice(np4).find(([x]) => x.crew === "select");
+    checks.push(["intent: framed, a footer notification asks the app to show its workspace and pane",
+      fetched.length === nf4 && !!sel && sel[0].ws === "WS-9" && sel[0].pane === "S-PANE-9" && sel[1] === APP, JSON.stringify(sel)]);
+    const np5 = posted.length;
+    newsEl.listeners.forEach((fn) => fn({ target: bare }));
+    checks.push(["intent: a footer entry with no workspace does nothing", posted.length === np5 && fetched.length === nf4]);
+  }
   // The armed chip's ×, and the ⋯ menu's Resume at reset: the app keeps resume.json.
   const armedEl = mk("span", { class: "chip sig armed", "data-a": "resume", "data-x": "off" }, [], "resumes 3:04 PM \u00d7");
   const armItem = mk("span", { class: "tki", "data-a": "resume", "data-x": "on" }, [], "Resume at reset");
@@ -2137,66 +2155,6 @@ if (live && Array.isArray(live.rows)) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-// ---- news: the board's rows as sentences, in the board's own order ----------
-{
-  const fs = await import("node:fs");
-  const os = await import("node:os");
-  const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-news-"));
-  const NOW = 1_800_000_000;
-  const R = (id, kind, badge, extra = {}) => ({ id, name: id, kind, badge, said: "", chips: [], frac: null, meta: "", ...extra });
-  const compose = (rows, hours = 5) => {
-    const f = join(tmp, "fx.json");
-    fs.writeFileSync(f, JSON.stringify({ rows, now: NOW, hours }));
-    return JSON.parse(runTool("news.py", ["--compose", f]));
-  };
-  const n = compose([
-    R("gate", "attend", "gate shut", { subject: "Wire the cache" }),
-    R("red", "wilt", "ci failed", { branch: "dev/red" }),
-    R("chk", "wilt", "check failed", { subject: "increment 3 · test-probe" }),
-    R("busy", "running", "working", { subject: "Footer", meta: "2/5 increments",
-      commits: [{ at: NOW - 600, s: "newest" }, { at: NOW - 3600, s: "older" }, { at: NOW - 6 * 3600, s: "outside" }] }),
-    R("par", "running", "working", { family: "F", famrole: "parent", famtier: "attend" }),
-    R("kid", "attend", "review", { family: "F", famrole: "child", famtier: "attend", meta: "0/8 increments" }),
-    R("kid2", "quiet", "plan idle", { family: "F", famrole: "child", famtier: "attend" }),
-    R("q1", "quiet", "idle", { commits: [{ at: NOW - 60, s: "tidy {{x}} `y`" }] }),
-    R("q2", "quiet", "idle"),
-    R("q3", "quiet", "idle", { commits: [{ at: NOW - 9 * 3600, s: "old" }] }),
-  ]);
-  const ids = n.items.map(i => i.id);
-  checks.push(["news: items follow the board's order, attend before wilt before running",
-    ids.join() === "gate,red,chk,busy,family:F,q1,quiet"]);
-  checks.push(["news: the lede is the first item",
-    n.lede === n.items[0].text && n.lede.includes("{{gate}}") && n.lede.includes("Wire the cache")]);
-  checks.push(["news: a family is one item at its lead tier, members joined",
-    n.items[4].tier === "attend" && n.items[4].family === "F" &&
-    /Family \{\{F\}\}: \{\{par\}\} is working; \{\{kid\}\} needs its alignment check taken; 8 increments are locked behind it; 1 more is quiet\./.test(n.items[4].text)]);
-  checks.push(["news: commits inside the window are counted, newest named",
-    /2 commits in the last 5h, latest “newest”/.test(n.items[3].text) && n.items[3].text.includes("(2/5 increments)")]);
-  checks.push(["news: a quiet row speaks only when it committed in the window",
-    n.items[5].text.startsWith("{{q1}} is quiet, with 1 commit") && !ids.includes("q2") && !ids.includes("q3")]);
-  checks.push(["news: quiet rows without commits collapse to one count",
-    n.items[6].text === "2 other workspaces are quiet."]);
-  checks.push(["news: a commit subject cannot open bold or code",
-    !/tidy \{\{|`y`/.test(n.items[5].text) && n.items[5].text.includes("tidy x y")]);
-  checks.push(["news: red CI names the branch, a failed check names it",
-    n.items[1].text === "{{red}} is red on CI on `dev/red`." && n.items[2].text.includes("(increment 3 · test-probe)")]);
-  const del = compose([
-    R("ft-parent", "running", "working", { family: "ft-parent", famrole: "parent", famgo: "human", famtier: "attend" }),
-    R("ft-kid", "attend", "gate shut", { subject: "Retry sweep", family: "ft-parent", famrole: "child", famgo: "parent", famtier: "attend" }),
-    R("ft-own", "attend", "gate shut", { subject: "Own go", family: "ft-parent", famrole: "child", famgo: "human", famtier: "attend" }),
-  ]);
-  checks.push(["news: a delegated child at a shut gate waits on its parent, as its card says",
-    del.items[0].text.includes("{{ft-kid}} waits on its go from the parent, ft-parent, for Retry sweep") &&
-    del.items[0].text.includes("{{ft-own}} needs your go-ahead on Own go") && !/ft-kid\}\} needs your go-ahead/.test(del.items[0].text)]);
-  const empty = compose([]);
-  checks.push(["news: no rows give no items and an empty lede",
-    empty.items.length === 0 && empty.lede === "" && empty.hours === 5]);
-  checks.push(["news: a narrower window drops older commits",
-    /1 commit in the last 0.5h/.test(compose([R("b", "running", "working",
-      { commits: [{ at: NOW - 600, s: "a" }, { at: NOW - 3600, s: "b" }] })], 0.5).items[0].text)]);
-  fs.rmSync(tmp, { recursive: true, force: true });
-}
-
 // ---- the fast pass reads what the full pass cached --------------------------
 // The 15s board tick is affordable only because a fast build skips the
 // per-workspace sidebar-state call and reads branch/PR/live-turn from a cache
@@ -2227,14 +2185,13 @@ if (live && Array.isArray(live.rows)) {
     [r.id, r.kind, r.branch, r.pr, r.pr_url, r.dirty, r.meta, r.chips]));
   checks.push(["a fast build agrees with a full build", key(fast) === key(full) && full.rows.length === 3 &&
     full.rows.find(r => r.id === "W-A").pr_url === "https://github.com/o/r/pull/41", key(full) + "\n" + key(fast)]);
-  checks.push(["a fast build carries the same news as a full build", JSON.stringify(fast.news) === JSON.stringify(full.news)]);
+  checks.push(["a fast build carries the same notifications as a full build", JSON.stringify(fast.notes) === JSON.stringify(full.notes)]);
   checks.push(["...and asks cmux only for the list, not sidebar-state", !/sidebar-state/.test(calls) && /workspace list/.test(calls), calls]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-// ---- goldens: news and judgments print the bytes they always have ----------
-// Fixtures through every badge, families, commit windows, odd types and
-// non-ASCII, held to golden files recorded from crew's retired Python
+// ---- goldens: judgments print the bytes they always have ------------------
+// Fixtures through odd types and non-ASCII, held to golden files recorded from crew's retired Python
 // (crew/tools/golden/README.md).
 {
   const fs = await import("node:fs");
@@ -2245,31 +2202,6 @@ if (live && Array.isArray(live.rows)) {
   const gold = (name, text) => golds.push([name, golden.expect(name, text)[0]]);
   const one = (name, args, opts = {}) => runTool(name + ".py", args, opts);
   const NOW = 1790000000.25;
-  const badges = ["asked you", "review", "gate shut", "needs a value", "ci failed", "check failed", "conflicts", "changes",
-    "blocked", "stuck", "working", "merged", "plan done", "something else", ""];
-  const rows = badges.flatMap((b, i) => [
-    { id: "b" + i, name: "név {{" + i + "}}", kind: i % 3 ? "attend" : "running", badge: b,
-      subject: i % 2 ? "the `thing` " + i : "", branch: i % 2 ? "dev/x" + i : "",
-      meta: i % 4 ? `${i}/${i + 3} increments · s` : (i ? "0/0 increments" : ""),
-      commits: i % 3 ? [{ at: NOW - 60 * i, s: "c" + i + " ✓" }, { at: String(NOW - 7200), s: "str-at" }, { at: null }, "junk"] : [] },
-  ]).concat([
-    { id: 7, kind: "quiet", commits: [{ at: NOW - 5, s: "x".repeat(90) }] },
-    { name: "", id: "", kind: "quiet" },
-    { id: "f1", name: "par", kind: "running", badge: "working", family: "Fam", famtier: "attend", famrole: "parent" },
-    { id: "f2", name: "kid", kind: "attend", badge: "review", family: "Fam", meta: "0/1 increments" },
-    { id: "f3", name: "idle", kind: "quiet", family: "Fam" },
-    { id: "g1", name: "q", kind: "quiet", family: "G2" },
-    { id: "d1", name: "dp", kind: "running", badge: "working", family: "Del", famrole: "parent", famgo: "human" },
-    { id: "d2", name: "dk", kind: "attend", badge: "gate shut", subject: "Retry `sweep`", family: "Del", famrole: "child", famgo: "parent" },
-    { id: "d3", name: "dk2", kind: "attend", badge: "gate shut", family: "Del", famgo: "parent" },
-  ]);
-  const cases = [{ rows, now: NOW, hours: 5 }, { rows, now: NOW, hours: 0.25 }, { rows: [], now: NOW, hours: 2.5 },
-    { rows: rows.slice(0, 3), now: NOW }];
-  cases.forEach((fx, i) => {
-    const f = join(tmp, `news${i}.json`);
-    fs.writeFileSync(f, JSON.stringify(fx));
-    gold(`board/news-${i}.txt`, one("news", ["--compose", f], { env: { ...process.env, CREW_NEWS_HOURS: "3" } }));
-  });
   const jfx = join(tmp, "j.json");
   fs.writeFileSync(jfx, JSON.stringify({ now: NOW, threshold: 0.5,
     workspaces: [{ cwd: "/w/a" }, { cwd: "/w/b", running: true }, { cwd: "/w/c" }, { cwd: "/w/d" }, { cwd: "/w/e" }, {}],
@@ -2288,7 +2220,7 @@ if (live && Array.isArray(live.rows)) {
     return fs.readFileSync(file, "utf8").replace(/"at": [0-9.e+]+/g, '"at": T');
   };
   gold("board/judgments-record.json", rec(join(tmp, "jr.json")));
-  checks.push(["golden: news --compose, judgments --apply and --record print their goldens' bytes", golds.every(([, ok]) => ok),
+  checks.push(["golden: judgments --apply and --record print their goldens' bytes", golds.every(([, ok]) => ok),
     golds.filter(([, ok]) => !ok).map(([n]) => n).join(", ")]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
@@ -2384,17 +2316,17 @@ if (live && Array.isArray(live.rows)) {
     "/w/p": P("p", "implementing", [{ n: 2, id: "test-c", kind: "test", status: "pending" }]),
     "/w/d": P("d", "done", [{ n: 3, id: "test-d", kind: "test", status: "fail" }]) };
   const W = (s, running) => ({ id: s, title: s, cwd: "/w/" + s, desc: "", running,
-    branch: "none", pr: "none", dirty: false, commits: [{ at: 1, s: "x" }] });
+    branch: "none", pr: "none", dirty: false });
   const all = stateFrom({ plans: pb, workspaces: [W("f", true), W("l", false), W("p", true), W("d", false), W("q", false)] }).rows;
   const po = stateFrom({ plans: pb }).rows;
   const out = {
-    rank: Object.fromEntries(all.map(r => [r.id, [r.kind, r.badge, r.subject ?? ""]])),
+    rank: Object.fromEntries(all.map(r => [r.id, [r.kind, r.badge, r.said]])),
     plans: Object.fromEntries(po.map(r => [r.id, [r.kind, r.badge]])),
-    commits: all.find(r => r.id === "f").commits,
+    keys: Object.keys(all.find(r => r.id === "f")),
     chips: Object.fromEntries(all.map(r => [r.id, r.chips])),
   };
   checks.push(["checks: a failed check ranks wilt even mid-turn, naming it",
-    JSON.stringify(out.rank.f) === JSON.stringify(["wilt", "check failed", "increment 2 · test-a"])]);
+    out.rank.f[0] === "wilt" && out.rank.f[1] === "check failed" && out.rank.f[2].includes("`test-a`")]);
   checks.push(["checks: a lost runner ranks wilt too", out.rank.l[0] === "wilt" && out.rank.l[1] === "check failed"]);
   checks.push(["checks: a pending check leaves the row working", out.rank.p[1] === "working"]);
   checks.push(["checks: a done plan never climbs back to wilt", out.rank.d[0] === "done"]);
@@ -2403,7 +2335,8 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["wake: every row, tiered and quiet, ends with the wake chip",
     Object.keys(out.chips).length === 5 && Object.values(out.chips).every(c => c[c.length - 1] === "wake") &&
     out.chips.q[0] === "jump" && out.chips.f[0] !== "wake"]);
-  checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
+  checks.push(["rank: a row carries no commits or subject (they fed only the retired news)",
+    !out.keys.includes("commits") && !out.keys.includes("subject"), out.keys.join(",")]);
 }
 
 // ---- browser and claiming checks: a card for a person's answer, a thumbnail for a failure ----
@@ -2420,12 +2353,12 @@ if (live && Array.isArray(live.rows)) {
       [{ id: "flow", kind: "browser", status: "fail", evidence: { dir: "inc2-flow-17", latest: "frame-0004.png", frames: 4 } }]),
     "/w/t": P("t", [{ n: 2, id: "unit", kind: "test", status: "fail" }], [{ id: "unit", kind: "test", status: "fail" }]),
   };
-  const W = s => ({ id: s, title: s, cwd: "/w/" + s, desc: "", running: true, branch: "none", pr: "none", dirty: false, commits: [] });
+  const W = s => ({ id: s, title: s, cwd: "/w/" + s, desc: "", running: true, branch: "none", pr: "none", dirty: false });
   const live = Object.fromEntries(stateFrom({ plans: pb, workspaces: ["a", "r", "b", "t"].map(W) }).rows.map(r => [r.id, r]));
   const off = Object.fromEntries(stateFrom({ plans: pb }).rows.map(r => [r.id, r]));
   for (const [path, rows] of [["", live], [" (cmux down)", off]]) {
     checks.push(["claims: a check parked on a person's answer is an attend card naming its question" + path,
-      rows.a.kind === "attend" && rows.a.badge === "needs a value" && rows.a.subject === "increment 2 \u00b7 qa" &&
+      rows.a.kind === "attend" && rows.a.badge === "needs a value" &&
       rows.a.said.startsWith("{{Increment 2's check `qa` asks: Which QA env?}}") && rows.a.chips[0] === "plan"]);
     checks.push(["claims: so is a running claim with its question open" + path,
       rows.r.badge === "needs a value" && /asks: Pick a variant/.test(rows.r.said)]);
@@ -2787,48 +2720,50 @@ if (live && Array.isArray(live.rows)) {
     /"archive": "archive"/.test(intent) && /"archive": "Close this workspace/.test(rjs)]);
 }
 
-// ---- the news footer: escaped, keeps its open state, hides when empty ------
+// ---- the notifications footer: escaped, keeps its open state, hides when empty ----
 {
-  const NEWS = { hours: 5, lede: "{{gate}} needs your go-ahead on <img src=x onerror=1>.",
-    items: [{ id: "gate", tier: "attend", family: "", text: "{{gate}} needs your go-ahead on <img src=x onerror=1>." },
-            { id: "red", tier: "wilt", family: "", text: "{{red}} is red on CI on `dev/red`." },
-            { id: "x", tier: "\"><script>", family: "", text: "odd tier" }] };
+  const NOW = Date.now();
+  const NOTES = [
+    { at: NOW - 120000, ws: "W-1", pane: "P-1", kind: "waiting", title: "api · waiting on you", body: "Merge <img src=x onerror=1>?", shown: true, why: "", source: "app" },
+    { at: NOW - 600000, ws: "W-2", pane: "P-2", kind: "finished", title: "docs · done", body: "Finished its turn", shown: false, why: "on screen", source: "app" },
+    { at: NOW - 900000, ws: "", pane: "", kind: "\"><script>", title: "odd {{kind}} `x`", body: "", shown: true, why: "", source: "hook" },
+  ];
   els.news = mk("news");
   els.news.setAttribute("open", "");
-  render({ rows: [{ id: "gate", name: "gate", kind: "wilt", badge: "red", said: "", chips: [], frac: null, meta: "" }],
-    quiet: "", news: NEWS });
+  render({ rows: [], quiet: "", notes: NOTES });
   const body = els["news-body"].innerHTML, lede = els["news-lede"].innerHTML;
-  checks.push(["news: footer shows when there is news", els.news.hidden === false]);
-  checks.push(["news: the window is in the title", els["news-ttl"].textContent === "news · 5h"]);
-  checks.push(["news: one paragraph per item, coloured by tier",
-    (body.match(/<p class="ni /g) || []).length === 3 && body.includes('class="ni attend"') && body.includes('class="ni wilt"')]);
-  checks.push(["news: text is escaped, affordances kept",
-    !body.includes("<img") && !lede.includes("<img") && lede.includes("<b>gate</b>") && body.includes("<code>dev/red</code>")]);
-  checks.push(["news: an unknown tier cannot reach the class attribute",
+  checks.push(["notes: the footer shows when the log has entries", els.news.hidden === false]);
+  checks.push(["notes: the title says notifications", els["news-ttl"].textContent === "notifications"]);
+  checks.push(["notes: the collapsed line is the newest entry", lede.startsWith("<b>api · waiting on you</b>") && els["news-lede"].className === ""]);
+  checks.push(["notes: one paragraph per entry, newest first, coloured by kind",
+    (body.match(/<p class="ni /g) || []).length === 3 && body.indexOf("api ·") < body.indexOf("docs ·") &&
+    body.includes('class="ni attend"') && body.includes('class="ni done skip"'), body]);
+  checks.push(["notes: a skipped banner is greyed and says not shown, and why", /class="ni done skip"[^>]*title="not shown: on screen"/.test(body) &&
+    body.includes('<span class="nskip">not shown</span>'), body]);
+  // The board's one format (clockOf): "1:05 PM" today, "Nov 5 11:40 PM" on another day.
+  render({ rows: [], quiet: "", notes: [{ ...NOTES[0], at: NOW - 2 * 864e5 }] });
+  const oldAt = (/<span class="nago">([^<]*)<\/span>/.exec(els["news-body"].innerHTML) || [])[1] || "";
+  const ages = [...body.matchAll(/<span class="nago">([^<]*)<\/span>/g)].map((m) => m[1]);
+  checks.push(["notes: each entry says the time it came, in the board's one format, which a quiet board cannot freeze",
+    ages.length === 3 && ages.every((a) => /^(?:[A-Z][a-z]{2} \d{1,2} )?\d{1,2}:\d{2} [AP]M$/.test(a)) &&
+    /^[A-Z][a-z]{2} \d{1,2} \d{1,2}:\d{2} [AP]M$/.test(oldAt), ages.join(" | ") + " / " + oldAt]);
+  render({ rows: [], quiet: "", notes: NOTES });
+  checks.push(["notes: an entry carries its workspace and pane for the click, one without carries none",
+    body.includes('data-ws="W-1" data-pane="P-1"') && !/data-ws=""/.test(body), body]);
+  checks.push(["notes: text is plain: escaped, with no affordances",
+    !body.includes("<img") && !lede.includes("<img") && body.includes("odd {{kind}} `x`") && !body.includes("<code>")]);
+  checks.push(["notes: an unknown kind cannot reach the class attribute",
     body.includes('class="ni quiet"') && !body.includes("<script")]);
-  render({ rows: [], quiet: "", news: NEWS });
-  checks.push(["news: the <details> keeps its open state across a push", els.news.getAttribute("open") === ""]);
-  // A lede about a card already on the board that needs you is skipped in
-  // the collapsed line: the next item leads, and with none left the title counts.
-  const gateRow = { id: "gate", name: "gate", kind: "attend", badge: "gate shut", said: "", chips: [], frac: null, meta: "" };
-  render({ rows: [gateRow], quiet: "", news: NEWS });
-  checks.push(["news: the collapsed lede skips a row already open as a needs-you card, for the next item",
-    !els["news-lede"].innerHTML.includes("gate") && els["news-lede"].innerHTML.includes("<b>red</b>") &&
-    els["news-ttl"].textContent === "news · 5h" && (els["news-body"].innerHTML.match(/<p class="ni /g) || []).length === 3]);
-  const famNews = { hours: 5, lede: "Family {{F}}: {{k}} needs your go-ahead.",
-    items: [{ id: "family:F", tier: "attend", family: "F", text: "Family {{F}}: {{k}} needs your go-ahead." }] };
-  render({ rows: [{ ...gateRow, id: "k", family: "F" }], quiet: "", news: famNews });
-  checks.push(["news: ...a family's too, and with nothing left the title counts the news",
-    els["news-lede"].innerHTML === "" && els["news-ttl"].textContent === "news · 1" && els.news.hidden === false]);
-  render({ rows: [gateRow], quiet: "", news: { hours: 3, lede: "{{gate}} asked you a question.",
-    items: [{ tier: "attend", text: "{{gate}} asked you a question." }, { tier: "running", text: "{{red}} started increment 2." }] } });
-  checks.push(["news: ...an item with no id is matched by the name it opens with",
-    els["news-lede"].innerHTML.includes("<b>red</b>") && !els["news-lede"].innerHTML.includes("gate")]);
-  render({ rows: [], quiet: "", news: { hours: 5, lede: "", items: [] } });
-  checks.push(["news: no items hides the footer", els.news.hidden === true]);
+  render({ rows: [], quiet: "", notes: NOTES.slice(1) });
+  checks.push(["notes: a newest entry that was not shown greys the collapsed line too",
+    els["news-lede"].className === "skip" && els["news-lede"].innerHTML.startsWith("<b>docs · done</b>")]);
+  render({ rows: [], quiet: "", notes: NOTES });
+  checks.push(["notes: the <details> keeps its open state across a push", els.news.getAttribute("open") === ""]);
+  render({ rows: [], quiet: "", notes: [] });
+  checks.push(["notes: an empty log hides the footer", els.news.hidden === true]);
   render({ rows: [], quiet: "" });
-  checks.push(["news: a push without news (an old collector) hides it too", els.news.hidden === true]);
-  checks.push(["board.html has the news targets inside a <details>",
+  checks.push(["notes: a push without notes (an old collector) hides it too", els.news.hidden === true]);
+  checks.push(["board.html has the footer's targets inside a <details>",
     /<details id="news"[^>]*>[\s\S]*id="news-ttl"[\s\S]*id="news-lede"[\s\S]*id="news-body"[\s\S]*<\/details>/.test(pageHtml)]);
 }
 
@@ -3288,10 +3223,25 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       r.end();
     });
     const ids = d => (d.rows || []).map(x => x.id);
+    // The notification log under the server's HOME: one line now, one later.
+    const notesDir = join(HOME, ".claude", "crew", "notifications");
+    fs.mkdirSync(notesDir, { recursive: true });
+    const noteDay = join(notesDir, new Date().toISOString().slice(0, 10) + ".jsonl");
+    const noteLine = (title) => JSON.stringify({ at: Date.now(), ws: "W-FEED-1", pane: "P-FEED", kind: "waiting",
+      title, body: "b", shown: true, why: "", source: "app" }) + "\n";
+    fs.appendFileSync(noteDay, noteLine("feed · waiting on you"));
     const first = await states(() => true, 30000);
     checks.push(["board feed: the first state arrives on connect, ranked from cmux",
-      !!first && ids(first).includes("W-FEED-1") && typeof first.stamp === "string" && first.news && first.stale === false,
+      !!first && ids(first).includes("W-FEED-1") && typeof first.stamp === "string" && Array.isArray(first.notes) && first.stale === false,
       JSON.stringify(first).slice(0, 300)]);
+    checks.push(["board feed: its notes are the log's last hours, from ~/.claude/crew/notifications",
+      !!first && first.notes.length === 1 && first.notes[0].title === "feed · waiting on you" && first.notes[0].pane === "P-FEED",
+      JSON.stringify(first && first.notes)]);
+    const nextNotes = states(d => (d.notes || []).length === 2, 15000);
+    fs.appendFileSync(noteDay, noteLine("feed · done"));
+    const noted = await nextNotes;
+    checks.push(["board feed: a line appended to the log is pushed, newest first",
+      !!noted && noted.notes[0].title === "feed · done", JSON.stringify(noted && noted.notes)]);
     const tgt = JSON.parse(fs.readFileSync(join(HOME, ".cache", "cmux-crew", "board-targets.json"), "utf8"));
     checks.push(["board feed: each build writes the click table, so /do knows the rows shown",
       tgt["W-FEED-1"]?.ref === "workspace:5"]);

@@ -5,11 +5,10 @@
 //! crew-digest --hours 4    an arbitrary lookback
 //! crew-digest --week       since Monday
 //! crew-digest --notify     also post a one-line summary as a notification
-//! crew-digest --paragraph  only where things stand, as one plain paragraph
 //! ```
 //!
-//! Every section degrades to silence rather than failing the run: the board's
-//! news (crew-board state), commits across the main checkout and its
+//! Every section degrades to silence rather than failing the run: what
+//! pinged you (the notification log's last hours), commits across the main checkout and its
 //! worktrees, PRs from gh, sessions still waiting, and worktrees that shipped.
 //! Times are naive local wall-clock, as the Python's datetime.now() is.
 
@@ -57,26 +56,47 @@ fn main_repo() -> String {
     concat!("__MAIN_", "REPO__").to_string()
 }
 
-/// The board's news ({hours, lede, items}) from `crew-board state --fast --json`.
-fn board_news() -> Option<Value> {
-    let mut argv: Vec<String> = match sibling::own("crew-board") {
-        Some(h) => h,
-        None => vec![sibling::stub("board/crew-board")?],
-    };
-    argv.extend(["state", "--fast", "--json"].map(String::from));
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let out = sh(&refs, None, 30);
-    let v: Value = serde_json::from_str(&out).ok()?;
-    let news = v.get("news").filter(|n| truthy(Some(n)))?.clone();
-    truthy(news.get("items")).then_some(news)
+/// The most entries "what pinged you" prints.
+const PINGED_CAP: usize = 20;
+
+/// A log entry's text as one plain terminal line: control characters (an
+/// escape sequence, a newline) become spaces. A body is often a question a
+/// Claude wrote, and the log is no reason to trust it with the terminal.
+fn plain_line(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
-fn plain(text: &str) -> String {
-    text.replace("{{", "").replace("}}", "").replace('`', "")
+/// "what pinged you": the notification log's last hours, newest first, one
+/// line each, coloured by kind; a banner seamux skipped is dim and says so.
+pub fn pinged_lines(notes: &[crew_core::notifications::Entry]) -> Vec<String> {
+    notes
+        .iter()
+        .map(|n| {
+            let ink = match n.kind.as_str() {
+                "waiting" | "reminder" | "blocked" => AMBER,
+                "limit" | "resume" => RED,
+                "finished" | "turn" => GREEN,
+                _ => DIM,
+            };
+            let (title, body) = (plain_line(&n.title), plain_line(&n.body));
+            let body = if body.is_empty() { String::new() } else { format!(" {body}") };
+            let hm = clock(n.at);
+            if n.shown {
+                format!("  {ink}●{RESET} {DIM}{hm}{RESET} {BOLD}{title}{RESET}{body}")
+            } else {
+                format!("  {DIM}○ {hm} {title}{body} · not shown{RESET}")
+            }
+        })
+        .collect()
 }
 
-fn text_of(it: &Value) -> String {
-    it.get("text").map(py_str).unwrap_or_default()
+/// HH:MM, local wall-clock, for a log entry's `at` (ms).
+fn clock(at_ms: u64) -> String {
+    let secs = (at_ms / 1000) as libc::time_t;
+    // SAFETY: localtime_r fills tm, which we own.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 
 // --- naive local time ------------------------------------------------------------
@@ -255,12 +275,6 @@ fn cell(s: &str, n: usize) -> String {
 
 fn run(args: &[String]) -> i32 {
     let has = |f: &str| args.iter().any(|a| a == f);
-    if has("--paragraph") {
-        let Some(news) = board_news() else { return 1 };
-        let items = news["items"].as_array().cloned().unwrap_or_default();
-        println!("{}", items.iter().map(|it| plain(&text_of(it))).collect::<Vec<_>>().join(" "));
-        return 0;
-    }
     let main = main_repo();
     let (start, label) = window(args);
     let since_iso = isoformat(start);
@@ -275,22 +289,18 @@ fn run(args: &[String]) -> i32 {
     };
     println!("\n{BOLD}crew digest{RESET}  {DIM}{label}{RESET}\n");
 
-    // --- where things stand -----------------------------------------------------
-    if let Some(news) = board_news() {
-        let hours = news.get("hours").and_then(Value::as_f64).unwrap_or(5.0);
-        println!("{BOLD}where things stand{RESET}  {DIM}commits: last {}h{RESET}", percent_g(hours));
-        for it in news["items"].as_array().cloned().unwrap_or_default() {
-            let text = text_of(&it).replace("{{", BOLD).replace("}}", RESET).replace('`', "");
-            let ink = match it.get("tier").and_then(Value::as_str) {
-                Some("attend") => AMBER,
-                Some("wilt") => RED,
-                Some("running") => "\x1b[36m",
-                Some("done") => GREEN,
-                _ => DIM,
-            };
-            println!("  {ink}●{RESET} {text}");
+    // --- what pinged you ---------------------------------------------------------
+    {
+        use crew_core::notifications as n;
+        let hours = n::RECENT_HOURS;
+        let notes = n::recent(&n::dir(), crew_core::history::now_ms(), hours, PINGED_CAP);
+        if !notes.is_empty() {
+            println!("{BOLD}what pinged you{RESET}  {DIM}last {hours}h{RESET}");
+            for line in pinged_lines(&notes) {
+                println!("{line}");
+            }
+            println!();
         }
-        println!();
     }
 
     // --- commits ------------------------------------------------------------------
@@ -552,6 +562,22 @@ pub fn main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_pinged_you_is_one_line_per_entry_and_a_skipped_one_says_so() {
+        use crew_core::notifications::Entry;
+        let e = |kind: &str, title: &str, shown: bool| Entry { at: 1_790_000_000_000, kind: kind.into(), title: title.into(),
+            body: "b".into(), shown, ..Default::default() };
+        let lines = pinged_lines(&[e("waiting", "api · waiting on you", true), e("finished", "docs · done", false)]);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains(AMBER) && lines[0].contains("api · waiting on you") && lines[0].ends_with(" b"));
+        assert!(lines[1].contains("○") && lines[1].ends_with(&format!("docs · done b · not shown{RESET}")));
+        // A title or body cannot drive the terminal: its control characters print as spaces.
+        let evil = Entry { body: "ok\x1b]0;pwned\x07\nnext".into(), ..e("waiting", "a\x1b[2Jb", true) };
+        let line = &pinged_lines(&[evil])[0];
+        assert!(line.contains("a [2Jb") && line.ends_with(" ok ]0;pwned  next"), "{line:?}");
+        assert!(!line.contains('\x07') && !line.contains('\n') && line.matches('\x1b').count() == 6, "only the digest's own colours: {line:?}");
+    }
 
     #[test]
     fn floats_as_python_reads_them() {

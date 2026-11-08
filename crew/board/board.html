@@ -21,10 +21,11 @@
              push so that sky appears at once instead of fading in
     #tally   how many rows are broken, working and waiting to close
     #says    what the cat has to say about that mood
-    #news    the news footer, a <details> render.js never replaces -- so its open
-             state survives every push; render.js sets .hidden and fills
-             #news-ttl (the window), #news-lede (the first sentence, shown
-             collapsed) and #news-body (every sentence, by tier: .ni + tier)
+    #news    the notification log's footer, a <details> render.js never
+             replaces -- so its open state survives every push; render.js sets
+             .hidden and fills #news-ttl, #news-lede (the newest entry, shown
+             collapsed) and #news-body (every entry: .ni + tier, .skip when
+             it was not shown); intent.js jumps on a click
 
   The cat's geometry lives HERE rather than in render.js on purpose: it is static art
   that never varies with the data, and render.js is re-sent on every single push. Only
@@ -248,7 +249,7 @@ html,body{margin:0;background:var(--bg);color:var(--fg)}
    header started 11px down and a sliver of page background sat above the cat's
    shelf -- the negative side margins below cancel the LEFT and RIGHT padding, and
    nothing was cancelling this one. */
-/* A column at least the pane's height, so the news footer's margin-top:auto
+/* A column at least the pane's height, so the notifications footer's margin-top:auto
    lands it on the bottom edge even when the board is two rows long. */
 body{display:flex;flex-direction:column;min-height:100vh;
   padding:0 11px 11px;font:var(--fs-3)/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
@@ -852,7 +853,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
   color:var(--grey);font-size:var(--fs-2)}
 #quiet:empty{display:none}
 
-/* The news: pinned to the pane's bottom edge, one line until opened. Sticky
+/* The notifications: pinned to the pane's bottom edge, one line until opened. Sticky
    rather than fixed, so it stays in the flow -- scrolled to the end, it sits
    after the last row instead of over it. Negative margins reach the edges and
    cancel the body's bottom padding, as the header does at the top. Nothing in
@@ -878,6 +879,12 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 .ni.wilt{border-left-color:var(--wilt)}
 .ni.running{border-left-color:var(--running)}
 .ni.done{border-left-color:var(--done)}
+.ni[data-ws]{cursor:pointer}
+.ni[data-ws]:hover{background:var(--bg-hover)}
+.ni.skip,.ni.skip b,#news-lede.skip,#news-lede.skip b{color:var(--grey)}
+.ni.skip{border-left-style:dashed}
+.nago,.nskip{color:var(--grey);font-size:var(--fs-1)}
+.nskip{text-transform:uppercase;letter-spacing:.06em}
 </style></head>
 <body>
 <header>
@@ -1003,7 +1010,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 </div>
 <div id="quiet"></div>
 <details id="news" hidden>
-  <summary><span id="news-ttl">news</span><span id="news-lede"></span></summary>
+  <summary><span id="news-ttl">notifications</span><span id="news-lede"></span></summary>
   <div id="news-body"></div>
 </details>
 </body></html>

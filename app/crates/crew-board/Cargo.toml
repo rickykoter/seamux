@@ -1,6 +1,6 @@
 [package]
 name = "crew-board"
-description = "The crew board in Rust: the ranking, its news, the TypeSafe judgments cache, the cat poses and (later) the intent server"
+description = "The crew board in Rust: the ranking with the notification log, the TypeSafe judgments cache, the cat poses and (later) the intent server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

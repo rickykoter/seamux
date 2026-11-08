@@ -18,6 +18,7 @@ pub mod home;
 pub mod ident;
 pub mod limits;
 pub mod native;
+pub mod notifications;
 pub mod pricing;
 pub mod published;
 pub mod py;

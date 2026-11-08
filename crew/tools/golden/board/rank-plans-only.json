@@ -6,7 +6,6 @@
       "kind": "attend",
       "badge": "gate shut",
       "said": "{{Gate me}} needs your go-ahead.",
-      "subject": "Gate me",
       "chips": [
         "go 3",
         "plan"
@@ -33,7 +32,6 @@
       "cost_unpriced": [],
       "issue": "",
       "issue_url": "",
-      "commits": [],
       "famtier": "attend",
       "famkid": false
     },
@@ -43,7 +41,6 @@
       "kind": "attend",
       "badge": "gate shut",
       "said": "{{Owned}} waits on its go from the parent, g. You can still give it.",
-      "subject": "Owned",
       "chips": [
         "parent goes \u00b7 inc 1",
         "plan"
@@ -70,7 +67,6 @@
       "cost_unpriced": [],
       "issue": "",
       "issue_url": "",
-      "commits": [],
       "famtier": "attend",
       "famkid": true
     },
@@ -80,7 +76,6 @@
       "kind": "wilt",
       "badge": "blocked",
       "said": "{{Blk}} is blocked: None",
-      "subject": "Blk",
       "chips": [
         "plan"
       ],
@@ -106,7 +101,6 @@
       "cost_unpriced": [],
       "issue": "",
       "issue_url": "",
-      "commits": [],
       "famtier": "attend",
       "famkid": true
     },
@@ -138,9 +132,7 @@
       "cost": 0,
       "cost_unpriced": [],
       "issue": "",
-      "issue_url": "",
-      "subject": "",
-      "commits": []
+      "issue_url": ""
     },
     {
       "id": "f",
@@ -148,7 +140,6 @@
       "kind": "wilt",
       "badge": "check failed",
       "said": "{{Increment 2's check `test-a` failed.}}",
-      "subject": "increment 2 \u00b7 test-a",
       "chips": [
         "plan"
       ],
@@ -170,8 +161,7 @@
       "cost": 0,
       "cost_unpriced": [],
       "issue": "",
-      "issue_url": "",
-      "commits": []
+      "issue_url": ""
     },
     {
       "id": "d",
@@ -200,9 +190,7 @@
       "cost": 0,
       "cost_unpriced": [],
       "issue": "",
-      "issue_url": "",
-      "subject": "",
-      "commits": []
+      "issue_url": ""
     }
   ],
   "quietCount": 0,
@@ -210,34 +198,5 @@
   "stamp": "T",
   "stale": true,
   "src": "6 plans",
-  "news": {
-    "hours": 5.0,
-    "lede": "Family {{g}}: {{g}} needs your go-ahead on Gate me; {{k}} waits on its go from the parent, g, for Owned; {{b}} is blocked on Blk.",
-    "items": [
-      {
-        "id": "family:g",
-        "tier": "attend",
-        "family": "g",
-        "text": "Family {{g}}: {{g}} needs your go-ahead on Gate me; {{k}} waits on its go from the parent, g, for Owned; {{b}} is blocked on Blk."
-      },
-      {
-        "id": "r",
-        "tier": "attend",
-        "family": "",
-        "text": "{{r}} needs its alignment check taken."
-      },
-      {
-        "id": "f",
-        "tier": "wilt",
-        "family": "",
-        "text": "{{f}} failed a check (increment 2 \u00b7 test-a)."
-      },
-      {
-        "id": "d",
-        "tier": "done",
-        "family": "",
-        "text": "{{d}} finished every increment; its plan can be closed."
-      }
-    ]
-  }
+  "notes": []
 }

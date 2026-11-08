@@ -356,6 +356,23 @@ pub struct NowPage {
     pub root: String,
 }
 
+/// One line of the notification log, for the palette (crew_core::notifications).
+#[derive(Clone, Debug, Serialize, PartialEq, Default)]
+pub struct NoteBrief {
+    pub at: u64,
+    pub ws: String,
+    pub pane: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub shown: bool,
+    pub why: String,
+}
+
+/// How many log entries the frame carries: the palette's strip shows three,
+/// and its search reads them all.
+pub const NOTES_CAP: usize = 50;
+
 /// A workspace's pull request and CI, in brief. `n` is "" when only CI is known.
 #[derive(Clone, Debug, Serialize, PartialEq, Default)]
 pub struct PrBrief {
@@ -418,8 +435,14 @@ pub struct ViewsFrame {
     /// published them (crew_core::published): never a live call, so as
     /// fresh as the last sync. A workspace with no PR and no CI is left out.
     pub pr: std::collections::BTreeMap<String, PrBrief>,
+    /// The notification log's last hours, newest first, for the palette.
+    pub notes: Vec<NoteBrief>,
     /// What could not be read this time, for the page to say.
     pub problems: Vec<String>,
+}
+
+fn brief(e: crew_core::notifications::Entry) -> NoteBrief {
+    NoteBrief { at: e.at, ws: e.ws, pane: e.pane, kind: e.kind, title: e.title, body: e.body, shown: e.shown, why: e.why }
 }
 
 /// Where the feed reads. `live()` is this machine's; tests point at fixtures.
@@ -429,6 +452,8 @@ pub struct Inputs {
     /// lookout's reviews dir.
     pub reviews_dir: PathBuf,
     pub history_dir: PathBuf,
+    /// The notification log (crew_core::notifications).
+    pub notes_dir: PathBuf,
     /// Muted and tucked worktrees (tuck.rs).
     pub tuck_file: PathBuf,
     /// crew-board's ask pages and their records.
@@ -448,6 +473,7 @@ impl Inputs {
             state_dir: crew_core::home::xdg_cache(),
             reviews_dir: crew_board::review::reviews_dir(),
             history_dir: history::dir(),
+            notes_dir: crew_core::notifications::dir(),
             tuck_file: crate::tuck::Store::live().file,
             asks_dir: crew_board::ask::asks_dir(),
             tmux_dir: (crate::backend::kind() == crew_core::backend::Kind::Tmux).then(crew_core::backend::tmux::state_dir),
@@ -812,6 +838,9 @@ pub struct Feed {
     state_dir: PathBuf,
     reviews_dir: PathBuf,
     history_dir: PathBuf,
+    notes_dir: PathBuf,
+    /// The log's day files as last read (name, mtime, size), and what they held.
+    notes: Mutex<(Vec<(String, Option<SystemTime>, u64)>, Vec<crew_core::notifications::Entry>)>,
     asks_dir: PathBuf,
     tmux_dir: Option<PathBuf>,
     /// The last published facts and the mtimes of the files they came from.
@@ -829,6 +858,8 @@ impl Feed {
             state_dir: inputs.state_dir,
             reviews_dir: inputs.reviews_dir,
             history_dir: inputs.history_dir,
+            notes_dir: inputs.notes_dir,
+            notes: Mutex::default(),
             asks_dir: inputs.asks_dir,
             tmux_dir: inputs.tmux_dir,
             published: Mutex::default(),
@@ -852,6 +883,35 @@ impl Feed {
             *last = (stamps, crew_core::published::all(&self.state_dir, tmux));
         }
         last.1.clone()
+    }
+
+    /// The log's last hours, newest first. A frame is built every couple of
+    /// seconds; the day files are parsed again only when one changed, and
+    /// the window is cut from what was read.
+    fn notes(&self, now_ms: u64) -> Vec<NoteBrief> {
+        use crew_core::notifications as n;
+        let since = now_ms.saturating_sub(n::RECENT_HOURS * 3_600_000);
+        let mut stamps: Vec<(String, Option<SystemTime>, u64)> = std::fs::read_dir(&self.notes_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".jsonl"))
+            .map(|e| {
+                let m = e.metadata().ok();
+                (e.file_name().to_string_lossy().into_owned(), m.as_ref().and_then(|m| m.modified().ok()), m.map(|m| m.len()).unwrap_or(0))
+            })
+            .collect();
+        stamps.sort();
+        let mut last = self.notes.lock().unwrap();
+        // The window only moves forward, so what was read when a file last
+        // changed still covers it.
+        if last.0 != stamps {
+            *last = (stamps, n::read_since(&self.notes_dir, since.saturating_sub(24 * 3_600_000)));
+        }
+        let mut v: Vec<n::Entry> = last.1.iter().filter(|e| e.at >= since).cloned().collect();
+        v.reverse();
+        v.truncate(NOTES_CAP);
+        v.into_iter().map(brief).collect()
     }
 
     pub fn history_dir(&self) -> &Path {
@@ -996,7 +1056,8 @@ impl Feed {
             }
         }
         let pr = pr_briefs(tiles, &self.published());
-        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, branches, pr, problems }
+        let notes = self.notes(now_ms);
+        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, branches, pr, notes, problems }
     }
 
     /// Each live workspace's open pages: its plan (the review surface while

@@ -134,10 +134,15 @@ CAST = [
 SNAP = {
     "rows": CAST, "quiet": "", "src": "preview", "stamp": time.strftime("%H:%M:%S"),
     "stale": False,
-    "news": {"hours": 5, "lede": "{{checkout-flow}} is waiting on a gate.",
-             "items": [{"tier": "attend", "text": "{{checkout-flow}} is waiting on a gate."},
-                       {"tier": "wilt", "text": "{{rate-limits}} checks went red."},
-                       {"tier": "done", "text": "{{login-copy}} merged."}]},
+    "notes": [{"at": int(time.time() * 1000) - 120000, "ws": "checkout-flow", "pane": "", "kind": "waiting",
+               "title": "checkout-flow · waiting on you", "body": "Go on to increment 3?", "shown": True,
+               "why": "", "source": "app"},
+              {"at": int(time.time() * 1000) - 600000, "ws": "rate-limits", "pane": "", "kind": "limit",
+               "title": "rate-limits · stopped", "body": "Stopped: 5h limit", "shown": True,
+               "why": "", "source": "hook"},
+              {"at": int(time.time() * 1000) - 1800000, "ws": "login-copy", "pane": "", "kind": "finished",
+               "title": "login-copy · done", "body": "Finished its turn · nothing new to review", "shown": False,
+               "why": "on screen", "source": "app"}],
 }
 
 # The audit. One expression, so `cmux browser eval` can run it whichever world

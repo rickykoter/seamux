@@ -159,9 +159,9 @@ impl Feed {
                 continue;
             };
             state::write_targets(&d);
-            // Rows and news decide whether a viewer would see a change; the
-            // clock alone does not.
-            let payload = pyjson::dumps(&Value::Array(vec![d["rows"].clone(), d["news"].clone()]));
+            // Rows and notifications decide whether a viewer would see a
+            // change; the clock alone does not.
+            let payload = pyjson::dumps(&Value::Array(vec![d["rows"].clone(), d["notes"].clone()]));
             if Some(&payload) == last_payload.as_ref() {
                 continue;
             }
@@ -209,9 +209,10 @@ impl Feed {
         // Plan state files, the app's tucked.json (a tuck shows at once) and
         // resume.json (arming shows at once), and on the tmux backend's side
         // the pane-status files and the registry: a Claude that asks there is
-        // no cmux event, only a pane file write.
+        // no cmux event, only a pane file write. On both backends, the
+        // notification log: a banner posted or skipped shows in the footer.
         let resume = || std::fs::metadata(crate::state::resume_file()).and_then(|m| m.modified()).ok();
-        let print = || (plan_fingerprint(), crate::tucked::stamp(), resume(), pane_fingerprint());
+        let print = || (plan_fingerprint(), crate::tucked::stamp(), resume(), pane_fingerprint(), notes_fingerprint());
         let mut last = print();
         loop {
             std::thread::sleep(Duration::from_millis(250));
@@ -242,6 +243,11 @@ fn pane_fingerprint() -> Print {
     let mut out = fingerprint(&crate::state::state_dir(), &|n| n.starts_with("pane-") && n.ends_with(".json"));
     out.extend(fingerprint(&crew_core::backend::tmux::state_dir(), &|n| n == "workspaces.json"));
     out
+}
+
+/// The notification log's day files: an append changes today's size.
+fn notes_fingerprint() -> Print {
+    fingerprint(&crew_core::notifications::dir(), &|n| n.ends_with(".jsonl"))
 }
 
 /// (name, mtime, size) of the files in `dir` whose names pass `keep`, by name.

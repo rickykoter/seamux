@@ -6,6 +6,13 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **The board's news footer is now a log of the notifications seamux sent.**
+  Every banner seamux posts, and every one it skipped because you were looking
+  at that pane, is one line in `~/.claude/crew/notifications/<day>.jsonl`
+  (ADRs 0079 and 0080). The footer lists the last five hours, newest first,
+  with skipped ones greyed, and a click goes to the pane. `seamux news`, the
+  rows' `commits` and `subject` fields and `CREW_NEWS_HOURS` are gone, and the
+  rank goldens are re-recorded without those two fields.
 - **crew: the Python is gone, and the probes test seamux.** crew's Python
   board, hooks, crew/bin tools and status line, the bash hook copies and
   `docs/demo/board-demo.py` are deleted (about 16k lines); every crew tool
