@@ -16,7 +16,7 @@ Deep cases for the six no other probe runs black-box:
   - crew-feed: publish (live, stale, truncated, guard-blocked), show, clear,
     and reply (sent, unknown mode, window closed), each audited;
   - crew-digest: commits by branch, merged / red / approved PRs from gh,
-    sessions waiting, reclaimable worktrees, --notify, --paragraph, and every
+    sessions waiting, reclaimable worktrees, --notify, what pinged you, and every
     section going quiet when its source is missing;
   - crew-resume --rows-json: one row per directory, states, scope, the query's
     order, a session id prefix.
@@ -534,18 +534,28 @@ elif "open" in a:
         {"number": 11, "title": "a draft", "isDraft": True, "reviewDecision": "", "statusCheckRollup": []}]))
 """)
 os.chmod(GH, 0o755)
-json.dump({"news": {"hours": 5, "lede": "x", "items": [
-    {"tier": "attend", "text": "{{api}} wants you"}, {"tier": "done", "text": "`ui` landed"}]}},
-    open(NEWS, "w"))
+# The notification log under the throwaway HOME: one banner shown, one skipped.
+NOTES_DIR = os.path.join(HOME, ".claude", "crew", "notifications")
+os.makedirs(NOTES_DIR, exist_ok=True)
+_now_ms = int(time.time() * 1000)
+NOTES_DAY = os.path.join(NOTES_DIR, time.strftime("%Y-%m-%d", time.gmtime(_now_ms / 1000)) + ".jsonl")
+with open(NOTES_DAY, "a") as fh:
+    for at, kind, title, shown in ((_now_ms - 3_600_000, "finished", "ui · done", False),
+                                   (_now_ms - 600_000, "waiting", "api · waiting on you", True)):
+        fh.write(json.dumps({"at": at, "ws": "W", "pane": "P", "kind": kind, "title": title, "body": "b",
+                             "shown": shown, "why": "" if shown else "on screen", "source": "app"}) + "\n")
 DENV = dict(ENV, CREW_MONOLITH=MAIN)
 clear_log()
 r = run("crew-digest", "--hours", "24", "--notify", env=DENV, crew_home=STUB_HOME, timeout=120)
 out = r.stdout
 plain = __import__("re").sub(r"\033\[[0-9;]*m", "", out)
 check("the window it reports on", r.returncode == 0 and "crew digest  the last 24h" in plain, plain[:300])
-check("where things stand: the board's news, from crew-board state --fast --json",
-      "where things stand  commits: last 5h" in plain and "● api wants you" in plain and "● ui landed" in plain
-      and ["crew-board", "state", "--fast", "--json"] in stub_calls(), plain)
+check("what pinged you: the notification log's last hours, newest first, without asking the board",
+      "what pinged you  last 5h" in plain and "api · waiting on you b" in plain
+      and plain.index("api · waiting on you") < plain.index("ui · done")
+      and not any(c[:2] == ["crew-board", "state"] for c in stub_calls()), plain)
+check("...and a banner seamux skipped is marked not shown", "ui · done b · not shown" in plain
+      and "○" in plain.split("ui · done")[0].splitlines()[-1], plain)
 # %D names refs only on a branch's tip, so the commits below dev/wip's tip carry
 # none and group as "(no ref)": what the retired Python did, whatever its comment
 # said, and so what seamux keeps doing.
@@ -565,19 +575,14 @@ notes = [l for l in cmux_log() if l.startswith("notify ")]
 check("--notify posts one line: commits, merged, reclaimable",
       notes == ["notify --title crew digest --subtitle crew:digest --body 9 commits · 1 merged · 1 reclaimable"],
       str(notes))
-r = run("crew-digest", "--paragraph", env=DENV, crew_home=STUB_HOME)
-check("--paragraph: only the news, as one plain sentence run",
-      r.returncode == 0 and r.stdout == "api wants you ui landed\n", repr(r.stdout))
-os.remove(NEWS)
+os.remove(NOTES_DAY)
 os.remove(GH)
 os.remove(os.path.join(HOME, ".cmuxterm", "claude-hook-sessions.json"))
-r = run("crew-digest", "--paragraph", env=DENV, crew_home=STUB_HOME)
-check("--paragraph with no news: exit 1, nothing printed", r.returncode == 1 and r.stdout == "")
 r = run("crew-digest", "--hours", "24", env=dict(DENV, CREW_MONOLITH=os.path.join(T, "nowhere")),
         crew_home=STUB_HOME, timeout=120)
 plain = __import__("re").sub(r"\033\[[0-9;]*m", "", r.stdout)
 check("with every source missing, each section goes quiet and the run still succeeds",
-      r.returncode == 0 and "no commits the last 24h" in plain and "where things stand" not in plain
+      r.returncode == 0 and "no commits the last 24h" in plain and "what pinged you" not in plain
       and "PR(s)" not in plain and "waiting on you" not in plain and "reclaimable" not in plain, plain)
 
 
