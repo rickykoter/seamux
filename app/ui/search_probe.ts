@@ -1,7 +1,7 @@
 // node app/ui/search_probe.ts — the session search's rows, matching and
 // order (search.ts), with no DOM. Node runs this file as TypeScript.
 import { readFileSync } from "node:fs";
-import { asideOf, base, echoes, fuzzy, isKeyHints, rowsOf, search, tailOf, type Inputs, type TileIn } from "./search.ts";
+import { asideOf, base, echoes, fuzzy, isKeyHints, noteHits, noteKey, rowsOf, search, tailOf, type Inputs, type NoteIn, type TileIn } from "./search.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
@@ -209,6 +209,29 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   // Every string a person reads in search and the Hide words: no "muted".
   const read = [...(pal + tk).matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2]).filter((t) => /\bmuted?\b/i.test(t) && /\s/.test(t));
   ok("words: no string a person reads says muted", read.length === 0, JSON.stringify(read));
+}
+
+// ---- notifications: the log's entries, matched by title and body ---------
+{
+  const n = (at: number, title: string, body: string, shown = true): NoteIn =>
+    ({ at, ws: "W", pane: "P" + at, kind: "waiting", title, body, shown, why: shown ? "" : "on screen" });
+  const notes = [n(30, "api · waiting on you", "Merge the PR now?"), n(20, "docs · done", "Finished its turn", false),
+    n(10, "web · waiting on you", "Merge it or rebase first?")];
+  ok("notes: an empty query lists none (the strip shows the newest)", noteHits(notes, "  ").length === 0);
+  const merge = noteHits(notes, "merge").map((h) => h.note.title);
+  ok("notes: a word in the body matches, and the newest of a tie comes first",
+    JSON.stringify(merge) === JSON.stringify(["api · waiting on you", "web · waiting on you"]), JSON.stringify(merge));
+  ok("notes: a title match beats a body match", noteHits([n(1, "x", "docs"), n(0, "docs · done", "")], "docs")[0].note.title === "docs · done");
+  ok("notes: every word must match", noteHits(notes, "web rebase").length === 1 && noteHits(notes, "web nothing").length === 0);
+  const h = noteHits(notes, "docs")[0];
+  ok("notes: a skipped entry still matches, and its marks point into the title", h.note.shown === false && JSON.stringify(h.marks.title) === "[0,1,2,3]",
+    JSON.stringify(h.marks));
+  ok("notes: an entry's key is stable across frames", noteKey(notes[0]) === noteKey({ ...notes[0] }) && noteKey(notes[0]) !== noteKey(notes[2]));
+  const pal = readFileSync(new URL("./palette.ts", import.meta.url), "utf8");
+  ok("notes: the palette's strip jumps on ⌥1 to ⌥3 by key code, and keeps the key's character out of the query",
+    /e\.altKey && !e\.metaKey && \/\^Digit\[1-3\]\$\/\.test\(e\.code\)/.test(pal) && /preventDefault\(\);\s*this\.jumpStrip/.test(pal));
+  ok("notes: matching notifications follow the sessions and hidden rows, in their own section",
+    /search-sect", "notifications"/.test(pal) && pal.indexOf('"notifications"') > pal.indexOf('"search-sect", "hidden"'));
 }
 
 let failed = 0;

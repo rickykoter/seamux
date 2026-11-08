@@ -99,6 +99,7 @@ fn inputs(f: &Fixture, plans: serde_json::Value, wake: Vec<crew_store::Row>) -> 
         state_dir: f.p("state"),
         reviews_dir: f.p("reviews"),
         history_dir: f.p("history"),
+        notes_dir: f.p("notes"),
         tuck_file: f.p("tucked.json"),
         asks_dir: f.p("asks"),
         tmux_dir: Some(f.p("tmux")),
@@ -226,6 +227,29 @@ fn decisions_merge_oldest_first_from_every_source() {
             Decision::Family { .. } => panic!("no family in this fixture"),
         }
     }
+}
+
+#[test]
+fn the_frame_carries_the_notification_logs_last_hours_newest_first() {
+    use crew_core::notifications::{append, Entry};
+    let f = Fixture::new("notes");
+    let e = |at: u64, title: &str, shown: bool| Entry { at, ws: WS_A.into(), pane: SURF_A.into(), kind: "waiting".into(),
+        title: title.into(), body: "b".into(), shown, why: if shown { String::new() } else { "on screen".into() }, source: "app".into() };
+    append(&f.p("notes"), &e(NOW - 6 * 3_600_000, "too old", true)).unwrap();
+    append(&f.p("notes"), &e(NOW - 600_000, "older", false)).unwrap();
+    append(&f.p("notes"), &e(NOW - 60_000, "newest", true)).unwrap();
+    let a = f.p("work/a").to_string_lossy().into_owned();
+    let frame = primed(inputs(&f, serde_json::json!([]), vec![])).build(&[tile(SURF_A, WS_A, &a, "idle")], NOW);
+    let titles: Vec<&str> = frame.notes.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(titles, ["newest", "older"]);
+    assert_eq!((frame.notes[1].shown, frame.notes[1].why.as_str(), frame.notes[0].pane.as_str()), (false, "on screen", SURF_A));
+    // Read again only when a file changes: a new line shows on the next frame.
+    let feed = primed(inputs(&f, serde_json::json!([]), vec![]));
+    assert_eq!(feed.build(&[tile(SURF_A, WS_A, &a, "idle")], NOW).notes.len(), 2);
+    append(&f.p("notes"), &e(NOW - 1_000, "newer still", true)).unwrap();
+    assert_eq!(feed.build(&[tile(SURF_A, WS_A, &a, "idle")], NOW).notes[0].title, "newer still");
+    // And the window moves with the clock, from what was read.
+    assert!(feed.build(&[tile(SURF_A, WS_A, &a, "idle")], NOW + 5 * 3_600_000 - 30_000).notes.iter().all(|n| n.title != "older"));
 }
 
 #[test]

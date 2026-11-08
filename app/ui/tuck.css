@@ -100,6 +100,20 @@
 .search-dot.needs_input { fill: var(--ask); }
 .search-dot.working { fill: var(--ef-blue, var(--good)); }
 .search-dot.away { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+/* The newest notifications, under the search box: ⌥1 to ⌥3 jump to them. */
+.search-strip { display: flex; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); overflow: hidden; }
+.search-strip[hidden] { display: none; }
+.search-strip-item {
+  flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: none; color: inherit; font: inherit;
+  font-size: var(--fs-2); cursor: pointer; text-align: left;
+}
+.search-strip-item:hover { background: var(--hover, color-mix(in srgb, var(--accent) 8%, transparent)); }
+.search-strip-item.skip { color: var(--muted); border-style: dashed; }
+.search-strip-item kbd { flex: none; font: inherit; font-size: var(--fs-1); color: var(--muted); }
+.search-strip-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-strip-item > .palette-when { flex: none; margin-left: auto; }
+.search-note.away b { color: var(--muted); font-weight: 500; }
 .search-preview { overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .search-p-head { display: flex; align-items: center; gap: 7px; font-size: var(--fs-4); margin-bottom: 2px; }
 .search-p-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

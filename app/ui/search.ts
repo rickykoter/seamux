@@ -308,3 +308,36 @@ export function search(rows: Row[], q: string): Hit[] {
     return 0;
   });
 }
+
+/** views.rs NoteBrief: one line of the notification log, newest first. */
+export type NoteIn = { at: number; ws: string; pane: string; kind: string; title: string; body: string; shown: boolean; why: string };
+export type NoteHit = { note: NoteIn; key: string; score: number; marks: { title?: number[]; body?: number[] } };
+/** A log entry's identity across frames. */
+export const noteKey = (n: NoteIn): string => `note:${n.at}:${n.pane}:${n.kind}:${n.title}:${n.body}`;
+
+/** The notifications matching every word of `q` in their title or body, best
+ *  match first, then the newest, in TIE-wide bands as sessions rank. None
+ *  for an empty `q`: the palette's strip already shows the newest. */
+export function noteHits(notes: NoteIn[], q: string): NoteHit[] {
+  const words = q.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const hits: NoteHit[] = [];
+  for (const note of notes) {
+    let total = 0;
+    const marks: NoteHit["marks"] = {};
+    let ok = true;
+    for (const w of words) {
+      const t = fuzzy(w, note.title), b = fuzzy(w, note.body);
+      const ts = t ? t.score : -1, bs = b ? b.score * 0.7 : -1;
+      if (ts < 0 && bs < 0) { ok = false; break; }
+      const f = ts >= bs ? "title" : "body";
+      const m = (f === "title" ? t : b)!;
+      total += Math.max(ts, bs);
+      marks[f] = [...new Set([...(marks[f] ?? []), ...m.at])].sort((x, y) => x - y);
+    }
+    if (ok) hits.push({ note, key: noteKey(note), score: total, marks });
+  }
+  const best = Math.max(0, ...hits.map((h) => h.score));
+  const band = (s: number) => (best > 0 ? Math.floor((best - s) / (best * TIE)) : 0);
+  return hits.sort((a, b) => band(a.score) - band(b.score) || b.note.at - a.note.at);
+}

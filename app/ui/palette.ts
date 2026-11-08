@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
-import { asideOf, rowsOf, search, tailOf, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
+import { asideOf, noteHits, rowsOf, search, tailOf, type FamilyIn, type Field, type Hit, type Inputs, type NoteHit, type NoteIn, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
 import { say, UNTIL_SHORT, untilSaid, wakesAt, type Level, type TuckRow } from "./tuck";
 
@@ -66,7 +66,25 @@ type LastExchange = { prompt: string; reply: string; session: string; at: number
 const CI_SAID: Record<string, string> = { pass: "passing", fail: "failing", run: "running" };
 const REVIEW_SAID: Record<string, string> = { approved: "approved", changes: "changes requested" };
 
-type ViewsIn = { plans?: PlanIn[]; families?: FamilyIn[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string>; pr?: Record<string, Pr> };
+type ViewsIn = { plans?: PlanIn[]; families?: FamilyIn[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string>; pr?: Record<string, Pr>; notes?: NoteIn[] };
+
+/** How many of the newest notifications the strip shows, each on ⌥1 to ⌥N. */
+const STRIP = 3;
+
+/** A notification's dot in the session dot's colours: amber when it asked
+ *  for you, grey otherwise, a hollow ring when its banner was not shown. */
+const NOTE_STATE: Record<string, string> = { waiting: "needs_input", reminder: "needs_input", blocked: "needs_input" };
+function noteDot(n: NoteIn): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const s = document.createElementNS(ns, "svg");
+  s.setAttribute("viewBox", "0 0 10 10");
+  s.setAttribute("class", `search-dot ${n.shown ? NOTE_STATE[n.kind] ?? "idle" : "away"}`);
+  s.setAttribute("aria-hidden", "true");
+  const c = document.createElementNS(ns, "circle");
+  c.setAttribute("cx", "5"); c.setAttribute("cy", "5"); c.setAttribute("r", n.shown ? "4" : "3.4");
+  s.append(c);
+  return s;
+}
 
 /** Session search: every open session, tucked and muted ones below, ranked by
  *  match then priority (search.ts); a preview of the one selected beside the
@@ -79,6 +97,10 @@ export class Palette {
   private input = el("input", "palette-q");
   private list = el("div", "palette-list");
   private preview = el("div", "search-preview");
+  /** The newest notifications, under the input: ⌥1 to ⌥3 jump to them. */
+  private strip = el("div", "search-strip");
+  /** Notifications matching the query, listed after the sessions. */
+  private notes: NoteHit[] = [];
   private foot = el("div", "palette-foot");
   private tiles: TileIn[] = [];
   private views: ViewsIn = {};
@@ -119,7 +141,7 @@ export class Palette {
     this.preview.setAttribute("aria-live", "polite");
     const body = el("div", "search-body");
     body.append(this.list, this.preview);
-    this.card.append(this.input, body, this.foot);
+    this.card.append(this.input, this.strip, body, this.foot);
     this.el.append(this.card);
     this.el.addEventListener("click", (e) => e.target === this.el && this.close());
     document.body.append(this.el);
@@ -232,12 +254,16 @@ export class Palette {
 
   private draw(): void {
     this.shown = search(this.rows, this.input.value);
+    this.notes = noteHits(this.views.notes ?? [], this.input.value);
+    this.drawStrip();
     // The selection follows its row through a re-rank; a row that left the
-    // list leaves the selection where it was, kept in range.
-    const kept = this.selKey ? this.shown.findIndex((h) => h.row.key === this.selKey) : -1;
-    this.sel = kept >= 0 ? kept : Math.min(this.sel, Math.max(0, this.shown.length - 1));
-    this.selKey = this.shown[this.sel]?.row.key ?? "";
-    if (!this.shown.length) {
+    // list leaves the selection where it was, kept in range. Sessions come
+    // first, then the notifications that match.
+    const total = this.shown.length + this.notes.length;
+    const kept = this.selKey ? this.keys().indexOf(this.selKey) : -1;
+    this.sel = kept >= 0 ? kept : Math.min(this.sel, Math.max(0, total - 1));
+    this.selKey = this.keys()[this.sel] ?? "";
+    if (!total) {
       const empty = el("div", "search-empty");
       const cat = el("div", "search-cat");
       cat.innerHTML = catSvg("perk");
@@ -256,6 +282,10 @@ export class Palette {
       }
       kids.push(this.rowEl(h, i));
     });
+    if (this.notes.length) {
+      kids.push(el("div", "search-sect", "notifications"));
+      this.notes.forEach((h, k) => kids.push(this.noteEl(h, this.shown.length + k)));
+    }
     this.list.replaceChildren(...kids);
     // Brought into view only when the selection moves: a frame that redraws
     // the same selection leaves the list where the person scrolled it.
@@ -263,8 +293,96 @@ export class Palette {
       this.scrolledTo = this.selKey;
       this.list.querySelector(".palette-row.sel")?.scrollIntoView({ block: "nearest" });
     }
-    this.drawPreview(this.shown[this.sel]);
-    this.drawFoot(this.shown[this.sel]?.row);
+    const note = this.selNote();
+    if (note) {
+      this.drawNotePreview(note);
+      this.drawFoot(undefined);
+    } else {
+      this.drawPreview(this.shown[this.sel]);
+      this.drawFoot(this.shown[this.sel]?.row);
+    }
+  }
+
+  /** Every listed row's key, sessions then notifications. */
+  private keys(): string[] {
+    return [...this.shown.map((h) => h.row.key), ...this.notes.map((h) => h.key)];
+  }
+
+  /** The selected notification, when the selection is past the sessions. */
+  private selNote(): NoteHit | undefined {
+    return this.sel >= this.shown.length ? this.notes[this.sel - this.shown.length] : undefined;
+  }
+
+  /** The newest few notifications, each a button with its ⌥ key. Hidden
+   *  while the log has none. */
+  private drawStrip(): void {
+    const newest = (this.views.notes ?? []).slice(0, STRIP);
+    this.strip.hidden = !newest.length;
+    this.strip.replaceChildren(...newest.map((n, i) => {
+      const b = el("button", `search-strip-item${n.shown ? "" : " skip"}`);
+      b.type = "button";
+      b.title = `${n.title}${n.body ? " · " + n.body : ""}${n.shown ? "" : " (not shown)"}`;
+      b.append(el("kbd", "", `⌥${i + 1}`), noteDot(n), el("span", "search-strip-title", n.title),
+        el("span", "palette-when", ago(Date.now() - n.at)));
+      b.addEventListener("click", () => this.jumpNote(n));
+      return b;
+    }));
+  }
+
+  /** ⌥1 to ⌥3: the strip's entry, if there is one. */
+  private jumpStrip(k: number): void {
+    const n = (this.views.notes ?? []).slice(0, STRIP)[k - 1];
+    if (n) this.jumpNote(n);
+  }
+
+  /** Show a notification's workspace with its pane. */
+  private jumpNote(n: NoteIn): void {
+    this.close();
+    if (n.ws) this.onJump(n.ws, n.pane);
+  }
+
+  /** A notification in the list: its dot, its title (marked), what matched
+   *  in its body, and when (or that it was not shown). */
+  private noteEl(h: NoteHit, i: number): HTMLElement {
+    const n = h.note;
+    const row = el("div", `palette-row search-row search-note${i === this.sel ? " sel" : ""}${n.shown ? "" : " away"}`);
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(i === this.sel));
+    const name = el("span", "palette-name");
+    const b = el("b");
+    b.append(...marked(n.title, h.marks.title));
+    name.append(noteDot(n), b);
+    row.append(name);
+    if (h.marks.body?.length) {
+      const meta = el("span", "palette-meta ask");
+      meta.append(...marked(n.body, h.marks.body));
+      row.append(meta);
+    }
+    row.append(el("span", "palette-when", n.shown ? ago(Date.now() - n.at) : "not shown"));
+    row.addEventListener("click", () => this.jumpNote(n));
+    return row;
+  }
+
+  /** The selected notification in full: its title, body, and when. */
+  private drawNotePreview(h: NoteHit): void {
+    const n = h.note;
+    const head = el("div", "search-p-head");
+    const t = el("b");
+    t.append(...marked(n.title, h.marks.title));
+    head.append(noteDot(n), t);
+    const bits: Node[] = [head];
+    const line = (label: string, text: string, at?: number[]) => {
+      if (!text) return;
+      const p = el("p", "search-p-line");
+      const v = el("span", "search-p-v");
+      v.append(...marked(text, at));
+      p.append(el("span", "search-p-k", label), v);
+      bits.push(p);
+    };
+    line("said", n.body, h.marks.body);
+    line("when", `${ago(Date.now() - n.at)} ago`);
+    if (!n.shown) line("banner", n.why === "on screen" ? "not shown: you were looking at it" : "not shown");
+    this.preview.replaceChildren(...bits);
   }
 
   /** The keys that do something now: ⌘↵ only on a hidden row, ⇧⌘↵ only
@@ -276,6 +394,8 @@ export class Palette {
     if (sel?.level) keys.push("⌘↵ show again");
     const muted = this.rows.filter((r) => r.level === "mute").length;
     if (muted) keys.push("⇧⌘↵ show the ones hidden until needed");
+    const recent = Math.min(STRIP, (this.views.notes ?? []).length);
+    if (recent) keys.push(recent === 1 ? "⌥1 newest notification" : `⌥1-${recent} recent notifications`);
     keys.push("esc");
     this.foot.textContent = keys.join(" · ");
   }
@@ -484,6 +604,8 @@ export class Palette {
    *  brought back instead). `restore`: ⌘Enter, bring a tucked or muted one
    *  back, then jump when it has a session. */
   private async choose(restore: boolean): Promise<void> {
+    const note = this.selNote();
+    if (note) return this.jumpNote(note.note);
     const r = this.shown[this.sel]?.row;
     if (!r) return;
     if (r.tuckPath && (restore || !r.ws)) {
@@ -504,10 +626,14 @@ export class Palette {
     if (e.key === "Escape") {
       e.preventDefault();
       this.close();
+    } else if (e.altKey && !e.metaKey && /^Digit[1-3]$/.test(e.code)) {
+      // By code: ⌥1 types ¡ on a Mac, which must not reach the query.
+      e.preventDefault();
+      this.jumpStrip(Number(e.code.slice(5)));
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
-      this.sel = Math.max(0, Math.min(this.shown.length - 1, this.sel + (e.key === "ArrowDown" ? 1 : -1)));
-      this.selKey = this.shown[this.sel]?.row.key ?? "";
+      this.sel = Math.max(0, Math.min(this.shown.length + this.notes.length - 1, this.sel + (e.key === "ArrowDown" ? 1 : -1)));
+      this.selKey = this.keys()[this.sel] ?? "";
       this.draw();
     } else if (e.key === "Enter" && e.metaKey && e.shiftKey) {
       e.preventDefault();
