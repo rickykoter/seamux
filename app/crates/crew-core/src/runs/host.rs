@@ -409,7 +409,9 @@ pub fn runs_of(a: &Adapter, ctx: &Context) -> Result<Vec<Run>, String> {
 pub fn report(ctx: &Context, adapters: &[Adapter], all: bool) -> Report {
     let mut rep = Report::default();
     let mut kinds: Vec<(&str, usize)> = Vec::new();
-    for b in &ctx.background {
+    // A shell a sub-agent left running is that agent's, not a task type an
+    // adapter reads: it raises no notice.
+    for b in ctx.background.iter().filter(|b| b.kind != "shell") {
         match kinds.iter_mut().find(|(k, _)| *k == b.kind) {
             Some((_, n)) => *n += 1,
             None => kinds.push((b.kind.as_str(), 1)),

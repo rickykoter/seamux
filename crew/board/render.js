@@ -566,7 +566,7 @@ function __boardRender(d) {
       var tip = shell ? "A command a sub-agent left running: " + (e.label || e.id)
         : (run ? "Run " : "Sub-agent ") + (e.label || e.id) + ", " + st[1] + ": open its " + (run ? "run page" : "transcript");
       return '<div class="ag ' + st[0] + (fresh ? " new" : "") + (shell ? " sh" : "") + '"' + (shell ? ' data-a="none"' : ' data-a="' + (run ? "run" : "agent") + '" data-x="' + esc(e.id) +
-        '" data-path="/' + (run ? "run" : "agent") + "/" + esc(e.session || "") + "/" + esc(e.id) + '"') + ' title="' + esc(tip) + '">' +
+        '" data-path="/' + (run ? "run" : "agent") + "/" + esc(e.session || "") + "/" + esc(run ? e.id : e.agent || e.id) + '"') + ' title="' + esc(tip) + '">' +
         agentMark(e) + '<span class="ak">' + esc(e.label || e.id) + "</span>" +
         (e.needsYou ? '<span class="aw nd">needs you</span>' : what ? '<span class="aw">' + esc(what) + "</span>" : "") + agentTime(e) +
         (e.badge ? '<span class="ab">' + esc(e.badge) + "</span>" : "") + "</div>";

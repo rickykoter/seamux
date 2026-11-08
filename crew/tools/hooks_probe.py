@@ -729,8 +729,19 @@ check("…and raises a banner naming it",
       any("crew:blocked" in l and "judge is waiting on a permission prompt (Bash)" in l for l in L), L)
 hook("pretool", stdin=payload(tool_name="Bash", agent_id="a1", agent_type="general-purpose"))
 P = pane_file()
-check("its next tool use clears the mark and the hold",
-      "waiting" not in P["background"][0] and not os.path.exists(os.path.join(STATE, "hold-ws-1")), P)
+check("its next tool use clears the mark", "waiting" not in P["background"][0], P)
+check("…the hold goes, and the bgonly marker stays while only background work is left",
+      P.get("bg_only") is True and not os.path.exists(os.path.join(STATE, "hold-ws-1"))
+      and os.path.exists(os.path.join(STATE, "bgonly-ws-1")), P)
+open(SPAWN, "w").close()
+hook("pretool", stdin=payload(tool_name="Bash", agent_id="a1", agent_type="general-purpose"))
+check("…so a sub-agent's tool use exits in bash, starting no binary",
+      pane_file().get("bg_only") is True and not spawns(), spawns())
+hook("pretool", stdin=payload(tool_name="Bash", tool_input={"command": "grep agent_id payload.json", "note": '"agent_id": "x"'}))
+P = pane_file()
+check("…and the main agent's tool use (a turn a background finish started) ends background-only and its marker",
+      "bg_only" not in P and not os.path.exists(os.path.join(STATE, "bgonly-ws-1")), P)
+hook("stop", stdin=payload(background_tasks=[AGENT]))
 hook("permreq", stdin=payload(agent_id="a1", tool_name="Bash"))
 hook("permdenied", stdin=payload(agent_id="a1", tool_name="Bash"))
 check("a PermissionDenied clears it too", "waiting" not in pane_file()["background"][0], pane_file())

@@ -779,12 +779,18 @@ fn permission(h: &mut Hook, on: bool) {
     }
     let k = status::key(&h.ws, &surface()).to_string();
     let Some(seen) = status::read(&h.state, &k) else { return };
+    // A workflow's agent keeps its transcript under subagents/workflows/:
+    // only such an agent may be marked on a workflow's entry.
+    let main = h.json("transcript_path");
+    let flows = main.strip_suffix(".jsonl").map(|d| Path::new(d).join("subagents").join("workflows")).unwrap_or_default();
+    let workflow_ok = std::fs::read_dir(&flows).into_iter().flatten().flatten()
+        .any(|run| run.path().join(format!("agent-{agent}.jsonl")).exists());
     let mut probe = seen.clone();
-    if !probe.mark_waiting(&agent, on) {
+    if !probe.mark_waiting_in(&agent, on, workflow_ok) {
         return;
     }
     h.settle(true, &[], |p| {
-        p.mark_waiting(&agent, on);
+        p.mark_waiting_in(&agent, on, workflow_ok);
     });
     if on {
         h.history("working", "agent-permission");
@@ -875,6 +881,7 @@ fn pretool() -> i32 {
         p.asked = None;
         p.review = false;
         p.limited = None;
+        p.bg_only = false;
     });
     // Back from waiting on you: the phase is the roll-up's again.
     let resumed = before.state == "needs_input" || before.asked.is_some() || legacy_ask;

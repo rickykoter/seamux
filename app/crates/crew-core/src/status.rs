@@ -258,6 +258,13 @@ impl Pane {
     /// entry, else on the one workflow entry it may belong to. True when
     /// something changed.
     pub fn mark_waiting(&mut self, agent: &str, on: bool) -> bool {
+        self.mark_waiting_in(agent, on, true)
+    }
+
+    /// mark_waiting, with `workflow_ok` false when `agent` is known not to
+    /// be a workflow's (a foreground sub-agent's prompt is the main
+    /// terminal's, not a workflow's).
+    pub fn mark_waiting_in(&mut self, agent: &str, on: bool, workflow_ok: bool) -> bool {
         if agent.is_empty() {
             return false;
         }
@@ -273,7 +280,7 @@ impl Pane {
         let i = self.background.iter().position(|b| b.id == agent)
             .or_else(|| {
                 let flows: Vec<usize> = self.background.iter().enumerate().filter(|(_, b)| b.kind == "workflow").map(|(i, _)| i).collect();
-                (flows.len() == 1).then(|| flows[0])
+                (workflow_ok && flows.len() == 1).then(|| flows[0])
             });
         match i {
             Some(i) if !self.background[i].waiting.iter().any(|a| a == agent) => {
@@ -339,6 +346,14 @@ pub fn hold_path(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("hold-{key}"))
 }
 
+/// The bgonly-<key> marker, kept while only background work keeps the pane
+/// working (bg_only): the main turn a background finish starts fires no
+/// prompt hook, so pretool's hot path hands the main agent's first tool use
+/// to the binary to end it. A sub-agent's tool use passes on, as without.
+pub fn bgonly_path(dir: &Path, key: &str) -> PathBuf {
+    dir.join(format!("bgonly-{key}"))
+}
+
 pub fn read(dir: &Path, key: &str) -> Option<Pane> {
     let text = fs::read_to_string(path(dir, key)).ok()?;
     Pane::from_json(&serde_json::from_str(&text).ok()?)
@@ -356,13 +371,14 @@ fn write_whole(p: &Path, text: &str) {
 pub fn write(dir: &Path, p: &Pane) {
     let _ = fs::create_dir_all(dir);
     write_whole(&path(dir, p.key()), &format!("{}\n", p.to_json()));
-    let hold = hold_path(dir, p.key());
-    if p.holds() {
-        if !hold.exists() {
-            let _ = fs::write(&hold, "");
+    for (path, on) in [(hold_path(dir, p.key()), p.holds()), (bgonly_path(dir, p.key()), p.bg_only)] {
+        if on {
+            if !path.exists() {
+                let _ = fs::write(&path, "");
+            }
+        } else {
+            let _ = fs::remove_file(&path);
         }
-    } else {
-        let _ = fs::remove_file(&hold);
     }
 }
 
@@ -370,6 +386,7 @@ pub fn write(dir: &Path, p: &Pane) {
 pub fn remove(dir: &Path, key: &str) {
     let _ = fs::remove_file(path(dir, key));
     let _ = fs::remove_file(hold_path(dir, key));
+    let _ = fs::remove_file(bgonly_path(dir, key));
 }
 
 /// Every pane file in `dir`, whichever workspace.
@@ -1060,6 +1077,9 @@ mod tests {
         assert_eq!(Pane::from_json(&p.to_json()), Some(p.clone()), "round-trips");
         assert!(p.mark_waiting("a1", false) && p.mark_waiting("x9", false) && !p.waiting());
         assert!(!p.mark_waiting("a1", false), "nothing left to clear");
+        assert!(!p.mark_waiting_in("f1", true, false), "a foreground sub-agent's prompt is not a workflow's");
+        p.bg_only = true;
+        assert!(!p.holds(), "background-only is its own marker (bgonly-<key>), not a hold");
     }
 
     #[test]

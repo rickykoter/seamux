@@ -60,7 +60,9 @@ pub fn agent_path(row: &Map<String, Value>, action: &str, id: &str) -> Option<St
     }
     let kind = e.get("kind").and_then(Value::as_str).unwrap_or("agent");
     let want = if kind == "workflow" { "run" } else { "agent" };
-    (action == want).then(|| format!("/{want}/{session}/{id}"))
+    // A lone agent's page is its agent's id, when the adapter gave one apart.
+    let page = e.get("agent").and_then(Value::as_str).filter(|a| plain(a) && !a.starts_with('.')).unwrap_or(id);
+    (action == want).then(|| format!("/{want}/{session}/{page}"))
 }
 
 /// Run a child to completion within `timeout`: Some((code, stdout, stderr)),
@@ -683,13 +685,15 @@ mod tests {
         let row = serde_json::json!({"agents": [
             {"id": "a1", "kind": "agent", "session": "9c328a5c-81d2"},
             {"id": "wf_f7b371f3-6f2", "kind": "workflow", "session": "9c328a5c-81d2"},
-            {"id": "x", "kind": "agent", "session": "../etc"}]});
+            {"id": "x", "kind": "agent", "session": "../etc"},
+            {"id": "run-7", "kind": "agent", "agent": "ag-7", "session": "9c328a5c-81d2"}]});
         let row = row.as_object().unwrap();
         assert_eq!(agent_path(row, "agent", "a1").as_deref(), Some("/agent/9c328a5c-81d2/a1"));
         assert_eq!(agent_path(row, "run", "wf_f7b371f3-6f2").as_deref(), Some("/run/9c328a5c-81d2/wf_f7b371f3-6f2"));
         assert_eq!(agent_path(row, "run", "a1"), None, "a lone agent opens as an agent");
         assert_eq!(agent_path(row, "agent", "nope"), None, "an id the card does not list");
         assert_eq!(agent_path(row, "agent", "x"), None, "a session that is not a plain id");
+        assert_eq!(agent_path(row, "agent", "run-7").as_deref(), Some("/agent/9c328a5c-81d2/ag-7"), "a lone agent's page is its agent's id");
         assert!(ACTIONS.contains(&"agent") && ACTIONS.contains(&"run") && ACTIONS.contains(&"adapter"));
     }
 

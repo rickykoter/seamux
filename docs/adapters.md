@@ -12,7 +12,7 @@ page is how to write one.
 
 When a session runs background work that no adapter reads, its card shows a
 notice row: "2 background tasks from teammate: no adapter". When an adapter
-fails, the row says how: "adapter mine failed: runs[0].status: "sleeping"
+fails, or a folder's manifest cannot be read, the row says how: "adapter mine failed: runs[0].status: "sleeping"
 is not one of running, done, failed, cancelled, unknown".
 
 The row's **Create adapter** (or **Fix adapter**) button opens a new Claude
@@ -84,7 +84,7 @@ seamux runs <session-id> --all
 prints every adapter's runs for the session, and a notice for any that
 failed. A failure names the first thing wrong: the exit code and the first
 line of stderr, a timeout, output that is not JSON, or the field that did
-not validate. The card and the run page show the same notice.
+not validate. The card shows the same notice.
 
 ## Rules of thumb
 

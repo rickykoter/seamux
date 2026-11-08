@@ -60,7 +60,7 @@ pub fn prompt(ctx: &Context, notice: &Notice, template: &Path) -> String {
     format!(
 "{what}
 
-An adapter is a folder under ~/.config/seamux/adapters/ with an adapter.json manifest and a program. seamux runs the program with a context (seamux.context/1) on stdin; the program prints one seamux.run/1 document on stdout within its timeout. The authoring guide is docs/adapters.md in the seamux checkout, and the schema is docs/RUNS.md. A working template is at {template}: copy it to ~/.config/seamux/adapters/{name}/, set `recognizes` to [\"{type_}\"], and change the program to read this orchestrator's files.
+An adapter is a folder under ~/.config/seamux/adapters/ with an adapter.json manifest and a program. seamux runs the program with a context (seamux.context/1) on stdin; the program prints one seamux.run/1 document on stdout within its timeout. The authoring guide is https://github.com/rickykoter/seamux/blob/main/docs/adapters.md and the schema https://github.com/rickykoter/seamux/blob/main/docs/RUNS.md (the same files are docs/adapters.md and docs/RUNS.md in a seamux checkout). A working template is at {template}: copy it to ~/.config/seamux/adapters/{name}/, set `recognizes` to [\"{type_}\"], and change the program to read this orchestrator's files.
 
 What is there to read:
 

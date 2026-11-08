@@ -59,6 +59,10 @@ An adapter prints one JSON document:
 ```
 
 A run needs only `id` and `status`. An agent needs only `id` and `state`.
+Ids are letters, digits, `.`, `_` and `-`, since the pages put them in
+their paths; a run or agent with any other id is shown but cannot be
+opened. A lone agent's card row opens `/agent/<session>/<agent id>`, and a
+run's opens `/run/<session>/<run id>`.
 Everything else is optional, and seamux fills the gaps: a missing name or
 label becomes the id, and missing totals are counted from the agents.
 

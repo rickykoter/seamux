@@ -89,6 +89,8 @@ fn unknown_types_give_a_notice() {
     let [n] = rep.notices.as_slice() else { panic!("{:?}", rep.notices) };
     assert_eq!((n.kind.as_str(), n.task_type.as_deref(), n.count), ("missing", Some("teammate"), 2));
     assert_eq!(n.text(), "2 background tasks from teammate: no adapter");
+    let shells = host::report(&ctx("s-done", vec![task("shell", "b3", "sleep 20")]), &crew_core::runs::builtins(), false);
+    assert!(shells.notices.is_empty(), "a sub-agent's shell is not a task type an adapter reads: {:?}", shells.notices);
 }
 
 #[test]

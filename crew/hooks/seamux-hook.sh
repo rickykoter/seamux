@@ -53,8 +53,13 @@ if [ "$event" = "pretool" ]; then
   _w="${SEAMUX_WORKSPACE_ID:-${CMUX_WORKSPACE_ID:-none}}"
   _k="${SEAMUX_PANE_ID:-${CMUX_SURFACE_ID:-$_w}}"
   [ -d "$_d" ] && : > "$_d/act-$_k" 2>/dev/null
+  # bgonly-<pane>: only background work keeps the pane working, and the
+  # main agent's first tool use in a turn a background finish started is
+  # what ends that. A sub-agent's tool use passes on unless something holds.
+  _bg=0
+  [ -f "$_d/bgonly-$_k" ] && _bg=1
   if [ -f "$_d/pane-$_k.json" ]; then
-    [ -f "$_d/hold-$_k" ] || exit 0
+    [ -f "$_d/hold-$_k" ] || [ "$_bg" = 1 ] || exit 0
   else
     [ -f "$_d/lane-$_w" ] || exit 0
   fi
@@ -66,7 +71,12 @@ if [ "$event" = "pretool" ]; then
   # A subagent's tool use (Claude Code sends a top-level agent_id only from
   # inside one) is not the main agent taking its question back. The text can
   # also sit inside tool_input, so the binary reads the JSON to tell.
-  if [[ ${_p:-} == *'"agent_id"'* ]]; then
+  # Claude Code writes a sub-agent's top-level agent_id before tool_input,
+  # so only the part before it is read: the main agent's tool input may
+  # mention agent_id too.
+  _head=${_p%%\"tool_input\"*}
+  if [[ ${_head:-} == *'"agent_id"'* ]]; then
+    [ -f "$_d/hold-$_k" ] || exit 0
     exec "$seamux" crew-hook pretool <<<"$_p"
   fi
   exec "$seamux" crew-hook pretool </dev/null

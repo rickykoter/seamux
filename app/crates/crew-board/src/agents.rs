@@ -54,14 +54,18 @@ fn worker() {
             };
             let mut changed = false;
             if !todo.is_empty() {
-                let (adapters, _) = host::adapters();
+                // A folder whose manifest cannot be read is said on the card too.
+                let (adapters, bad) = host::adapters();
                 for (k, ctx, all) in todo {
-                    let rep = host::report(&ctx, &adapters, all);
+                    let mut rep = host::report(&ctx, &adapters, all);
+                    rep.notices.extend(bad.iter().cloned());
                     let mut s = shared().lock().unwrap_or_else(|p| p.into_inner());
-                    if s.reports.get(&k) != Some(&rep) {
-                        s.reports.insert(k, rep);
+                    // Only what a card shows wakes the feed: a streaming
+                    // agent's tokens and text change every second.
+                    if s.reports.get(&k).map(coarse) != Some(coarse(&rep)) {
                         changed = true;
                     }
+                    s.reports.insert(k, rep);
                 }
             }
             if changed {
@@ -70,6 +74,14 @@ fn worker() {
             std::thread::sleep(Duration::from_secs(1));
         });
     });
+}
+
+/// What a card draws from a report: each run's state, end, phases, counts,
+/// badges and needs-you, and the notices.
+fn coarse(r: &Report) -> String {
+    let runs: Vec<Value> = r.runs.iter().map(|run| entry(run, "", "")).collect();
+    let notes: Vec<String> = r.notices.iter().map(|n| n.text()).collect();
+    json!([runs, notes]).to_string()
 }
 
 /// Ask for a session's report: the last one the worker made, if any.
@@ -128,6 +140,11 @@ pub fn entry(run: &Run, surface: &str, session: &str) -> Value {
     });
     if let Some(m) = model {
         v["model"] = json!(m);
+    }
+    // A lone agent's transcript page is found by the agent's own id, which
+    // an adapter may give apart from the run's.
+    if let Some(a) = one.filter(|a| a.id != run.id) {
+        v["agent"] = json!(a.id);
     }
     if let Some(b) = badge {
         v["badge"] = json!(b);
