@@ -186,6 +186,11 @@ fn main() {
     adopt_utf8_locale();
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        // A Wake row's image or video by its id, streamed in ranges, so the
+        // Wake's preview can show big files and seek in videos.
+        .register_asynchronous_uri_scheme_protocol(wake_app::SCHEME, |_ctx, req, responder| {
+            std::thread::spawn(move || responder.respond(wake_app::wakefile(&req)));
+        })
         .setup(|app| {
             shell::install(app)?;
             // The board's server, on this app's backend.

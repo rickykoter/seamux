@@ -353,7 +353,30 @@ const WAKE = [
   [15, "search", "review", "search-index · increment 3", 43, { locator: "rv-search-41", source: "lookout", prompt: "go 3" }],
   [16, "search", "pr", "Reindex search when a product is renamed", 41, { url: `https://github.com/${GH}/pull/41`, prompt: "merge it" }],
   [17, "docs", "commit", "docs: shorter checkout help text", 25, { sha: "c81e0f4", url: `https://github.com/${GH}/commit/c81e0f4` }],
+  // Pictures, a video and a page from one prompt: what the Wake's preview flips through.
+  [18, "api", "image", "checkout-after.png", 30, { path: `${TREES}/coupons-api/docs/checkout-after.png`, prompt: "go 2" }],
+  [19, "api", "image", "coupon-error.png", 29, { path: "/tmp/claude/coupon-error.png", prompt: "go 2", state: "risk" }],
+  [20, "api", "temp", "checkout-walkthrough.webm", 28, { path: "/tmp/claude/checkout-walkthrough.webm", prompt: "go 2" }],
+  [21, "api", "temp", "totals-report.html", 27, { path: "/tmp/claude/totals-report.html", prompt: "go 2" }],
 ];
+
+/** A stand-in screenshot for a Wake image row: a checkout card in the row's hue. */
+function demoShot(id) {
+  const hue = (Number(id) * 67) % 360;
+  const title = WAKE.find(([i]) => String(i) === String(id))?.[3] ?? "image";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+<rect width="1280" height="800" fill="hsl(${hue} 30% 92%)"/><rect x="0" y="0" width="1280" height="64" fill="hsl(${hue} 35% 30%)"/>
+<text x="40" y="42" font-family="-apple-system,sans-serif" font-size="24" fill="#fff">Checkout</text>
+<rect x="340" y="140" width="600" height="520" rx="18" fill="#fff" stroke="hsl(${hue} 20% 80%)"/>
+<text x="380" y="200" font-family="-apple-system,sans-serif" font-size="28" fill="#222">Order summary</text>
+${[0, 1, 2].map((i) => `<rect x="380" y="${240 + i * 60}" width="${420 - i * 70}" height="18" rx="9" fill="hsl(${hue} 15% 85%)"/>`).join("")}
+<rect x="380" y="440" width="380" height="48" rx="10" fill="none" stroke="hsl(${hue} 40% 55%)" stroke-width="2"/>
+<text x="398" y="472" font-family="ui-monospace,monospace" font-size="20" fill="#555">SPRING25</text>
+<rect x="380" y="560" width="520" height="60" rx="12" fill="hsl(${hue} 45% 45%)"/>
+<text x="560" y="598" font-family="-apple-system,sans-serif" font-size="22" fill="#fff">Place order</text>
+<text x="40" y="770" font-family="ui-monospace,monospace" font-size="18" fill="hsl(${hue} 20% 45%)">${title}</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
 function wakeRows() {
   return WAKE.filter(([, k]) => ws.some((w) => w.key === k))
     .map(([id, k, kind, title, m, o]) => {
@@ -824,8 +847,12 @@ const handlers = {
     return { ws: dir ?? "", rows: rows.map(strip), limit: 500, truncated: false, workspaces };
   },
   wake_open: () => ({ sheet: null, detail: "opened in cmux" }),
-  wake_file: () => {
-    throw "the demo has no files to show";
+  wake_file: ({ id }) => {
+    if (id !== 21) throw "the demo has no files to show";
+    const page = `<!doctype html><body style="font:15px -apple-system,sans-serif;padding:28px;color:#222"><h2>Coupon totals</h2>
+<table cellpadding="6"><tr><th align="left">code</th><th align="right">orders</th><th align="right">saved</th></tr>
+<tr><td>SPRING25</td><td align="right">412</td><td align="right">$3,180</td></tr><tr><td>WELCOME10</td><td align="right">1,094</td><td align="right">$2,207</td></tr></table></body>`;
+    return { kind: "html", title: "totals-report.html", data: `data:text/html;base64,${btoa(page)}` };
   },
   wake_keep: () => ({ path: `${HOME}/.claude/crew/kept/coupon-totals.json` }),
   wake_keep_all: () => ({ results: [{ ok: true }] }),
@@ -895,6 +922,8 @@ const handlers = {
 /** Commands the views never named: logged once, answered with null. */
 const unknown = new Set();
 mockWindows("main");
+// The Wake's images stream from the app's wakefile: scheme by row id; here, drawn.
+window.__TAURI_INTERNALS__.convertFileSrc = (id, protocol) => (protocol === "wakefile" && WAKE.some(([i, , kind]) => String(i) === id && kind === "image") ? demoShot(id) : `${protocol}://localhost/${id}`);
 mockIPC(
   async (cmd, args) => {
     const h = handlers[cmd];

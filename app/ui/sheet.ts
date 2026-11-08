@@ -23,7 +23,7 @@ export type Page = {
 };
 
 /** A file the sheet shows itself: an image, a sandboxed HTML page or a PDF. */
-export type Shown = { kind: "image" | "html" | "pdf"; title: string; data: string };
+export type Shown = { kind: "image" | "video" | "html" | "pdf"; title: string; data: string };
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -1198,6 +1198,16 @@ export class Sheet {
         const ib = document.createElement("div");
         ib.className = "sheet-imgbox";
         ib.append(img);
+        box.append(ib);
+      } else if (s.kind === "video") {
+        const v = document.createElement("video");
+        v.className = "sheet-img";
+        v.controls = true;
+        v.preload = "metadata";
+        v.src = s.data;
+        const ib = document.createElement("div");
+        ib.className = "sheet-imgbox";
+        ib.append(v);
         box.append(ib);
       } else {
         const frame = document.createElement("iframe");

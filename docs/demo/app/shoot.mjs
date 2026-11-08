@@ -91,6 +91,12 @@ export const VIEWS = {
     await page.locator("#wake .w-list li").first().waitFor();
     await settle(page);
   },
+  async wakeview(page) {
+    await VIEWS.wake(page);
+    await page.locator("#wake .w-row", { hasText: "checkout-after.png" }).click();
+    await page.locator("#wake .wv-img").waitFor();
+    await settle(page);
+  },
   async lookout(page) {
     await tab(page, "Lookout");
     await page.locator(".r-item", { hasText: "PR #41" }).click();

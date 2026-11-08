@@ -21,7 +21,9 @@ use crate::state::state_dir;
 pub const WAKE_VIEW: &str = "wake-view"; // the tab files and pages open in, beside the Wake
 pub const WAKE_TAB: &str = "wake"; // the tab the Wake itself lives in
 pub const WAKE_LIMIT: usize = 2000; // rows per answer; the page says when it is cut
-const VIEW_IN_WAKE: [&str; 9] = [".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"];
+const VIEW_IN_WAKE: [&str; 13] = [
+    ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".m4v", ".mov", ".webm",
+];
 const BROWSER_HOSTS: [&str; 2] = ["claude.ai", "github.com"];
 const ARTIFACTS_SLOT: &str = r#"<script id="boot" type="application/json">__BOOT__</script>"#;
 const PUBLISHABLE: [&str; 10] = [".html", ".htm", ".md", ".markdown", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"];
@@ -362,7 +364,7 @@ fn row_by(rid: &str) -> Result<crew_store::Row, (bool, String)> {
 pub enum Target {
     /// A path on the intent server: /plan/<slug>[suffix], /review/<id>, /ask/<id>.
     Page(String),
-    /// A local file the Wake's tab can show (HTML, SVG, an image, a PDF).
+    /// A local file the Wake's tab can show (HTML, SVG, an image, a video, a PDF).
     File(String),
     Browser(String),
     Editor(String),
@@ -654,6 +656,10 @@ mod tests {
         std::fs::write(&html, "<p>x</p>").unwrap();
         std::fs::write(&code, "fn main() {}").unwrap();
         let (h, c) = (html.to_string_lossy().into_owned(), code.to_string_lossy().into_owned());
+        let video = dir.join("demo.mp4");
+        std::fs::write(&video, b"\0\0\0\x18ftypmp42").unwrap();
+        let v = video.to_string_lossy().into_owned();
+        assert_eq!(resolve_row(&row("temp", "v", &v, ""), ""), Ok(Target::File(v.clone())), "a video previews in the Wake");
 
         assert_eq!(resolve_row(&row("plan", "seamux-views", "", ""), ""), Ok(Target::Page("/plan/seamux-views".into())));
         assert_eq!(resolve_row(&row("plan", "seamux-views", "", ""), "working"), Ok(Target::Page("/plan/seamux-views".into())));

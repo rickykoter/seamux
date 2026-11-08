@@ -139,3 +139,47 @@
 .w-dayrisk { color: var(--bad-t, var(--bad)); }
 .w-chip.w-more { border-style: dashed; }
 .w-prompt.same { display: none; }
+
+/* The preview pane (wakeview.ts): beside the list or under it, a strip of
+   the rest along its foot. The list keeps its place; the pane follows the pick. */
+.w-main { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.wake.viewing.side { flex-direction: row; }
+.wake.viewing.side .wv { flex: 0 0 var(--wv-x, 55%); min-width: 0; border-left: 1px solid var(--line); }
+.wake.viewing.below .wv { flex: 0 0 var(--wv-y, 55%); min-height: 0; border-top: 1px solid var(--line); }
+.wake.viewing.full .w-main { display: none; }
+.wake.viewing.full .wv { flex: 1 1 auto; border: 0; }
+/* Beside a pane the list's rows lose their reading width cap's margin. */
+.wake.viewing.side .w-list > *, .wake.viewing.side :is(.w-head, .w-bar, .w-chips) { max-width: none; }
+.wv-grip { flex: none; }
+.wv-grip.x { width: 9px; margin: 0 -4px; z-index: 2; }
+.wv-grip.y { height: 9px; margin: -4px 0; z-index: 2; }
+.wv-grip[hidden], .wv[hidden] { display: none; }
+
+.wv { display: flex; flex-direction: column; background: var(--bg); }
+.wv-bar { display: flex; align-items: center; gap: 2px; padding: 6px 8px; }
+.wv-btn { flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.wv-btn:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 7%, transparent); }
+.wv svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.wv svg.fill { fill: currentColor; stroke: none; }
+.wv-count { flex: none; min-width: 48px; text-align: center; font-size: var(--fs-2); color: var(--muted); font-variant-numeric: tabular-nums; }
+.wv-name { flex: 1; min-width: 0; padding: 0 6px; font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.wv-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; margin: 0 8px; border-radius: 8px; background: var(--term); }
+.wv-img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+/* A click shows the picture at its own size, scrolled within the stage. */
+.wv-stage.actual { overflow: auto; align-items: flex-start; justify-content: flex-start; }
+.wv-stage.actual .wv-img { max-width: none; max-height: none; cursor: zoom-out; }
+.wv-video { max-width: 100%; max-height: 100%; background: #000; }
+/* Pages assume a white page under them. */
+.wv-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.wv-note { margin: 0; padding: 16px; max-width: 360px; text-align: center; color: var(--muted); font-size: var(--fs-2); }
+.wv-meta { flex: none; padding: 5px 12px 0; font-size: var(--fs-1); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.wv-strip { flex: none; display: flex; gap: 6px; overflow-x: auto; padding: 6px 8px 8px; scrollbar-width: thin; }
+.wv-strip[hidden] { display: none; }
+.wv-thumb { flex: none; width: 56px; height: 42px; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--term); color: var(--muted); cursor: pointer; opacity: 0.75; }
+.wv-thumb:hover { opacity: 1; }
+.wv-thumb.on { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.wv-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.wv-thumb.tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: var(--fs-1); }
+.wv-thumb.tile svg { width: 13px; height: 13px; }
