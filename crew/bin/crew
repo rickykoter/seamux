@@ -1382,7 +1382,14 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
     note "no intent server has started yet — crew-listen starts one"
   elif [ "$SEAMUX" -nt "$STATE/board-intent.port" ]; then
     bad "intent server is running older code than is installed — restart it:"
-    bad "  pkill -f crew-board-intent   (crew-listen respawns it within ~10s)"
+    # Only a running listener respawns it; with the listener off (crew listen
+    # off, or never on), stopping it leaves no server at all, so the hint
+    # starts the new one itself.
+    if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+      bad "  pkill -f crew-board-intent   (crew-listen respawns it within ~10s)"
+    else
+      bad "  pkill -f crew-board-intent; nohup \"${SEAMUX/#$HOME/\$HOME}\" crew-board-intent >/dev/null 2>&1 &"
+    fi
   else
     ok "intent server is running the installed code"
   fi
