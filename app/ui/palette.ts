@@ -12,9 +12,8 @@ const untilOf = (r: Row): string =>
   r.level === "mute" || r.level === "snooze" || r.level === "tuck" ? untilSaid(r.level as Level, r.until || undefined) : "";
 
 /** A hidden row's until, for the row's narrow right column: "until needed",
- *  a snooze's "until 3 PM" (its :00 dropped), or nothing for a plain hide
- *  (the section above says hidden). The full
- *  words (untilOf) are in the row's tooltip. */
+ *  a snooze's "until 3 PM" (its :00 dropped), or "until you ask" for a plain
+ *  hide. The full words (untilOf) are in the row's tooltip. */
 const untilShort = (r: Row): string =>
   r.level === "snooze" ? (r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : "for now") : r.level === "mute" || r.level === "tuck" ? UNTIL_SHORT[r.level] : "";
 
