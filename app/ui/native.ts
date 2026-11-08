@@ -38,17 +38,20 @@ type Look = {
 };
 
 /** The terminal's look when no Ghostty or cmux config names one: Everforest,
- *  the app's own palette, as Ghostty ships it (Dark Hard and Light Med). */
-const PALETTE_SHARED = ["#7a8478", "#e67e80", "", "", "#7fbbb3", "#d699b6", "#83c092", "", "#a6b0a0", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#fffbef"];
+ *  the app's own palette. Dark is Ghostty's Dark Hard. Light is seamux's own:
+ *  Light Med's hues are 2:1 as words on its cream, so each colour is the
+ *  palette's light word colour (theme/everforest.css, 4.5:1 or better on the
+ *  ground, the brights a shade deeper), and a selection is a tint that
+ *  shows. Bright white stays light: programs print it as a ground. */
+const DARK_PALETTE = ["#7a8478", "#e67e80", "#a7c080", "#dbbc7f", "#7fbbb3", "#d699b6", "#83c092", "#f2efdf", "#a6b0a0", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#fffbef"];
+const LIGHT_PALETTE = ["#5c6a72", "#ae3b39", "#5d6a01", "#815d00", "#296a8d", "#98477e", "#247053", "#6f7b72", "#5e6a62", "#9c2f2d", "#4f5a00", "#6f5000", "#215b79", "#843a6c", "#1d5f46", "#fffbef"];
 function everforest(dark: boolean): Look {
-  const own = dark ? ["#a7c080", "#dbbc7f", "#f2efdf"] : ["#9ab373", "#c1a266", "#b2af9f"];
-  const p = [...PALETTE_SHARED];
-  [p[2], p[3], p[7]] = own;
+  const p = dark ? DARK_PALETTE : LIGHT_PALETTE;
   return {
     palette: Object.fromEntries(p.map((c, i) => [String(i), c])),
     ...(dark
       ? { background: "#1e2326", foreground: "#d3c6aa", cursor: "#e69875", cursorText: "#4c3743", selectionBackground: "#4c3743", selectionForeground: "#d3c6aa" }
-      : { background: "#efebd4", foreground: "#5c6a72", cursor: "#f57d26", cursorText: "#eaedc8", selectionBackground: "#eaedc8", selectionForeground: "#5c6a72" }),
+      : { background: "#efebd4", foreground: "#4b575e", cursor: "#9a4e18", cursorText: "#efebd4", selectionBackground: "#c9d8c6", selectionForeground: "#3e4a51" }),
   };
 }
 
@@ -436,10 +439,13 @@ export class NativeTerm {
       return;
     }
     const css = getComputedStyle(this.el);
-    const accent = css.getPropertyValue("--accent").trim() || "#d9a441";
+    // Matches wear the accent (the focus role), not amber: a match is not a
+    // call. A tint of it marks every match, the full colour the current one.
+    const raw = css.getPropertyValue("--accent").trim();
+    const accent = /^#[0-9a-f]{6}$/i.test(raw) ? raw : matchMedia("(prefers-color-scheme: dark)").matches ? "#7fbbb3" : "#2a8079";
     const opts = {
       incremental: fresh && next,
-      decorations: { matchOverviewRuler: accent, activeMatchColorOverviewRuler: accent, matchBackground: "#d9a44155", activeMatchBackground: "#d9a441" },
+      decorations: { matchOverviewRuler: accent, activeMatchColorOverviewRuler: accent, matchBackground: accent + "55", activeMatchBackground: accent + "99" },
     };
     if (next) this.search.findNext(q, opts);
     else this.search.findPrevious(q, opts);
