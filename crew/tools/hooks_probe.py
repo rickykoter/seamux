@@ -72,6 +72,14 @@ HOME = os.path.join(T, "home")
 CACHE = os.path.join(HOME, ".cache")
 STATE = os.path.join(CACHE, "cmux-crew")
 HISTORY = os.path.join(HOME, ".claude", "crew", "history")
+NOTES = os.path.join(HOME, ".claude", "crew", "notifications")
+
+
+def notes():
+    """Every notification log line so far, oldest first."""
+    if not os.path.isdir(NOTES):
+        return []
+    return [json.loads(l) for f in sorted(os.listdir(NOTES)) for l in open(os.path.join(NOTES, f)) if l.strip()]
 LIVE = os.path.join(T, "live")
 SPAWN = os.path.join(T, "spawn.log")
 BIN = os.path.join(T, "bin")
@@ -515,6 +523,11 @@ check("phase and the five feed tokens are dropped in one write, others kept",
       desc() == "ci:green" and sum("set-description" in l for l in L) == 1, f"{desc()} {L}")
 check("the turn banner names the branch",
       f"notify --title {LABEL} --subtitle crew:turn --body Turn complete — {BRANCH}" in L, L)
+N = notes()
+check("…and the notification log gets it as a turn, not shown (cmux hides crew:turn)",
+      bool(N) and N[-1].get("kind") == "turn" and N[-1].get("shown") is False
+      and N[-1].get("why") == "no banner on cmux" and N[-1].get("title") == f"{LABEL} · done"
+      and N[-1].get("source") == "hook", N[-1:] if N else N)
 PLAIN = os.path.join(T, "plain-dir")
 os.makedirs(PLAIN, exist_ok=True)
 reset([row()])
@@ -791,8 +804,10 @@ check("…and marks the tool's start as act-PT, from bash", marker("act-PT"))
 r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "posttool"],
         payload(tool_name="Bash"), env_for(**tmux))
 check("…posttool marks its end as done-PT, with no cmux", r.returncode == 0 and marker("done-PT") and not log(), log())
+before_notes = len(notes())
 hook("stop", **tmux)
 check("…and its stop marks it idle, still without cmux", pane_state("PT") == "idle" and not log(), log())
+check("…and writes no notification line: on tmux the app logs what it posts", len(notes()) == before_notes, notes()[before_notes:])
 
 # A usage limit ends the turn: Claude Code fires StopFailure, not Stop.
 # The payload follows Claude Code 2.1.318's schema (read from its binary:
