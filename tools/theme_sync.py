@@ -45,7 +45,9 @@ program prints words in to 4.5:1 on --term-bg, the selection's words to
 4.5:1 on the selection, the cursor to GRAPHIC:1 on the ground and the
 letter under it to 4.5:1 on the cursor. A selection is a tint, held only
 through its words. The slots a terminal
-paints as grounds (TERM_GROUND_SLOTS) are held to nothing.
+paints as grounds (TERM_GROUND_SLOTS) are held to nothing. The 256-colour
+slots seamux tints (TERM_TINTS) are held off the ground by TINT_FLOOR, with
+the words held to 4.5:1 on them.
 """
 
 import functools
@@ -98,6 +100,13 @@ ROLES = ROLE_WORDS | ROLE_FILLS | ROLE_FREE | {s + "-t" for s in STATES}
 
 # The terminal's own colours, beside the 16 ANSI slots (--term-0 .. --term-15).
 TERM_KEYS = {"bg", "text", "cursor", "cursor-text", "selection", "selection-text"} | {str(i) for i in range(16)}
+# 256-colour slots seamux tints per mode, keeping their usual sense: diff
+# lines (dark green, dark red), changed words, raised bands. Each must stand
+# off the ground by its floor and hold the words (text, white) at 4.5:1;
+# the bands hold the quiet grey (bright black) too.
+TERM_TINTS = {"22": "line", "52": "line", "28": "word", "88": "word", "236": "band", "237": "band"}
+TINT_FLOOR = {"line": 1.2, "word": 1.4, "band": 1.05}
+TERM_KEYS |= set(TERM_TINTS)
 # Slots programs paint as grounds rather than print words in: black in dark
 # (Claude Code's dark-ansi theme fills its bash and inverse text with it),
 # bright white in light (its light-ansi theme's bash background).
@@ -119,6 +128,10 @@ def term_failures(mode: str, t: dict[str, str]) -> list[str]:
     out = []
     pairs = [("text", "bg", FLOOR), ("selection-text", "selection", FLOOR), ("cursor", "bg", GRAPHIC), ("cursor-text", "cursor", FLOOR)]
     pairs += [(str(i), "bg", FLOOR) for i in range(16) if str(i) not in TERM_GROUND_SLOTS[mode]]
+    for slot, kind in TERM_TINTS.items():
+        pairs += [(slot, "bg", TINT_FLOOR[kind]), ("text", slot, FLOOR), ("7", slot, FLOOR)]
+        if kind == "band":
+            pairs.append(("8", slot, FLOOR))
     for k, g, floor in pairs:
         r = ratio(t[k], t[g])
         if r < floor:
@@ -274,6 +287,8 @@ C_BANDS = ["userMessageBackground", "userMessageBackgroundHover", "bashMessageBa
 BAND_WORDS = ["text", "inactive", "subtle"]
 C_UNDER_TEXT = ["selectionBg", "diffAdded", "diffRemoved", "diffAddedDimmed", "diffRemovedDimmed",
                 "diffAddedWord", "diffRemovedWord"]
+DIFF_FLOORS = {"diffAdded": 1.2, "diffRemoved": 1.2, "diffAddedDimmed": 1.08, "diffRemovedDimmed": 1.08,
+               "diffAddedWord": 1.4, "diffRemovedWord": 1.4}
 C_FREE = ["promptBorder", "promptBorderShimmer", "rate_limit_empty", "clawd_background"]
 C_GRAPHIC = ["bashBorder", "rate_limit_fill", "background", "chromeYellow", "clawd_body"] + [
     k for k in CLAUDE_TOKENS if ("Shimmer" in k or k.endswith("_shimmer")) and k not in C_FREE]
@@ -293,7 +308,7 @@ def shimmer(k: str) -> str:
 # mix:<a>:<b>:<percent of a> (a and b each a source of two parts).
 EXACT = {
     "text": "term:text", "inverseText": "term:bg",
-    "inactive": "ef:text-dim", "subtle": "ef:text-faint",
+    "inactive": "ef:text-dim", "subtle": "term:8",
     "claude": "ef:text-orange", "briefLabelClaude": "ef:text-orange", "fastMode": "ef:text-orange",
     "suggestion": "role:link", "permission": "role:link", "remember": "role:link", "ide": "role:link",
     "professionalBlue": "role:link", "briefLabelYou": "role:link", "claudeBlue_FOR_SYSTEM_SPINNER": "role:link",
@@ -302,12 +317,12 @@ EXACT = {
     "effortUltra": "ef:text-purple", "bashBorder": "ef:text-purple",
     "success": "role:done-t", "error": "role:broken-t", "warning": "role:attend-t",
     "promptBorder": "role:edge", "promptBorderShimmer": "ef:dim",
-    "userMessageBackground": "ef:bg1", "userMessageBackgroundHover": "ef:bg",
-    "composerSidebarBackground": "ef:bg1", "bashMessageBackgroundColor": "mix:ef:bg-visual:term:bg:60",
+    "userMessageBackground": "term:236", "userMessageBackgroundHover": "term:237",
+    "composerSidebarBackground": "term:236", "bashMessageBackgroundColor": "mix:ef:bg-visual:term:bg:60",
     "memoryBackgroundColor": "mix:ef:bg-blue:term:bg:60", "selectionBg": "term:selection",
-    "diffAdded": "ef:bg-green", "diffRemoved": "ef:bg-red",
-    "diffAddedDimmed": "mix:ef:bg-green:term:bg:50", "diffRemovedDimmed": "mix:ef:bg-red:term:bg:50",
-    "diffAddedWord": "mix:ef:green:term:bg:25", "diffRemovedWord": "mix:ef:red:term:bg:25",
+    "diffAdded": "term:22", "diffRemoved": "term:52",
+    "diffAddedDimmed": "mix:term:22:term:bg:60", "diffRemovedDimmed": "mix:term:52:term:bg:60",
+    "diffAddedWord": "term:28", "diffRemovedWord": "term:88",
     "rate_limit_fill": "role:working", "rate_limit_empty": "ef:bg3",
     "background": "role:working", "chromeYellow": "role:attend",
     "clawd_body": "ef:text-orange", "clawd_background": "term:bg",
@@ -326,16 +341,15 @@ for _k, _of in [("claudeShimmer", "claude"), ("permissionShimmer", "permission")
                 ("claudeBlueShimmer_FOR_SYSTEM_SPINNER", "claudeBlue_FOR_SYSTEM_SPINNER")]:
     EXACT[_k] = shimmer(_of)
 
-# Foam: ANSI slot names with their usual meanings, on Claude Code's
+# Foam: terminal slots with their usual meanings, on Claude Code's
 # light-ansi base, so a flip of the app's appearance repaints it at once.
-# Text is black, as in light-ansi: no slot gives text and a raised ground
-# that both read in both modes, and black on bright white is the pair that
-# reads best in both (3.8:1 dark, 5.4:1 light). So every band is bright
-# white: soft in light, bright in dark.
+# Text is white, the terminal's words in both of seamux's palettes. Bands
+# and diffs take the 256-colour slots seamux tints per mode (TERM_TINTS), as
+# ansi256(n): no 16-colour slot is a soft tint in both modes.
 ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
 ANSI = ANSI + [n + "Bright" for n in ANSI]
 FOAM = {
-    "text": "black", "inverseText": "whiteBright", "inactive": "blackBright", "subtle": "blackBright",
+    "text": "white", "inverseText": "whiteBright", "inactive": "blackBright", "subtle": "blackBright",
     "claude": "redBright", "claudeShimmer": "red", "briefLabelClaude": "redBright",
     "fastMode": "redBright", "fastModeShimmer": "red", "clawd_body": "redBright", "clawd_background": "whiteBright",
     "suggestion": "blue", "permission": "blue", "permissionShimmer": "blueBright", "remember": "blue",
@@ -347,11 +361,11 @@ FOAM = {
     "success": "green", "error": "red", "warning": "yellow", "warningShimmer": "yellowBright",
     "chromeYellow": "yellow",
     "promptBorder": "blackBright", "promptBorderShimmer": "white", "inactiveShimmer": "white",
-    "userMessageBackground": "whiteBright", "userMessageBackgroundHover": "whiteBright",
-    "bashMessageBackgroundColor": "whiteBright", "memoryBackgroundColor": "whiteBright",
-    "composerSidebarBackground": "whiteBright", "selectionBg": "whiteBright",
-    "diffAdded": "green", "diffRemoved": "red", "diffAddedDimmed": "green", "diffRemovedDimmed": "red",
-    "diffAddedWord": "greenBright", "diffRemovedWord": "redBright",
+    "userMessageBackground": "ansi256(236)", "userMessageBackgroundHover": "ansi256(237)",
+    "bashMessageBackgroundColor": "ansi256(236)", "memoryBackgroundColor": "ansi256(236)",
+    "composerSidebarBackground": "ansi256(236)", "selectionBg": "ansi256(237)",
+    "diffAdded": "ansi256(22)", "diffRemoved": "ansi256(52)", "diffAddedDimmed": "ansi256(22)",
+    "diffRemovedDimmed": "ansi256(52)", "diffAddedWord": "ansi256(28)", "diffRemovedWord": "ansi256(88)",
     "rate_limit_fill": "blue", "rate_limit_empty": "blackBright",
     "red_FOR_SUBAGENTS_ONLY": "red", "blue_FOR_SUBAGENTS_ONLY": "blue", "green_FOR_SUBAGENTS_ONLY": "green",
     "yellow_FOR_SUBAGENTS_ONLY": "yellow", "purple_FOR_SUBAGENTS_ONLY": "magenta",
@@ -368,13 +382,6 @@ FOAM = {
 # README lists them for people; --check fails on any failure not here, and
 # on an entry here that now passes.
 FOAM_LIMITS = {
-    # Black text is a grey under 4.5:1 in dark (4.1:1 on the ground, 3.8:1
-    # on the bright white bands), and nothing reads on the diff grounds: the
-    # green and red slots are word colours, too close to the text in light
-    # and too light under it in dark.
-    "text dark", "text light",
-    # Quiet text (bright black) is a light grey in dark: lost on bright white.
-    "inactive dark", "subtle dark",
     # A chip's word is bright white: in dark the chips are light word colours.
     "inverseText dark",
 }
@@ -426,7 +433,7 @@ def resolve(src: str, mode: str, table: dict[str, str], seen: tuple = ()) -> str
 def claude_theme(name: str, base: str, mode: str | None) -> dict:
     """A theme file's content: exact colours for one mode, or foam's slot names."""
     if mode is None:
-        over = {k: f"ansi:{FOAM[k]}" for k in CLAUDE_TOKENS if k in FOAM}
+        over = {k: FOAM[k] if FOAM[k].startswith("ansi256(") else f"ansi:{FOAM[k]}" for k in CLAUDE_TOKENS if k in FOAM}
     else:
         over = {k: resolve(EXACT[k], mode, EXACT) for k in CLAUDE_TOKENS if k in EXACT}
     return {"name": name, "base": base, "overrides": over}
@@ -447,6 +454,9 @@ def as_hex(v: str, mode: str) -> str:
     """A theme value as the hex the app's terminal draws it with."""
     if v.startswith("ansi:"):
         return mode_tokens(mode)[2][str(ANSI.index(v[5:]))].lower()
+    m = re.fullmatch(r"ansi256\((\d+)\)", v)
+    if m:
+        return mode_tokens(mode)[2][m.group(1)].lower()
     return v.lower()
 
 
@@ -469,6 +479,16 @@ def theme_failures(over: dict[str, str], mode: str) -> list[tuple[str, str]]:
             hold(k, c.get(b), b, FLOOR)
     for d in C_UNDER_TEXT:
         hold("text", c.get(d), d, FLOOR)
+    # A diff tint must stand off the ground, or changed lines don't show;
+    # a changed word's tint off it further than its line's.
+    for d, floor in DIFF_FLOORS.items():
+        if d in c:
+            r = ratio(c[d], g)
+            if r < floor:
+                out.append((d, f"{d} {c[d]} is {r:.2f}:1 on the terminal ground, under {floor}:1: changed lines won't show"))
+    for word, line in (("diffAddedWord", "diffAdded"), ("diffRemovedWord", "diffRemoved")):
+        if word in c and line in c and ratio(c[word], g) <= ratio(c[line], g):
+            out.append((word, f"{word} {c[word]} stands off the ground no further than {line} {c[line]}"))
     for k in C_GRAPHIC:
         hold(k, g, "the terminal ground", GRAPHIC)
     for chip in C_CHIPS:
@@ -491,7 +511,10 @@ def claude_failures() -> tuple[list[str], list[str]]:
         if missing:
             bad.append(f"{label} themes: no value for " + ", ".join(missing))
     for v in FOAM.values():
-        if v not in ANSI:
+        m = re.fullmatch(r"ansi256\((\d+)\)", v)
+        if m and m.group(1) not in TERM_TINTS:
+            bad.append(f"foam: {v} is not a slot seamux tints per mode (TERM_TINTS)")
+        elif not m and v not in ANSI:
             bad.append(f"foam: ansi:{v} is not one of the 16 slot names")
     if bad:
         return bad, limits

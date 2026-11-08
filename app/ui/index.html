@@ -21,11 +21,12 @@
            that parts from the card (the palette's lightest in light, darkest in dark). */
         --line2: var(--role-edge); --field: var(--ef-ink);
         /* Word colours: the hues above are for fills and dots. */
-        --accent-t: var(--role-link); --ask-t: var(--role-attend-t); --bad-t: var(--role-broken-t); --good-t: var(--role-done-t); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
+        --accent-t: var(--role-link); --ask-t: var(--role-attend-t); --bad-t: var(--role-broken-t); --good-t: var(--role-done-t); --term: var(--term-bg); --term-fg: var(--term-text);
         /* Section labels: quiet small caps. Yellow is kept for what needs you. */
         --section: var(--ef-text-dim);
         /* Every drawing of a pane, live or text, shares these; --pane-bg and
-           --pane-fg are the terminal theme cmux reports (term.ts sets them). */
+           --pane-fg are a per-pane override nothing sets now, so every pane
+           draws on the terminal's own ground and words (--term-bg, --term-text). */
         --term-font: 12px/15px ui-monospace, Menlo, monospace; --term-pad: 8px;
         --pane-bg-or: var(--pane-bg, var(--term)); --pane-fg-or: var(--pane-fg, var(--term-fg));
       }

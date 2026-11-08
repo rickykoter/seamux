@@ -6,7 +6,7 @@
 // the slot draws nothing, and the sheet offers Move to native instead.
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon, type ClipboardSelectionType } from "@xterm/addon-clipboard";
@@ -25,14 +25,31 @@ void invoke("pty_reset").catch(() => {});
  *  bundled, so the system's monospace stands in for it). */
 const FONT = "ui-monospace, Menlo, monospace";
 
+/** The xterm 256-colour cube and grey ramp (slots 16-255), as every
+ *  terminal draws them by default. */
+function std256(n: number): string {
+  const hex = (x: number) => x.toString(16).padStart(2, "0");
+  if (n >= 232) {
+    const g = 8 + (n - 232) * 10;
+    return `#${hex(g)}${hex(g)}${hex(g)}`;
+  }
+  const i = n - 16;
+  const c = (x: number) => (x === 0 ? 0 : 55 + x * 40);
+  return `#${hex(c(Math.floor(i / 36)))}${hex(c(Math.floor(i / 6) % 6))}${hex(c(i % 6))}`;
+}
+
 /** The terminal's colours, for the mode in force: seamux's own, the
  *  --term-* tokens in theme/everforest.css (synced into everforest.css, so
  *  the page's computed style holds the right mode's). Dark is Ghostty's
  *  Everforest Dark Hard, light seamux's own; theme_sync.py --check holds the
  *  word slots to 4.5:1 on the ground. A cmux or Ghostty config's colours are
  *  never used: they named a theme drawn for another ground. Null when the
- *  stylesheet has not loaded. */
-function colours(): Record<string, string> | null {
+ *  stylesheet has not loaded.
+ *  Any 256-colour slot the palette tints for the mode (--term-16 to
+ *  --term-255: diff lines, changed words, raised bands) replaces the
+ *  standard one, so a Claude theme that names it (seamux foam) follows the
+ *  flip; theme_sync.py's TERM_TINTS says which. */
+function colours(): (ITheme & { background: string }) | null {
   const cs = getComputedStyle(document.documentElement);
   const v = (k: string) => cs.getPropertyValue(`--term-${k}`).trim();
   const names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const;
@@ -45,7 +62,10 @@ function colours(): Record<string, string> | null {
     selectionForeground: v("selection-text"),
   };
   for (let i = 0; i < 16; i++) theme[i < 8 ? names[i] : "bright" + names[i - 8][0].toUpperCase() + names[i - 8].slice(1)] = v(String(i));
-  return Object.values(theme).every(Boolean) ? theme : null;
+  if (!Object.values(theme).every(Boolean)) return null;
+  const ext = Array.from({ length: 240 }, (_, i) => std256(i + 16));
+  for (let n = 16; n < 256; n++) ext[n - 16] = v(String(n)) || ext[n - 16];
+  return { ...theme, background: theme.background, extendedAnsi: ext };
 }
 
 /** The font a Ghostty or cmux config names, if any: the one thing seamux
