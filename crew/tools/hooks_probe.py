@@ -679,6 +679,40 @@ hook("subagentstop", stdin=payload(agent_id="a1", agent_type="general-purpose"))
 check("an older payload with no list still removes the agent",
       "background" not in pane_file(), pane_file())
 
+# A sub-agent that stops while a shell it backgrounded still runs: Claude
+# Code lists only the shell after it (seen with 2.1.319), and the agent's
+# own transcript names the shell's id.
+SHELL = {"id": "b3", "type": "shell", "status": "running", "description": "Sleep in background", "command": "sleep 20"}
+DEV = {"id": "d1", "type": "shell", "status": "running", "description": "npm run dev"}
+AGENT_T = os.path.join(TRANSCRIPT[:-len(".jsonl")], "subagents", "agent-a1.jsonl")
+os.makedirs(os.path.dirname(AGENT_T), exist_ok=True)
+open(AGENT_T, "w").write(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result",
+    "content": "Command running in background with ID: b3. Output is being written to: /x"}]}}) + "\n")
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[AGENT, DEV]))
+hook("subagentstop", stdin=payload(agent_id="a1", agent_type="general-purpose", agent_transcript_path=AGENT_T,
+                                   background_tasks=[AGENT, SHELL, DEV]))
+P = pane_file()
+check("a sub-agent that stops with its own shell running hands the card to that shell, never the dev server beside it",
+      P["state"] == "working" and [(b["kind"], b["id"]) for b in P.get("background", [])] == [("shell", "b3")], P)
+hook("stop", stdin=payload(background_tasks=[SHELL, DEV]))
+check("…a stop that lists only those shells keeps it working", pane_file()["state"] == "working", pane_file())
+hook("stop", stdin=payload(background_tasks=[DEV]))
+P = pane_file()
+check("…and the stop after its shell ends idles it, the dev server still running", P["state"] == "idle" and "background" not in P, P)
+H = [json.loads(l) for l in open(os.path.join(HISTORY, sorted(os.listdir(HISTORY))[-1]))] if os.path.isdir(HISTORY) and os.listdir(HISTORY) else []
+check("…and crew's history says the background work is done", any(e.get("detail") == "background-done" for e in H), H[-3:])
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[AGENT, DEV]))
+hook("stop", stdin=payload(background_tasks=[SHELL, DEV]))
+check("without SubagentStop, a stop where the agent just left adopts the shell its transcript names, and only that",
+      pane_file()["state"] == "working" and [b["id"] for b in pane_file().get("background", [])] == ["b3"], pane_file())
+os.remove(AGENT_T)
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[AGENT]))
+hook("stop", stdin=payload(background_tasks=[DEV]))
+check("a shell no departing agent's transcript names is never adopted", pane_file()["state"] == "idle", pane_file())
+
 reset([row(desc="phase:working")])
 hook("stop", stdin=payload(background_tasks=[
     {"id": "b1", "type": "shell", "status": "running", "description": "npm run dev"},

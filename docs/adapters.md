@@ -24,7 +24,9 @@ below.
 
 ## Start from the template
 
-`crew/adapters/template` is a working adapter in Python. Copy it into your
+`crew/adapters/template` is a working adapter in Python, and
+`crew/adapters/lookout` is a fuller one: it gives lookout reviewers their
+findings as a result. Copy it into your
 adapters folder under the name you want:
 
 ```bash

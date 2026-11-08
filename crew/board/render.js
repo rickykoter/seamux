@@ -562,9 +562,11 @@ function __boardRender(d) {
       nextAg[key] = 1;
       // Only a row that just arrived animates in: a push redraws the list.
       var fresh = !seenAg[key] && host.getAttribute("data-pushed") === "1";
-      var tip = (run ? "Run " : "Sub-agent ") + (e.label || e.id) + ", " + st[1] + ": open its " + (run ? "run page" : "transcript");
-      return '<div class="ag ' + st[0] + (fresh ? " new" : "") + '" data-a="' + (run ? "run" : "agent") + '" data-x="' + esc(e.id) +
-        '" data-path="/' + (run ? "run" : "agent") + "/" + esc(e.session || "") + "/" + esc(e.id) + '" title="' + esc(tip) + '">' +
+      var shell = e.kind === "shell";
+      var tip = shell ? "A command a sub-agent left running: " + (e.label || e.id)
+        : (run ? "Run " : "Sub-agent ") + (e.label || e.id) + ", " + st[1] + ": open its " + (run ? "run page" : "transcript");
+      return '<div class="ag ' + st[0] + (fresh ? " new" : "") + (shell ? " sh" : "") + '"' + (shell ? ' data-a="none"' : ' data-a="' + (run ? "run" : "agent") + '" data-x="' + esc(e.id) +
+        '" data-path="/' + (run ? "run" : "agent") + "/" + esc(e.session || "") + "/" + esc(e.id) + '"') + ' title="' + esc(tip) + '">' +
         agentMark(e) + '<span class="ak">' + esc(e.label || e.id) + "</span>" +
         (what ? '<span class="aw">' + esc(what) + "</span>" : "") + agentTime(e) +
         (e.badge ? '<span class="ab">' + esc(e.badge) + "</span>" : "") + "</div>";

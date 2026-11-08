@@ -205,11 +205,22 @@ pub fn load(dir: &Path) -> (Vec<Adapter>, Vec<Notice>) {
     (out, notices)
 }
 
-/// The built-ins first, then the command adapters in adapters_dir().
+/// The command adapters crew ships (crew/adapters, in crew's live tree):
+/// every folder but the template.
+pub fn bundled_dir() -> PathBuf {
+    crate::crew_home().join("adapters")
+}
+
+/// The built-ins first, then crew's bundled command adapters, then the
+/// person's own in adapters_dir(). A person's adapter with a bundled one's
+/// name takes its place.
 pub fn adapters() -> (Vec<Adapter>, Vec<Notice>) {
     let mut all = super::builtins();
-    let (cmds, notices) = load(&adapters_dir());
-    all.extend(cmds);
+    let (mine, mut notices) = load(&adapters_dir());
+    let (bundled, bad) = load(&bundled_dir());
+    notices.extend(bad);
+    all.extend(bundled.into_iter().filter(|b| b.name() != "template" && !mine.iter().any(|m| m.name() == b.name())));
+    all.extend(mine);
     (all, notices)
 }
 
@@ -419,6 +430,17 @@ pub fn report(ctx: &Context, adapters: &[Adapter], all: bool) -> Report {
             Err(why) => rep.notices.push(Notice { kind: "failed".into(), adapter: Some(a.name().to_string()), task_type: None, count: wanted, why }),
         }
     }
+    // A later adapter's run with an earlier one's id replaces it: a command
+    // adapter that knows more about a sub-agent (lookout's) than the
+    // built-in does takes its row.
+    let mut kept: Vec<Run> = Vec::new();
+    for r in rep.runs.drain(..) {
+        match kept.iter().position(|k| k.id == r.id) {
+            Some(i) => kept[i] = r,
+            None => kept.push(r),
+        }
+    }
+    rep.runs = kept;
     rep.runs.sort_by(|a, b| b.start.unwrap_or(0).cmp(&a.start.unwrap_or(0)).then_with(|| a.id.cmp(&b.id)));
     rep
 }

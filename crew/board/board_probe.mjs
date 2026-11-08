@@ -2451,6 +2451,7 @@ if (live && Array.isArray(live.rows)) {
     ag("a2", { surface: "s-b", label: "judge", state: "done", end: start + 90 * 1000, badge: "8" }),
     ag("a3", { label: "gone quiet", state: "unknown" }),
   ];
+  const shellRow = ag("b3", { kind: "shell", label: "sleep 20" });
   const R = (id, extra) => ({ id, name: id, kind: "running", badge: "working", said: "Mid-turn.", chips: ["jump"],
     frac: null, meta: "", ref: "workspace:1", cwd: "/w/" + id, panes, agents, ...extra });
   render({ rows: [R("ag", { agentsMore: 2, agentNotices: [{ surface: "S-B", kind: "missing", taskType: "teammate", text: "2 background tasks from teammate: no adapter" }] })], quiet: "" });
@@ -2480,6 +2481,9 @@ if (live && Array.isArray(live.rows)) {
   const h2 = els.rows.innerHTML;
   checks.push(["agents: only a row that just arrived animates in",
     /class="ag run new" data-a="agent" data-x="a9"/.test(h2) && /class="ag run" data-a="agent" data-x="a1"/.test(h2), h2.slice(0, 1200)]);
+  render({ rows: [R("ag", { kind: "wilt", agents: [shellRow] })], quiet: "" });
+  checks.push(["agents: a shell a sub-agent left running is a row with no link",
+    /class="ag run (new )?sh" data-a="none" title="A command a sub-agent left running: sleep 20"/.test(els.rows.innerHTML) && !/data-x="b3"/.test(els.rows.innerHTML), els.rows.innerHTML.slice(els.rows.innerHTML.indexOf('class="ag'), els.rows.innerHTML.indexOf('class="ag') + 300)]);
   render({ rows: [R("am", { tuck: "mute" })], quiet: "" });
   checks.push(["agents: a muted card draws no rows", !/class="ag /.test(els.rows.innerHTML)]);
 }

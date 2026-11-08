@@ -219,9 +219,10 @@ fn the_builtins_are_adapters_like_any_other() {
 #[test]
 fn the_template_adapters_output_validates() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crew/adapters");
-    let (adapters, bad) = host::load(&dir);
+    let (all, bad) = host::load(&dir);
     assert!(bad.is_empty(), "{bad:?}");
-    assert_eq!(adapters.iter().map(|a| a.name().to_string()).collect::<Vec<_>>(), vec!["template"]);
+    let adapters: Vec<Adapter> = all.into_iter().filter(|a| a.name() == "template").collect();
+    assert_eq!(adapters.len(), 1);
     let c = Context { session_dir: fixture("s-done"), session: "s-done".into(), background: vec![task("teammate", "t1", "helper")], ..Default::default() };
     let rep = host::report(&c, &adapters, false);
     assert!(rep.notices.is_empty(), "{:?}", rep.notices);
@@ -247,4 +248,50 @@ fn the_drafted_prompt_carries_the_sample() {
     let f = crew_core::runs::draft::prompt(&c, &failed, Path::new("/t"));
     assert!(f.starts_with("The seamux adapter `mine` failed: runs[0].status"), "a broken adapter's prompt names the check: {f}");
     assert!(crew_core::runs::draft::listing(&fixture("s-done")).len() <= crew_core::runs::draft::LIST_MAX + 1);
+}
+
+#[test]
+fn the_lookout_adapter_replaces_a_reviewers_row_with_its_findings() {
+    // A session with one background sub-agent whose brief names a lookout
+    // review, and that review's store with a finding made while it ran.
+    let root = tmp("lookout");
+    let session = root.join("s-lk");
+    let sub = session.join("subagents");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join("agent-r1.meta.json"), json!({"agentType": "general-purpose", "description": "Lookout review of x",
+        "requestShape": "background", "finished": true}).to_string()).unwrap();
+    let lines = [
+        json!({"type": "user", "timestamp": "2026-11-08T20:00:00.000Z", "message": {"content": "Read the brief"}}),
+        json!({"type": "user", "timestamp": "2026-11-08T20:00:05.000Z", "message": {"content": [{"type": "tool_result",
+            "content": "Then ingest it:\n\n  lookout findings add rv-1 /tmp/x.json"}]}}),
+        json!({"type": "assistant", "timestamp": "2026-11-08T20:01:00.000Z", "message": {"id": "m1", "model": "claude-sonnet-5-5",
+            "usage": {"input_tokens": 10, "output_tokens": 5}, "content": [{"type": "text", "text": "done"}]}}),
+    ];
+    fs::write(sub.join("agent-r1.jsonl"), lines.iter().map(|l| l.to_string() + "\n").collect::<String>()).unwrap();
+    let store = root.join("reviews");
+    fs::create_dir_all(&store).unwrap();
+    fs::write(store.join("rv-1.json"), json!({"title": "x", "reviewedAt": "2026-11-08T20:00:40.000Z", "findings": [
+        {"id": "f1", "severity": "major", "file": "a/b.rs", "line": 9, "short_summary": "it breaks", "createdAt": "2026-11-08T20:00:30.000Z"},
+        {"id": "f0", "severity": "blocker", "file": "a/c.rs", "line": 1, "short_summary": "an earlier round's", "createdAt": "2026-11-08T19:00:00.000Z"},
+        {"id": "f2", "severity": "blocker", "file": "a/d.rs", "line": 2, "short_summary": "a person's", "by": "human", "createdAt": "2026-11-08T20:00:31.000Z"}]}).to_string()).unwrap();
+    // The bundled adapter, run with its store pointed here through its own
+    // command (no process-wide variable).
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crew/adapters/lookout/adapter.py");
+    let wrap = root.join("adapters/lookout");
+    fs::create_dir_all(&wrap).unwrap();
+    fs::write(wrap.join("adapter.json"), json!({"schema": "seamux.adapter/1", "name": "lookout", "recognizes": ["subagent"],
+        "command": ["env", format!("SEAMUX_LOOKOUT_REVIEWS={}", store.display()), "python3", script.display().to_string()]}).to_string()).unwrap();
+    let (bundled, bad) = host::load(&root.join("adapters"));
+    assert!(bad.is_empty(), "{bad:?}");
+    let mut adapters = crew_core::runs::builtins();
+    adapters.extend(bundled);
+    let c = Context { session_dir: session.clone(), session: "s-lk".into(), background: vec![task("subagent", "r1", "Lookout review of x")], ..Default::default() };
+    let rep = host::report(&c, &adapters, false);
+    assert!(rep.notices.is_empty(), "{:?}", rep.notices);
+    let [r] = rep.runs.as_slice() else { panic!("one run, the lookout one replacing the built-in's: {:?}", rep.runs) };
+    let res = r.agents[0].result.clone().unwrap();
+    assert_eq!((r.source.as_str(), res.badge.as_deref()), ("lookout", Some("1 major")), "only this reviewer's finding counts");
+    assert!(res.detail.as_deref().is_some_and(|d| d.contains("major   f1   b.rs:9  it breaks") && !d.contains("f0") && !d.contains("f2")),
+            "not another round's, not a person's: {:?}", res.detail);
+    assert_eq!(r.agents[0].model.as_deref(), Some("claude-sonnet-5-5"));
 }

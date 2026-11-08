@@ -60,7 +60,7 @@ pub struct Pane {
 /// The background task types that keep a pane working: agents, which
 /// finish on their own and start a main turn when they do. A background
 /// shell or monitor (a dev server, a log tail) can run for hours and is not
-/// the session at work.
+/// the session at work, unless a sub-agent started it (see from_payload).
 pub const BACKGROUND_KINDS: [&str; 3] = ["subagent", "workflow", "teammate"];
 
 /// One background task, as Claude Code's background_tasks lists it.
@@ -90,14 +90,23 @@ impl Background {
     /// background_tasks that still run, less `except` (a SubagentStop lists
     /// its own agent as running). A task this pane already knows keeps its
     /// start; a new one starts at `now_ms`.
-    pub fn from_payload(payload: &Value, except: &str, known: &[Background], now_ms: u64) -> Vec<Background> {
+    ///
+    /// A sub-agent that stops while a shell it put in the background still
+    /// runs drops off the list, and Claude Code (2.1.319) lists only the
+    /// shell, with no owner. So a shell counts when a sub-agent started it:
+    /// its id is in `owned`, the shell ids the departing agents' own
+    /// transcripts name (shells_owned). Once adopted it counts until it
+    /// ends. Any other shell (the main agent's dev server) never does.
+    pub fn from_payload(payload: &Value, except: &str, known: &[Background], owned: &[String], now_ms: u64) -> Vec<Background> {
         let Some(tasks) = payload.get("background_tasks").and_then(Value::as_array) else { return Vec::new() };
         let s = |t: &Value, k: &str| t.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         tasks.iter().filter_map(|t| {
             let id = s(t, "id");
             let status = s(t, "status");
             let kind = s(t, "type");
-            if id.is_empty() || id == except || !BACKGROUND_KINDS.contains(&kind.as_str())
+            let agent = BACKGROUND_KINDS.contains(&kind.as_str());
+            let shell = kind == "shell" && (known.iter().any(|b| b.id == id) || owned.contains(&id));
+            if id.is_empty() || id == except || !(agent || shell)
                 || !(status.is_empty() || status == "running" || status == "pending") {
                 return None;
             }
@@ -106,6 +115,53 @@ impl Background {
             let at = known.iter().find(|b| b.id == id).map(|b| b.at).unwrap_or(now_ms);
             Some(Background { kind, id, label, at })
         }).collect()
+    }
+
+    /// The agents this pane knew that a payload no longer lists: they
+    /// stopped (and may have left a shell running).
+    pub fn agents_left(payload: &Value, known: &[Background]) -> Vec<String> {
+        let listed: Vec<&str> = payload.get("background_tasks").and_then(Value::as_array).into_iter().flatten()
+            .filter_map(|t| t.get("id").and_then(Value::as_str)).collect();
+        known.iter().filter(|b| b.kind == "subagent" && !listed.contains(&b.id.as_str())).map(|b| b.id.clone()).collect()
+    }
+
+    /// The payload's shell ids that these transcripts name: Claude Code
+    /// writes "Command running in background with ID: <id>" into the
+    /// transcript of the agent that started it. Each transcript is read
+    /// line by line, keeping only the lines that say so.
+    pub fn shells_owned(payload: &Value, transcripts: &[PathBuf]) -> Vec<String> {
+        use std::io::BufRead;
+        let ids: Vec<String> = payload.get("background_tasks").and_then(Value::as_array).into_iter().flatten()
+            .filter(|t| t.get("type").and_then(Value::as_str) == Some("shell"))
+            .filter_map(|t| t.get("id").and_then(Value::as_str).filter(|i| !i.is_empty()).map(str::to_string)).collect();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let mut text = String::new();
+        for t in transcripts {
+            let Ok(f) = fs::File::open(t) else { continue };
+            let mut r = std::io::BufReader::new(f);
+            let mut raw = Vec::new();
+            loop {
+                raw.clear();
+                match r.read_until(b'\n', &mut raw) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let line = String::from_utf8_lossy(&raw);
+                if line.contains("background with ID: ") {
+                    text.push_str(&line);
+                }
+            }
+        }
+        // The id must end where the text's does: a prefix of another id is no match.
+        let named = |id: &str| {
+            let pat = format!("background with ID: {id}");
+            text.match_indices(&pat).any(|(i, _)| {
+                text[i + pat.len()..].chars().next().is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+            })
+        };
+        ids.into_iter().filter(|id| named(id)).collect()
     }
 }
 
@@ -195,6 +251,7 @@ impl Pane {
         if self.bg_only {
             v["bg_only"] = Value::Bool(true);
         }
+
         v
     }
 
@@ -998,10 +1055,32 @@ mod tests {
             {"id": "s1", "type": "shell", "status": "completed", "description": "ls"},
             {"id": "s2", "type": "shell", "status": "running", "description": "npm run dev"},
             {"id": "m1", "type": "monitor", "status": "running", "description": "tail"}]});
-        let got = Background::from_payload(&payload, "", &[Background { at: 1, ..bg("a1") }], 99);
+        let got = Background::from_payload(&payload, "", &[Background { at: 1, ..bg("a1") }], &[], 99);
         let ids: Vec<(&str, &str, &str, u64)> = got.iter().map(|b| (b.kind.as_str(), b.id.as_str(), b.label.as_str(), b.at)).collect();
         assert_eq!(ids, vec![("subagent", "a1", "judge", 1), ("workflow", "w1", "spike-wf", 99)], "a known task keeps its start; a finished one, a shell and a monitor are not on it");
-        assert_eq!(Background::from_payload(&payload, "a1", &[], 99).len(), 1, "a SubagentStop's own agent is left out");
-        assert!(Background::from_payload(&serde_json::json!({}), "", &[], 99).is_empty());
+        assert_eq!(Background::from_payload(&payload, "a1", &[], &[], 99).len(), 1, "a SubagentStop's own agent is left out");
+        assert!(Background::from_payload(&serde_json::json!({}), "", &[], &[], 99).is_empty());
+
+        // A sub-agent that stops with its own shell still running, as
+        // Claude Code 2.1.319 lists it: the shell is the sub-agent's when
+        // the sub-agent's transcript names its id.
+        let dir = tmp("owned");
+        let tr = dir.join("agent-a1.jsonl");
+        fs::write(&tr, "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"Command running in background with ID: b3. Output is being written to: /x\"}]}}\n").unwrap();
+        let shell = serde_json::json!({"id": "b3", "type": "shell", "status": "running", "description": "Sleep in background", "command": "sleep 20"});
+        let dev = serde_json::json!({"id": "d1", "type": "shell", "status": "running", "description": "npm run dev"});
+        let agent = serde_json::json!({"id": "a1", "type": "subagent", "status": "running", "description": "nested sleeper"});
+        let sub_stop = serde_json::json!({"background_tasks": [agent, shell, dev]});
+        let owned = Background::shells_owned(&sub_stop, std::slice::from_ref(&tr));
+        assert_eq!(owned, vec!["b3".to_string()], "only the shell the agent's transcript names; the main agent's dev server is not");
+        let after = Background::from_payload(&sub_stop, "a1", &[bg("a1")], &owned, 5);
+        assert_eq!(after.iter().map(|b| (b.kind.as_str(), b.id.as_str())).collect::<Vec<_>>(), vec![("shell", "b3")], "adopted from a SubagentStop");
+        let only = serde_json::json!({"background_tasks": [shell, dev]});
+        assert_eq!(Background::agents_left(&only, &[bg("a1")]), vec!["a1".to_string()], "a Stop where the agent just left");
+        assert_eq!(Background::from_payload(&only, "", &after, &[], 5).len(), 1, "once adopted it counts until it ends");
+        assert!(Background::from_payload(&only, "", &[], &[], 5).is_empty(), "a shell no agent's transcript names never counts");
+        assert!(Background::shells_owned(&only, &[dir.join("missing.jsonl")]).is_empty());
+        let pre = serde_json::json!({"background_tasks": [{"id": "b", "type": "shell", "status": "running"}]});
+        assert!(Background::shells_owned(&pre, std::slice::from_ref(&tr)).is_empty(), "b is a prefix of b3, not a match");
     }
 }

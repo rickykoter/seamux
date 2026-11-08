@@ -146,6 +146,7 @@ li.open .car{transform:rotate(90deg)}
 li.open .body{display:block}
 li.err .body{border-left-color:var(--bad)}
 .out{color:var(--ink)}
+.in{font:12.5px/1.45 var(--mono);color:var(--muted);padding-bottom:6px;margin-bottom:6px;border-bottom:1px dashed var(--line)}
 .note{color:var(--muted);font-size:13px;margin:10px 8px}
 pre.plain{font:12.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
 .gone{margin:40px auto;max-width:520px;color:var(--muted);text-align:center}
@@ -222,7 +223,8 @@ pre.plain{font:12.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhe
     li.setAttribute("data-i", String(i));
     var kind = s.kind === "tool" ? s.name : s.kind === "prompt" ? "Prompt" : "said";
     var line = s.kind === "tool" ? s.summary : String(s.text || "").split("\n")[0];
-    var body = s.kind === "tool" ? (s.result != null ? '<div class="out">' + esc(s.result || "(no output)") + "</div>" : '<div class="note">running…</div>')
+    var given = s.kind === "tool" && s.input && s.input !== s.summary ? '<div class="in">' + esc(s.input) + "</div>" : "";
+    var body = s.kind === "tool" ? given + (s.result != null ? '<div class="out">' + esc(s.result || "(no output)") + "</div>" : '<div class="note">running…</div>')
       : '<div>' + rich(s.text || "") + "</div>";
     li.innerHTML = '<button type="button" aria-expanded="false"><span class="tm">' + clock(s.at) + '</span><span class="kd">' + esc(kind) +
       '</span><span class="sm">' + esc(line) + "</span>" + CAR + '</button><div class="body">' + body + "</div>";

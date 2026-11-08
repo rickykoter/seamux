@@ -134,6 +134,20 @@ seamux caches each result until a file under the session's folder or the
 adapter's own folder changes, so an adapter runs only when there is
 something new to read.
 
+crew also ships command adapters of its own, in `crew/adapters` (crew's
+live tree, `~/.config/cmux/crew/adapters`). They load after the built-ins
+and before yours, and one of yours with the same name takes a bundled one's
+place. When two adapters report a run with the same id, the later one's run
+replaces the earlier one's. That is how a command adapter that reads more
+about a sub-agent than the built-in does takes over its row.
+
+**lookout** (bundled, recognizes `subagent`) reports each background
+sub-agent whose brief runs `lookout findings add <review-id>` as a lookout
+reviewer. It reads that review's store (`~/.claude/plans/reviews/<id>.json`)
+and counts the findings created while the reviewer ran. The badge reads
+"2 major" or "clean". The hover text lists each finding with its severity,
+file and line, and ends with a link to the review page.
+
 ### When an adapter is missing or fails
 
 A background task type that no adapter recognizes is reported as a notice:

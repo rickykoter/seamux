@@ -73,27 +73,76 @@ fn ts(v: &Value) -> Option<u64> {
     v.get("timestamp").and_then(Value::as_str).and_then(crew_core::py::iso_timestamp).map(|t| (t * 1000.0) as u64)
 }
 
-/// A tool call in one line: what it ran, read or looked for.
+/// Paths under the home folder, written from `~`.
+pub fn tilde(t: &str) -> String {
+    let home = crew_core::py::home().display().to_string();
+    if home.len() > 1 { t.replace(&format!("{home}/"), "~/") } else { t.to_string() }
+}
+
+/// A shell command's first step that does something: a leading `cd`, a
+/// variable set or a function defined first is setup, not the step.
+pub fn first_command(cmd: &str) -> String {
+    // Lines are steps too: setup on a line of its own is skipped the same way.
+    let joined = cmd.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+    let first_line = joined.as_str();
+    let mut rest = first_line;
+    loop {
+        let cut = [" && ", "; ", ";"].iter().filter_map(|sep| rest.find(sep).map(|i| (i, sep.len()))).min_by_key(|x| x.0);
+        let head = cut.map(|(i, _)| &rest[..i]).unwrap_or(rest).trim();
+        let setup = head.starts_with("cd ") || head == "cd" || head.starts_with("export ")
+            || (!head.contains(' ') && head.split_once('=').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')))
+            || (head.contains("()") && head.contains('{'));
+        match cut {
+            Some((i, n)) if setup => {
+                // A function body runs to its closing brace: skip past it.
+                if head.contains("()") && head.contains('{') && !head.contains('}') {
+                    match rest.find('}') {
+                        Some(j) => rest = rest[j + 1..].trim_start_matches([';', ' ', '&']),
+                        None => return head.to_string(),
+                    }
+                } else {
+                    rest = rest[i + n..].trim_start();
+                }
+            }
+            _ => return if head.is_empty() { first_line.to_string() } else { head.to_string() },
+        }
+    }
+}
+
+/// A tool call in one line: what it ran, read or looked for. A call's own
+/// description says it best; a shell command shows its first real step.
 pub fn summary(name: &str, input: &Value) -> String {
     let s = |k: &str| input.get(k).and_then(Value::as_str).map(str::trim).filter(|x| !x.is_empty());
     let one = match name {
-        "Bash" => s("command"),
-        "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => s("file_path").or(s("notebook_path")),
-        "Grep" | "Glob" => s("pattern"),
-        "WebFetch" => s("url"),
-        "WebSearch" => s("query"),
-        "Agent" | "Task" => s("description"),
-        "Skill" => s("skill"),
+        "Bash" => s("description").map(str::to_string).or_else(|| s("command").map(first_command)).map(|x| x.to_string()),
+        "SubagentHandback" => s("message").map(str::to_string),
+        "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => s("file_path").or(s("notebook_path")).map(str::to_string),
+        "Grep" | "Glob" => s("pattern").map(str::to_string),
+        "WebFetch" => s("url").map(str::to_string),
+        "WebSearch" => s("query").map(str::to_string),
+        "Agent" | "Task" => s("description").map(str::to_string),
+        "Skill" => s("skill").map(str::to_string),
         _ => None,
     }
-    .or_else(|| s("description"))
-    .or_else(|| ["command", "file_path", "path", "pattern", "query", "url", "prompt"].iter().find_map(|k| s(k)))
-    .map(str::to_string)
+    .or_else(|| s("description").map(str::to_string))
+    .or_else(|| ["command", "file_path", "path", "pattern", "query", "url", "prompt"].iter().find_map(|k| s(k)).map(str::to_string))
     .unwrap_or_else(|| {
         let t = input.to_string();
         if t == "{}" || t == "null" { String::new() } else { t }
     });
-    trim(one.lines().next().unwrap_or(""), 200)
+    trim(&tilde(one.lines().next().unwrap_or("")), 200)
+}
+
+/// What a call was given, in full, for its opened step: the command, the
+/// file, or the input as JSON.
+pub fn input_text(name: &str, input: &Value) -> String {
+    let s = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
+    let t = match name {
+        "Bash" => s("command"),
+        "Read" | "Write" | "Edit" | "MultiEdit" => s("file_path"),
+        _ => None,
+    }.unwrap_or_else(|| serde_json::to_string_pretty(input).unwrap_or_default());
+    trim(&tilde(t.trim()), RESULT_MAX * 2)
 }
 
 fn text_of(content: &Value) -> String {
@@ -114,6 +163,9 @@ pub fn claude_view(path: &Path) -> Option<Value> {
     let mut steps: Vec<Value> = Vec::new();
     let mut by_tool: HashMap<String, usize> = HashMap::new();
     let mut last_text: Option<String> = None;
+    // An agent hands its report back through SubagentHandback: that, when
+    // it has one, is its answer rather than whatever it said last.
+    let mut handback: Option<String> = None;
     let mut known = false;
     // Read lossily, line by line: one line that is not UTF-8 is skipped,
     // never the end of the transcript.
@@ -148,7 +200,7 @@ pub fn claude_view(path: &Path) -> Option<Value> {
                     let id = b.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
                     let Some(&i) = by_tool.get(id) else { continue };
                     let out = text_of(b.get("content").unwrap_or(&Value::Null));
-                    steps[i]["result"] = json!(trim(out.trim(), RESULT_MAX));
+                    steps[i]["result"] = json!(trim(&tilde(out.trim()), RESULT_MAX));
                     steps[i]["error"] = json!(b.get("is_error").and_then(Value::as_bool).unwrap_or(false));
                     steps[i]["done"] = json!(at);
                 }
@@ -171,8 +223,14 @@ pub fn claude_view(path: &Path) -> Option<Value> {
                             }
                             let name = b.get("name").and_then(Value::as_str).unwrap_or("tool").to_string();
                             let input = b.get("input").cloned().unwrap_or(Value::Null);
+                            if name == "SubagentHandback" {
+                                if let Some(m) = input.get("message").and_then(Value::as_str).filter(|m| !m.trim().is_empty()) {
+                                    handback = Some(m.trim().to_string());
+                                }
+                            }
                             by_tool.insert(id, steps.len());
-                            steps.push(json!({"kind": "tool", "at": at, "name": name, "summary": summary(&name, &input)}));
+                            steps.push(json!({"kind": "tool", "at": at, "name": name, "summary": summary(&name, &input),
+                                              "input": input_text(&name, &input)}));
                         }
                         _ => {}
                     }
@@ -192,7 +250,7 @@ pub fn claude_view(path: &Path) -> Option<Value> {
     let dropped = steps.len().saturating_sub(STEPS_MAX);
     let steps: Vec<Value> = steps.into_iter().skip(dropped).collect();
     Some(json!({"format": "claude-jsonl", "prompt": prompt, "steps": steps, "dropped": dropped,
-                "lastText": last_text.map(|t| trim(&t, TEXT_MAX))}))
+                "lastText": handback.or(last_text).map(|t| trim(&t, TEXT_MAX))}))
 }
 
 /// Any other file: its last PLAIN_MAX bytes.
@@ -340,7 +398,7 @@ mod tests {
         assert!(v["prompt"].as_str().unwrap().contains("sleep 15"), "{}", v["prompt"]);
         let steps = v["steps"].as_array().unwrap();
         let tool = steps.iter().find(|s| s["kind"] == "tool").unwrap();
-        assert_eq!((tool["name"].as_str(), tool["summary"].as_str()), (Some("Bash"), Some("sleep 15")));
+        assert_eq!((tool["name"].as_str(), tool["summary"].as_str(), tool["input"].as_str()), (Some("Bash"), Some("Sleep for 15 seconds"), Some("sleep 15")), "its description, and the command when opened");
         assert_eq!(tool["result"], "(Bash completed with no output)");
         assert_eq!(tool["error"], false);
         assert_eq!(v["lastText"], "done");
@@ -372,8 +430,30 @@ mod tests {
     }
 
     #[test]
+    fn a_shell_commands_setup_is_skipped_and_a_handback_is_the_answer() {
+        assert_eq!(first_command("cd /w/repo; git show HEAD:a.rs | sed -n 1,9p"), "git show HEAD:a.rs | sed -n 1,9p");
+        assert_eq!(first_command("cd /w && N=abc; s(){ git show \"$N:$1\"; }; s app/x.rs"), "s app/x.rs");
+        assert_eq!(first_command("cargo test -p x"), "cargo test -p x");
+        assert_eq!(first_command("cd /w\nexport X=1\ncargo test"), "cargo test", "setup on lines of its own");
+        assert_eq!(first_command("RUST_LOG=debug cargo run && echo ok"), "RUST_LOG=debug cargo run", "an env-prefixed command is the step");
+        assert_eq!(summary("Bash", &json!({"command": "cd /w; ls", "description": "List files"})), "List files");
+        let home = crew_core::py::home().display().to_string();
+        assert_eq!(summary("Read", &json!({"file_path": format!("{home}/code/a.rs")})), "~/code/a.rs");
+        let d = std::env::temp_dir().join(format!("agent-page-hb-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("t.jsonl");
+        std::fs::write(&f, [
+            r#"{"type":"user","message":{"content":"review it"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"SubagentHandback","input":{"message":"Findings: blocker 0, major 2"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a stray remark"}]}}"#,
+        ].join("\n")).unwrap();
+        let v = claude_view(&f).unwrap();
+        assert_eq!(v["lastText"], "Findings: blocker 0, major 2", "the handback is the answer, not the last thing said");
+    }
+
+    #[test]
     fn a_tool_call_is_summed_up_in_one_line() {
-        assert_eq!(summary("Bash", &json!({"command": "cargo test\n  -p x", "description": "Run"})), "cargo test");
+        assert_eq!(summary("Bash", &json!({"command": "cargo test\n  -p x"})), "cargo test");
         assert_eq!(summary("Read", &json!({"file_path": "/w/a.rs"})), "/w/a.rs");
         assert_eq!(summary("Mystery", &json!({"description": "does a thing"})), "does a thing");
         assert_eq!(summary("Mystery", &json!({})), "");

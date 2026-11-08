@@ -9,8 +9,8 @@
 //!
 //! Only coarse fields go on a card (state, start, end, phase, k of n, the
 //! badge): the elapsed time is drawn by the page, so a run's ticking tokens
-//! never re-push the board. A finished row stays until the pane's next
-//! prompt (crew's history says when that was).
+//! never re-push the board. A finished row stays KEEP_MS after it ends,
+//! whatever is typed meanwhile, so its page is a click away for a while.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -24,8 +24,8 @@ use serde_json::{json, Value};
 pub const ROWS_MAX: usize = 4;
 /// A session nobody asked about for this long drops out of the worker.
 const WANTED_MS: u64 = 60_000;
-/// How far back crew's history is read for a pane's last prompt.
-const HISTORY_MS: u64 = 12 * 3_600_000;
+/// How long a finished row stays on its card after it ends.
+pub const KEEP_MS: u64 = 15 * 60_000;
 
 struct Shared {
     /// Session id: its context and when the board last asked.
@@ -81,11 +81,13 @@ fn report_for(ctx: Context, all: bool) -> Option<Report> {
     s.reports.get(&k).cloned()
 }
 
-/// Per pane surface (upper-cased): its last prompt, and whether a turn
-/// since left background work. From crew's history, read again only when
-/// the newest history file changes.
-fn turns() -> HashMap<String, (u64, bool)> {
-    static CACHE: Mutex<Option<(Option<std::time::SystemTime>, HashMap<String, (u64, bool)>)>> = Mutex::new(None);
+/// Per pane surface (upper-cased): when it last had background work, from
+/// crew's history: a turn that ended with some ("background"), or the stop
+/// after the last of it ended ("background-done"), so a long run's finished
+/// row stays KEEP_MS from its end. Read again only when the newest history
+/// file changes.
+fn turns() -> HashMap<String, u64> {
+    static CACHE: Mutex<Option<(Option<std::time::SystemTime>, HashMap<String, u64>)>> = Mutex::new(None);
     let dir = crew_core::history::dir();
     let now = crew_core::history::now_ms();
     let stamp = std::fs::metadata(crew_core::history::file_for(&dir, now)).and_then(|m| m.modified()).ok();
@@ -95,14 +97,11 @@ fn turns() -> HashMap<String, (u64, bool)> {
             return m.clone();
         }
     }
-    let mut m: HashMap<String, (u64, bool)> = HashMap::new();
-    for e in crew_core::history::read_since(&dir, now.saturating_sub(HISTORY_MS)) {
-        let k = e.surface.to_uppercase();
-        let t = m.entry(k).or_insert((0, false));
-        match e.detail.as_str() {
-            "prompt" if e.at >= t.0 => *t = (e.at, false),
-            "background" if e.at >= t.0 => t.1 = true,
-            _ => {}
+    let mut m: HashMap<String, u64> = HashMap::new();
+    for e in crew_core::history::read_since(&dir, now.saturating_sub(KEEP_MS)) {
+        if e.detail == "background" || e.detail == "background-done" {
+            let t = m.entry(e.surface.to_uppercase()).or_insert(0);
+            *t = (*t).max(e.at);
         }
     }
     *c = Some((stamp, m.clone()));
@@ -148,12 +147,14 @@ pub fn entry(run: &Run, surface: &str, session: &str) -> Value {
 
 /// A background task no run covers yet: its row from the hooks alone.
 pub fn pending(b: &Background, surface: &str, session: &str) -> Value {
-    json!({"surface": surface, "session": session, "id": b.id, "kind": if b.kind == "workflow" { "workflow" } else { "agent" },
+    // A shell a sub-agent left running has no transcript: a row, no link.
+    let kind = match b.kind.as_str() { "workflow" => "workflow", "shell" => "shell", _ => "agent" };
+    json!({"surface": surface, "session": session, "id": b.id, "kind": kind,
            "label": b.label, "state": "running", "start": b.at, "end": null, "task": true})
 }
 
 /// One pane's rows: its running tasks first, oldest first, then what
-/// finished since its last prompt, newest first.
+/// finished since `since`, newest first.
 pub fn rows_for(p: &Pane, rep: Option<&Report>, since: u64) -> Vec<Value> {
     let runs: &[Run] = rep.map(|r| r.runs.as_slice()).unwrap_or(&[]);
     let mut live: Vec<Value> = Vec::new();
@@ -183,7 +184,7 @@ pub fn rows_for(p: &Pane, rep: Option<&Report>, since: u64) -> Vec<Value> {
 
 /// Each row's agents, agentsMore and agentNotices, from its panes' files.
 /// `report` gives a pane's report (the worker's, outside tests).
-pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, (u64, bool)>,
+pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64>,
                  report: &mut dyn FnMut(&Pane, bool) -> Option<Report>) {
     let now = crew_core::history::now_ms();
     for r in rows.iter_mut() {
@@ -195,15 +196,15 @@ pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, (u6
         let mut all: Vec<Value> = Vec::new();
         let mut notices: Vec<Value> = Vec::new();
         for p in files.iter().filter(|f| surfaces.contains(&f.surface.to_uppercase()) && !f.session.is_empty()) {
-            let (prompt, had) = turns.get(&p.surface.to_uppercase()).copied().unwrap_or((0, false));
+            let since = now.saturating_sub(KEEP_MS);
+            let had = turns.get(&p.surface.to_uppercase()).is_some_and(|t| *t >= since);
             let busy = p.state == "working" && !p.background.is_empty();
             // A pane with nothing running asks for its finished runs only
-            // when a turn since its last prompt left background work.
+            // when one of its turns left background work in the last KEEP_MS.
             if !busy && !had {
                 continue;
             }
             let rep = report(p, !busy);
-            let since = prompt.max(now.saturating_sub(HISTORY_MS));
             all.extend(rows_for(p, rep.as_ref(), since));
             for n in rep.iter().flat_map(|r| r.notices.iter()) {
                 notices.push(json!({"surface": p.surface, "session": p.session, "kind": n.kind, "text": n.text(),
@@ -272,8 +273,8 @@ mod tests {
         assert_eq!((wf["id"].as_str(), wf["phase"].as_str(), wf["k"].as_u64(), wf["n"].as_u64()), (Some("wf_1"), Some("Verify"), Some(1), Some(3)),
                    "a workflow without its task id yet is matched by name; oldest running first");
         assert_eq!((rows[1]["model"].as_str(), rows[1].get("tokens")), (Some("sonnet"), None), "coarse fields only");
-        assert_eq!((rows[2]["label"].as_str(), rows[2]["badge"].as_str()), (Some("judge"), Some("8")), "finished since the prompt stays");
-        assert_eq!(rows.len(), 3, "a run that ended before the prompt is gone");
+        assert_eq!((rows[2]["label"].as_str(), rows[2]["badge"].as_str()), (Some("judge"), Some("8")), "finished within the keep window stays");
+        assert_eq!(rows.len(), 3, "a run that ended before it is gone");
     }
 
     #[test]
@@ -297,11 +298,12 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_pane_asks_for_its_finished_runs_only_after_a_turn_left_background_work() {
+    fn an_idle_pane_asks_for_its_finished_runs_only_while_its_background_work_is_recent() {
         let files = vec![pane("S1", &[]), pane("S2", &[])];
         let mut rows = vec![json!({"id": "W1", "panes": [{"surface": "S1"}, {"surface": "S2"}]})];
         let mut t = HashMap::new();
-        t.insert("S2".to_string(), (crew_core::history::now_ms() - 5_000, true));
+        t.insert("S2".to_string(), crew_core::history::now_ms() - 5_000);
+        t.insert("S1".to_string(), crew_core::history::now_ms() - KEEP_MS - 5_000);
         let mut asked = Vec::new();
         mark_with(&mut rows, &files, &t, &mut |p, all| { asked.push((p.surface.clone(), all)); None });
         assert_eq!(asked, vec![("S2".to_string(), true)]);

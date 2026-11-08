@@ -525,6 +525,8 @@ function __boardIntent(cfg) {
         mark(rid);
         return;
       }
+      // A row that opens nothing (a sub-agent's shell): the click stops here.
+      if (t.a === "none") return;
       // A sub-agent or run row, framed by an app that opens those pages
       // itself: the page in its Sheet, beside that workspace's terminal.
       // Anywhere else the server's agent and run actions open it.

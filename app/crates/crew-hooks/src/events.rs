@@ -609,8 +609,15 @@ fn stop(h: &mut Hook) -> String {
     let sid = h.json("session_id");
     let payload: Value = serde_json::from_str(&h.payload).unwrap_or(Value::Null);
     let now = crew_core::history::now_ms();
+    let mut had_bg = false;
+    // A sub-agent that stopped since may have left a shell running: its
+    // transcript says which.
+    let known = status::read(&h.state, status::key(&h.ws, &surface())).map(|p| p.background).unwrap_or_default();
+    let left = status::Background::agents_left(&payload, &known);
+    let owned = status::Background::shells_owned(&payload, &agent_transcripts(&h.json("transcript_path"), &left));
     let (before, _, pane) = status::update(&h.state, &h.ws, &surface(), &sid, now, |p| {
-        let bg = status::Background::from_payload(&payload, "", &p.background, now);
+        let bg = status::Background::from_payload(&payload, "", &p.background, &owned, now);
+        had_bg = !p.background.is_empty();
         p.state = if bg.is_empty() { "idle" } else { "working" }.into();
         p.bg_only = !bg.is_empty();
         p.background = bg;
@@ -630,6 +637,11 @@ fn stop(h: &mut Hook) -> String {
     if running > 0 {
         h.history("working", "background");
     } else {
+        // The last background task is over: the card keeps its finished
+        // rows for a while from here (crew-board agents.rs).
+        if had_bg {
+            h.history("idle", "background-done");
+        }
         h.history("idle", "stop");
     }
     // The feed's tokens describe the ask a pane waits on: they stay while one does.
@@ -712,9 +724,14 @@ fn subagent_stop(h: &mut Hook) {
     let agent = h.json("agent_id");
     let payload: Value = serde_json::from_str(&h.payload).unwrap_or(Value::Null);
     let now = crew_core::history::now_ms();
+    // The shells this agent left running, by its own transcript.
+    let mine = h.json("agent_transcript_path");
+    let mut transcripts: Vec<PathBuf> = if mine.is_empty() { Vec::new() } else { vec![PathBuf::from(&mine)] };
+    transcripts.extend(agent_transcripts(&h.json("transcript_path"), &status::Background::agents_left(&payload, &seen.background)));
+    let owned = status::Background::shells_owned(&payload, &transcripts);
     let left = |known: &[status::Background]| -> Vec<status::Background> {
         if payload.get("background_tasks").is_some_and(Value::is_array) {
-            status::Background::from_payload(&payload, &agent, known, now)
+            status::Background::from_payload(&payload, &agent, known, &owned, now)
         } else {
             known.iter().filter(|b| b.id != agent).cloned().collect()
         }
@@ -722,12 +739,26 @@ fn subagent_stop(h: &mut Hook) {
     if left(&seen.background) == seen.background {
         return;
     }
+    let mut done = false;
     h.settle(false, &[], |p| {
         p.background = left(&p.background);
         if p.background.is_empty() {
             p.bg_only = false;
+            done = true;
         }
     });
+    // The last background task is over: the card keeps its finished rows
+    // for a while from here (crew-board agents.rs).
+    if done {
+        h.history("working", "background-done");
+    }
+}
+
+/// Where Claude Code keeps these sub-agents' transcripts: beside the main
+/// transcript, in <session>/subagents/agent-<id>.jsonl.
+fn agent_transcripts(main: &str, agents: &[String]) -> Vec<PathBuf> {
+    let Some(dir) = main.strip_suffix(".jsonl") else { return Vec::new() };
+    agents.iter().map(|a| Path::new(dir).join("subagents").join(format!("agent-{a}.jsonl"))).collect()
 }
 
 /// The errors a resume can wait out: a usage limit (rate_limit) or a spend

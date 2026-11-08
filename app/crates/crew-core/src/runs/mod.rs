@@ -89,6 +89,7 @@ pub fn facts(path: &Path) -> Facts {
     let Ok(file) = std::fs::File::open(path) else { return f };
     let mut seen: Vec<String> = Vec::new();
     let mut tokens = 0u64;
+    let mut handed = false;
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if !line.contains("\"timestamp\"") {
             continue;
@@ -117,8 +118,18 @@ pub fn facts(path: &Path) -> Facts {
         let text: Vec<&str> = m.get("content").and_then(Value::as_array).map(|c| c.iter()
             .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
             .filter_map(|b| b.get("text").and_then(Value::as_str)).collect()).unwrap_or_default();
-        if !text.is_empty() {
+        if !text.is_empty() && !handed {
             f.last_text = Some(text.join("\n"));
+        }
+        // An agent hands its report back through SubagentHandback: that is
+        // its result, whatever it says after.
+        for b in m.get("content").and_then(Value::as_array).into_iter().flatten() {
+            if b.get("type").and_then(Value::as_str) == Some("tool_use") && b.get("name").and_then(Value::as_str) == Some("SubagentHandback") {
+                if let Some(msg) = b.get("input").and_then(|i| i.get("message")).and_then(Value::as_str).filter(|x| !x.trim().is_empty()) {
+                    f.last_text = Some(msg.trim().to_string());
+                    handed = true;
+                }
+            }
         }
     }
     f.tokens = (tokens > 0).then_some(tokens);

@@ -454,16 +454,28 @@ pub fn background_by_ws(panes: &[crew_core::status::Pane]) -> std::collections::
     out
 }
 
-/// A working card's badge while background work runs: the one task's
-/// label, or how many there are.
+/// A working card's badge while background work runs: short, so it fits
+/// the card's head. What is running is named in the said line.
 fn background_badge(bg: &[crew_core::status::Background]) -> String {
     match bg {
-        [one] if !one.label.is_empty() => {
-            let l: String = one.label.chars().take(28).collect();
-            let more = if one.label.chars().count() > 28 { "…" } else { "" };
-            format!("working · {l}{more}")
-        }
+        [one] if one.kind == "workflow" => "working · 1 run".into(),
+        [_] => "working · 1 agent".into(),
         _ => format!("working · {} in background", bg.len()),
+    }
+}
+
+/// A working card's said line while background work runs: what it is.
+fn background_said(bg: &[crew_core::status::Background]) -> String {
+    // Inside {{…}} markup a label's own braces would end the span early.
+    let name = |b: &crew_core::status::Background| {
+        let l: String = b.label.replace("{{", "{ {").replace("}}", "} }").chars().take(60).collect();
+        if b.label.chars().count() > 60 { format!("{l}…") } else { l }
+    };
+    match bg {
+        [one] if !one.label.is_empty() => format!("{{{{{}}}}} is still running in the background.", name(one)),
+        [one] => format!("One background {} still running.", if one.kind == "workflow" { "run" } else { "task" }),
+        [a, b] => format!("{{{{{}}}}} and {{{{{}}}}} are still running in the background.", name(a), name(b)),
+        _ => format!("{} background tasks still running.", bg.len()),
     }
 }
 
@@ -613,10 +625,7 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             match open.and_then(|o| o.first()) {
                 _ if waits.is_some() => said = waits.unwrap_or_default(),
                 Some(o0) => said = format!("{{{{{}}}}} in progress.", py_str(&o0["title"])),
-                None if !bg.is_empty() => said = match bg.len() {
-                    1 => "One background task still running.".into(),
-                    n => format!("{n} background tasks still running."),
-                },
+                None if !bg.is_empty() => said = background_said(bg),
                 None => said = "Mid-turn.".into(),
             }
             chips = vec!["diff".into(), "jump".into()];
@@ -892,9 +901,10 @@ mod tests {
         let row = |id: &str| rows.iter().find(|r| r["id"] == id).unwrap();
         assert_eq!((row("w-three")["kind"].as_str(), row("w-three")["badge"].as_str()), (Some("running"), Some("working · 3 in background")));
         assert_eq!(row("w-three")["said"], "3 background tasks still running.");
-        assert_eq!(row("w-wf")["badge"], "working · review-changes");
-        let long = background_badge(&[b("workflow", "w", "a-very-long-workflow-name-that-runs-on")]);
-        assert_eq!(long, "working · a-very-long-workflow-name-th…");
+        assert_eq!(row("w-wf")["badge"], "working · 1 run", "the badge stays short");
+        assert_eq!(row("w-wf")["said"], "{{review-changes}} is still running in the background.", "the said line names it");
+        assert_eq!(background_badge(&[b("subagent", "a", "Lookout review of hands-on fixes")]), "working · 1 agent");
+        assert_eq!(background_said(&[b("subagent", "a", "x"), b("shell", "s", "sleep 20")]), "{{x}} and {{sleep 20}} are still running in the background.");
         let panes = vec![{ let mut p = crew_core::status::Pane::new("w-wf", "S"); p.state = "working".into(); p.background = vec![b("workflow", "w1", "x")]; p },
                          { let mut p = crew_core::status::Pane::new("w-wf", "T"); p.state = "idle".into(); p.background = vec![b("subagent", "a", "y")]; p }];
         assert_eq!(background_by_ws(&panes).get("W-WF").map(Vec::len), Some(1), "an idle pane's stale list does not count");
@@ -921,7 +931,7 @@ mod tests {
         let mut bg = std::collections::HashMap::new();
         bg.insert("W-P".to_string(), vec![Background { kind: "subagent".into(), id: "a1".into(), label: "Lookout review".into(), at: 1 }]);
         let (rows, _) = rank_with(&wss, &plans, false, Default::default(), bg);
-        assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("running"), Some("working · Lookout review")));
+        assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("running"), Some("working · 1 agent")));
         assert_eq!(rows[0]["said"], "{{Increment 2's check `review-code-review`}} waits on 1 background agent.");
         let (rows, _) = rank_with(&wss, &plans, false, Default::default(), Default::default());
         assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("wilt"), Some("check failed")), "the agents are done: it shows");
