@@ -10,7 +10,7 @@
 // The last check is the important one. `said` can carry raw terminal text captured with
 // `cmux read-screen`, which means agent output reaches innerHTML. It must be escaped.
 
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createContext, runInContext } from "node:vm";
 import { execFileSync } from "node:child_process";
@@ -34,7 +34,7 @@ const crewTool = (name, args, opts = {}) => {
     { encoding: "utf8", ...opts, env: crewImpl.env(opts.env || process.env) });
 };
 // The argv that runs one board tool, as [cmd, ...args]: the one place this
-// probe names crew-board, crew-board-intent, judgments and cat_poses.
+// probe names crew-board, crew-board-intent, judgments and sprites.
 // Through crew_impl, as `seamux <basename>`.
 const tool = (name) => crewImpl.argv(name.replace(/\.py$/, ""));
 // The env any board tool or the server it starts runs in.
@@ -424,6 +424,8 @@ const lumOf = (h) => {
 };
 const ratio = (a, b) => { const x = lumOf(a), y = lumOf(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
 const css = (pageHtml.match(/<style>([\s\S]*?)<\/style>/) || ["", ""])[1].replace(/\/\*[\s\S]*?\*\//g, "");
+// The generated block: each sprite's sheet and the sp-* timelines.
+const spritesCss = (pageHtml.match(/<style id="sprites">([\s\S]*?)<\/style>/) || ["", ""])[1];
 // Every :root block: the palette's (theme/everforest.css, synced in) and the
 // board's own names, which are hex or var(--ef-…) pointing into it. Plain
 // :root is dark; :root[data-theme="light"] holds what light changes (the
@@ -454,6 +456,9 @@ for (const [mode, T] of [["dark", TOK], ["light", TOKL]]) {
   for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const sel = rule[1].trim();
     if (sel.startsWith(":root") || /^(from|to|\d)/.test(sel)) continue;     // tokens, keyframes
+    // The sprite's z's are drawn on the shelf, never on a card ground: they
+    // were SVG fill until the sprites became sheets, and are decoration.
+    if (sel.startsWith("#cat")) continue;
     for (const d of rule[2].matchAll(/(?:^|[;{\s])color:\s*([^;]+)/g)) {
       const v = d[1].trim();
       // A signal's own colour, lifted per mode by render.js: measured below.
@@ -477,7 +482,7 @@ checks.push([`every text colour reads at 4.5:1 on every ground, dark and light (
 if (lows.length) console.log("    " + lows.join("\n    "));
 // The rail follows the app's appearance, so nothing in its renderer or page
 // may assume a dark ground: each colour that did is a token now. Hex is
-// allowed only in a :root token block, the cat's own pixel art, and the
+// allowed only in a :root token block, the sprites' own pixel art, and the
 // worktree and signal colours the collector sends.
 {
   const DARK_ONLY = ["#2f3639", "#dfa000", "#323b40", "#374145", "#1e2326", "#171c1f", "#13181c",
@@ -486,9 +491,9 @@ if (lows.length) console.log("    " + lows.join("\n    "));
     "rgba(211,198,170"];
   const rjs = readFileSync(join(HERE, "render.js"), "utf8").replace(/\/\/.*$/gm, "");
   const ijs = readFileSync(join(HERE, "intent.js"), "utf8").replace(/\/\/.*$/gm, "");
-  // The page's rules outside :root, and its markup minus the cat's sprite.
+  // The page's rules outside :root, and its markup minus the generated sprite sheets.
   const rules = css.replace(/:root[^{]*\{[^}]*\}/g, "");
-  const markup = pageHtml.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<svg id="cat"[\s\S]*?<\/svg>/, "");
+  const markup = pageHtml.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<!-- SPRITES:BEGIN[\s\S]*?<!-- SPRITES:END -->/, "");
   const hits = [];
   for (const [name, text] of [["render.js", rjs], ["intent.js", ijs], ["board.html rules", rules], ["board.html markup", markup]])
     for (const lit of DARK_ONLY) if (text.toLowerCase().includes(lit.toLowerCase())) hits.push(name + ": " + lit);
@@ -903,35 +908,20 @@ checks.push(["and it has something to say about each",
       css.includes("#shelf[data-sky=" + k + "] .sky." + k))]);
 
   // ---- the nap, idling ------------------------------------------------------
-  // One cycle for all of it: a peek and a flick on cycles of their own drifted
-  // into each other and drew two full poses at once. So: the same duration for
-  // the two shows and the hide, show windows that never overlap, and the hide
-  // covering exactly their union. And none of it on a push with a reaction.
+  // One timeline for all of it: a peek and a flick on cycles of their own
+  // drifted into each other and drew two poses at once. So the nap's breath,
+  // its peeks and its flick are one generated keyframes rule, sp-nap, on one
+  // element; a frame can only be one frame.
   {
-    const IDLE = "#cat\\.nap:not\\(\\.hop\\):not\\(\\.perk\\):not\\(\\.stretch\\) ";
-    const dur = (sel, name) => (new RegExp(IDLE + sel + "\\{animation:" + name + " (\\d+)s").exec(css) || [])[1];
-    const d1 = dur("\\.peek", "peekshow"), d2 = dur("\\.flick", "flickshow"), d3 = dur("\\.pose:not\\(\\.x\\) path", "idlehide");
-    const windows = (name, prop, on) => {
-      const body = (new RegExp("@keyframes " + name + "\\{([\\s\\S]*?)\\}\\}").exec(css) || ["", ""])[1] + "}";
-      const out = [];
-      for (const [, sel, decl] of body.matchAll(/([\d.%,\s]+)\{([^}]*)\}/g)) {
-        if (decl.includes(prop + ":" + on)) {
-          const ps = sel.split(",").map((x) => parseFloat(x));
-          out.push([Math.min(...ps), Math.max(...ps)]);
-        }
-      }
-      return out;
-    };
-    const pw = windows("peekshow", "visibility", "visible"), fw = windows("flickshow", "visibility", "visible");
-    const hw = windows("idlehide", "opacity", "0");
-    const overlap = pw.some(([a, b]) => fw.some(([c, e]) => a <= e && c <= b));
-    const union = [...pw, ...fw].sort((x, y) => x[0] - y[0]);
-    checks.push(["nap: peek and flick share one long cycle, and the nap hides on it too",
-      d1 && +d1 >= 30 && d1 === d2 && d2 === d3]);
-    checks.push(["nap: ...their moments never overlap, and the nap hides for exactly those",
-      pw.length >= 2 && fw.length >= 1 && !overlap && JSON.stringify(hw) === JSON.stringify(union)]);
-    checks.push(["nap: ...and none of it runs on a push that carries a reaction",
-      !/#cat\.nap \.(peek|flick)\{/.test(css) && !/#cat\.nap \.pose:not\(\.x\) path\{/.test(css)]);
+    const kf = (name) => (new RegExp("@keyframes " + name + "\\{([\\s\\S]*?)\\}\\}").exec(spritesCss) || ["", ""])[1];
+    const frameAt = (k) => (k === 0 ? "0 0" : "-" + k * 48 + "px 0");
+    const nap = kf("sp-nap");
+    checks.push(["nap: breathes, peeks and flicks on one long timeline",
+      /#cat\.nap \.body\{animation:sp-nap (\d+)s steps\(1,end\) infinite\}/.test(css) && +RegExp.$1 >= 30 &&
+      [3, 4, 5, 6].every((k) => nap.includes("background-position:" + frameAt(k)))]);
+    checks.push(["pace: walks in bursts, its four walk frames then a sit, on one timeline",
+      [7, 8, 9, 10, 0].every((k) => kf("sp-pace").includes("background-position:" + frameAt(k))) &&
+      /#cat\.pace\{animation:sp-travel 60s/.test(css) && /#cat\.pace \.body\{animation:sp-pace 10s/.test(css)]);
   }
 
   P([Rw("x", "running")]);
@@ -1055,20 +1045,19 @@ render({ rows: [
 checks.push(["the headline never says all-clear over a broken board",
   !/all clear/i.test(els.need.textContent) && /nothing needs you/i.test(els.need.textContent)]);
 
-// The board-only poses are generated too, from cat_poses.py's grids.
-checks.push(["the board-only poses are in sync with cat_poses.py",
-  (() => { try { runTool("cat_poses.py", ["--check"],
-    { encoding: "utf8" }); return true; } catch { return false; } })()]);
-// They sit inside the sprite, so they walk and turn with it, and every
-// reaction render.js can set has a pose to show and a rule to show it.
+// The sprites are generated from crew/board/sprites/*.json, into this page and
+// into the app's sprites.gen.ts: both must be what the JSON says.
+checks.push(["the sprites are in sync with their JSON (seamux sprites --check)",
+  (() => { try { runTool("sprites", ["--check"], { encoding: "utf8" }); return true; } catch { return false; } })()]);
 {
-  const sprite = (pageHtml.match(/<!-- CAT:BEGIN[\s\S]*?<!-- CAT:END -->/) || [""])[0];
-  const facing = (sprite.match(/<g class="facing">([\s\S]*)<\/g><\/g>/) || ["", ""])[1];
-  checks.push(["the new poses are inside the cat's svg, in the turning group",
-    ["hop-a", "hop-b", "heart", "perk", "stretch", "peek", "flick"].every((p) => facing.includes('class="pose x ' + p + '"'))]);
-  checks.push(["every reaction has its poses shown and the mood hidden for as long",
-    ["hop", "perk", "stretch"].every((r) => new RegExp("#cat\\." + r + " \\.pose:not\\(\\.x\\) path\\{animation:rxhide").test(css)) &&
-    /#cat\.hop \.hop-a\{/.test(css) && /#cat\.perk \.perk\{/.test(css) && /#cat\.stretch \.stretch\{/.test(css)]);
+  // Every reaction plays after the mood's own timeline, in every mood, so it
+  // wins while it runs and the mood is back when it ends.
+  const MOODS = { nap: "sp-nap 48s", pace: "sp-pace 10s", swat: "sp-swat 6s" };
+  const RX = { hop: "sp-hop 1.6s", perk: "sp-perk 1.2s", stretch: "sp-stretch 2.4s" };
+  checks.push(["every reaction plays once after the mood's timeline, in every mood",
+    Object.entries(MOODS).every(([m, mt]) => Object.entries(RX).every(([r, rt]) =>
+      css.includes("#cat." + m + "." + r + " .body{animation:" + mt + " steps(1,end) infinite," + rt + " steps(1,end) 1}"))) &&
+    /#cat\.hop \.heart\{animation:heart/.test(css)]);
   // Reduced motion stops EVERYTHING, and names each rule by its OWN selector. A
   // broader selector loses on specificity: the mood's frames stayed hidden for
   // a reaction's length while the reaction's poses were stopped, and the cat
@@ -1089,9 +1078,10 @@ checks.push(["the board-only poses are in sync with cat_poses.py",
   }
   const missing = rxSels.filter((x) => !stopped.has(x));
   checks.push([`reduced motion stops every animation by its own selector (${rxSels.length})`,
-    rxSels.length >= 30 && missing.length === 0]);
-  checks.push(["...and, stopped, each mood holds its first frame instead of vanishing",
-    /#cat\.swat \.swat-a,#cat\.pace \.walk-a,#cat\.nap \.nap-a\{visibility:visible\}/.test(reduce)]);
+    rxSels.length >= 25 && missing.length === 0]);
+  checks.push(["...and, stopped, each mood holds its resting frame instead of vanishing",
+    /#cat \.body\{background-position:-144px 0\}/.test(css) && /#cat\.pace \.body\{background-position:-336px 0\}/.test(css) &&
+    /#cat\.swat \.body\{background-position:-528px 0\}/.test(css)]);
   checks.push(["...and the sky changes without fading", /#shelf \.sky,#shelf \.orb\{transition:none\b/.test(reduce)]);
   if (missing.length) console.log("    not stopped: " + missing.join(" | "));
 }
@@ -1111,10 +1101,16 @@ checks.push(["the board-only poses are in sync with cat_poses.py",
     /#shelf\[data-sky=day\] \.orb\{[^}]*box-shadow/.test(css)]);
 }
 
-// The sprite is generated from crew.swift, so the two boards cannot drift apart
-// silently. This is the check that notices if the sidebar's cat moves on.
-checks.push(["the cat is in sync with the sidebar's (seamux cat_poses --from-swift --check)",
-  (() => { try { runTool("cat_poses", ["--from-swift", "--check"]); return true; } catch { return false; } })()]);
+// Every sprite in crew/board/sprites has its sheet in the page; the tuxedo's is
+// the unqualified rule, so a board no app has told shows it. Five data: sheets
+// are most of the page's weight, so they have a budget.
+{
+  const ids = readdirSync(join(HERE, "sprites")).filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, ""));
+  checks.push(["every sprite has its sheet in the page, and the tuxedo is the default",
+    ids.length >= 5 && ids.includes("tuxedo") && spritesCss.includes("#cat .body,#cat .heart{background-image:url(") &&
+    ids.filter((i) => i !== "tuxedo").every((i) => spritesCss.includes("#cat[data-sprite=" + i + "] .body"))]);
+  checks.push(["the sprite sheets stay under 150 KB", spritesCss.length < 150_000, String(spritesCss.length)]);
+}
 
 // An indeterminate dial is the only one allowed to spin; one with a number is not.
 render({ rows: [{ id: "p", name: "p", kind: "running", badge: "b", said: "",

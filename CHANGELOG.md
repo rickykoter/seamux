@@ -6,6 +6,14 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **The board's cat has company: five sprites on 2px cells.** The tuxedo cat
+  is redrawn (soft-yellow eyes, a real tail, a 4-frame walk), and a sandy cat,
+  a penguin, an owl and a little robot join it. All five have the same 18
+  frames, kept as JSON in `crew/board/sprites/`. `seamux sprites` writes them
+  into the board as CSS sprite sheets and into `app/ui/sprites.gen.ts`, and
+  `--check` fails if either is stale (ADRs 0081 and 0082). The shelf walks in
+  bursts at 8 fps instead of a constant 1 Hz. `seamux cat_poses` and the
+  board's link to crew.swift's cat are gone; the Swift sidebar keeps its cat.
 - **The board's news footer is now a log of the notifications seamux sent.**
   Every banner seamux posts, and every one it skipped because you were looking
   at that pane, is one line in `~/.claude/crew/notifications/<day>.jsonl`
