@@ -620,6 +620,92 @@ check("…which is removed once it was read",
       wait_for(lambda: not [f for f in os.listdir(STATE) if f.startswith("asked-payload-")]),
       os.listdir(STATE))
 
+# --- background work (Stop's background_tasks, SubagentStart, SubagentStop) ------------
+# Payloads shaped as Claude Code 2.1.319 sends them: a background agent and a
+# workflow are each one task; a workflow's own agents fire SubagentStart and
+# SubagentStop (agent_type workflow-subagent) but are not on the list.
+print("background work")
+AGENT = {"id": "a1", "type": "subagent", "status": "running", "description": "judge", "agent_type": "general-purpose"}
+FLOW = {"id": "w1", "type": "workflow", "status": "running", "description": "tiny", "name": "review-changes"}
+
+
+def pane_file():
+    return json.load(open(os.path.join(STATE, "pane-ws-1.json")))
+
+
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[AGENT, FLOW], last_assistant_message="launched"))
+P, L = pane_file(), log()
+check("stop with background tasks keeps the pane working, each task on its list",
+      P["state"] == "working" and P.get("bg_only") is True
+      and [(b["kind"], b["id"], b["label"]) for b in P.get("background", [])]
+      == [("subagent", "a1", "judge"), ("workflow", "w1", "review-changes")], P)
+check("…the phase stays working and the claude status is kept",
+      desc() == "phase:working" and "clear-status claude" not in L, f"{desc()} {L}")
+check("…and the turn banner says what still runs",
+      any(l.endswith("2 still running in the background") for l in L), L)
+started = {b["id"]: b["at"] for b in P["background"]}
+open(CLOG, "w").close()
+hook("subagentstop", stdin=payload(agent_id="x9", agent_type="workflow-subagent",
+                                   background_tasks=[AGENT, FLOW]))
+check("a workflow agent's subagent stop leaves the list alone, with no write",
+      pane_file() == P and not log(), log())
+hook("subagentstop", stdin=payload(agent_id="a1", agent_type="general-purpose",
+                                   background_tasks=[AGENT, FLOW]))
+P = pane_file()
+check("subagent stop removes its agent; the workflow keeps its start time",
+      P["state"] == "working" and [b["id"] for b in P["background"]] == ["w1"]
+      and P["background"][0]["at"] == started["w1"], P)
+hook("stop", stdin=payload(background_tasks=[]))
+P = pane_file()
+check("a later stop with nothing in the background idles it and clears the list",
+      P["state"] == "idle" and "background" not in P and "bg_only" not in P
+      and "clear-status claude" in log(), P)
+
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[AGENT]))
+open(CLOG, "w").close()
+hook("subagentstop", stdin=payload(agent_id="a1", agent_type="general-purpose", background_tasks=[AGENT]))
+P = pane_file()
+check("the last removal keeps the pane working for the turn its finish starts, open to the silent check",
+      P["state"] == "working" and "background" not in P and "bg_only" not in P
+      and "clear-status claude" not in log() and desc() == "phase:working", f"{P} {desc()} {log()}")
+hook("stop", stdin=payload(background_tasks=[], last_assistant_message="finished"))
+check("…and that turn's stop idles it", pane_file()["state"] == "idle", pane_file())
+
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[AGENT]))
+hook("subagentstop", stdin=payload(agent_id="a1", agent_type="general-purpose"))
+check("an older payload with no list still removes the agent",
+      "background" not in pane_file(), pane_file())
+
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[
+    {"id": "b1", "type": "shell", "status": "running", "description": "npm run dev"},
+    {"id": "m1", "type": "monitor", "status": "running", "description": "tail -f log"}]))
+check("a background shell or monitor alone does not keep the pane working",
+      pane_file()["state"] == "idle" and "background" not in pane_file(), pane_file())
+
+reset([row()])
+hook("stop")
+open(CLOG, "w").close()
+hook("subagentstop", stdin=payload(agent_id="f1", agent_type="Explore", background_tasks=[]))
+check("a foreground agent's stop on a pane with no list changes nothing",
+      pane_file()["state"] == "idle" and not log(), log())
+hook("subagentstart", stdin=payload(agent_id="a2", agent_type="general-purpose"))
+check("a sub-agent starting on an idle pane is a turn running: working again",
+      pane_file()["state"] == "working" and desc() == "phase:working", f"{pane_file()} {desc()}")
+open(CLOG, "w").close()
+hook("subagentstart", stdin=payload(agent_id="a3", agent_type="general-purpose"))
+check("…and one starting on a working pane writes nothing", not log(), log())
+
+reset([row()])
+hook("stop", stdin=payload(background_tasks=[AGENT]))
+hook("end")
+P = pane_file()
+check("the session's end drops its background list",
+      P["state"] == "ended" and "background" not in P, P)
+
 # --- asked-hook ----------------------------------------------------------------------
 print("asked-hook")
 

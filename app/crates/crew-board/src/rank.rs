@@ -357,6 +357,9 @@ struct Ctx {
     /// Per workspace (upper-cased id), its quietest working pane past the
     /// silent threshold: silent (maybe hung), or inside one long tool.
     silent: std::collections::HashMap<String, Quiet>,
+    /// Per workspace (upper-cased id), the background sub-agents and
+    /// workflows its panes' sessions still run.
+    background: std::collections::HashMap<String, Vec<crew_core::status::Background>>,
     cost_map: Map<String, Value>,
     jmap: Map<String, Value>,
     stuck_t: f64,
@@ -441,17 +444,43 @@ pub fn quiet_by_ws(panes: &[crew_core::status::Pane], now_ms: u64, threshold_ms:
     out
 }
 
+/// Each workspace's background tasks (crew_core::status::Pane::background),
+/// across its working panes, keyed by the upper-cased workspace id.
+pub fn background_by_ws(panes: &[crew_core::status::Pane]) -> std::collections::HashMap<String, Vec<crew_core::status::Background>> {
+    let mut out: std::collections::HashMap<String, Vec<crew_core::status::Background>> = std::collections::HashMap::new();
+    for p in panes.iter().filter(|p| p.state == "working" && !p.background.is_empty()) {
+        out.entry(p.ws.to_ascii_uppercase()).or_default().extend(p.background.iter().cloned());
+    }
+    out
+}
+
+/// A working card's badge while background work runs: the one task's
+/// label, or how many there are.
+fn background_badge(bg: &[crew_core::status::Background]) -> String {
+    match bg {
+        [one] if !one.label.is_empty() => {
+            let l: String = one.label.chars().take(28).collect();
+            let more = if one.label.chars().count() > 28 { "…" } else { "" };
+            format!("working · {l}{more}")
+        }
+        _ => format!("working · {} in background", bg.len()),
+    }
+}
+
 /// rank(): the tiered rows and the quiet ones, families grouped.
 pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> (Vec<Value>, Vec<Value>) {
     let dir = crate::state::state_dir();
-    let quiet = quiet_by_ws(&crew_core::status::all(&dir), (crew_core::py::now() * 1000.0) as u64,
+    let panes = crew_core::status::all(&dir);
+    let quiet = quiet_by_ws(&panes, (crew_core::py::now() * 1000.0) as u64,
                             crew_core::status::silent_threshold_ms(), &|p| crew_core::status::activity(&dir, p.key()));
-    rank_with(wss, plan_by_root, screens, quiet)
+    rank_with(wss, plan_by_root, screens, quiet, background_by_ws(&panes))
 }
 
-/// rank() with the quiet panes given, so a test needs no state folder.
+/// rank() with the quiet panes and background tasks given, so a test needs
+/// no state folder.
 pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool,
-                 silent: std::collections::HashMap<String, Quiet>) -> (Vec<Value>, Vec<Value>) {
+                 silent: std::collections::HashMap<String, Quiet>,
+                 background: std::collections::HashMap<String, Vec<crew_core::status::Background>>) -> (Vec<Value>, Vec<Value>) {
     let cwds: Vec<String> = wss.iter()
         .filter(|w| truthy(get(w, "cwd")))
         .map(|w| py_str(get(w, "cwd")))
@@ -461,6 +490,7 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
     let j = get(&integ, "jira");
     let ctx = Ctx {
         silent,
+        background,
         cost_map: costs::costs_for(&cwds),
         jmap: judgments::fresh_map(None, None),
         stuck_t: judgments::stuck_threshold(),
@@ -487,6 +517,7 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
         let hush = ctx.silent.get(&py_str(get(w, "id")).to_ascii_uppercase()).cloned();
         let silent_ms = match hush { Some(Quiet::Silent(ms)) => Some(ms), _ => None };
         let in_tool_ms = match hush { Some(Quiet::InTool(ms)) => Some(ms), _ => None };
+        let bg = ctx.background.get(&py_str(get(w, "id")).to_ascii_uppercase()).map(Vec::as_slice).unwrap_or(&[]);
         let mut meta_bits = Vec::new();
         if let Some(p) = plan {
             meta_bits.push(incs(p));
@@ -558,7 +589,10 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         } else if running || has(d, "phase:working") {
             (kind, badge) = (Some("running"), "working");
             // A long test, script or subagent: busy, said so, never silent.
-            if let Some(ms) = in_tool_ms {
+            // Background sub-agents or a workflow: said by name or count.
+            if !bg.is_empty() {
+                badge_text = background_badge(bg);
+            } else if let Some(ms) = in_tool_ms {
                 badge_text = format!("in a tool {}m", ms / 60_000);
             }
             // The plan's progress is its owner pane's work: when that pane's
@@ -571,6 +605,10 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             let open = plan.filter(|_| !owner_idle).map(|p| get(progress(p), "open")).filter(|o| truthy(o)).and_then(Value::as_array);
             match open.and_then(|o| o.first()) {
                 Some(o0) => said = format!("{{{{{}}}}} in progress.", py_str(&o0["title"])),
+                None if !bg.is_empty() => said = match bg.len() {
+                    1 => "One background task still running.".into(),
+                    n => format!("{n} background tasks still running."),
+                },
                 None => said = "Mid-turn.".into(),
             }
             chips = vec!["diff".into(), "jump".into()];
@@ -816,7 +854,7 @@ mod tests {
         let mut silent = std::collections::HashMap::new();
         silent.insert("W-HUNG".to_string(), Quiet::Silent(14 * 60_000 + 5_000));
         silent.insert("W-TEST".to_string(), Quiet::InTool(20 * 60_000));
-        let (rows, _) = rank_with(&wss, &Map::new(), false, silent);
+        let (rows, _) = rank_with(&wss, &Map::new(), false, silent, Default::default());
         let at = |id: &str| rows.iter().position(|r| r["id"] == id).unwrap();
         let hung = &rows[at("w-hung")];
         assert_eq!(hung["badge"], "silent 14m");
@@ -826,6 +864,32 @@ mod tests {
         assert_eq!((test["kind"].as_str(), test["badge"].as_str()), (Some("running"), Some("in a tool 20m")), "a long tool is busy, not silent");
         assert!(at("w-ask") < at("w-hung") && at("w-hung") < at("w-busy"), "{rows:?}");
         assert_eq!(rows[at("w-busy")]["badge"], "working");
+    }
+
+    #[test]
+    fn a_workspace_with_background_work_says_how_many_or_which() {
+        use crew_core::status::Background;
+        let wss = vec![
+            json!({"id": "w-three", "title": "three", "cwd": "/w/three", "desc": "phase:working", "running": true}),
+            json!({"id": "w-wf", "title": "wf", "cwd": "/w/wf", "desc": "phase:working", "running": true}),
+        ];
+        let b = |kind: &str, id: &str, label: &str| Background { kind: kind.into(), id: id.into(), label: label.into(), at: 1 };
+        let mut bg = std::collections::HashMap::new();
+        bg.insert("W-THREE".to_string(), vec![b("subagent", "a1", "judge"), b("subagent", "a2", "judge"), b("subagent", "a3", "lookout")]);
+        bg.insert("W-WF".to_string(), vec![b("workflow", "w1", "review-changes")]);
+        // A pane in a long tool beside them: the background work is the word.
+        let mut silent = std::collections::HashMap::new();
+        silent.insert("W-THREE".to_string(), Quiet::InTool(20 * 60_000));
+        let (rows, _) = rank_with(&wss, &Map::new(), false, silent, bg);
+        let row = |id: &str| rows.iter().find(|r| r["id"] == id).unwrap();
+        assert_eq!((row("w-three")["kind"].as_str(), row("w-three")["badge"].as_str()), (Some("running"), Some("working · 3 in background")));
+        assert_eq!(row("w-three")["said"], "3 background tasks still running.");
+        assert_eq!(row("w-wf")["badge"], "working · review-changes");
+        let long = background_badge(&[b("workflow", "w", "a-very-long-workflow-name-that-runs-on")]);
+        assert_eq!(long, "working · a-very-long-workflow-name-th…");
+        let panes = vec![{ let mut p = crew_core::status::Pane::new("w-wf", "S"); p.state = "working".into(); p.background = vec![b("workflow", "w1", "x")]; p },
+                         { let mut p = crew_core::status::Pane::new("w-wf", "T"); p.state = "idle".into(); p.background = vec![b("subagent", "a", "y")]; p }];
+        assert_eq!(background_by_ws(&panes).get("W-WF").map(Vec::len), Some(1), "an idle pane's stale list does not count");
     }
 
     #[test]

@@ -48,6 +48,65 @@ pub struct Pane {
     /// The turn was stopped by a usage limit (a StopFailure of rate_limit or
     /// billing_error), until the pane works again.
     pub limited: Option<Limited>,
+    /// Background sub-agents and workflows the session still runs, from
+    /// Claude Code's Stop and SubagentStop payloads (background_tasks).
+    pub background: Vec<Background>,
+    /// The main turn ended and only background work keeps the pane working,
+    /// so the silent and interrupt checks leave it alone. A prompt, an
+    /// answer, a new session or the last task's finish clears it.
+    pub bg_only: bool,
+}
+
+/// The background task types that keep a pane working: agents, which
+/// finish on their own and start a main turn when they do. A background
+/// shell or monitor (a dev server, a log tail) can run for hours and is not
+/// the session at work.
+pub const BACKGROUND_KINDS: [&str; 3] = ["subagent", "workflow", "teammate"];
+
+/// One background task, as Claude Code's background_tasks lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Background {
+    /// Claude Code's task type: subagent, workflow, shell, monitor and so on.
+    pub kind: String,
+    pub id: String,
+    /// The workflow's name, else the task's description, else its agent type.
+    pub label: String,
+    /// When this pane first saw it, in ms since the epoch.
+    pub at: u64,
+}
+
+impl Background {
+    pub fn to_json(&self) -> Value {
+        json!({"kind": self.kind, "id": self.id, "label": self.label, "at": self.at})
+    }
+
+    pub fn from_json(v: &Value) -> Option<Background> {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let id = s("id");
+        (!id.is_empty()).then(|| Background { kind: s("kind"), id, label: s("label"), at: v.get("at").and_then(Value::as_u64).unwrap_or(0) })
+    }
+
+    /// The agent tasks (BACKGROUND_KINDS) in a hook payload's
+    /// background_tasks that still run, less `except` (a SubagentStop lists
+    /// its own agent as running). A task this pane already knows keeps its
+    /// start; a new one starts at `now_ms`.
+    pub fn from_payload(payload: &Value, except: &str, known: &[Background], now_ms: u64) -> Vec<Background> {
+        let Some(tasks) = payload.get("background_tasks").and_then(Value::as_array) else { return Vec::new() };
+        let s = |t: &Value, k: &str| t.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        tasks.iter().filter_map(|t| {
+            let id = s(t, "id");
+            let status = s(t, "status");
+            let kind = s(t, "type");
+            if id.is_empty() || id == except || !BACKGROUND_KINDS.contains(&kind.as_str())
+                || !(status.is_empty() || status == "running" || status == "pending") {
+                return None;
+            }
+            let label = [s(t, "name"), s(t, "description"), s(t, "agent_type"), s(t, "type")]
+                .into_iter().find(|l| !l.is_empty()).unwrap_or_default();
+            let at = known.iter().find(|b| b.id == id).map(|b| b.at).unwrap_or(now_ms);
+            Some(Background { kind, id, label, at })
+        }).collect()
+    }
 }
 
 /// Why a pane's turn stopped on a limit, and when it may go again. Times are
@@ -105,6 +164,8 @@ impl Pane {
             review: false,
             at: 0,
             limited: None,
+            background: Vec::new(),
+            bg_only: false,
         }
     }
 
@@ -120,13 +181,19 @@ impl Pane {
         self.state == "needs_input" || self.review || self.asked.is_some() || self.limited.is_some()
     }
 
-    /// The file's JSON. `limited` is written only while set, so a pane no
-    /// limit stopped reads as it always did.
+    /// The file's JSON. `limited`, `background` and `bg_only` are written
+    /// only while set, so a pane without them reads as it always did.
     pub fn to_json(&self) -> Value {
         let mut v = json!({"ws": self.ws, "surface": self.surface, "session": self.session, "state": self.state,
                "question": self.question, "asked": self.asked, "review": self.review, "at": self.at});
         if let Some(l) = &self.limited {
             v["limited"] = l.to_json();
+        }
+        if !self.background.is_empty() {
+            v["background"] = Value::Array(self.background.iter().map(Background::to_json).collect());
+        }
+        if self.bg_only {
+            v["bg_only"] = Value::Bool(true);
         }
         v
     }
@@ -144,6 +211,9 @@ impl Pane {
             review: v.get("review").and_then(Value::as_bool).unwrap_or(false),
             at: v.get("at").and_then(Value::as_u64).unwrap_or(0),
             limited: v.get("limited").and_then(Limited::from_json),
+            background: v.get("background").and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Background::from_json).collect()).unwrap_or_default(),
+            bg_only: v.get("bg_only").and_then(Value::as_bool).unwrap_or(false),
         })
     }
 }
@@ -233,10 +303,12 @@ pub fn activity(dir: &Path, key: &str) -> (u64, u64) {
 /// started after the last tool ended (and after the pane's last write) is
 /// in flight: such a pane is InTool by how long that tool has run. Any other
 /// is Silent by how long since its last sign of life (a write, a tool start
-/// or end). `activity` gives a pane's (tool start, tool end) marks.
+/// or end). `activity` gives a pane's (tool start, tool end) marks. A pane
+/// whose main turn ended while background work runs (bg_only) is busy,
+/// never quiet: its sub-agents' tool use leaves no marks of its own.
 pub fn quiet<'a>(panes: &'a [Pane], now_ms: u64, threshold_ms: u64, activity: &dyn Fn(&Pane) -> (u64, u64)) -> Vec<(&'a Pane, Quiet)> {
     let mut out: Vec<(&Pane, Quiet, u64)> = Vec::new();
-    for p in panes.iter().filter(|p| p.state == "working" && p.at > 0) {
+    for p in panes.iter().filter(|p| p.state == "working" && p.at > 0 && !p.bg_only) {
         let (act, done) = activity(p);
         if act > done && act >= p.at {
             let age = now_ms.saturating_sub(act);
@@ -593,16 +665,18 @@ pub fn screen_asks(screen: &str) -> bool {
 /// failed) proves nothing. `activity` is the pane's (tool start, tool end).
 pub fn interrupted(p: &Pane, activity: (u64, u64), screen: &str, now_ms: u64) -> bool {
     let last = p.at.max(activity.0).max(activity.1);
-    p.state == "working" && p.at > 0 && now_ms.saturating_sub(last) >= INTERRUPT_QUIET_MS
+    p.state == "working" && p.at > 0 && !p.bg_only && now_ms.saturating_sub(last) >= INTERRUPT_QUIET_MS
         && !screen.trim().is_empty() && !screen_busy(screen) && !screen_asks(screen)
 }
 
 /// The working panes worth a screen read now: quiet past INTERRUPT_QUIET_MS.
 /// A caller reads each one's screen and passes it to `settle_interrupted`.
+/// A pane whose main turn already ended (bg_only) is none: no spinner is
+/// expected while its sub-agents run.
 pub fn interrupt_suspects(dir: &Path, now_ms: u64) -> Vec<Pane> {
     all(dir).into_iter().filter(|p| {
         let a = activity(dir, p.key());
-        p.state == "working" && p.at > 0 && now_ms.saturating_sub(p.at.max(a.0).max(a.1)) >= INTERRUPT_QUIET_MS
+        p.state == "working" && p.at > 0 && !p.bg_only && now_ms.saturating_sub(p.at.max(a.0).max(a.1)) >= INTERRUPT_QUIET_MS
     }).collect()
 }
 
@@ -618,8 +692,16 @@ pub fn settle_interrupted(dir: &Path, hist: &Path, seen: &Pane, screen: &str, no
     }
     let _l = lock(dir);
     let Some(mut p) = read(dir, &k) else { return false };
-    if p.state != "working" || p.at != seen.at {
+    if p.state != "working" || p.at != seen.at || p.bg_only {
         return false;
+    }
+    // Background agents outlive an interrupted turn: the main turn is over,
+    // and the pane stays working on them.
+    if !p.background.is_empty() {
+        p.bg_only = true;
+        p.at = now_ms;
+        write(dir, &p);
+        return true;
     }
     p.state = "idle".into();
     p.at = now_ms;
@@ -857,5 +939,69 @@ mod tests {
         let h = crate::history::read_since(&hist, 0);
         assert!(h.iter().any(|e| e.source == "interrupt" && e.state == "idle"), "{h:?}");
         assert!(interrupt_suspects(&dir, now + 600).is_empty());
+    }
+
+    fn bg(id: &str) -> Background {
+        Background { kind: "subagent".into(), id: id.into(), label: "judge".into(), at: 1 }
+    }
+
+    #[test]
+    fn quiet_and_settle_interrupted_skip_a_pane_with_background_work() {
+        // A pane whose main turn ended while two sub-agents run: no tool of
+        // its own in flight and nothing written for an hour.
+        let mut p = Pane::new("W1", "S1");
+        p.state = "working".into();
+        p.at = 1_000;
+        p.background = vec![bg("a1"), bg("a2")];
+        p.bg_only = true;
+        let hour = 1_000 + 3_600_000;
+        assert!(quiet(std::slice::from_ref(&p), hour, 600_000, &|_| (0, 0)).is_empty(), "background work is busy, not silent");
+        assert!(!interrupted(&p, (0, 0), DONE, hour), "no spinner while sub-agents run");
+
+        let dir = tmp("background");
+        let hist = dir.join("history");
+        let (_, _, seen) = update(&dir, "W1", "S1", "s", 1_000, |q| {
+            q.state = "working".into();
+            q.background = vec![bg("a1")];
+            q.bg_only = true;
+        });
+        assert!(interrupt_suspects(&dir, hour).is_empty());
+        let mut plain = seen.clone();
+        plain.bg_only = false;
+        assert!(!settle_interrupted(&dir, &hist, &plain, DONE, hour), "the file's own flag stands");
+        assert_eq!(read(&dir, "S1").unwrap().state, "working");
+
+        // The person's own turn runs beside the background work: Esc still
+        // counts, and ends only the main turn.
+        let (_, _, mine) = update(&dir, "W1", "S1", "s", 2_000, |q| q.bg_only = false);
+        let later = 2_000 + INTERRUPT_QUIET_MS;
+        assert!(!quiet(std::slice::from_ref(&mine), later + 600_000, 600_000, &|_| (0, 0)).is_empty(), "a turn of its own can go silent");
+        assert_eq!(interrupt_suspects(&dir, later).len(), 1);
+        assert!(settle_interrupted(&dir, &hist, &mine, DONE, later));
+        let after = read(&dir, "S1").unwrap();
+        assert_eq!((after.state.as_str(), after.bg_only, after.background.len()), ("working", true, 1));
+    }
+
+    #[test]
+    fn the_background_list_round_trips_and_reads_a_payload() {
+        let mut p = pane("S1", "working", 5);
+        p.background = vec![bg("a1")];
+        p.bg_only = true;
+        assert_eq!(Pane::from_json(&p.to_json()), Some(p.clone()));
+        let none = pane("S2", "idle", 5).to_json();
+        assert!(none.get("background").is_none() && none.get("bg_only").is_none(), "unset, nothing is written");
+
+        // Stop and SubagentStop as Claude Code 2.1.319 sends them.
+        let payload = serde_json::json!({"background_tasks": [
+            {"id": "a1", "type": "subagent", "status": "running", "description": "judge", "agent_type": "general-purpose"},
+            {"id": "w1", "type": "workflow", "status": "running", "description": "tiny", "name": "spike-wf"},
+            {"id": "s1", "type": "shell", "status": "completed", "description": "ls"},
+            {"id": "s2", "type": "shell", "status": "running", "description": "npm run dev"},
+            {"id": "m1", "type": "monitor", "status": "running", "description": "tail"}]});
+        let got = Background::from_payload(&payload, "", &[Background { at: 1, ..bg("a1") }], 99);
+        let ids: Vec<(&str, &str, &str, u64)> = got.iter().map(|b| (b.kind.as_str(), b.id.as_str(), b.label.as_str(), b.at)).collect();
+        assert_eq!(ids, vec![("subagent", "a1", "judge", 1), ("workflow", "w1", "spike-wf", 99)], "a known task keeps its start; a finished one, a shell and a monitor are not on it");
+        assert_eq!(Background::from_payload(&payload, "a1", &[], 99).len(), 1, "a SubagentStop's own agent is left out");
+        assert!(Background::from_payload(&serde_json::json!({}), "", &[], 99).is_empty());
     }
 }

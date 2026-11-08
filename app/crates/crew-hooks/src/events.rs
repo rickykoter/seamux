@@ -580,6 +580,8 @@ fn session(h: &mut Hook) {
             p.asked = None;
             p.review = false;
             p.limited = None;
+            p.background.clear();
+            p.bg_only = false;
         });
         h.history("idle", "session");
         r
@@ -601,13 +603,22 @@ fn stop(h: &mut Hook) -> String {
     // Idle is written first, before any git: in a slow repo the git calls
     // below can run past the hook's timeout, and the pane must not stay
     // working because they did. The review flag follows in a second write.
+    // A turn that leaves background sub-agents or a workflow running keeps
+    // the pane working, with each task on its background list, until a
+    // later Stop or the last SubagentStop finds none.
     let sid = h.json("session_id");
-    let (before, _, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, crew_core::history::now_ms(), |p| {
-        p.state = "idle".into();
+    let payload: Value = serde_json::from_str(&h.payload).unwrap_or(Value::Null);
+    let now = crew_core::history::now_ms();
+    let (before, _, pane) = status::update(&h.state, &h.ws, &surface(), &sid, now, |p| {
+        let bg = status::Background::from_payload(&payload, "", &p.background, now);
+        p.state = if bg.is_empty() { "idle" } else { "working" }.into();
+        p.bg_only = !bg.is_empty();
+        p.background = bg;
         p.question = None;
         p.asked = None;
         p.review = false;
     });
+    let running = pane.background.len();
     let cwd = h.cwd();
     let br = branch(&cwd);
     let review = has_unreviewed_work(&cwd);
@@ -616,11 +627,18 @@ fn stop(h: &mut Hook) -> String {
     if !after.busy() {
         h.cli(&["clear-status", "claude"]);
     }
-    h.history("idle", "stop");
+    if running > 0 {
+        h.history("working", "background");
+    } else {
+        h.history("idle", "stop");
+    }
     // The feed's tokens describe the ask a pane waits on: they stay while one does.
     let feed: &[&str] = if after.state == "needs_input" { &[] } else { &["feed", "feedby", "feedgate", "feedreq", "feedws"] };
     h.tokens(after.phase(), feed);
-    let body = if br.is_empty() { "Turn complete".to_string() } else { format!("Turn complete — {br}") };
+    let mut body = if br.is_empty() { "Turn complete".to_string() } else { format!("Turn complete — {br}") };
+    if running > 0 {
+        body.push_str(&format!(", {running} still running in the background"));
+    }
     h.notify("crew:turn", &body);
     h.sync_maybe();
 
@@ -663,6 +681,53 @@ fn stop(h: &mut Hook) -> String {
     let t = spawn::tool("crew-artifacts", &["index"]);
     let _ = spawn::detach(&t.argv, None, None);
     out
+}
+
+/// SubagentStart: a sub-agent starting is work. A pane that reads idle has a
+/// turn running it did not see start (a turn a background task's finish
+/// began), so it goes back to working. Any other pane is left alone, so a
+/// foreground sub-agent costs no write.
+fn subagent_start(h: &mut Hook) {
+    let k = status::key(&h.ws, &surface()).to_string();
+    if status::read(&h.state, &k).is_some_and(|p| p.state == "idle") {
+        h.history("working", "subagent");
+        h.settle(true, &[], |p| p.state = "working".into());
+    }
+}
+
+/// SubagentStop: the finished agent leaves the pane's background list. The
+/// payload's background_tasks is the session's list, with this agent still
+/// in it as running; an older Claude Code sends none, and the agent alone
+/// goes. A workflow's own agents are not on the list (the workflow is one
+/// task), so their stops change nothing. The pane stays working when the
+/// last task goes: Claude Code starts a main turn on a background task's
+/// finish (seen with 2.1.319), and that turn's Stop idles it. With no task
+/// left, bg_only clears, so the silent check covers a turn that never comes.
+fn subagent_stop(h: &mut Hook) {
+    let k = status::key(&h.ws, &surface()).to_string();
+    let Some(seen) = status::read(&h.state, &k) else { return };
+    if seen.background.is_empty() {
+        return;
+    }
+    let agent = h.json("agent_id");
+    let payload: Value = serde_json::from_str(&h.payload).unwrap_or(Value::Null);
+    let now = crew_core::history::now_ms();
+    let left = |known: &[status::Background]| -> Vec<status::Background> {
+        if payload.get("background_tasks").is_some_and(Value::is_array) {
+            status::Background::from_payload(&payload, &agent, known, now)
+        } else {
+            known.iter().filter(|b| b.id != agent).cloned().collect()
+        }
+    };
+    if left(&seen.background) == seen.background {
+        return;
+    }
+    h.settle(false, &[], |p| {
+        p.background = left(&p.background);
+        if p.background.is_empty() {
+            p.bg_only = false;
+        }
+    });
 }
 
 /// The errors a resume can wait out: a usage limit (rate_limit) or a spend
@@ -806,6 +871,7 @@ pub fn main(args: &[String]) -> i32 {
             h.settle(true, &[], |p| {
                 p.state = "working".into();
                 p.question = None;
+                p.bg_only = false;
             });
             String::new()
         }
@@ -819,6 +885,7 @@ pub fn main(args: &[String]) -> i32 {
                 p.asked = None;
                 p.review = false;
                 p.limited = None;
+                p.bg_only = false;
             });
             String::new()
         }
@@ -845,6 +912,14 @@ pub fn main(args: &[String]) -> i32 {
             String::new()
         }
         "stop" => stop(&mut h),
+        "subagentstart" => {
+            subagent_start(&mut h);
+            String::new()
+        }
+        "subagentstop" => {
+            subagent_stop(&mut h);
+            String::new()
+        }
         "stopfail" => {
             stopfail(&mut h);
             String::new()
@@ -859,6 +934,8 @@ pub fn main(args: &[String]) -> i32 {
                 p.asked = None;
                 p.review = false;
                 p.limited = None;
+                p.background.clear();
+                p.bg_only = false;
             });
             h.lane_to(&before, &after, true);
             if !after.busy() {
