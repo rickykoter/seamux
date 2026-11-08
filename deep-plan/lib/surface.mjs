@@ -616,6 +616,9 @@ export const SURFACE_JS = String.raw`<script>
     if (/^(ArrowUp|ArrowDown|PageUp|PageDown|Home|End| )$/.test(e.key)) unpin();
   });
   document.addEventListener("pointerdown", function () { lastKey = ""; }, true);
+  // Tab's focus lands between its keydown and keyup: once the key is up, a
+  // later focus (a script's, during a jump) is not the reader tabbing in.
+  document.addEventListener("keyup", function () { lastKey = ""; });
   var spyQueued = false;
   function queueSpy() { if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } }
   // Exactly one rail item is current: the increment, ADR or diagram the

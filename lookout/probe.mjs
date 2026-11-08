@@ -1835,7 +1835,8 @@ if (want("page script")) {
      js.includes('for (const x of (R.findings || []).filter(isOpen)) open[x.severity] = (open[x.severity] || 0) + 1;') &&
      js.includes("gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go }, open,") &&
      app.includes("open?: Record<string, number>;") &&
-     app.includes("${JSON.stringify(this.pageState?.open ?? null)}") &&
+     app.includes("const pageOpen = j.review_id && j.review_id === this.framed ? this.pageState?.open ?? null : null;") &&
+     app.includes("${JSON.stringify(pageOpen)}") &&
      app.includes('const rows = all.filter((f) => f.status !== "resolved" && f.status !== "dismissed");') &&
      app.includes('toggle.title = (total ? `${openSummary(bySev)}. ` : "") +'));
   ok("app: a picker row leads with its severity chip and place, and its title wraps to two lines, clamped, not cut mid-word on one",

@@ -444,7 +444,9 @@ export class ReviewView {
   private async loadFindings(j: Job): Promise<void> {
     // The framed page's counts move first when the reader resolves one there:
     // the list reloads then, so the button and the gate pill say the same number.
-    const key = `${runOf(j)}|${JSON.stringify(j.open)}|${JSON.stringify(this.pageState?.open ?? null)}|${j.busy}|${j.ahead}`;
+    // Only the framed job's page posts counts; another job's key leaves them out.
+    const pageOpen = j.review_id && j.review_id === this.framed ? this.pageState?.open ?? null : null;
+    const key = `${runOf(j)}|${JSON.stringify(j.open)}|${JSON.stringify(pageOpen)}|${j.busy}|${j.ahead}`;
     if (this.findings.get(j.id)?.key === key) return;
     this.findings.set(j.id, { key, rows: this.findings.get(j.id)?.rows ?? [] });
     try {
