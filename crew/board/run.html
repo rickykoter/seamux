@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run</title>
+<!--
+  One run's page beside the terminal, served at /run/<session>/<id> by
+  crew-board's run_page.rs with run.js inlined and the token in the boot data.
+  The swimlane is the page: everything above it (name, status, elapsed time,
+  counts, phase bars, a needs-you banner) sticks to the top, and everything
+  below it (results, the pipeline) starts folded. A replay scrubber appears
+  once the run ends. The model is seamux.run/1 (docs/RUNS.md), from whichever
+  adapter reads this orchestrator.
+-->
+<style>
+/* everforest:start */
+:root {
+  --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
+  --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
+  --ef-line: #3d484d; --ef-line2: #4f5b58; --ef-card: #3a464c; --ef-card2: #343f44; --ef-card3: #424e54;
+  --ef-red: #e67e80; --ef-orange: #e69875; --ef-yellow: #dbbc7f; --ef-green: #a7c080;
+  --ef-aqua: #83c092; --ef-blue: #7fbbb3; --ef-purple: #d699b6;
+  --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
+  --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
+  --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #bac2bc; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
+  --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
+  --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
+  /* roles: what a colour means, the same on every surface. A page maps its
+     own names onto these and never picks a hue for a state itself. Each state
+     has a fill (rings, dots, borders: 3:1) and a word colour (-t: 4.5:1).
+     A role names a palette token where one passes; a raw hex is a palette
+     hue made darker or lighter to pass. Amber is needs-you and nothing else;
+     working, links and focus share the teal accent in both modes (in light,
+     a teal of their own: --ef-accent stays Everforest's blue, a palette
+     colour that means nothing). Lines and edges are separators, held to no floor. */
+  --role-attend: #dfa000; --role-attend-t: var(--ef-text-mark);
+  --role-working: var(--ef-blue); --role-working-t: var(--ef-text-accent);
+  --role-done: var(--ef-green); --role-done-t: var(--ef-text-green);
+  --role-broken: var(--ef-red); --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: var(--ef-text-accent); --role-focus: var(--ef-accent);
+  --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* type scale: every page sizes words with these, never a px value of its own.
+     1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
+     3 body and UI default · 4 emphasis, card titles · 5 section and page titles
+     6 the plan page's h1 alone */
+  --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
+}
+/* light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+    --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+    --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+    --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+    --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+    --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+    --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+    --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+    --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+    --role-working: #2a8079; --role-working-t: #22675f;
+    --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+    --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+    --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+    --role-line: #ddd8bf; --role-edge: #b9bea6;
+    --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+    --role-link: #22675f; --role-focus: #2a8079;
+  }
+}
+:root[data-theme="light"] {
+  --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+  --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+  --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+  --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+  --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+  --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+  --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+  --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+  --role-working: #2a8079; --role-working-t: #22675f;
+  --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+  --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: #ddd8bf; --role-edge: #b9bea6;
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: #22675f; --role-focus: #2a8079;
+}
+/* everforest:end */
+:root{
+  --bg:var(--ef-bg); --card:var(--ef-bg1); --card2:var(--ef-bg2); --line:var(--ef-line); --ink:var(--ef-text);
+  --muted:var(--ef-text-dim); --faint:var(--ef-text-faint);
+  --run:var(--role-working); --run-t:var(--role-working-t); --ok:var(--role-done); --ok-t:var(--role-done-t);
+  --bad:var(--role-broken); --bad-t:var(--role-broken-t); --need:var(--role-attend); --need-t:var(--role-attend-t);
+  --idle:var(--ef-grey0); --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:1200px;margin:0 auto;padding:0 18px 48px}
+button{font:inherit;color:inherit}
+
+/* ---- the header: sticks while the swimlane scrolls under it ---- */
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 18px 10px;margin:0 -18px;border-bottom:1px solid var(--line)}
+.top{display:flex;align-items:baseline;gap:10px;min-width:0}
+h1{font:600 17px/1.25 system-ui;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.pill{flex:none;font:600 12px/1.6 system-ui;padding:0 8px;border-radius:999px;border:1px solid currentColor}
+.pill.running{color:var(--run-t)} .pill.done{color:var(--ok-t)} .pill.failed,.pill.cancelled{color:var(--bad-t)}
+.pill.unknown{color:var(--muted)}
+.meta{display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:3px;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+.meta b{color:var(--ink);font-weight:600}
+.phases{display:flex;gap:10px;margin-top:8px;flex-wrap:wrap}
+.ph{flex:1 1 120px;min-width:110px;max-width:260px}
+.ph .pt{display:flex;justify-content:space-between;gap:6px;font-size:12px;color:var(--muted)}
+.ph .pt b{color:var(--ink);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seg{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--card2);margin-top:2px}
+.seg i{display:block;height:100%} .seg .ok{background:var(--ok)} .seg .run{background:var(--run)}
+.seg .bad{background:var(--bad)} .seg .need{background:var(--need)}
+.banner{margin-top:8px;padding:6px 10px;border-radius:6px;border:1px solid var(--need);color:var(--need-t);font-size:13px}
+.banner[hidden]{display:none}
+.notice{margin-top:6px;color:var(--muted);font-size:12.5px}
+
+/* ---- the swimlane ---- */
+.lane-wrap{margin-top:14px;position:relative;user-select:none}
+.axis{position:relative;height:16px;margin-left:0;color:var(--faint);font:11px/16px var(--mono)}
+.axis span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+.axis span.first{transform:none}
+svg.cap{display:block;width:100%;height:30px}
+svg.cap .area{fill:color-mix(in srgb,var(--run) 22%,transparent);stroke:var(--run);stroke-width:1}
+svg.cap .lim{stroke:var(--faint);stroke-dasharray:3 3}
+.capl{position:absolute;right:0;top:16px;font:11px/1 var(--mono);color:var(--faint)}
+.lanes{position:relative;margin-top:4px}
+.slot{position:relative;height:24px;border-top:1px solid color-mix(in srgb,var(--line) 50%,transparent)}
+.bar{position:absolute;top:3px;height:18px;border-radius:4px;min-width:3px;cursor:pointer;display:flex;align-items:center;
+  background:var(--idle);color:var(--bg);font:600 11.5px/18px system-ui;padding:0 5px;white-space:nowrap}
+.bar.run{background:var(--run)} .bar.ok{background:var(--ok)} .bar.bad{background:var(--bad)} .bar.need{background:var(--need)}
+.bar.cancelled{background:var(--idle)}
+.bar.notr{cursor:default}
+.bar:focus-visible{outline:2px solid var(--role-focus);outline-offset:1px}
+.bar .bl{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.bar .bb{margin-left:auto;padding-left:6px;font-variant-numeric:tabular-nums}
+/* A label too long for its bar sits to its right, on the page's ground. */
+.lab{position:absolute;z-index:1;top:3px;height:18px;font:500 11.5px/18px system-ui;color:var(--muted);white-space:nowrap;pointer-events:none;
+  padding:0 4px;background:var(--bg);border-radius:3px}
+.lab b{color:var(--ink);font-weight:600;margin-left:4px;font-variant-numeric:tabular-nums}
+.now{position:absolute;top:0;bottom:0;width:0;border-left:1.5px solid var(--run);pointer-events:none;z-index:2}
+.now[hidden]{display:none}
+.tip{position:fixed;z-index:9;max-width:420px;padding:8px 10px;border-radius:7px;background:var(--card);border:1px solid var(--line);
+  box-shadow:0 6px 24px rgba(0,0,0,.25);font-size:12.5px;pointer-events:none}
+.tip[hidden]{display:none}
+.tip .th{font-weight:600} .tip .tm{color:var(--muted);font-variant-numeric:tabular-nums}
+.tip .td{margin-top:4px;white-space:pre-wrap;font:12px/1.45 var(--mono);max-height:220px;overflow:hidden}
+.empty{color:var(--muted);margin:30px 0;text-align:center}
+
+/* ---- below: folded sections, and the replay ---- */
+.replay{display:flex;align-items:center;gap:10px;margin-top:12px;color:var(--muted);font-size:12.5px}
+.replay[hidden]{display:none}
+.replay input{flex:1;accent-color:var(--run)}
+.replay output{font:12px var(--mono);min-width:54px;text-align:right}
+details{margin-top:14px;border-top:1px solid var(--line);padding-top:8px}
+summary{cursor:pointer;font:600 12px/1.6 system-ui;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+summary::marker{color:var(--faint)}
+.res{list-style:none;margin:8px 0 0;padding:0}
+.res li{display:flex;gap:10px;align-items:baseline;padding:3px 6px;border-radius:5px;cursor:pointer;min-width:0}
+.res li:hover{background:var(--card2)}
+.res .rb{flex:none;min-width:38px;font:600 12px var(--mono);color:var(--ok-t)}
+.res li.bad .rb{color:var(--bad-t)}
+.res .rl{flex:none;font-weight:600;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.res .rd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font:12px var(--mono)}
+.pipe{display:flex;gap:10px;overflow-x:auto;margin-top:8px;padding-bottom:4px}
+.col{flex:1 0 180px;background:var(--card);border-radius:8px;padding:8px}
+.col h4{margin:0 0 6px;font:600 12.5px system-ui;display:flex;justify-content:space-between;color:var(--ink)}
+.col h4 span{color:var(--muted);font-weight:500}
+.card{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:5px;font-size:12.5px;min-width:0;cursor:pointer}
+.card:hover{background:var(--card2)}
+.card .cl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .cb{margin-left:auto;font:600 11.5px var(--mono);color:var(--ok-t)}
+svg.mk{flex:none;width:10px;height:10px}
+@media (prefers-reduced-motion:reduce){.bar{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="top"><h1 id="name">Run</h1><span class="pill unknown" id="status">…</span></div>
+    <div class="meta" id="meta"></div>
+    <div class="phases" id="phases"></div>
+    <div class="banner" id="need" hidden></div>
+    <div class="notice" id="notice" hidden></div>
+  </header>
+  <div class="lane-wrap" id="wrap">
+    <div class="axis" id="axis"></div>
+    <svg class="cap" id="cap" preserveAspectRatio="none" aria-hidden="true"></svg>
+    <span class="capl" id="capl"></span>
+    <div class="lanes" id="lanes"><div class="now" id="now" hidden></div></div>
+    <p class="empty" id="empty" hidden></p>
+  </div>
+  <div class="replay" id="replay" hidden><span>Replay</span><input type="range" id="scrub" min="0" max="1000" value="1000" aria-label="Replay the run"><output id="at"></output></div>
+  <details id="resd"><summary>Results</summary><ul class="res" id="res"></ul></details>
+  <details id="piped"><summary>Pipeline</summary><div class="pipe" id="pipe"></div></details>
+</main>
+<div class="tip" id="tip" hidden></div>
+<script id="boot" type="application/json">__BOOT__</script>
+<script>
+/*__RUN_JS__*/
+</script>
+</body>
+</html>

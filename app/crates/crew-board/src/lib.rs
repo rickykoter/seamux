@@ -23,6 +23,7 @@ pub mod proxy;
 pub mod pyval;
 pub mod rank;
 pub mod review;
+pub mod run_page;
 pub mod routes;
 pub mod selftest;
 pub mod server;

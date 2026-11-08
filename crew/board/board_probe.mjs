@@ -2481,6 +2481,40 @@ if (live && Array.isArray(live.rows)) {
   render({ rows: [R("am", { tuck: "mute" })], quiet: "" });
   checks.push(["agents: a muted card draws no rows", !/class="ag /.test(els.rows.innerHTML)]);
 }
+// ---- the run page's model (run.js, with no page) ----------------------------
+{
+  const box = createContext({});
+  runInContext(readFileSync(join(HERE, "run.js"), "utf8"), box);
+  const M = box.__runPage;
+  const a = (id, start, end, state, extra) => ({ id, label: id, start, end, state, ...extra });
+  checks.push(["run page: an agent is queued, then running or needing you, then what it ended as, by t",
+    M.stateAt(a("x", 100, 200, "done"), 50) === "queued" && M.stateAt(a("x", 100, 200, "done"), 150) === "running" &&
+    M.stateAt(a("x", 100, 200, "failed"), 250) === "failed" && M.stateAt(a("x", 100, 0, "running", { needsYou: true }), 150) === "need" &&
+    M.stateAt(a("x", 0, 0, "queued"), 999) === "queued"]);
+  const ags = [a("p", 0, 500, "done"), a("q", 100, 300, "done"), a("r", 350, 0, "running"), a("s", 600, 900, "done"), a("z", 0, 0, "queued")];
+  ags[0].start = 10;
+  const slots = M.pack(ags, {}, 1000);
+  checks.push(["run page: agents pack into the first free slot, a running one holds its slot, a queued one has none",
+    slots.p === 0 && slots.q === 1 && slots.r === 1 && slots.s === 0 && !("z" in slots), JSON.stringify(slots)]);
+  const kept = M.pack(ags.concat([a("t", 950, 0, "running")]), { p: 0, q: 1, r: 1, s: 0 }, 1000);
+  checks.push(["run page: a slot once given is kept as the run goes on", kept.r === 1 && kept.s === 0 && kept.t === 0, JSON.stringify(kept)]);
+  const cc = M.concurrency([a("p", 10, 500, "done"), a("r", 350, 0, "running")], 0, 1000);
+  checks.push(["run page: the cap strip counts one still running at the end", cc[cc.length - 1][1] === 1 && Math.max(...cc.map((x) => x[1])) === 2, JSON.stringify(cc)]);
+  const where = M.place([{ id: "long", label: "verify:f1-with-a-long-name", badge: "", left: 0, width: 40 },
+    { id: "roomy", label: "short", badge: "", left: 300, width: 20 }, { id: "wide", label: "fits", badge: "8", left: 330, width: 200 }]);
+  checks.push(["run page: a label sits in its bar when it fits, right of it when there is room before the next bar, else cut short in the bar",
+    where.long === "out" && where.roomy === "cut" && where.wide === "in", JSON.stringify(where)]);
+  const where2 = M.place([{ id: "a", label: "verify:f1", badge: "", left: 0, width: 30 }, { id: "b", label: "x", badge: "", left: 60, width: 200 }]);
+  checks.push(["run page: a label never covers the next bar", where2.a === "cut", JSON.stringify(where2)]);
+  const run = { status: "done", start: 0, end: 1000, phases: ["Review", "Verify"], agents: [a("p", 10, 500, "done", { phase: "Review" }),
+    a("q", 100, 300, "failed", { phase: "Review" }), a("r", 600, 900, "done", { phase: "Verify" }), a("w", 0, 0, "queued", { phase: "Extra" })] };
+  const pc = M.phaseCounts(run, 400);
+  checks.push(["run page: phase bars count each phase at t, the run's phases first, then any an agent names",
+    pc.map((p) => p.name).join() === "Review,Verify,Extra" && pc[0].running === 1 && pc[0].failed === 1 && pc[1].queued === 1, JSON.stringify(pc)]);
+  const sp = M.span({ status: "running", start: 1, agents: [] }, 5000);
+  checks.push(["run page: a running run's span ends now, a finished one's at its end",
+    sp[1] === 5000 && M.span({ status: "done", start: 1, end: 5000, agents: [] }, 99999)[1] === 5000, JSON.stringify(sp)]);
+}
 // The Rust board lists them from cmux's pane list and crew's pane files.
 {
   const t = (s, label, agents) => ({ kind: "terminal", lifecycle: "running", cwd: "/w/a", label, agents,
@@ -3277,6 +3311,34 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       checks.push(["agent page: no token, an unlisted id, a foreground agent no adapter reports, and a path are refused",
         noTok.status === 403 && stray.status === 404 && fg.status === 404 && [404, 400].includes(climb.status) && [404, 400].includes(deep.status),
         JSON.stringify([noTok.status, stray.status, fg.status, climb.status, deep.status])]);
+    }
+
+    // ---- a run's page: /run/<session>/<id>, its data and its events ---------
+    {
+      const R = "wf_f7b371f3-6f2", q = "?t=" + encodeURIComponent(token);
+      const page = await req("GET", `/run/s-done/${R}`), data = await req("GET", `/run/s-done/${R}/data${q}`);
+      const v = (() => { try { return JSON.parse(data.body); } catch (e) { return {}; } })();
+      checks.push(["run page: the page inlines run.js with the token and its ids, framed like the board",
+        page.status === 200 && page.body.includes("root.__runPage = model") && page.body.includes('"id": "' + R + '"') &&
+        page.body.includes('"t": "' + token + '"') && !page.body.includes("/*__RUN_JS__*/") &&
+        /^frame-ancestors 'self' /.test(String(page.headers["content-security-policy"] || "")), page.body.slice(0, 200)]);
+      checks.push(["run page: its data is the run model, with whether each agent has a transcript and never its path",
+        data.status === 200 && v.name === "spike-wf" && v.status === "done" && (v.agents || []).length === 2 &&
+        v.agents.every((x) => x.transcript === true) && !data.body.includes(".jsonl") && v.agents[0].result.badge === "7", data.body.slice(0, 300)]);
+      const noTok = await req("GET", `/run/s-done/${R}/data`), stray = await req("GET", `/run/s-done/wf_nope/data${q}`), evNoTok = await req("GET", `/run/s-done/${R}/events`);
+      checks.push(["run page: no token, a run no adapter reports, and the event feed without a token are refused",
+        noTok.status === 403 && stray.status === 404 && evNoTok.status === 403, JSON.stringify([noTok.status, stray.status, evNoTok.status])]);
+      // The feed's first event is the run.
+      const first = await new Promise((res) => {
+        let buf = "";
+        const r = http.request({ host: "127.0.0.1", port, method: "GET", path: `/run/s-done/${R}/events${q}` }, (resp) => {
+          resp.on("data", (c) => { buf += c; if (/event: run\ndata: .*\n\n/.test(buf)) { r.destroy(); res(buf); } });
+        });
+        r.on("error", () => res(buf));
+        setTimeout(() => { r.destroy(); res(buf); }, 5000);
+        r.end();
+      });
+      checks.push(["run page: the event feed sends the run as its first event", /event: run\ndata: \{"id": ?"wf_f7b371f3-6f2"/.test(first), first.slice(0, 200)]);
     }
 
     // ---- the served board: /board and its /board/events feed ---------------
