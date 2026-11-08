@@ -2,8 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_TAB, Tabs } from "./tabs";
 import "./everforest.css";
-// The sheet's and the decision cards' styles.
-import "./desk.css";
 import { DockView } from "./dock";
 import "./dock.css";
 import "./newws.css";

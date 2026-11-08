@@ -188,22 +188,24 @@
   // run goes on, the replay and trace after it, which of its scripts changed
   // in this increment, and a picker when its claim is asking. Everything acts
   // through the token-checked /check/* routes; nothing here records a verdict.
+  // Colours are the plan page's names (the colour roles): a border takes a
+  // fill, words take the word colour (-t).
   var CSS = ".dp-bc{margin:6px 0 10px 18px;font-size:12px}" +
     ".dp-bc .dp-bc-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:3px 0}" +
-    ".dp-bc button{font:inherit;padding:2px 8px;border-radius:5px;border:1px solid var(--line,#8884);background:transparent;color:inherit;cursor:pointer}" +
-    ".dp-bc button.dp-busy{opacity:.5}.dp-bc button.dp-bad{border-color:var(--bad,#c33)}" +
+    ".dp-bc button{font:inherit;padding:2px 8px;border-radius:5px;border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer}" +
+    ".dp-bc button.dp-busy{opacity:.5}.dp-bc button.dp-bad{border-color:var(--bad)}" +
     ".dp-film{display:flex;gap:4px;overflow-x:auto;padding:4px 0;max-width:100%}" +
-    ".dp-film img{height:54px;border-radius:3px;border:1px solid var(--line,#8884);cursor:zoom-in;flex:none}" +
-    ".dp-film img.dp-now{outline:2px solid var(--accent,#4a8)}" +
-    ".dp-film img.dp-failed{outline:2px solid var(--bad,#c33)}" +
-    ".dp-bc .dp-step{opacity:.85}.dp-bc .dp-err{color:var(--bad,#c33)}" +
-    ".dp-bc input{font:inherit;padding:2px 6px;border-radius:5px;border:1px solid var(--line,#8884);background:transparent;color:inherit}" +
-    ".dp-act.dp-busy{opacity:.65;cursor:progress}.dp-act.dp-bad{border-color:var(--bad,#c33);color:var(--bad,#c33)}" +
-    ".dp-act.dp-ok{border-color:var(--good,#4a8);color:var(--good,#4a8)}" +
-    ".dp-bc button.dp-ok{border-color:var(--good,#4a8)}" +
-    ".dp-act-msg{font-size:12px;margin-left:4px;color:var(--dim,#888)}.dp-act-msg.dp-bad{color:var(--bad,#c33)}" +
+    ".dp-film img{height:54px;border-radius:3px;border:1px solid var(--line);cursor:zoom-in;flex:none}" +
+    ".dp-film img.dp-now{outline:2px solid var(--accent)}" +
+    ".dp-film img.dp-failed{outline:2px solid var(--bad)}" +
+    ".dp-bc .dp-step{opacity:.85}.dp-bc .dp-err{color:var(--bad-t)}" +
+    ".dp-bc input{font:inherit;padding:2px 6px;border-radius:5px;border:1px solid var(--line);background:transparent;color:inherit}" +
+    ".dp-act.dp-busy{opacity:.65;cursor:progress}.dp-act.dp-bad{border-color:var(--bad);color:var(--bad-t)}" +
+    ".dp-act.dp-ok{border-color:var(--good);color:var(--good-t)}" +
+    ".dp-bc button.dp-ok{border-color:var(--good)}" +
+    ".dp-act-msg{font-size:12px;margin-left:4px;color:var(--dim)}.dp-act-msg.dp-bad{color:var(--bad-t)}" +
     ".dp-why{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin:4px 6px 4px 0;font-size:12px}" +
-    ".dp-why input{font:inherit;min-width:16em;padding:3px 6px;border-radius:5px;border:1px solid var(--line,#8884);background:transparent;color:inherit}" +
+    ".dp-why input{font:inherit;min-width:16em;padding:3px 6px;border-radius:5px;border:1px solid var(--line);background:transparent;color:inherit}" +
     ".dp-why button.dp-act{padding:2px 10px}" +
     "#dp-lightbox{position:fixed;inset:0;background:#000c;display:flex;align-items:center;justify-content:center;z-index:99;cursor:zoom-out}" +
     "#dp-lightbox img{max-width:94vw;max-height:90vh;border-radius:6px}" +
