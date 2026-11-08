@@ -704,42 +704,35 @@ one has its **transitions frozen**, so the tooltip's opacity reads 0 from the
 outside even though the inline style is 1. That is the same throttling that keeps
 a backgrounded plan page from finishing its load — not a bug in the page.
 
-## The news footer
+## The notifications footer
 
-The ranking answers "who needs you", one row at a time. The footer says the same
-thing as a paragraph, plus what moved recently: one sentence per workspace, or
-one per family, in exactly the board's order. Shut gates and untaken alignment
-checks come first. Then red CI and failed checks, work in progress with its
-increment count, merged and finished plans, quiet workspaces that committed
-recently, and a count for the rest.
+The cards say who needs you now. The footer says what seamux told you: every
+banner it posted in the last five hours, newest first, and every banner it
+chose not to show because you were already looking at that pane.
 
 ```
-▸ NEWS · 5H  summary needs your go-ahead on Wire the cache.
+▸ NOTIFICATIONS  api · waiting on you Merge the PR now?
 ```
 
 It is a native `<details>` pinned to the pane's bottom edge. Collapsed, it shows
-the first sentence. Open, it grows upward and shows every sentence, each on its
-tier's rail. render.js writes only its contents and never replaces the element,
-so if you leave it open it stays open across pushes. It is sticky rather than
-fixed, so once you scroll to the end it sits after the last row instead of over
-it.
+the newest entry. Open, it lists up to 30, each with the time it came and a
+rail in its kind's colour: amber for a question or a block, red for a limit stop
+or a resume that gave up, green for a finished turn. A banner that was not shown
+is grey, with a dashed rail and "not shown". render.js writes only the
+element's contents, so if you leave it open it stays open across pushes. Click
+an entry to show its workspace with its pane: framed by the app, the app does
+it; in cmux's Dock, the board's `pane` verb does.
 
-**Rebuilt on every push, never generated on a timer.** `seamux news` composes it
-from `rank()`'s rows, so it cannot disagree with the cards above it: the push
-that clears a `ci:fail` token also drops the "red on CI" sentence. The five
-hours bound only the commits it counts (`CREW_NEWS_HOURS`, default 5). No model
-writes it and nothing leaves the machine.
+**Read from the notification log** (ADR 0079), one JSONL file per UTC day in
+`~/.claude/crew/notifications` (`CREW_NOTIFICATIONS_DIR` in tests). Each sender
+writes where it posts (ADR 0080). On cmux that is the crew hooks; a finished
+turn is logged as not shown there, since triage strips its banner. On the app's
+tmux it is the app's notifier, which logs each pane's banner before merging and
+also logs the ones it skipped. The feed watches the day files, so a new line
+reaches the page within a second. No model writes it and nothing leaves the
+machine.
 
-**Commits are the one expensive input**, so only the full pass reads them: one
-`git log HEAD --not origin/HEAD` per worktree, onto the row in
-`board-sidebar.json`. The fast pass reuses them and recounts the timestamps
-against the sliding window. `--not origin/HEAD` stops a fresh worktree from
-claiming main's commits as its own. A clone where `origin/HEAD` does not
-resolve says nothing about commits rather than guessing (`git remote set-head
-origin --auto` fixes it).
-
-`crew-digest` opens with the same sentences, read from `crew-board state
---json`, and `crew-digest --paragraph` prints them as one line to paste.
+`crew-digest` opens with the same entries under "what pinged you".
 
 ## Refresh cadence
 
@@ -829,7 +822,7 @@ server-sent-events stream of the ranked state (`crew-board state --json`), one
 server builds it the way `crew-board watch` does: cmux's wake events, a stat of
 deep-plan's state files, and a heartbeat (`CREW_BOARD_HEARTBEAT`, 30s) for CI,
 review and Jira, which no event announces. A build that changes neither rows nor
-news is not sent. Each build also writes `board-targets.json`, so a click on the
+notifications is not sent. Each build also writes `board-targets.json`, so a click on the
 served page resolves through `/do` exactly as a Dock click does. The worker stops
 a minute after the last page closes.
 

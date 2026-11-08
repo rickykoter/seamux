@@ -1,5 +1,5 @@
-//! The crew board in Rust (plan port-board): the ranking (`crew-board`), its
-//! news, the TypeSafe judgments cache, the cat poses, and the intent server
+//! The crew board in Rust (plan port-board): the ranking (`crew-board`) with
+//! the notification log's last hours, the TypeSafe judgments cache, the cat poses, and the intent server
 //! (`crew-board-intent`) with the served board and the Wake.
 //!
 //! Each module with a Python CLI is a `seamux <basename>` tool with the
@@ -17,7 +17,6 @@ pub mod cat_poses;
 pub mod cmux_cli;
 pub mod companion;
 pub mod judgments;
-pub mod news;
 pub mod plans;
 pub mod proxy;
 pub mod pyval;
@@ -39,5 +38,4 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("crew-board", state::main),
     ("crew-board-intent", server::main),
     ("judgments", judgments::main),
-    ("news", news::main),
 ];

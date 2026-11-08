@@ -93,7 +93,7 @@ The "how" column says how each scene is captured:
 | 5.1 | Who needs you comes first. | the board, ranked | page |
 | | Approve the next step from the board. | `go 3`, the row moves to working | page |
 | | A family is one card. | a workstream opened inside its family | page |
-| | The footer says it in sentences. | the news footer | page |
+| | The footer lists what seamux told you. | the notifications footer | page |
 | 5.2 | See what you're spending. | `/usage` | page |
 | | Dollars per workspace. | | page |
 | | Know when the cache goes cold. | the cache panel | page |
@@ -114,7 +114,7 @@ The "how" column says how each scene is captured:
 | dp-verify-init | `deep-plan verify init` drafting recipes | still |
 | dp-ask, dp-family | ask page, parent plan | page |
 | lo-quiz, lo-overview, lo-risk, lo-findings, lo-diff | lookout review | page |
-| crew-board, crew-family, crew-news, crew-usage, crew-usage-billing, crew-cache, crew-statusline | crew | page, still |
+| crew-board, crew-family, crew-notifications, crew-usage, crew-usage-billing, crew-cache, crew-statusline | crew | page, still |
 | app-dock, app-newws, app-reclaim, app-wake, app-lookout, app-palette | the app | app |
 | plan-pane, gate-band (in `docs/img/`) | seamux-mods in Claude Code | kept from a real session |
 
@@ -123,7 +123,7 @@ The "how" column says how each scene is captured:
 - Remote Control on the phone, and ⌥Space over another app: they need a real
   account or the real screen.
 - crew's terminal tools (`crew-digest`, `crew-resume`, `crew-sweep`,
-  `crew doctor`): they read your real repos, transcripts and setup. The news
-  footer shows the digest's sentences, and the app's reclaim wizard shows
+  `crew doctor`): they read your real repos, transcripts and setup. The
+  notifications footer shows the digest's entries, and the app's reclaim wizard shows
   reclaim.
 - Graphite stacks, `redraw` and `overviews`: no visible change worth a shot.

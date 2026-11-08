@@ -492,6 +492,14 @@ function __boardRender(d) {
     var s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
     return s < 60 ? "<1m" : s < 3600 ? Math.floor(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d";
   }
+  // A log entry's colour by what it was about, and its text: the title in
+  // bold, then the body, both escaped (no affordances: the log is plain text).
+  var NOTE_TIER = { waiting: "attend", reminder: "attend", blocked: "attend", limit: "wilt", resume: "wilt",
+    finished: "done", turn: "done" };
+  function noteText(n) {
+    var b = String(n.body || "");
+    return "<b>" + esc(n.title || "") + "</b>" + (b ? " " + esc(b) : "");
+  }
   var PST = { needs_input: ["wait", "needs you"], working: ["work", "working"], idle: ["idle", "idle"], ended: ["end", "ended"] };
   var CHEV = '<svg class="pg" viewBox="0 0 8 8" width="8" height="8" aria-hidden="true"><path d="M2.5 1.5 5.5 4 2.5 6.5"/></svg>';
   function paneList(a) {
@@ -1109,42 +1117,29 @@ function __boardRender(d) {
   need.textContent = n ? n + (n === 1 ? " needs you" : " need you") : "nothing needs you";
   need.className = n ? "on" : "";
   $("quiet").textContent = tail;
-  // The news footer. Only its contents are written: the <details> itself is
+  // The notification log's footer: what seamux told you, or chose not to,
+  // newest first. Only its contents are written: the <details> itself is
   // never replaced, so whether you left it open survives every push without
   // any state of ours. Below #rows and filled after slide(), it cannot move a
-  // row the FLIP has already measured. The text is the retired news.py's and goes through
-  // the same escape-then-two-affordances path as `said`.
+  // row the FLIP has already measured. Titles and bodies are plain text.
   var nw = $("news");
   if (nw) {
-    var news = d.news || {};
-    var items = news.items || [];
-    nw.hidden = !items.length;
-    // The collapsed line skips news about a card already open above that
-    // needs you: the card says it, louder. Its lede is the first item
-    // left; with none left, the title counts the items instead. An item
-    // with no id (a hand-made push, like the demo's) is matched by the
-    // {{name}} it opens with.
-    var asking = {};
-    rows.forEach(function (a) {
-      if (a.kind !== "attend") return;
-      asking[a.id] = 1;
-      if (a.family) asking["family:" + a.family] = 1;
-      asking["{{" + a.name + "}}"] = 1;
-    });
-    var fresh = items.filter(function (it) {
-      if (it.tier !== "attend") return true;
-      var key = it.id || (/^\{\{[^}]*\}\}/.exec(it.text || "") || [""])[0];
-      return !asking[key];
-    });
-    var ledeText = items.length && fresh.length === items.length ? news.lede || "" : fresh.length ? fresh[0].text : "";
+    var notes = Object.prototype.toString.call(d.notes) === "[object Array]" ? d.notes : [];
+    nw.hidden = !notes.length;
     var ttl = $("news-ttl");
-    if (ttl) ttl.textContent = "news" + (ledeText ? (news.hours ? " · " + news.hours + "h" : "") : " · " + items.length);
+    if (ttl) ttl.textContent = "notifications";
     var lede = $("news-lede");
-    if (lede) lede.innerHTML = said(ledeText);
+    if (lede) lede.innerHTML = notes.length ? noteText(notes[0]) : "";
     var body = $("news-body");
-    if (body) body.innerHTML = items.map(function (it) {
-      var tier = COL[it.tier] ? it.tier : "quiet";
-      return '<p class="ni ' + tier + '">' + said(it.text) + "</p>";
+    if (body) body.innerHTML = notes.map(function (n) {
+      var tier = NOTE_TIER[n.kind] || "quiet";
+      var skip = n.shown === false;
+      // The clock time it came, not "2m ago": a quiet board is not pushed
+      // again, so a relative age would freeze.
+      var at = typeof n.at === "number" && n.at > 0 ? ' <span class="nago">' + clockOf(n.at) + "</span>" : "";
+      return '<p class="ni ' + tier + (skip ? " skip" : "") + (n.ws ? '" data-ws="' + esc(n.ws) + '" data-pane="' + esc(n.pane || "") : "") + '"' +
+        (skip ? ' title="not shown: ' + esc(n.why || "") + '"' : "") + ">" + noteText(n) + at +
+        (skip ? ' <span class="nskip">not shown</span>' : "") + "</p>";
     }).join("");
   }
   $("src").textContent = d.src || "";

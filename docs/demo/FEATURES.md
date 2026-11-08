@@ -118,7 +118,7 @@ code. Each row names the shot that covers it: a screenshot in
 | Signal badges: CI, review state, conflicts, draft, Jira, `⇣ parent open`, `stuck`, unpriced spend | crew/README.md "Signals on the board" | S-crew-board |
 | Chips: `go N`, plan, diff, pr, checks, sandbox, allow/deny with reply window, jump, reclaim, archive | "Parity with the Swift sidebar" | S-crew-board, V5.1 |
 | Whimsy: cat and sky by hour | board README "Whimsy" | V5.1 |
-| News footer: one sentence per workspace or family | "The news footer" | S-crew-news, V5.1 |
+| Notifications footer: what seamux told you, skipped banners greyed | "The notifications footer" | S-crew-notifications, V5.1 |
 | `/plan/<slug>` served into the Dock | "Serving a plan" | V1.2 (cmux route card) |
 | `/usage`: 5h window, daily bars, week by model, dollars per workspace | "The spend dashboard" | S-crew-usage, V5.2 |
 | Usage-billing layout: month card and pace | README Usage-based billing | S-crew-usage-billing |
@@ -126,7 +126,7 @@ code. Each row names the shot that covers it: a screenshot in
 | Cache: desktop stale warning, break report after a turn | README Cache | not filmed: a macOS notification and a live session |
 | Status line: title, usage, cache segment | `seamux statusline` (app/crates/crew-hooks/src/statusline.rs) | S-crew-statusline |
 | Notifications on transitions; TypeSafe promotes a turn-end question to Needs you | "What puts a row in Needs you" | V5.1 (card) |
-| `crew-digest` and `--paragraph` | "The morning digest" | S-crew-news (the digest prints the same sentences; not filmed, it reads your real repos and `gh`) |
+| `crew-digest`: what pinged you | "The morning digest" | S-crew-notifications (the digest prints the same entries; not filmed, it reads your real repos and `gh`) |
 | `crew-resume`: fuzzy finder over live / archived / past sessions | "Sessions" | not filmed: reads your real transcripts |
 | `crew-sweep`: one card at a time cleanup | "Sweep" | not filmed: reads your real worktrees |
 | Reclaim: dry-run report with its guards | "The one tap that asks first" | S-app-reclaim |

@@ -41,8 +41,6 @@
       "cwd": "/w/g",
       "pr_url": "",
       "slug": "g",
-      "subject": "Gate me",
-      "commits": [],
       "family": "g",
       "famrole": "parent",
       "famgo": "human",
@@ -79,8 +77,6 @@
       "cwd": "/w/k",
       "pr_url": "",
       "slug": "k",
-      "subject": "Owned",
-      "commits": [],
       "family": "g",
       "famrole": "child",
       "famgo": "parent",
@@ -115,8 +111,6 @@
       "cwd": "/w/b",
       "pr_url": "",
       "slug": "b",
-      "subject": "Blk",
-      "commits": [],
       "family": "g",
       "famrole": "child",
       "famgo": "",
@@ -163,9 +157,7 @@
       "ref": "",
       "cwd": "/w/r",
       "pr_url": "",
-      "slug": "r",
-      "subject": "",
-      "commits": []
+      "slug": "r"
     },
     {
       "id": "f",
@@ -214,14 +206,7 @@
       "ref": "",
       "cwd": "/w/f",
       "pr_url": "https://x/pull/5",
-      "slug": "f",
-      "subject": "increment 2 \u00b7 test-a",
-      "commits": [
-        {
-          "at": 1,
-          "s": "x"
-        }
-      ]
+      "slug": "f"
     },
     {
       "id": "c",
@@ -264,9 +249,7 @@
       "ref": "",
       "cwd": "/w/c",
       "pr_url": "",
-      "slug": "",
-      "subject": "",
-      "commits": []
+      "slug": ""
     },
     {
       "id": "m",
@@ -296,9 +279,7 @@
       "ref": "",
       "cwd": "/w/m",
       "pr_url": "",
-      "slug": "",
-      "subject": "",
-      "commits": []
+      "slug": ""
     },
     {
       "id": "d",
@@ -327,9 +308,7 @@
       "ref": "",
       "cwd": "/w/d",
       "pr_url": "",
-      "slug": "d",
-      "subject": "",
-      "commits": []
+      "slug": "d"
     },
     {
       "id": "q",
@@ -360,9 +339,7 @@
       "ref": "",
       "cwd": "/w/q",
       "pr_url": "",
-      "slug": "",
-      "subject": "",
-      "commits": []
+      "slug": ""
     }
   ],
   "quietCount": 1,
@@ -370,52 +347,5 @@
   "stamp": "T",
   "stale": false,
   "src": "6 plans",
-  "news": {
-    "hours": 5.0,
-    "lede": "Family {{g}}: {{g}} needs your go-ahead on Gate me; {{k}} waits on its go from the parent, g, for Owned; {{b}} is blocked on Blk.",
-    "items": [
-      {
-        "id": "family:g",
-        "tier": "attend",
-        "family": "g",
-        "text": "Family {{g}}: {{g}} needs your go-ahead on Gate me; {{k}} waits on its go from the parent, g, for Owned; {{b}} is blocked on Blk."
-      },
-      {
-        "id": "r",
-        "tier": "attend",
-        "family": "",
-        "text": "{{r}} is waiting on your answer."
-      },
-      {
-        "id": "f",
-        "tier": "wilt",
-        "family": "",
-        "text": "{{f PROJ-12}} failed a check (increment 2 \u00b7 test-a)."
-      },
-      {
-        "id": "c",
-        "tier": "wilt",
-        "family": "",
-        "text": "{{c}} is red on CI."
-      },
-      {
-        "id": "m",
-        "tier": "done",
-        "family": "",
-        "text": "{{m}} merged and can be reclaimed."
-      },
-      {
-        "id": "d",
-        "tier": "done",
-        "family": "",
-        "text": "{{d}} finished every increment; its plan can be closed."
-      },
-      {
-        "id": "quiet",
-        "tier": "quiet",
-        "family": "",
-        "text": "1 other workspace is quiet."
-      }
-    ]
-  }
+  "notes": []
 }

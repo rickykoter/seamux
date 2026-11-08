@@ -287,10 +287,6 @@ fn get_s(d: &Value, k: &str, default: &str) -> String {
     d.get(k).map(py_str).unwrap_or_else(|| default.to_string())
 }
 
-pub fn failed_subject(c: &Value) -> String {
-    format!("increment {} \u{00b7} {}", get_s(c, "n", "?"), get_s(c, "id", "?"))
-}
-
 /// `"%d" % x` for a JSON number (Python truncates a float).
 fn pct_d(v: &Value) -> String {
     match v {
@@ -487,7 +483,6 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
         let mut badge = "";
         let mut said = String::new();
         let mut chips: Vec<String> = Vec::new();
-        let mut subject = json!("");
         let mut badge_text = String::new();
         let hush = ctx.silent.get(&py_str(get(w, "id")).to_ascii_uppercase()).cloned();
         let silent_ms = match hush { Some(Quiet::Silent(ms)) => Some(ms), _ => None };
@@ -515,13 +510,11 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             let nxt = get(progress(p), "next");
             let nxt = if truthy(nxt) { nxt.clone() } else { json!({}) };
             (kind, badge) = (Some("attend"), "gate shut");
-            subject = nxt.get("title").cloned().unwrap_or(json!(""));
             said = go_said(plan, &get_s(&nxt, "title", "The next increment"),
                            Some(&py_str(get(get(p, "gate"), "why"))));
             chips = vec![go_chip(plan, &get_s(&nxt, "n", "?")), "diff".into(), "jump".into()];
         } else if let Some(a) = &asking {
             (kind, badge) = (Some("attend"), "needs a value");
-            subject = json!(failed_subject(a));
             said = format!("{} Pick it on the plan.", ask_said(a));
             chips = vec!["plan".into(), "jump".into()];
         } else if has(d, "ci:fail") {
@@ -531,7 +524,6 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             chips = vec!["checks".into(), "diff".into(), "jump".into()];
         } else if let Some(f) = failed {
             (kind, badge) = (Some("wilt"), "check failed");
-            subject = json!(failed_subject(f));
             let how = if get(f, "status") == "lost" { "lost its runner" } else { "failed" };
             said = format!("{{{{Increment {}'s check `{}` {}.}}}} It cannot close until the check passes.",
                            py_str(get(f, "n")), py_str(get(f, "id")), how);
@@ -548,7 +540,6 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         } else if let Some(b) = blocked {
             let b = &b[0];
             (kind, badge) = (Some("wilt"), "blocked");
-            subject = b.get("title").cloned().unwrap_or(json!(""));
             said = format!("{{{{{}}}}} is blocked: {}", get_s(b, "title", "An increment"),
                            get_s(b, "note", "no reason recorded"));
             chips = vec!["jump".into()];
@@ -579,10 +570,7 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             });
             let open = plan.filter(|_| !owner_idle).map(|p| get(progress(p), "open")).filter(|o| truthy(o)).and_then(Value::as_array);
             match open.and_then(|o| o.first()) {
-                Some(o0) => {
-                    subject = o0["title"].clone();
-                    said = format!("{{{{{}}}}} in progress.", py_str(&o0["title"]));
-                }
+                Some(o0) => said = format!("{{{{{}}}}} in progress.", py_str(&o0["title"])),
                 None => said = "Mid-turn.".into(),
             }
             chips = vec!["diff".into(), "jump".into()];
@@ -597,7 +585,7 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         }
 
         let (cost, unpriced) = ctx.cost(get(w, "cwd"));
-        let tail = |r: &mut Map<String, Value>, signals: Vec<Value>, feedby: Value, feedgate: Value, subject: Value| {
+        let tail = |r: &mut Map<String, Value>, signals: Vec<Value>, feedby: Value, feedgate: Value| {
             for (k, v) in ctx.issue_fields(w) {
                 r.insert(k, v);
             }
@@ -614,13 +602,10 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             r.insert("cwd".into(), get(w, "cwd").clone());
             r.insert("pr_url".into(), w.get("pr_url").cloned().unwrap_or(json!("")));
             r.insert("slug".into(), plan.and_then(|p| p.get("slug")).cloned().unwrap_or(json!("")));
-            r.insert("subject".into(), subject);
             // A failed browser check's last frame, for the card.
             if !thumb.is_empty() {
                 r.insert("thumb".into(), json!(thumb));
             }
-            let commits = get(w, "commits");
-            r.insert("commits".into(), if truthy(commits) { commits.clone() } else { json!([]) });
             for (k, v) in fam_fields(plan) {
                 r.insert(k, v);
             }
@@ -655,7 +640,7 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             r.insert("meta".into(), json!(qmeta.join(" · ")));
             r.insert("cost".into(), cost);
             r.insert("cost_unpriced".into(), unpriced);
-            tail(&mut r, Vec::new(), json!(0), json!(""), json!(""));
+            tail(&mut r, Vec::new(), json!(0), json!(""));
             // Quiet rows sort by when their panes last did anything (newest
             // first); a row whose panes never wrote carries no time.
             let active = crew_core::status::panes(&crate::state::state_dir(), &py_str(get(w, "id"))).iter().map(|p| p.at).max().unwrap_or(0);
@@ -698,7 +683,7 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         }
         r.insert("cost".into(), cost);
         r.insert("cost_unpriced".into(), unpriced);
-        tail(&mut r, sigs, json!(feedby), json!(token_value(d, "feedgate")), subject);
+        tail(&mut r, sigs, json!(feedby), json!(token_value(d, "feedgate")));
         rows.push(Value::Object(r));
     }
 
@@ -748,13 +733,10 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
         r.insert("id".into(), get(plan, "slug").clone());
         r.insert("name".into(), name);
         let mut thumb = String::new();
-        let mut put = |kind: &str, badge: &str, said: String, subject: Option<Value>, chips: Vec<String>| {
+        let mut put = |kind: &str, badge: &str, said: String, chips: Vec<String>| {
             r.insert("kind".into(), json!(kind));
             r.insert("badge".into(), json!(badge));
             r.insert("said".into(), json!(said));
-            if let Some(s) = subject {
-                r.insert("subject".into(), s);
-            }
             r.insert("chips".into(), json!(chips));
             r.insert("frac".into(), frac(Some(plan)));
             r.insert("meta".into(), json!(meta.clone()));
@@ -763,47 +745,46 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
         let blocked = get(pr, "blocked");
         if phase == "review" {
             put("attend", "review", format!("{{{{Alignment check not taken.}}}} {total} increments are locked behind it."),
-                None, vec!["take the check".into(), "plan".into()]);
+                vec!["take the check".into(), "plan".into()]);
         } else if !truthy(get(get(plan, "gate"), "allow")) {
             let nxt = get(pr, "next");
             let nxt = if truthy(nxt) { nxt.clone() } else { json!({}) };
             put("attend", "gate shut",
                 go_said(Some(plan), &get_s(&nxt, "title", "The next increment"), None),
-                Some(nxt.get("title").cloned().unwrap_or(json!(""))),
                 vec![go_chip(Some(plan), &get_s(&nxt, "n", "?")), "plan".into()]);
         } else if let Some(a) = asking_check(Some(plan)) {
-            put("attend", "needs a value", ask_said(&a), Some(json!(failed_subject(&a))), vec!["plan".into()]);
+            put("attend", "needs a value", ask_said(&a), vec!["plan".into()]);
         } else if let Some(f) = failed_check(Some(plan)) {
             put("wilt", "check failed",
                 format!("{{{{Increment {}'s check `{}` failed.}}}}", py_str(get(f, "n")), py_str(get(f, "id"))),
-                Some(json!(failed_subject(f))), vec!["plan".into()]);
+                vec!["plan".into()]);
             thumb = check_thumb(Some(plan), f);
         } else if truthy(blocked) {
             let b = &blocked[0];
             put("wilt", "blocked",
                 format!("{{{{{}}}}} is blocked: {}", get_s(b, "title", "An increment"), get_s(b, "note", "no reason recorded")),
-                Some(b.get("title").cloned().unwrap_or(json!(""))), vec!["plan".into()]);
+                vec!["plan".into()]);
         } else if phase == "done" {
-            put("done", "plan done", "Every increment is done; the gate has retired.".into(), None, vec!["close plan".into()]);
+            put("done", "plan done", "Every increment is done; the gate has retired.".into(), vec!["close plan".into()]);
         } else {
             let open = get(pr, "open");
             let first = if truthy(open) { open.get(0) } else { None };
-            let (said, subj) = match first {
-                Some(o) => (format!("{{{{{}}}}} in progress.", py_str(&o["title"])), o["title"].clone()),
-                None => ("Implementing.".to_string(), json!("")),
+            let said = match first {
+                Some(o) => format!("{{{{{}}}}} in progress.", py_str(&o["title"])),
+                None => "Implementing.".to_string(),
             };
-            put("running", "working", said, Some(subj), vec!["plan".into()]);
+            put("running", "working", said, vec!["plan".into()]);
         }
         for (k, v) in fam_fields(Some(plan)) {
             r.insert(k, v);
         }
         // Python's setdefault chain, in its order: present keys keep their place.
-        let defaults: [(&str, Value); 19] = [
+        let defaults: [(&str, Value); 17] = [
             ("slug", r["id"].clone()), ("ref", json!("")), ("cwd", json!("")), ("pr_url", json!("")),
             ("branch", json!("")), ("dirty", json!(false)), ("pr", json!("")), ("pr_state", json!("")),
             ("color", json!("")), ("signals", json!([])), ("feedby", json!(0)), ("feedgate", json!("")),
             ("selected", json!(false)), ("cost", json!(0)), ("cost_unpriced", json!([])),
-            ("issue", json!("")), ("issue_url", json!("")), ("subject", json!("")), ("commits", json!([])),
+            ("issue", json!("")), ("issue_url", json!("")),
         ];
         for (k, v) in defaults {
             if !r.contains_key(k) {

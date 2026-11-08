@@ -1,4 +1,4 @@
-//! The board's state: gather, rank, compose the news (crew/board/crew-board).
+//! The board's state: gather, rank, and the notification log's last hours (crew/board/crew-board).
 //!
 //!   seamux crew-board state [--json] [--fast] [--screens] [--selected ID]
 //!   seamux crew-board state --json --fixture FILE   rank {plans, workspaces} from a file
@@ -22,7 +22,7 @@ use crew_core::{dp_engine, py, pyjson};
 
 use crate::cmux_cli::{self, cmux};
 use crate::pyval::{get, py_str, truthy};
-use crate::{news, rank};
+use crate::rank;
 
 /// A fast pass will not trust a cached sidebar-state row older than this.
 const FAST_MAX_AGE: i64 = 300;
@@ -118,32 +118,14 @@ pub fn remote_slug(cwd: &str) -> String {
     slug
 }
 
-/// [{at, s}] for this worktree's own commits in the news window, newest first.
-pub fn recent_commits(cwd: &str) -> Vec<Value> {
-    if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
-        return Vec::new();
-    }
-    let since = format!("--since={}.minutes", (news::hours() * 60.0) as i64);
-    let (ok, out) = cmux_cli::run(
-        "git",
-        &["-C", cwd, "log", "HEAD", "--not", "origin/HEAD", &since, "--no-merges", "-n", "20", "--format=%ct%x09%s"],
-        Duration::from_secs(5),
-    );
-    if !ok {
-        return Vec::new();
-    }
-    py::splitlines(&out)
-        .into_iter()
-        .filter_map(|line| {
-            let (at, subj) = line.split_once('\t').unwrap_or((line, ""));
-            if !at.is_empty() && at.chars().all(|c| c.is_ascii_digit()) {
-                let s: String = subj.chars().take(120).collect();
-                Some(json!({"at": at.parse::<i64>().unwrap_or(0), "s": s}))
-            } else {
-                None
-            }
-        })
-        .collect()
+/// How many log entries the footer lists at most.
+pub const NOTES_CAP: usize = 30;
+
+/// The notification log's last RECENT_HOURS, newest first, for the footer.
+pub fn notes() -> Value {
+    use crew_core::notifications as n;
+    let v = n::recent(&n::dir(), crew_core::history::now_ms(), n::RECENT_HOURS, NOTES_CAP);
+    Value::Array(v.iter().map(n::Entry::to_json).collect())
 }
 
 fn load_sidebar_cache() -> Map<String, Value> {
@@ -209,7 +191,7 @@ pub fn tmux_rows(
                 "id": w.id, "ref": w.id, "title": if w.title.is_empty() { w.id.clone() } else { w.title.clone() },
                 "cwd": w.cwd, "desc": desc, "branch": branch, "pr": pr_n, "dirty": dirty, "running": running,
                 "raw": "", "color": "", "selected": forced.is_some_and(|f| f.eq_ignore_ascii_case(&w.id)),
-                "pr_state": pr_str("state").to_ascii_lowercase(), "pr_url": pr_str("url"), "commits": Value::Array(recent_commits(&w.cwd)),
+                "pr_state": pr_str("state").to_ascii_lowercase(), "pr_url": pr_str("url"),
             })
         })
         .collect()
@@ -339,7 +321,6 @@ pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
             }
         };
         row.insert("pr_url".into(), json!(pr_url));
-        row.insert("commits".into(), Value::Array(recent_commits(&cwd_s)));
         let row = Value::Object(row);
         if ok2 {
             cache.insert(wid_s.clone(), json!({"at": now, "row": row.clone()}));
@@ -843,8 +824,6 @@ pub fn build(o: &Opts) -> Value {
     if let Some((live, files)) = &panes {
         mark_panes(&mut all, &plan_by_root, &wss, live, files);
     }
-    // The news is what needs you: a snoozed or settled row is left out.
-    let news = news::compose_now(&all.iter().filter(|r| !crate::settle::away(r)).cloned().collect::<Vec<_>>());
     let n = plan_by_root.len();
     let mut d = Map::new();
     d.insert("rows".into(), Value::Array(all));
@@ -856,7 +835,8 @@ pub fn build(o: &Opts) -> Value {
     d.insert("stamp".into(), json!(local_hms()));
     d.insert("stale".into(), json!(stale));
     d.insert("src".into(), json!(format!("{} plan{}", n, if n == 1 { "" } else { "s" })));
-    d.insert("news".into(), news);
+    // A fixture's board is its own: the live log is not part of it.
+    d.insert("notes".into(), if o.fixture.is_some() { json!([]) } else { notes() });
     Value::Object(d)
 }
 
@@ -888,14 +868,12 @@ fn print_state(d: &Value) {
     if truthy(get(d, "quiet")) {
         println!("  {:<8} {}", "quiet", py_str(get(d, "quiet")));
     }
-    let news = get(d, "news");
-    let items = get(news, "items").as_array().cloned().unwrap_or_default();
-    if !items.is_empty() {
-        let h = crate::pyval::py_float(get(news, "hours")).unwrap_or(0.0);
-        println!("news · last {}h", py::percent_g(h));
-        for it in items {
-            let text = py_str(get(&it, "text")).replace("{{", "").replace("}}", "").replace('`', "");
-            println!("  {:<8} {}", py_str(get(&it, "tier")), text);
+    let notes = get(d, "notes").as_array().cloned().unwrap_or_default();
+    if !notes.is_empty() {
+        println!("notifications · last {}h", crew_core::notifications::RECENT_HOURS);
+        for n in notes {
+            let mark = if get(&n, "shown") == &json!(false) { "not shown" } else { "" };
+            println!("  {:<9} {} · {}", mark, py_str(get(&n, "title")), py_str(get(&n, "body")));
         }
     }
 }
@@ -1072,7 +1050,6 @@ mod tests {
         assert_eq!(busy[0]["running"], true, "its pane's file says working, matched in any case");
         assert_eq!(out[0]["pr"], "none");
         assert_eq!(out[0]["branch"], "dev/rows", "the repo's branch");
-        assert!(out[0]["commits"].as_array().is_some());
         assert_eq!(out[1]["title"], "W2", "no title: its id");
         assert_eq!((out[1]["running"].clone(), out[1]["selected"].clone(), out[1]["branch"].clone()), (json!(false), json!(true), json!("none")));
         assert_eq!(out[0]["desc"], "", "no pane file: no phase");
