@@ -491,7 +491,9 @@ export class MigrateBanner {
     // what × does, so the keyboard can forget a session too.
     no.tabIndex = -1;
     r.setAttribute("aria-keyshortcuts", "Delete");
-    if (!r.title) r.title = "Enter or a click restarts it · Delete forgets it";
+    // What a click does is the row's own hint (restart, move, bring back, try
+    // again…), so the tooltip says that rather than a fixed verb.
+    if (!r.title) r.title = act ? `Enter or a click: ${hint} · Delete forgets it` : "Delete forgets it";
     r.addEventListener("keydown", (e) => {
       if ((e.key === "Delete" || e.key === "Backspace") && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
