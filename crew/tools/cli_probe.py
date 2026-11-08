@@ -59,9 +59,10 @@ def check(name, cond, extra=""):
 sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402
 
-if not crew_impl.seamux_bin():
-    sys.exit("cli_probe: no seamux binary: set SEAMUX_BIN or build app/target/debug/seamux "
-             "(cargo build --manifest-path app/Cargo.toml -p seamux-cli)")
+try:
+    crew_impl.seamux_bin()  # builds this checkout's seamux unless SEAMUX_BIN is set
+except crew_impl.NotPorted as e:
+    sys.exit(f"cli_probe: {e}")
 
 
 def _cmd(tool, args, env, crew_home):

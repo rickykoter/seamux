@@ -40,8 +40,8 @@ and deep-plan, lookout and ask stores each hold one record. What is asserted:
     bytes (crew/tools/golden/artifacts, recorded from crew's retired Python).
 
 Every call above runs this branch's `seamux crew-artifacts`; the probe seeds
-rows with plain sqlite3 into the store seamux creates. Build seamux first:
-cargo build --manifest-path app/Cargo.toml -p seamux-cli
+rows with plain sqlite3 into the store seamux creates. crew_impl builds
+seamux first; SEAMUX_BIN skips the build.
 
     python3 crew/tools/artifacts_probe.py                 exit 0 when all hold
 """
