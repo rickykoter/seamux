@@ -1145,7 +1145,11 @@ function __boardRender(d) {
     var ttl = $("news-ttl");
     if (ttl) ttl.textContent = "notifications";
     var lede = $("news-lede");
-    if (lede) lede.innerHTML = notes.length ? noteText(notes[0]) : "";
+    if (lede) {
+      lede.innerHTML = notes.length ? noteText(notes[0]) : "";
+      // Greyed, as in the open list, when the newest banner was not shown.
+      lede.className = notes.length && notes[0].shown === false ? "skip" : "";
+    }
     var body = $("news-body");
     if (body) body.innerHTML = notes.map(function (n) {
       var tier = NOTE_TIER[n.kind] || "quiet";

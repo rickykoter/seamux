@@ -2717,7 +2717,7 @@ if (live && Array.isArray(live.rows)) {
   const body = els["news-body"].innerHTML, lede = els["news-lede"].innerHTML;
   checks.push(["notes: the footer shows when the log has entries", els.news.hidden === false]);
   checks.push(["notes: the title says notifications", els["news-ttl"].textContent === "notifications"]);
-  checks.push(["notes: the collapsed line is the newest entry", lede.startsWith("<b>api · waiting on you</b>")]);
+  checks.push(["notes: the collapsed line is the newest entry", lede.startsWith("<b>api · waiting on you</b>") && els["news-lede"].className === ""]);
   checks.push(["notes: one paragraph per entry, newest first, coloured by kind",
     (body.match(/<p class="ni /g) || []).length === 3 && body.indexOf("api ·") < body.indexOf("docs ·") &&
     body.includes('class="ni attend"') && body.includes('class="ni done skip"'), body]);
@@ -2737,6 +2737,9 @@ if (live && Array.isArray(live.rows)) {
     !body.includes("<img") && !lede.includes("<img") && body.includes("odd {{kind}} `x`") && !body.includes("<code>")]);
   checks.push(["notes: an unknown kind cannot reach the class attribute",
     body.includes('class="ni quiet"') && !body.includes("<script")]);
+  render({ rows: [], quiet: "", notes: NOTES.slice(1) });
+  checks.push(["notes: a newest entry that was not shown greys the collapsed line too",
+    els["news-lede"].className === "skip" && els["news-lede"].innerHTML.startsWith("<b>docs · done</b>")]);
   render({ rows: [], quiet: "", notes: NOTES });
   checks.push(["notes: the <details> keeps its open state across a push", els.news.getAttribute("open") === ""]);
   render({ rows: [], quiet: "", notes: [] });
