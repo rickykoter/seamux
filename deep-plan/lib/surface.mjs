@@ -560,21 +560,39 @@ export const SURFACE_JS = String.raw`<script>
     if (t) jump(t);
   });
   function stickyOffset() { return WIDE.matches || window.innerWidth >= 980 ? 12 : rail.offsetHeight + 8; }
-  // A jump keeps its target current until the reader scrolls (a wheel, a
-  // touch, a scrolling key or the scrollbar): the smooth scroll may stop short
-  // of the target's line at the page's end, and the rail must not then name
-  // the section above it.
-  var pinned = null;
+  // A jump keeps its target current only while its own smooth scroll runs:
+  // that scroll may stop short of the target's line at the page's end, and
+  // the rail must not name the section above it mid-flight. The pin lets go
+  // once the scroll settles ('scrollend', or a quiet spell where that is
+  // missing) and on anything the reader does in the meantime: a wheel, a
+  // touch, a scrolling key, the scrollbar, a press in the main column, or Tab
+  // into it. After that the spy reads the page as it is.
+  var pinned = null, flight = 0, settleTimer = 0, lastKey = "";
   function linkFor(t) { for (var i = 0; i < navLinks.length; i++) if (navLinks[i].target === t) return navLinks[i]; return null; }
+  function settleLater(ms) {
+    clearTimeout(settleTimer);
+    var id = flight;
+    settleTimer = setTimeout(function () { if (id === flight) settle(); }, ms);
+  }
+  function settle() { if (flight) { flight = 0; clearTimeout(settleTimer); unpin(); } }
   function jump(target, noHistory) {
     reveal(target);
-    var y = target.getBoundingClientRect().top + window.scrollY - stickyOffset();
-    window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
+    var y = Math.max(0, target.getBoundingClientRect().top + window.scrollY - stickyOffset());
+    window.scrollTo({ top: y, behavior: "smooth" });
     if (!noHistory) try { history.replaceState(null, "", "#" + target.id); } catch (e) {}
     pinned = linkFor(target);
+    flight++;
+    // No scroll at all (already there) settles too; each scroll frame of the
+    // jump pushes the settle back.
+    settleLater(Math.abs(y - window.scrollY) < 2 ? 120 : 700);
     spy();
   }
-  function unpin() { if (pinned) { pinned = null; if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } } }
+  function unpin() {
+    flight = 0; clearTimeout(settleTimer);
+    if (pinned) { pinned = null; if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } }
+  }
+  window.addEventListener("scroll", function () { if (flight) settleLater(180); }, { passive: true });
+  if ("onscrollend" in window) window.addEventListener("scrollend", settle);
   window.addEventListener("wheel", unpin, { passive: true });
   // An in-page link the page does not route through jump() (the gate line's
   // #inc-2, a footnote) scrolls on its own: the pin no longer holds.
@@ -585,24 +603,33 @@ export const SURFACE_JS = String.raw`<script>
   });
   window.addEventListener("touchmove", unpin, { passive: true });
   document.addEventListener("mousedown", function (e) { if (e.target === document.documentElement) unpin(); });
+  // A press in the main column (a radio, a button, the text) is the reader
+  // at work there. A control that jumps does so on its click, after this,
+  // and pins afresh.
+  main.addEventListener("pointerdown", unpin);
+  main.addEventListener("focusin", function () { if (lastKey === "Tab") unpin(); queueSpy(); });
+  main.addEventListener("focusout", queueSpy);
   document.addEventListener("keydown", function (e) {
+    lastKey = e.key;
     var t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (/^(ArrowUp|ArrowDown|PageUp|PageDown|Home|End| )$/.test(e.key)) unpin();
   });
+  document.addEventListener("pointerdown", function () { lastKey = ""; }, true);
   var spyQueued = false;
+  function queueSpy() { if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } }
   // Exactly one rail item is current: the increment, ADR or diagram the
   // reader is on, else its section. At the page's end the last section in
   // view wins, since the ones below it can never reach the line.
   function spy() {
     spyQueued = false;
     var line = stickyOffset() + 40, cur = null, curSub = null;
-    if (pinned && pinned.target.getBoundingClientRect().height === 0) pinned = null;
+    var end = window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+    if (pinned && (pinned.target.getBoundingClientRect().height === 0 || (end && !flight))) pinned = null;
     if (pinned) {
       if (pinned.target.classList.contains("dp-sec")) cur = pinned;
       else { curSub = pinned; cur = linkFor(pinned.target.closest(".dp-sec")); }
     } else {
-      var end = window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
       navLinks.forEach(function (l) {
         var r = l.target.getBoundingClientRect();
         if (r.height === 0) return;
@@ -610,6 +637,17 @@ export const SURFACE_JS = String.raw`<script>
         if (isSec && (r.top <= line || (end && r.top < window.innerHeight - 24))) cur = l;
         else if (!isSec && r.top <= line && r.bottom > line - 40) curSub = l;
       });
+      // Off the page's end, the control the reader is working in (a quiz
+      // answer, a note) names its section while it is on screen, even when
+      // that section's heading has not reached the line yet.
+      var fe = !end && document.activeElement;
+      if (fe && fe !== main && main.contains(fe)) {
+        var fr = fe.getBoundingClientRect(), fs = fe.closest(".dp-sec"), fl = fs && linkFor(fs);
+        if (fl && fr.height > 0 && fr.top >= stickyOffset() && fr.bottom <= window.innerHeight) {
+          cur = fl;
+          curSub = navLinks.filter(function (l) { return !l.target.classList.contains("dp-sec") && l.target.contains(fe); })[0] || null;
+        }
+      }
       if (curSub && (!cur || curSub.target.closest(".dp-sec") !== cur.target)) curSub = null;
       // Above the first section (the title, the family strip) the reader is
       // about to read it, so the rail marks it rather than nothing.

@@ -1153,18 +1153,30 @@ ok("surfaces: the wide rail shows children only under the section the reader is 
   working.includes(".dp-toc>li:not(.dp-here)>.dp-sub{display:none}") &&
   /var here = !!cur && li === cur\.a\.parentNode;/.test(working) && working.includes('li.classList.toggle("dp-here", here)'));
 // The spy marks one rail item at a time (the child the reader is on, else
-// its section); at the page's end the last section in view wins; a jump pins
-// its target until the reader scrolls by wheel, touch, key or scrollbar.
+// its section); at the page's end the last section in view wins, pin or not;
+// a jump pins its target only while its own smooth scroll runs.
 ok("surfaces: the rail marks exactly one item current",
   working.includes("var one = curSub || cur;") && working.includes("var on = l === one;") &&
   !working.includes("var on = l === cur || l === curSub;"));
-ok("surfaces: at the page's end the last section in view is current",
+ok("surfaces: at the page's end the last section in view is current, and a settled pin gives way there",
   working.includes("window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2") &&
-  /if \(isSec && \(r\.top <= line \|\| \(end && r\.top < window\.innerHeight - 24\)\)\) cur = l;/.test(working));
+  /if \(isSec && \(r\.top <= line \|\| \(end && r\.top < window\.innerHeight - 24\)\)\) cur = l;/.test(working) &&
+  working.includes("(end && !flight))) pinned = null;"));
 ok("surfaces: a rail jump keeps its target current until the reader scrolls",
   working.includes("pinned = linkFor(target);") &&
   ["wheel", "touchmove"].every(ev => working.includes(`window.addEventListener("${ev}", unpin, { passive: true });`)) &&
   working.includes("if (e.target === document.documentElement) unpin();") && /PageDown\|Home\|End\| \)\$\/\.test\(e\.key\)\) unpin\(\)/.test(working));
+ok("surfaces: a press or a Tab into the main column releases the pin",
+  working.includes('main.addEventListener("pointerdown", unpin);') &&
+  working.includes('main.addEventListener("focusin", function () { if (lastKey === "Tab") unpin(); queueSpy(); });'));
+ok("surfaces: off the page's end, the control in focus names its section while on screen",
+  working.includes("var fe = !end && document.activeElement;") &&
+  working.includes("fr.top >= stickyOffset() && fr.bottom <= window.innerHeight") && working.includes('main.addEventListener("focusout", queueSpy);'));
+ok("surfaces: the pin lets go once the jump's own scroll settles",
+  working.includes('if ("onscrollend" in window) window.addEventListener("scrollend", settle);') &&
+  working.includes('window.addEventListener("scroll", function () { if (flight) settleLater(180); }, { passive: true });') &&
+  /flight\+\+;\s*\/\/[^\n]*\n[^\n]*\n\s*settleLater\(/.test(working) &&
+  /function settle\(\) \{ if \(flight\) \{ flight = 0; clearTimeout\(settleTimer\); unpin\(\); \} \}/.test(working));
 // Light mode: a folded head keeps its full dim colour (at .75 it fell under
 // 4.5:1 on the light ground), and diagram strokes draw darker than line2.
 {
