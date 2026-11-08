@@ -507,6 +507,22 @@ if (lows.length) console.log("    " + lows.join("\n    "));
   checks.push(["light: the dial's track still sits under every arc",
     arcs.every((k) => ratio(TOKL[k], TOKL.bg1) > ratio(TOKL.track, TOKL.bg1))]);
 }
+// The board's tiers, words, link and focus are the colour roles, so a
+// change to what a state looks like lands in theme/everforest.css alone: a
+// name here points at its role in dark and light alike, and no light block
+// gives a tier a hex of its own.
+{
+  const root = darkBlocks.join(";");
+  const ROLE_OF = { attend: "attend", running: "working", wilt: "broken", done: "done",
+    "attend-t": "attend-t", "running-t": "working-t", "wilt-tx": "broken-t", "done-t": "done-t",
+    fg: "text", fg2: "text-quiet", link: "link", focus: "focus", pri: "primary", ink: "on-primary" };
+  const off = Object.entries(ROLE_OF).filter(([k, r]) =>
+    !new RegExp(`--${k}:\\s*var\\(--role-${r}\\)`).test(root) ||
+    lightBlocks.concat(lightMedia).some((b) => new RegExp(`--${k}:`).test(b)) ||
+    !TOK[k] || TOK[k] !== TOK["role-" + r] || TOKL[k] !== TOKL["role-" + r]);
+  checks.push(["the board's tiers, words, link, focus and button are the colour roles in both modes",
+    off.length === 0, off.map(([k]) => k).join(", ")]);
+}
 // The footer's own colours point into the palette, and the uncommitted mark is
 // a neutral, never attend's amber.
 {
@@ -570,8 +586,9 @@ render({ rows: [{ id: "g", name: "g", kind: "attend", badge: "b", said: "", chip
 // AMBER once replaced it with an object: color:[object Object]).
 render({ rows: [{ id: "l", name: "l", kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "",
   limited: { error: "rate_limit", window: "five_hour", label: "5h limit", resets_at: Date.now() + 3600e3, next_try: null, tries: 0, usage: false } }], quiet: "" });
-checks.push(["the limit pill and its said line wear the attend colour, never an object",
-  /class="badge lim" style="color:var\(--attend\);border-color:var\(--attend\)"/.test(els.rows.innerHTML) &&
+checks.push(["the limit pill and its said line wear the attend colour (words in its word twin), never an object",
+  /class="badge lim" style="color:var\(--attend-t\);border-color:var\(--attend\)"/.test(els.rows.innerHTML) &&
+  /class="lim" style="color:var\(--attend-t\)"/.test(els.rows.innerHTML) &&
   !els.rows.innerHTML.includes("[object"), els.rows.innerHTML.slice(0, 600)]);
 checks.push(["a signal colour that is not a hex never reaches a style attribute",
   !sigOut.includes("url(") && /class="chip sig" data-a="checks"[^>]*>bad</.test(sigOut)]);
@@ -604,13 +621,13 @@ checks.push(["a merged card's reclaim is outlined, not a second filled button be
 checks.push(["a broken card whose first chip is only jump fills nothing, folded or open",
   !/chip pri/.test(pri.split('data-id="stuck"')[1] || "chip pri")]);
 // Round 12: one primary style across the app. The filled button is the
-// neutral text tier with the ground's ink, never the tier's colour: the needs-
+// primary role, a neutral, with its ink, never the tier's colour: the needs-
 // you card spent amber on its tally, ring, badge, frame AND button.
 {
   const rb = (sel) => { for (const [, x, b] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) if (x.trim() === sel) return b; return ""; };
-  const ok = (T) => T.pri && T.pri === T.fg && ratio(T.ink, T.pri) >= 4.5 &&
+  const ok = (T) => T.pri && T.pri === T["role-primary"] && T.ink === T["role-on-primary"] && ratio(T.ink, T.pri) >= 4.5 &&
     !["attend", "running", "wilt", "done"].some((k) => T[k] === T.pri);
-  checks.push(["every filled button is the one neutral primary (--pri, the text tier) with --ink on it, in both modes",
+  checks.push(["every filled button is the one neutral primary (--pri, the primary role) with --ink on it, in both modes",
     /background:var\(--pri\)/.test(rb(".chip.pri")) && /border-color:var\(--pri\)/.test(rb(".chip.pri")) &&
     /color:var\(--ink\)/.test(rb(".chip.pri")) && !/var\(--c\)|--attend/.test(rb(".chip.pri")) && ok(TOK) && ok(TOKL),
     `dark ${ratio(TOK.ink, TOK.pri).toFixed(2)}:1, light ${ratio(TOKL.ink, TOKL.pri).toFixed(2)}:1`]);

@@ -2,8 +2,9 @@
 """Copy seamux's palette (theme/everforest.css) into every page that uses it.
 
     python3 tools/theme_sync.py           write it where it is out of date
-    python3 tools/theme_sync.py --check   exit 1, naming each stale page
-                                          or text token under 4.5:1
+    python3 tools/theme_sync.py --check   exit 1, naming each stale page,
+                                          text token under 4.5:1 or role
+                                          fill under 3:1
 
 The pages cannot read theme/ at run time: crew runs from a copy of crew/
 (crew apply), the plugins from their own folders, and deep-plan inlines its
@@ -19,6 +20,14 @@ never reaches it; every page now carries both.
 grounds words sit on in each mode (GROUNDS). Faint text is meta text on the
 page itself, so it is held to the page grounds alone; it is not for code
 in a diff, which sits on the tints.
+
+The --role-* tokens say what a colour means (needs you, working, done,
+broken, text, link, focus, the primary button). A role is a hex or a
+var(--ef-*); --check resolves it, then holds each word colour (text,
+text-quiet, link, every -t) to 4.5:1 and each fill (the states, focus,
+primary) to GRAPHIC:1 on ROLE_GROUNDS, the primary's ink to 4.5:1 on the
+primary, and the two light copies to the same values. Lines and edges are
+separators and held to nothing.
 """
 
 import pathlib
@@ -50,9 +59,42 @@ GROUNDS = {
 }
 FAINT_GROUNDS = {"dark": ["bg-dim", "bg", "bg1"], "light": ["bg-dim", "bg", "bg1"]}
 
+GRAPHIC = 3.0
+# A state's word or mark sits on a page, a side bar, a raised row or card, or
+# the selected row; not on the diff tints.
+ROLE_GROUNDS = {
+    "dark": ["bg-dim", "bg", "bg1", "card", "card3"],
+    "light": ["bg-dim", "bg", "bg1", "bg3", "card3"],
+}
+# Words also sit on the tints: lookout puts a gate pill or an addressed
+# finding's status on a green, red or blue wash.
+ROLE_WORD_GROUNDS = {m: g + ["bg-green", "bg-red", "bg-blue"] for m, g in ROLE_GROUNDS.items()}
+ROLE_WORDS = {"text", "text-quiet", "link"}
+ROLE_FILLS = {"attend", "working", "done", "broken", "focus", "primary"}
+ROLE_FREE = {"line", "edge", "on-primary"}
+STATES = ("attend", "working", "done", "broken")
+# Every block carries every role, so no surface finds one missing in a mode.
+ROLES = ROLE_WORDS | ROLE_FILLS | ROLE_FREE | {s + "-t" for s in STATES}
+
 
 def tokens(css: str) -> dict[str, str]:
     return dict(re.findall(r"--ef-([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})", css))
+
+
+def roles(css: str, ef: dict[str, str]) -> dict[str, str]:
+    """Each --role-* in a block, resolved to a hex (None when it names no palette hex)."""
+    out = {}
+    for k, v in re.findall(r"--role-([a-z0-9-]+):\s*([^;]+);", css):
+        v = v.strip()
+        m = re.fullmatch(r"var\(--ef-([a-z0-9-]+)\)", v)
+        out[k] = ef.get(m.group(1)) if m else (v if re.fullmatch(r"#[0-9a-fA-F]{6}", v) else None)
+    return out
+
+
+def blocks(css: str) -> tuple[str, str, str]:
+    """The dark block, the OS-light media block and the data-theme light block."""
+    i, j = css.index("/* light */"), css.index(':root[data-theme="light"]')
+    return css[:i], css[i:j], css[j:]
 
 
 def luminance(hex_: str) -> float:
@@ -70,10 +112,12 @@ def ratio(a: str, b: str) -> float:
 
 def contrast_failures() -> list[str]:
     css = SOURCE.read_text()
-    dark = css[: css.index("/* light */")]
-    # The data-theme="light" block repeats the media block; check that one.
-    light = css[css.index(':root[data-theme="light"]') :]
+    # The data-theme="light" block repeats the media block; check that one,
+    # and that the two say the same.
+    dark, media, light = blocks(css)
     out = []
+    if (tokens(media), re.findall(r"--role-[^;]+;", media)) != (tokens(light), re.findall(r"--role-[^;]+;", light)):
+        out.append('light: the media block and :root[data-theme="light"] differ')
     for mode, block_ in (("dark", dark), ("light", light)):
         t = tokens(block_)
         texts = [k for k in t if k == "text" or k.startswith("text-")]
@@ -85,6 +129,36 @@ def contrast_failures() -> list[str]:
                 r = ratio(t[k], t[g])
                 if r < FLOOR:
                     out.append(f"{mode} --ef-{k} {t[k]} on --ef-{g} {t[g]} is {r:.2f}:1")
+        out += role_failures(mode, t, roles(block_, t))
+    return out
+
+
+def role_failures(mode: str, ef: dict[str, str], rs: dict[str, str]) -> list[str]:
+    out = []
+    missing = sorted(ROLES - rs.keys())
+    if missing:
+        out.append(f"{mode}: missing --role-" + ", --role-".join(missing))
+    for k, v in rs.items():
+        if v is None:
+            out.append(f"{mode} --role-{k}: not a hex or a var(--ef-*) with one")
+            continue
+        if k in ROLE_FREE:
+            continue
+        if k in ROLE_WORDS or k.endswith("-t"):
+            floor = FLOOR
+        elif k in ROLE_FILLS:
+            floor = GRAPHIC
+        else:
+            out.append(f"{mode} --role-{k}: not a known word, fill or separator role")
+            continue
+        for g in (ROLE_WORD_GROUNDS if floor == FLOOR else ROLE_GROUNDS)[mode]:
+            r = ratio(v, ef[g])
+            if r < floor:
+                out.append(f"{mode} --role-{k} {v} on --ef-{g} {ef[g]} is {r:.2f}:1, under {floor}:1")
+    if rs.get("primary") and rs.get("on-primary"):
+        r = ratio(rs["primary"], rs["on-primary"])
+        if r < FLOOR:
+            out.append(f"{mode} --role-on-primary on --role-primary is {r:.2f}:1, under {FLOOR}:1")
     return out
 
 
@@ -132,12 +206,12 @@ def main(argv: list[str]) -> int:
     if check:
         weak = contrast_failures()
         for w in weak:
-            print(f"theme sync: text under {FLOOR}:1: {w}", file=sys.stderr)
+            print(f"theme sync: contrast: {w}", file=sys.stderr)
         if stale:
             print("theme sync: out of date, run python3 tools/theme_sync.py: " + ", ".join(stale), file=sys.stderr)
         if stale or weak:
             return 1
-        print(f"theme sync: {len(TARGETS)} pages match theme/everforest.css; every text token is {FLOOR}:1 or better")
+        print(f"theme sync: {len(TARGETS)} pages match theme/everforest.css; every text token and role word is {FLOOR}:1 or better, every role fill {GRAPHIC}:1")
         return 0
     print(f"theme sync: wrote {len(stale)} of {len(TARGETS)} pages" + (": " + ", ".join(stale) if stale else ""))
     return 0

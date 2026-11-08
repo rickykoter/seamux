@@ -8,17 +8,20 @@
       :root {
         color-scheme: light dark;
         /* seamux's palette (everforest.css, from theme/everforest.css), as
-           deep-plan's pages wear it; both modes come from there. */
-        --fg: var(--ef-text); --muted: var(--ef-text-dim); --bg: var(--ef-bg); --strip: var(--ef-bg-dim); --line: var(--ef-line);
-        --on: var(--ef-bg1); --accent: var(--ef-accent); --ask: var(--ef-mark);
+           deep-plan's pages wear it; both modes come from there. What a
+           colour means (needs you, working, done, broken, text, link, focus,
+           the primary button) is its colour role (--role-*); grounds are
+           the palette's own. */
+        --fg: var(--role-text); --muted: var(--role-text-quiet); --bg: var(--ef-bg); --strip: var(--ef-bg-dim); --line: var(--role-line);
+        --on: var(--ef-bg1); --accent: var(--role-focus); --ask: var(--role-attend); --working: var(--role-working);
         /* The filled primary button: high-contrast neutral, so it never reads as a state. */
-        --primary: var(--ef-fg); --on-primary: var(--ef-ink); --bad: var(--ef-bad); --good: var(--ef-good);
+        --primary: var(--role-primary); --on-primary: var(--role-on-primary); --bad: var(--role-broken); --good: var(--role-done);
         --card: var(--ef-bg1); --shade: rgba(0, 0, 0, 0.06);
         /* A dialog's edges: a line that holds in light too, and a field ground
            that parts from the card (the palette's lightest in light, darkest in dark). */
-        --line2: var(--ef-line2); --field: var(--ef-ink);
+        --line2: var(--role-edge); --field: var(--ef-ink);
         /* Word colours: the hues above are for fills and dots. */
-        --accent-t: var(--ef-text-accent); --ask-t: var(--ef-text-mark); --bad-t: var(--ef-text-bad); --good-t: var(--ef-text-good); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
+        --accent-t: var(--role-link); --ask-t: var(--role-attend-t); --bad-t: var(--role-broken-t); --good-t: var(--role-done-t); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
         /* Section labels: quiet small caps. Yellow is kept for what needs you. */
         --section: var(--ef-text-dim);
         /* Every drawing of a pane, live or text, shares these; --pane-bg and

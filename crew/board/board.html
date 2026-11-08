@@ -86,6 +86,22 @@
   --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
   --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
   --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
+  /* roles: what a colour means, the same on every surface. A page maps its
+     own names onto these and never picks a hue for a state itself. Each state
+     has a fill (rings, dots, borders: 3:1) and a word colour (-t: 4.5:1).
+     A role names a palette token where one passes; a raw hex is a palette
+     hue made darker or lighter to pass. Amber is needs-you and nothing else;
+     working, links and focus share the teal accent in both modes (in light,
+     a teal of their own: --ef-accent stays Everforest's blue, a palette
+     colour that means nothing). Lines and edges are separators, held to no floor. */
+  --role-attend: #dfa000; --role-attend-t: var(--ef-text-mark);
+  --role-working: var(--ef-blue); --role-working-t: var(--ef-text-accent);
+  --role-done: var(--ef-green); --role-done-t: var(--ef-text-green);
+  --role-broken: var(--ef-red); --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: var(--ef-text-accent); --role-focus: var(--ef-accent);
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   /* type scale: every page sizes words with these, never a px value of its own.
      1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
@@ -108,6 +124,14 @@
     --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
     --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
     --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+    --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+    --role-working: #2a8079; --role-working-t: #22675f;
+    --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+    --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+    --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+    --role-line: #ddd8bf; --role-edge: #b9bea6;
+    --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+    --role-link: #22675f; --role-focus: #2a8079;
   }
 }
 :root[data-theme="light"] {
@@ -123,6 +147,14 @@
   --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
   --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
   --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+  --role-working: #2a8079; --role-working-t: #22675f;
+  --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+  --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: #ddd8bf; --role-edge: #b9bea6;
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: #22675f; --role-focus: #2a8079;
 }
 /* everforest:end */
 /* The board's names for seamux's palette (theme/everforest.css). */
@@ -131,23 +163,26 @@
   --bg:var(--ef-bg); --bg1:var(--ef-bg1); --bg-attend:#3b4136; --bg-kids:#2a3135;
   --bg2:var(--ef-bg2); --line:#414b50; --edge:#56636a;
   /* Text. fg names things, fg2 is what an agent said, grey is everything around
-     it. fg and fg2 are the palette's text tiers; grey stays the board's own,
-     a touch lighter than --ef-text-faint, which is 4.4:1 on the attend ground. */
-  --fg:var(--ef-text); --fg2:var(--ef-text-dim); --grey:#a3ada5;
-  /* Tiers. The badge, the dial and the card's frame wear these. Wilt's red is
-     3.9:1 on a card, so where it is text it uses its lighter twin. */
-  --attend:#dfa000; --running:var(--ef-blue); --wilt:var(--ef-red); --done:var(--ef-green); --quiet:var(--ef-grey0);
-  --wilt-tx:#f0a0a0;
+     it. fg and fg2 are the roles' text and quiet text; grey stays the board's
+     own, a touch lighter than --ef-text-faint, which is 4.4:1 on the attend ground. */
+  --fg:var(--role-text); --fg2:var(--role-text-quiet); --grey:#a3ada5;
+  /* Tiers: the colour roles (theme/everforest.css). The dial, the card's
+     frame, dots and pips wear the fill; a badge or any other word wears the
+     tier's word twin (-t), since a fill is held to 3:1 and words to 4.5:1.
+     Quiet is the board's own: a resting grey, no role. */
+  --attend:var(--role-attend); --running:var(--role-working); --wilt:var(--role-broken); --done:var(--role-done); --quiet:var(--ef-grey0);
+  --attend-t:var(--role-attend-t); --running-t:var(--role-working-t); --wilt-tx:var(--role-broken-t); --done-t:var(--role-done-t);
+  --focus:var(--role-focus);
   /* The footer's own colours: an open PR, a linked issue, uncommitted work.
      An open PR is the palette's green and uncommitted work its neutral text
      tier, both pointing into it, so light needs no copy of its own. The
      uncommitted mark stays away from attend's amber: it is not a call. */
   --pr-open:var(--ef-text-green); --issue:#b9a5fb; --dirty:var(--ef-text-dim);
-  --link:var(--ef-text-accent);
+  --link:var(--role-link);
   /* The one filled (primary) button, the same on every card and every page
-     of the app: the neutral text tier as its ground, the deepest ground as
-     its words. Amber is a status, never a button. */
-  --pri:var(--fg); --ink:var(--ef-ink);
+     of the app: the primary role, a neutral, with its ink as the words.
+     Amber is a status, never a button. */
+  --pri:var(--role-primary); --ink:var(--role-on-primary);
   /* The dial's track is a graphic, not a ground: 2.5:1 on a card and 3:1 on
      the page, so the ring reads, while each tier's arc sits about 2:1 above it.
      Lifts and shades. Hover grounds sit under text (--gnd); the rest are
@@ -169,15 +204,14 @@
   --orb:#8f8a7c; --orb-dawn:#e3c4a8; --orb-day:#efe6c8; --orb-dusk:#d9a99a; --orb-night:#cfc7b0;
   --zz:#8BA3C7;
 }
-/* Light: the same names on a light ground. Each tier is one colour that
-   reads as words on a card, so it is darker than the palette's light hues. Twice, as in
-   theme/everforest.css: the OS's light mode, and data-theme="light". */
+/* Light: the same names on a light ground; the tiers come from the roles'
+   own light values. Twice, as in theme/everforest.css: the OS's light
+   mode, and data-theme="light". */
 @media (prefers-color-scheme: light){
 :root:not([data-theme="dark"]){
   --bg-attend:#f8e9bf; --bg-kids:#ece8d0; --line:#ddd8bf; --edge:#b9bea6;
   --grey:#55625a;
-  --attend:#8a5d00; --running:#296a8d; --wilt:#ae3b39; --done:#5d6a01; --quiet:#7f8b80;
-  --wilt-tx:#ae3b39;
+  --quiet:#7f8b80;
   --issue:#5f4bb6;
   --bg-hover:#ebe6cd; --bg-press:#e4dfc5; --bg-kid-hover:#e6e1c8; --track:#dcd8c0; --sel:#c08000;
   --hover-a:rgba(60,50,20,.05); --hover-b:rgba(60,50,20,.07); --hover-c:rgba(60,50,20,.1);
@@ -195,8 +229,7 @@
 :root[data-theme="light"]{
   --bg-attend:#f8e9bf; --bg-kids:#ece8d0; --line:#ddd8bf; --edge:#b9bea6;
   --grey:#55625a;
-  --attend:#8a5d00; --running:#296a8d; --wilt:#ae3b39; --done:#5d6a01; --quiet:#7f8b80;
-  --wilt-tx:#ae3b39;
+  --quiet:#7f8b80;
   --issue:#5f4bb6;
   --bg-hover:#ebe6cd; --bg-press:#e4dfc5; --bg-kid-hover:#e6e1c8; --track:#dcd8c0; --sel:#c08000;
   --hover-a:rgba(60,50,20,.05); --hover-b:rgba(60,50,20,.07); --hover-c:rgba(60,50,20,.1);
@@ -235,7 +268,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 .hud{display:flex;align-items:baseline;gap:2px 10px;flex-wrap:wrap;min-width:0}
 #need{font:700 var(--fs-2)/1.35 system-ui;letter-spacing:.08em;text-transform:uppercase;
   color:var(--fg);white-space:nowrap;flex:none}
-#need.on{color:var(--attend)}
+#need.on{color:var(--attend-t)}
 .hud2{display:flex;align-items:baseline;gap:8px;margin-top:1px;min-width:0}
 .right{display:flex;gap:8px;align-items:baseline;font:500 var(--fs-1)/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
   color:var(--grey);white-space:nowrap;margin-left:auto;flex:none}
@@ -483,10 +516,10 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* A limit's pill is a phrase with a time in it ("back 2:04 PM"):
    set as words, not shouted, so it costs the name less room. */
 .badge.lim{text-transform:none;letter-spacing:0;font:600 var(--fs-1)/1.3 system-ui}
-.row.attend>.top>.badge,.row.attend>.top>.bs>.badge{color:var(--attend)}
-.row.running>.top>.badge,.row.running>.top>.bs>.badge{color:var(--running)}
+.row.attend>.top>.badge,.row.attend>.top>.bs>.badge{color:var(--attend-t)}
+.row.running>.top>.badge,.row.running>.top>.bs>.badge{color:var(--running-t)}
 .row.wilt>.top>.badge,.row.wilt>.top>.bs>.badge{color:var(--wilt-tx)}
-.row.done>.top>.badge,.row.done>.top>.bs>.badge{color:var(--done)}
+.row.done>.top>.badge,.row.done>.top>.bs>.badge{color:var(--done-t)}
 
 /* What the agent said: proportional, because it is a sentence, and two lines at
    most, because the card's job is to say what is next and the rest is a click
@@ -497,7 +530,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .said b{color:var(--fg);font-weight:600}
 /* Why a card needs you, ahead of what it said: its badge says only that it does. */
 .said .rsn{color:var(--fg);font-weight:600}
-.said code{font:var(--fs-2) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running)}
+.said code{font:var(--fs-2) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running-t)}
 
 /* Where you are standing. A ring in the worktree's OWN colour, so the card, the
    VS Code title bar and the pane frame are all wearing the same hex. The card's
@@ -553,7 +586,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pn.term>.pk{font:var(--fs-2)/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--grey)}
 .pn>.pw{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--grey);
   font-variant-numeric:tabular-nums}
-.pn.wait>.pw{color:var(--attend)}
+.pn.wait>.pw{color:var(--attend-t)}
 .pn.term>.pw{font:var(--fs-2)/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg2)}
 .ptag{flex:none;font:600 var(--fs-1)/1 system-ui;padding:2px 5px;border:1px solid var(--edge);
   border-radius:4px;color:var(--fg)}
@@ -711,7 +744,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 .caret{flex:none;width:24px;height:24px;margin:-4px -6px -4px -8px;padding:0;border:0;border-radius:5px;
   background:none;color:var(--grey);font-size:var(--fs-1);line-height:24px;text-align:center;cursor:pointer}
 .caret:hover{background:var(--hover-b);color:var(--fg)}
-.caret:focus-visible{outline:2px solid var(--running);outline-offset:-2px}
+.caret:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .caret::before{content:"\25B8"}
 .row.open>.top>.caret::before{content:"\25BE"}
 .said.nest{margin:0 0 8px 35px;cursor:pointer}
@@ -723,7 +756,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
    steps aside so the name is not the thing that gets clipped. */
 .kid:not(.open)>.kidhd.loud>.badge{display:none}
 /* The parent's badge counts its children's most urgent tier. */
-.badge.roll.attend{color:var(--attend)} .badge.roll.wilt{color:var(--wilt-tx)}
+.badge.roll.attend{color:var(--attend-t)} .badge.roll.wilt{color:var(--wilt-tx)}
 .row.shell .nm{font-weight:600}
 
 /* Fires once, on the transition into done -- render.js gates it with data-prev. */
@@ -838,7 +871,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 #news-lede{overflow:hidden;text-overflow:ellipsis}
 #news[open] #news-lede{display:none}
 #news-lede b,#news-body b{color:var(--fg);font-weight:600}
-#news-lede code,#news-body code{color:var(--running);font-size:var(--fs-2)}
+#news-lede code,#news-body code{color:var(--running-t);font-size:var(--fs-2)}
 #news-body{margin-top:5px}
 .ni{margin:0 0 4px;padding-left:7px;border-left:2px solid var(--quiet);
   color:var(--fg2);font-size:var(--fs-3);line-height:1.45}

@@ -13,6 +13,22 @@
   --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
   --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
   --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
+  /* roles: what a colour means, the same on every surface. A page maps its
+     own names onto these and never picks a hue for a state itself. Each state
+     has a fill (rings, dots, borders: 3:1) and a word colour (-t: 4.5:1).
+     A role names a palette token where one passes; a raw hex is a palette
+     hue made darker or lighter to pass. Amber is needs-you and nothing else;
+     working, links and focus share the teal accent in both modes (in light,
+     a teal of their own: --ef-accent stays Everforest's blue, a palette
+     colour that means nothing). Lines and edges are separators, held to no floor. */
+  --role-attend: #dfa000; --role-attend-t: var(--ef-text-mark);
+  --role-working: var(--ef-blue); --role-working-t: var(--ef-text-accent);
+  --role-done: var(--ef-green); --role-done-t: var(--ef-text-green);
+  --role-broken: var(--ef-red); --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: var(--ef-text-accent); --role-focus: var(--ef-accent);
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   /* type scale: every page sizes words with these, never a px value of its own.
      1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
@@ -35,6 +51,14 @@
     --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
     --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
     --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+    --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+    --role-working: #2a8079; --role-working-t: #22675f;
+    --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+    --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+    --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+    --role-line: #ddd8bf; --role-edge: #b9bea6;
+    --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+    --role-link: #22675f; --role-focus: #2a8079;
   }
 }
 :root[data-theme="light"] {
@@ -50,6 +74,14 @@
   --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
   --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
   --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+  --role-working: #2a8079; --role-working-t: #22675f;
+  --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+  --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: #ddd8bf; --role-edge: #b9bea6;
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: #22675f; --role-focus: #2a8079;
 }
 /* everforest:end */
 /* The review page in seamux's palette (theme/everforest.css), as
@@ -57,20 +89,26 @@
    Everforest's own (keywords red, strings aqua, functions green, types
    yellow). */
 :root {
-  --bg: var(--ef-bg); --fg: var(--ef-text); --muted: var(--ef-text-dim); --border: var(--ef-line2);
-  --side: var(--ef-bg-dim); --hover: var(--ef-bg1); --sel: var(--ef-bg-blue); --accent: var(--ef-accent); --accent-t: var(--ef-text-accent);
+  --bg: var(--ef-bg); --fg: var(--role-text); --muted: var(--role-text-quiet); --border: var(--role-edge);
+  --side: var(--ef-bg-dim); --hover: var(--ef-bg1); --sel: var(--ef-bg-blue); --accent: var(--role-focus); --accent-t: var(--role-link);
   --add: var(--ef-bg-green); --add-mark: color-mix(in srgb, var(--ef-green) 38%, transparent); --add-ln: color-mix(in srgb, var(--ef-green) 22%, transparent);
   --del: var(--ef-bg-red); --del-mark: color-mix(in srgb, var(--ef-red) 38%, transparent); --del-ln: color-mix(in srgb, var(--ef-red) 22%, transparent);
   --hunk: var(--ef-bg-blue); --hunk-fg: var(--ef-text-dim); --empty: var(--ef-bg-dim);
   /* Words take the text shades; dots and edges keep the hues (--dot-*). */
-  --st-m: var(--ef-text-yellow); --st-a: var(--ef-text-green); --st-d: var(--ef-text-red); --st-r: var(--ef-text-blue);
-  --risk-high: var(--ef-text-red); --risk-medium: var(--ef-text-yellow); --risk-low: var(--ef-text-faint); --rail: var(--ef-line2);
-  --dot-high: var(--ef-red); --dot-medium: var(--ef-yellow); --dot-low: var(--ef-grey0);
-  --card: var(--ef-bg1); --card-border: var(--ef-line2); --flash: var(--ef-bg-yellow);
+  /* Amber is the colour role for "needs you" and nothing on this page is a
+     call, so no state here wears it: a modified file is blue, medium risk
+     orange (between high's red and low's grey), an addressed finding the
+     working teal, a stale note quiet and dashed, the find flash a blue tint.
+     A renamed file is purple, so it stays apart from a modified one. */
+  --st-m: var(--ef-text-blue); --st-a: var(--ef-text-green); --st-d: var(--ef-text-red); --st-r: var(--ef-text-purple);
+  --risk-high: var(--role-broken-t); --risk-medium: var(--ef-text-orange); --risk-low: var(--ef-text-faint); --rail: var(--role-edge);
+  --dot-high: var(--role-broken); --dot-medium: var(--ef-orange); --dot-low: var(--ef-grey0);
+  --card: var(--ef-bg1); --card-border: var(--role-edge); --flash: var(--ef-bg-blue);
+  --addressed: var(--role-working-t); --pass: var(--role-done-t); --pass-edge: var(--role-done);
   /* Yellow means "needs you" in seamux: a minor is a neutral grey, a nit a fainter one. */
-  --sev-blocker: var(--ef-text-red); --sev-major: var(--ef-text-orange); --sev-minor: var(--ef-text-dim); --sev-nit: var(--ef-text-faint); --sev-comment: var(--ef-text-blue);
+  --sev-blocker: var(--role-broken-t); --sev-major: var(--ef-text-orange); --sev-minor: var(--ef-text-dim); --sev-nit: var(--ef-text-faint); --sev-comment: var(--ef-text-blue);
   /* The findings gutter's dots take the hues; a nit's is hollow. */
-  --gdot-blocker: var(--ef-red); --gdot-major: var(--ef-orange); --gdot-minor: var(--ef-grey2); --gdot-nit: var(--ef-grey0); --gdot-comment: var(--ef-blue);
+  --gdot-blocker: var(--role-broken); --gdot-major: var(--ef-orange); --gdot-minor: var(--ef-grey2); --gdot-nit: var(--ef-grey0); --gdot-comment: var(--ef-blue);
   --hl-comment: var(--ef-text-dim); --hl-keyword: var(--ef-text-red); --hl-string: var(--ef-text-aqua); --hl-number: var(--ef-text-purple);
   --hl-title: var(--ef-text-green); --hl-built: var(--ef-text-yellow); --hl-attr: var(--ef-text-blue); --hl-tag: var(--ef-text-orange);
   --hl-meta: var(--ef-text-purple); --hl-var: var(--ef-text-blue);
@@ -82,12 +120,12 @@
    the minor and nit gutter dots get a darker ring to show on cream. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --sel: color-mix(in srgb, var(--ef-accent) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3);
+    --sel: color-mix(in srgb, var(--role-focus) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3);
     --gdot-nit: var(--ef-dim); --gdot-edge-minor: var(--ef-text-faint);
   }
 }
 :root[data-theme="light"] {
-  --sel: color-mix(in srgb, var(--ef-accent) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3);
+  --sel: color-mix(in srgb, var(--role-focus) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3);
   --gdot-nit: var(--ef-dim); --gdot-edge-minor: var(--ef-text-faint);
 }
 
@@ -265,7 +303,7 @@ td.del mark { background: var(--del-mark); color: inherit; border-radius: 2px; }
 .gate.blocked { color: var(--sev-blocker); border-color: var(--sev-blocker); }
 /* The arrow says the pill goes somewhere: to the first blocking finding. */
 .gate .go { margin-left: 5px; font-weight: 400; opacity: .8; }
-.gate.pass { color: var(--st-a); border-color: var(--st-a); }
+.gate.pass { color: var(--pass); border-color: var(--pass-edge); }
 .gate.none { color: var(--muted); }
 tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border); font: var(--fs-3)/1.45 var(--sans); white-space: normal; }
@@ -302,7 +340,7 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 @media (hover: none) { .card-head .meta { position: static; opacity: 1; max-width: none; padding: 0; background: none; border: 0; } }
 .card .title { font-weight: 600; flex: 1; min-width: 200px; }
 .card .status { font-size: var(--fs-1); color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; }
-.card .status.st-addressed { color: var(--risk-medium); border-color: var(--risk-medium); }
+.card .status.st-addressed { color: var(--addressed); border-color: var(--addressed); }
 /* An addressed blocker or major: open, and blocking, until the human resolves it. */
 .card .status.st-addressed.blocks { cursor: help; }
 .card-body { padding: 0 10px 8px; }
@@ -376,7 +414,7 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: v
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 /* The one filled primary, the app's (app/ui/index.html --primary, --on-primary):
    Everforest's fg with ink words, a neutral that never reads as a state. */
-.buttons button.primary { background: var(--ef-fg); border-color: var(--ef-fg); color: var(--ef-ink); }
+.buttons button.primary { background: var(--role-primary); border-color: var(--role-primary); color: var(--role-on-primary); }
 .actions.folded { padding: 2px 10px 6px; border-top: 0; }
 /* Folded, Reply / Resolve / Dismiss take no room until wanted: on the
    current card (a click or n/p), with focus in it, a draft or a send note, and
@@ -437,7 +475,7 @@ a.gfile .fbadge { margin-left: 4px; }
 .note.flash { background: var(--flash); transition: background .6s; }
 .note-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--fs-1); color: var(--muted); }
 .nmark { border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; color: var(--muted); }
-.nmark.stale { color: var(--risk-medium); border-color: var(--risk-medium); }
+.nmark.stale { color: var(--muted); border-style: dashed; }
 .note-body { display: flex; flex-direction: column; gap: 4px; }
 .note-body p, .note-body ul.watch { margin: 0; max-width: 92ch; }
 .note-body .nwhy { color: var(--muted); }
