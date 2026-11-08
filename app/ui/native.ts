@@ -25,52 +25,41 @@ void invoke("pty_reset").catch(() => {});
  *  bundled, so the system's monospace stands in for it). */
 const FONT = "ui-monospace, Menlo, monospace";
 
-type Look = {
-  palette: Record<string, string>;
-  background?: string;
-  foreground?: string;
-  cursor?: string;
-  cursorText?: string;
-  selectionBackground?: string;
-  selectionForeground?: string;
-  fontFamily?: string;
-  fontSize?: number;
-};
-
-/** The terminal's look when no Ghostty or cmux config names one: Everforest,
- *  the app's own palette. Dark is Ghostty's Dark Hard. Light is seamux's own:
- *  Light Med's hues are 2:1 as words on its cream, so each colour is the
- *  palette's light word colour (theme/everforest.css, 4.5:1 or better on the
- *  ground, the brights a shade deeper; white and bright black are one
- *  readable grey), and a selection is a tint that shows. Bright white
- *  stays light: programs print it as a ground. */
-const DARK_PALETTE = ["#7a8478", "#e67e80", "#a7c080", "#dbbc7f", "#7fbbb3", "#d699b6", "#83c092", "#f2efdf", "#a6b0a0", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#fffbef"];
-const LIGHT_PALETTE = ["#5c6a72", "#ae3b39", "#5d6a01", "#815d00", "#296a8d", "#98477e", "#247053", "#5e6a62", "#5e6a62", "#9c2f2d", "#4f5a00", "#6f5000", "#215b79", "#843a6c", "#1d5f46", "#fffbef"];
-function everforest(dark: boolean): Look {
-  const p = dark ? DARK_PALETTE : LIGHT_PALETTE;
-  return {
-    palette: Object.fromEntries(p.map((c, i) => [String(i), c])),
-    ...(dark
-      ? { background: "#1e2326", foreground: "#d3c6aa", cursor: "#e69875", cursorText: "#4c3743", selectionBackground: "#4c3743", selectionForeground: "#d3c6aa" }
-      : { background: "#efebd4", foreground: "#4b575e", cursor: "#9a4e18", cursorText: "#efebd4", selectionBackground: "#c9d8c6", selectionForeground: "#3e4a51" }),
+/** The terminal's colours, for the mode in force: seamux's own, the
+ *  --term-* tokens in theme/everforest.css (synced into everforest.css, so
+ *  the page's computed style holds the right mode's). Dark is Ghostty's
+ *  Everforest Dark Hard, light seamux's own; theme_sync.py --check holds the
+ *  word slots to 4.5:1 on the ground. A cmux or Ghostty config's colours are
+ *  never used: they named a theme drawn for another ground. Null when the
+ *  stylesheet has not loaded. */
+function colours(): Record<string, string> | null {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (k: string) => cs.getPropertyValue(`--term-${k}`).trim();
+  const names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const;
+  const theme: Record<string, string> = {
+    background: v("bg"),
+    foreground: v("text"),
+    cursor: v("cursor"),
+    cursorAccent: v("cursor-text"),
+    selectionBackground: v("selection"),
+    selectionForeground: v("selection-text"),
   };
+  for (let i = 0; i < 16; i++) theme[i < 8 ? names[i] : "bright" + names[i - 8][0].toUpperCase() + names[i - 8].slice(1)] = v(String(i));
+  return Object.values(theme).every(Boolean) ? theme : null;
 }
 
-/** The look for the page's appearance (Ghostty's or cmux's config, else
- *  Everforest), asked once per appearance. The appearance is the app's
- *  (appearance.ts sets the window's theme, which this media query follows). */
-const looks = new Map<boolean, Promise<Look | null>>();
-function cmuxLook(): Promise<Look | null> {
+/** The font a Ghostty or cmux config names, if any: the one thing seamux
+ *  takes from it. Asked once per appearance, as the config can differ. */
+type Font = { fontFamily?: string; fontSize?: number };
+const fonts = new Map<boolean, Promise<Font | null>>();
+function configFont(): Promise<Font | null> {
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  if (!looks.has(dark)) {
-    looks.set(dark, invoke<Look>("term_look", { dark })
-      .catch(() => null)
-      // No colours configured: Everforest's, keeping any font the config names.
-      .then((l) => (l && (l.background || Object.keys(l.palette ?? {}).length)
-        ? l
-        : { ...everforest(dark), fontFamily: l?.fontFamily, fontSize: l?.fontSize })));
+  if (!fonts.has(dark)) {
+    fonts.set(dark, invoke<Font>("term_look", { dark })
+      .then((l) => ({ fontFamily: l?.fontFamily, fontSize: l?.fontSize }))
+      .catch(() => null));
   }
-  return looks.get(dark)!;
+  return fonts.get(dark)!;
 }
 
 /** Command keys a Mac terminal turns into line editing, as iTerm and
@@ -191,7 +180,7 @@ export class NativeTerm {
   /** A short note over the pane ("Copied 3 lines"). */
   private note = document.createElement("div");
   private noteTimer = 0;
-  /** The font size cmux's look gives; a pane's own size overrides it. */
+  /** The font size a Ghostty or cmux config gives; a pane's own size overrides it. */
   private baseFont = 12;
   /** The wheel went to tmux since the last key: it may be in copy mode. */
   private scrolled = false;
@@ -604,32 +593,20 @@ export class NativeTerm {
     this.theme();
   }
 
-  /** cmux's look: its theme's palette and colors, and its font if it sets
-   *  one; the page's pane colors until it comes, or if it cannot. */
+  /** seamux's terminal colours for the mode in force, at once; then the
+   *  font a Ghostty or cmux config names, if any, when it comes. A plain grey
+   *  stands in only if the stylesheet has no --term-* tokens. */
   private theme(): void {
-    const cs = getComputedStyle(document.documentElement);
-    const bg = cs.getPropertyValue("--pane-bg").trim() || "#1e1e1e";
-    const fg = cs.getPropertyValue("--pane-fg").trim() || "#dddddd";
-    if (!this.term.options.theme?.background) this.term.options.theme = { background: bg, foreground: fg, cursor: fg, selectionBackground: "#5a6a7a" };
-    void cmuxLook().then((l) => {
-      if (!l) return;
-      const names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const;
-      const theme: Record<string, string> = {
-        background: l.background ?? bg,
-        foreground: l.foreground ?? fg,
-        cursor: l.cursor ?? l.foreground ?? fg,
-        selectionBackground: l.selectionBackground ?? "#5a6a7a",
-      };
-      if (l.cursorText) theme.cursorAccent = l.cursorText;
-      if (l.selectionForeground) theme.selectionForeground = l.selectionForeground;
-      for (const [n, c] of Object.entries(l.palette)) {
-        const i = Number(n);
-        if (i < 16) theme[i < 8 ? names[i] : "bright" + names[i - 8][0].toUpperCase() + names[i - 8].slice(1)] = c;
-      }
+    const theme = colours();
+    if (theme) {
       this.term.options.theme = theme;
       this.el.style.background = theme.background;
-      if (l.fontFamily) this.term.options.fontFamily = `"${l.fontFamily.replace(/"/g, "")}", ${FONT}`;
-      if (l.fontSize) this.baseFont = Math.min(l.fontSize, 13);
+    } else if (!this.term.options.theme?.background) {
+      this.term.options.theme = { background: "#1e1e1e", foreground: "#dddddd", cursor: "#dddddd", selectionBackground: "#5a6a7a" };
+    }
+    void configFont().then((f) => {
+      if (f?.fontFamily) this.term.options.fontFamily = `"${f.fontFamily.replace(/"/g, "")}", ${FONT}`;
+      if (f?.fontSize) this.baseFont = Math.min(f.fontSize, 13);
       this.term.options.fontSize = savedFont(this.surface) ?? this.baseFont;
       if (this.visible()) this.fit.fit();
     });

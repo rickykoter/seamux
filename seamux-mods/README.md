@@ -15,6 +15,7 @@ because nothing here is load-bearing.
 | The gate band | When deep-plan's gate refuses an edit, a row above the prompt shows the refusal with `go next`, `open plan` and `dismiss`. ctrl+x tab focuses it, or click it. | `deep-plan go <slug> next` |
 | The status entry | `<slug> 1/7 · ▶ 2 · ↻ 1 running · cache 42m` under the prompt: progress, the open increment or `gate shut`, detached checks still running (or `⚠ 1 lost` when a runner died without a verdict; `run checks` starts it again), and the prompt cache's clock | the same status call, every 5s while the state directory changes, every 30s otherwise |
 | The ask toast | `Ask page: http://127.0.0.1:<port>/ask/<id>` when AskUserQuestion runs within a minute of a `deep-plan ask` for this directory | reads `~/.claude/plans/asks` |
+| Themes | `seamux dark`, `seamux light` and `seamux foam` in `/theme`, so Claude Code's own colours (the prompt border, a selected answer, diffs, the band behind your messages) match seamux's terminal. Pick one there; seamux never sets it for you. | nothing: Claude Code reads `themes/*.json` |
 
 The command is `/plan-pane` because `/plan` is a built-in, and the engine
 refuses a plugin that registers a built-in's name.
@@ -22,6 +23,38 @@ refuses a plugin that registers a built-in's name.
 The band's buttons carry letter hotkeys, never digits. A bare digit typed into
 an empty prompt answers a band button, and a gate's go-ahead must not be one
 stray keypress away.
+
+## Themes
+
+`tools/theme_sync.py` generates the three files in `themes/` from seamux's
+palette (`theme/everforest.css`). Edit the palette, not the JSON, then run
+`python3 tools/theme_sync.py`. Its `--check` holds every theme to contrast in
+each mode it serves.
+
+- **seamux dark** and **seamux light** use seamux's exact colours on Claude
+  Code's dark and light bases. Each one reads well in its own mode only, so
+  switch in `/theme` when you flip the app's appearance.
+- **seamux foam** names terminal slots (`ansi:blue`, `ansi:green`) instead of
+  colours, so it repaints the moment the terminal's palette changes, and
+  needs no `/theme` change when you flip. It builds on Claude Code's
+  `light-ansi` base.
+
+Foam pays for that with what a slot can't give in both modes. In seamux's
+terminal:
+
+- Text is the black slot, a mid grey in dark: 4.1:1 on the ground and 3.8:1
+  on the bright white bands under your messages and bash output. Those bands
+  are soft in light and glaring in dark.
+- Quiet text (hints, inactive items) is a light grey in dark, faint on those
+  bands.
+- Diff lines lie on the green and red slots, which are word colours, so the
+  code on them is hard to read in both modes.
+- The word on a coloured chip is bright white, faint on dark mode's light
+  chips.
+
+The check names these as foam's known limits and fails on any new one. For
+diffs, or long sessions in one mode, seamux dark or seamux light reads
+better.
 
 ## How it finds things
 

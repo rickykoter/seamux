@@ -33,13 +33,14 @@ function systemDark(): boolean {
 
 /** The button's tooltip: the choice, the look it gives now, and what a click
  *  does. Claude Code draws some of its own colours in the terminal (a
- *  selected answer, the prompt bars) from its own theme, which seamux never
- *  sets, so the tooltip says which /theme to pick to match. */
+ *  selected answer, the prompt border, diffs) from its own theme, which
+ *  seamux never sets, so the tooltip names the seamux-mods themes to pick in
+ *  /theme: foam follows this button, dark and light fit one mode each. */
 export function said(a: Appearance, dark: boolean): string {
   const then0 = next(a);
   const now = a === "system" ? `follows the system (${dark ? "dark" : "light"} now)` : a;
   const then = then0 === "system" ? "to follow the system" : `for ${then0}`;
-  return `Appearance: ${now}. Click ${then}. In the terminal, Claude Code's own colours follow its /theme: pick a ${dark ? "dark" : "light"} one to match.`;
+  return `Appearance: ${now}. Click ${then}. To match Claude Code's colours, pick a theme in its /theme: seamux foam follows this button, and seamux ${dark ? "dark" : "light"} fits this mode.`;
 }
 
 /** The short word shown beside the icon after a click. */
