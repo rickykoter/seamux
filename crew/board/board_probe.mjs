@@ -458,7 +458,7 @@ for (const [mode, T] of [["dark", TOK], ["light", TOKL]]) {
     if (sel.startsWith(":root") || /^(from|to|\d)/.test(sel)) continue;     // tokens, keyframes
     // The sprite's z's are drawn on the shelf, never on a card ground: they
     // were SVG fill until the sprites became sheets, and are decoration.
-    if (sel.startsWith("#cat")) continue;
+    if (/^#cat \.zz$/.test(sel)) continue;
     for (const d of rule[2].matchAll(/(?:^|[;{\s])color:\s*([^;]+)/g)) {
       const v = d[1].trim();
       // A signal's own colour, lifted per mode by render.js: measured below.

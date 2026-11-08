@@ -59,8 +59,13 @@ pub fn parse(stem: &str, src: &str) -> Result<Sprite, String> {
     if id != stem {
         return Err(at(format!("id {id:?} is not the file's name")));
     }
-    if !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-        return Err(at(format!("id {id:?}: lowercase letters, digits and - only")));
+    // It goes into an unquoted [data-sprite=...] selector: an identifier,
+    // so a lowercase letter first.
+    let ident = id.starts_with(|c: char| c.is_ascii_lowercase())
+        && id.len() <= 32
+        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !ident {
+        return Err(at(format!("id {id:?}: a lowercase letter, then lowercase letters, digits and - (32 at most)")));
     }
     let name = v["name"].as_str().ok_or_else(|| at("no name".into()))?.to_string();
     let order = v["order"].as_i64().ok_or_else(|| at("no order".into()))?;
@@ -411,6 +416,7 @@ mod tests {
     fn a_sprite_is_checked_cell_by_cell() {
         assert!(parse("t", &tiny("t")).is_ok());
         assert!(parse("u", &tiny("t")).unwrap_err().contains("not the file's name"));
+        assert!(parse("9lives", &tiny("9lives")).unwrap_err().contains("a lowercase letter"));
         assert!(parse("t", &tiny("t").replacen("\"aaaaaaaaaaaaaaaaaaaaaaaa\"", "\"aaa\"", 1)).unwrap_err().contains("want 24"));
         assert!(parse("t", &tiny("t").replacen("\"aaaaaaaaaaaaaaaaaaaaaaaa\"", "\"aaaaaaaaaaaaaaaaaaaaaaab\"", 1)).unwrap_err().contains("not in the palette"));
         assert!(parse("t", &tiny("t").replace("\"heart\":", "\"hearts\":")).unwrap_err().contains("unknown frame"));

@@ -397,7 +397,7 @@ function __boardIntent(cfg) {
         // The shelf's sprite, as chosen in the app (its Tray). A board no app
         // has told shows the default, the tuxedo.
         var cat = document.getElementById("cat");
-        if (cat && typeof d.sprite === "string" && /^[a-z0-9-]{1,32}$/.test(d.sprite)) cat.setAttribute("data-sprite", d.sprite);
+        if (cat && typeof d.sprite === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(d.sprite)) cat.setAttribute("data-sprite", d.sprite);
         shelfPick();
       }
     });
