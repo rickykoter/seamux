@@ -4,6 +4,7 @@ import { DEFAULT_TAB, Tabs } from "./tabs";
 import "./everforest.css";
 import { DockView } from "./dock";
 import "./dock.css";
+import "./tray.css";
 import "./newws.css";
 import "./reclaim.css";
 import { Wake } from "./wake";

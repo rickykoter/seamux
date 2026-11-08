@@ -53,18 +53,18 @@
 .pane-find-close { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent; color: inherit; opacity: 0.6; cursor: pointer; }
 .pane-find-close:hover { opacity: 1; background: color-mix(in srgb, var(--fg) 10%, transparent); }
 
-/* The Dock's cat (panecat.ts): peeks in at the bottom right while Claude
-   waits for you, hops with a heart when a long turn ends. Never takes the
-   mouse. */
+/* The Dock's sprite (panecat.ts), 48x30: peeks in at the bottom right while
+   Claude waits for you, its head and shoulders over the edge, and hops with a
+   heart when a long turn ends. Never takes the mouse. */
 .native-term { position: relative; }
 .pane-cat-box { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 3; }
-.pane-cat { position: absolute; right: 18px; bottom: -42px; line-height: 0; transition: bottom 0.35s ease; }
-.pane-cat[data-at="peek"] { bottom: -12px; }
-.pane-cat[data-at="up"] { bottom: 2px; transition-duration: 0.12s; }
-.pane-cat[data-at="air"] { bottom: 14px; transition-duration: 0.12s; }
-.pane-cat-heart { position: absolute; right: 26px; bottom: 34px; line-height: 0; opacity: 0; }
+.pane-cat { position: absolute; right: 18px; bottom: -34px; line-height: 0; transition: bottom 0.35s ease; }
+.pane-cat[data-at="peek"] { bottom: -6px; }
+.pane-cat[data-at="up"] { bottom: 0; transition-duration: 0.12s; }
+.pane-cat[data-at="air"] { bottom: 6px; transition-duration: 0.12s; }
+.pane-cat-heart { position: absolute; right: 18px; bottom: 4px; line-height: 0; opacity: 0; }
 .pane-cat-heart.up { animation: pane-heart 1.5s ease-out forwards; }
-@keyframes pane-heart { 0% { opacity: 0; transform: translateY(0); } 15% { opacity: 1; } 100% { opacity: 0; transform: translateY(-44px); } }
+@keyframes pane-heart { 0% { opacity: 0; transform: translateY(0); } 15% { opacity: 1; } 100% { opacity: 0; transform: translateY(-36px); } }
 
 /* The cursor shows Claude's state: it breathes while Claude works and is a
    steady amber while Claude waits for you (data-agent, from the pane's tile). */

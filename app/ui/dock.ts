@@ -10,9 +10,11 @@ import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { MigrateBanner } from "./migrate";
 import { NewWorkspace } from "./newws";
+import { sprite } from "./panecat";
 import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
+import { Tray } from "./tray";
 import { setLevel, setResume, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./tiles";
 
@@ -44,6 +46,8 @@ export class DockView {
   private reclaim = new ReclaimWizard();
   /** Sessions on the other backend that can move here, asked at launch. */
   private migrate = new MigrateBanner();
+  /** The shelf's sprites, opened by a click on the board's shelf. */
+  private tray = new Tray();
   /** A workspace just made here, and until when it is kept while cmux's
    *  frames catch up (it is not in them for a second or two). */
   private fresh: { ws: string; until: number } | null = null;
@@ -69,7 +73,9 @@ export class DockView {
     key.textContent = "⌘N";
     add.append(plus, label, key);
     add.addEventListener("click", () => void this.newws.open());
-    this.board.append(add, this.migrate.el, this.note);
+    this.board.append(add, this.migrate.el, this.note, this.tray.el);
+    // A sprite picked in the Tray: the board's shelf shows it too.
+    sprite.listen(() => this.tell());
     this.newws.onMade = (ws) => {
       this.fresh = { ws, until: Date.now() + 20_000 };
       this.select(ws, true);
@@ -122,6 +128,8 @@ export class DockView {
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;
       if (d?.crew === "reclaim" && typeof d.ws === "string" && d.ws) this.reclaim.open(d.ws, typeof r?.name === "string" ? r.name : d.ws);
+      // The board's shelf: its Tray, just under the shelf's 30px.
+      if (d?.crew === "sprites" && this.frame) this.tray.toggle(this.frame.offsetTop + 32);
       // The board's click handler is installed (its first push): mark ours.
       if (d?.crew === "ready") this.tell();
     });
@@ -242,13 +250,14 @@ export class DockView {
     this.tell();
   }
 
-  /** The board marks the workspace shown here, and learns what the app does
-   *  itself (its reclaim chip then asks here, not in a cmux terminal).
+  /** The board marks the workspace shown here, learns what the app does
+   *  itself (its reclaim chip then asks here, not in a cmux terminal, and its
+   *  shelf opens the Tray), and shows the sprite chosen here.
    *  `peek`: ⌘. brought it here, so its card opens for the visit only. */
   private tell(): void {
     const peek = !!this.peek && this.peek === this.ws;
     if (this.frame?.contentWindow && this.origin)
-      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim"], peek }, this.origin);
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites"], peek, sprite: sprite.get() }, this.origin);
   }
 
   private draw(): void {
