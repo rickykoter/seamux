@@ -6,6 +6,7 @@ import "./everforest.css";
 import "./desk.css";
 import { DockView } from "./dock";
 import "./dock.css";
+import "./tray.css";
 import "./newws.css";
 import "./reclaim.css";
 import { Wake } from "./wake";

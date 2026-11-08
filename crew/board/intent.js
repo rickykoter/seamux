@@ -56,7 +56,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "22";
+  var V = "23";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -394,6 +394,11 @@ function __boardIntent(cfg) {
         // What the app does itself instead of cmux (its reclaim wizard). An
         // app that never says keeps every chip going to cmux.
         if (Object.prototype.toString.call(d.can) === "[object Array]") host.setAttribute("data-app-can", d.can.join(" "));
+        // The shelf's sprite, as chosen in the app (its Tray). A board no app
+        // has told shows the default, the tuxedo.
+        var cat = document.getElementById("cat");
+        if (cat && typeof d.sprite === "string" && /^[a-z0-9-]{1,32}$/.test(d.sprite)) cat.setAttribute("data-sprite", d.sprite);
+        shelfPick();
       }
     });
     host.setAttribute("data-app-msg", V);
@@ -405,6 +410,35 @@ function __boardIntent(cfg) {
       try { window.parent.postMessage({ crew: "ready" }, ps[pi]); } catch (e) { /* a bad origin */ }
     }
   }
+
+  // The shelf, framed by an app that says it can pick sprites: a button that
+  // asks the app for its Tray. Top-level, as cmux's Dock, it is only a shelf.
+  function canPick() {
+    return (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" sprites ") >= 0;
+  }
+  function shelfPick() {
+    var shelf = document.getElementById("shelf");
+    if (!shelf || !canPick()) return;
+    shelf.setAttribute("data-pick", "1");
+    shelf.setAttribute("role", "button");
+    shelf.setAttribute("tabindex", "0");
+    shelf.setAttribute("aria-label", "Change the shelf's sprite");
+    shelf.setAttribute("title", "Change the sprite");
+    if (shelf.getAttribute("data-intent") === V) return;
+    var ask = function () {
+      if (shelf.getAttribute("data-intent") !== V || !canPick()) return;
+      tell({ crew: "sprites" });
+    };
+    shelf.addEventListener("click", ask);
+    shelf.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      ask();
+    });
+    shelf.setAttribute("data-intent", V);
+  }
+  // A push redraws nothing in the header, but a newer intent.js re-wires it.
+  if (framed()) shelfPick();
 
   if (host.getAttribute("data-intent") !== V) {
     host.addEventListener("click", function (ev) {

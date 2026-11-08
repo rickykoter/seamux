@@ -1810,6 +1810,10 @@ if (live && Array.isArray(live.rows)) {
   const APP = "tauri://localhost";
   byId.news = mk("details", { id: "news" });
   byId.news.parentElement = body;
+  byId.shelf = mk("div", { id: "shelf" });
+  byId.shelf.on = {};
+  byId.shelf.addEventListener = (type, fn) => { (byId.shelf.on[type] ||= []).push(fn); };
+  byId.cat = mk("div", { id: "cat", class: "nap" });
   createContext(box);
   runInContext(readFileSync(join(HERE, "intent.js"), "utf8"), box);
   box.__boardIntent({ port: 4242, token: "t", parents: [APP, "http://tauri.localhost"] });
@@ -1841,6 +1845,32 @@ if (live && Array.isArray(live.rows)) {
     fetched.length === 2 && m && m[0].ws === "WS-1" && m[0].name === "shipped-one"]);
   checks.push(["intent: what names a workspace goes to the app's origin only",
     !!m && m[1] === APP && posted.every(([, o]) => o !== "*")]);
+  // The shelf: a button for the app's Tray only once the app says it can pick
+  // sprites, and the sprite the app's selected message names goes on #cat.
+  {
+    const shelf = byId.shelf, cat = byId.cat;
+    const press = (type, ev = {}) => (shelf.on[type] || []).forEach((fn) => fn({ type, preventDefault() {}, ...ev }));
+    const asks = () => posted.filter(([x]) => x.crew === "sprites");
+    press("click");
+    checks.push(["shelf: framed by an app that has not said it can pick sprites, the shelf is no button",
+      !shelf.hasAttribute("data-pick") && asks().length === 0 && !cat.hasAttribute("data-sprite")]);
+    const say = (data) => winListeners.forEach((fn) => fn({ source: parent, origin: APP, data: { crew: "selected", ws: "", ...data } }));
+    say({ can: ["reclaim", "sprites"], sprite: "owl" });
+    checks.push(["shelf: once the app can, the selected message's sprite goes on #cat and the shelf is a button",
+      cat.getAttribute("data-sprite") === "owl" && shelf.getAttribute("data-pick") === "1" &&
+      shelf.getAttribute("role") === "button" && shelf.getAttribute("tabindex") === "0"]);
+    press("click");
+    press("keydown", { key: "Enter" });
+    press("keydown", { key: "a" });
+    checks.push(["shelf: a click or Enter asks the app for its Tray, at the app's origin only",
+      asks().length === 2 && asks().every(([, o]) => o === APP), JSON.stringify(asks())]);
+    say({ can: ["reclaim", "sprites"], sprite: "<img onerror=x>" });
+    say({ can: ["reclaim", "sprites"] });
+    checks.push(["shelf: a sprite name that is not a plain id, or none, leaves #cat as it was",
+      cat.getAttribute("data-sprite") === "owl"]);
+    say({ can: ["reclaim", "sprites"], sprite: "robot" });
+    checks.push(["shelf: a new choice in the app changes #cat", cat.getAttribute("data-sprite") === "robot"]);
+  }
   // ⌘. in the app (selected with peek): the folded card opens for the visit,
   // and goes back to folded when the app shows something else.
   {
