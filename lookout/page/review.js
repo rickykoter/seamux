@@ -496,23 +496,28 @@
     ];
   }
 
+  // A watch item: its file:line (mono, the one place the Overview uses it)
+  // goes to the line; a line the diff does not show says so.
   function watchLink(w) {
     return el("li", null, el("a", { href: "#", class: "wloc", onclick: e => { e.preventDefault(); goToLine(w.file, w.side || "new", w.line); } },
       `${w.file.slice(w.file.lastIndexOf("/") + 1)}:${w.line}`), w.outside ? el("span", { class: "outside-tag", title: "a line the diff does not show" }, " outside") : null,
-      " ", w.text);
+      " — ", w.text);
   }
 
-  function noteBody(n) {
+  // A note, compacted: why it is risky and its direction as two short
+  // paragraphs, the watch list, any drift, its touches as chips. No caps
+  // labels: the order says which is which. `lead` skips the direction when
+  // the group's row already shows all of it.
+  function noteBody(n, { lead = false } = {}) {
     const drift = (n.drift || []).map(id => (R.findings || []).find(f => f.id === id)).filter(Boolean);
     return el("div", { class: "note-body" },
-      el("div", { class: "nfield" }, el("div", { class: "nlabel" }, "Why it is risky"), el("div", null, n.why_risky)),
-      el("div", { class: "nfield" }, el("div", { class: "nlabel" }, "Direction"), el("div", null, n.direction)),
-      (n.watch || []).length ? el("div", { class: "nfield" }, el("div", { class: "nlabel" }, "Watch for"),
-        el("ul", { class: "watch" }, n.watch.map(watchLink))) : null,
-      drift.length ? el("div", { class: "nfield drift" }, el("div", { class: "nlabel" }, "Drift from the plan"),
+      n.why_risky ? el("p", { class: "nwhy" }, n.why_risky) : null,
+      lead ? null : el("p", { class: "ndir" }, n.direction),
+      (n.watch || []).length ? el("ul", { class: "watch" }, n.watch.map(watchLink)) : null,
+      drift.length ? el("div", { class: "ndrift" }, el("span", { class: "ndrift-lead" }, "Drift from the plan:"),
         el("ul", { class: "watch" }, drift.map(f => el("li", null,
           el("a", { href: "#", class: "wloc", onclick: e => { e.preventDefault(); goTo(f.id); } }, f.id),
-          ` ${f.severity}${isOpen(f) ? "" : " (" + f.status + ")"} `, f.short_summary || f.summary)))) : null,
+          ` ${f.severity}${isOpen(f) ? "" : " (" + f.status + ")"} — `, f.short_summary || f.summary)))) : null,
       (n.touches || []).length ? el("div", { class: "touches" }, n.touches.map(t => el("span", { class: "touch" }, TOUCH[t] || t))) : null);
   }
 
@@ -541,11 +546,20 @@
       status);
   }
 
-  function noteCard(n) {
+  // Small file links on one line; a click opens the file's diff.
+  const fileLinks = paths => el("div", { class: "nfiles" }, paths.map(p => el("a", { href: "#", class: "gfile", title: p,
+    onclick: e => { e.preventDefault(); select(p); } }, p.slice(p.lastIndexOf("/") + 1), badge(p))));
+
+  // One note inside an opened group. `lead`: the row shows its whole direction.
+  // A note whose files differ from the group's leads with its own.
+  // `gone`: its files left the diff, so they are named but not links.
+  function noteCard(n, { lead = false, files = null, gone = false } = {}) {
+    const own = gone || (files && [...n.files].sort().join("\n") !== [...files].sort().join("\n"));
+    const names = gone ? el("div", { class: "nfiles" }, n.files.map(p => el("span", { class: "gfile gone", title: p }, p.slice(p.lastIndexOf("/") + 1))))
+      : fileLinks(n.files);
     return el("div", { class: "note", "data-note": n.id },
-      el("div", { class: "note-head" }, el("span", { class: "nid" }, n.id),
-        el("span", { class: "nfiles" }, n.files.map(p => p.slice(p.lastIndexOf("/") + 1)).join(", ")), ...marks(n)),
-      asking(n) ? quizBlock(n) : [n.quiz && n.quiz.answered ? quizBlock(n) : null, noteBody(n)]);
+      own ? el("div", { class: "note-head" }, names, ...marks(n)) : null,
+      asking(n) ? quizBlock(n) : [n.quiz && n.quiz.answered ? quizBlock(n) : null, noteBody(n, { lead })]);
   }
 
   // The strip above a file's diff: one line per note about it, expanding to
@@ -568,48 +582,120 @@
         el("span", { class: "chev" }, openNow ? "▾" : "▸"),
         el("span", { class: "sgroup" }, n.group || n.id),
         el("span", { class: "sline" }, n.direction), ...marks(n)),
-      openNow ? noteBody(n) : null);
+      openNow ? noteBody(n, { lead: true }) : null);
     return node;
   }
 
-  // The architecture pass: every group, riskiest first, with its notes.
+  // The architecture pass: one folded row per group, riskiest first. A row
+  // is its band, a headline (its first note's direction, first sentence)
+  // and counts; a click, Enter or Space opens just that group. Which are
+  // open is kept per review for the tab (sessionStorage), so a redraw or a
+  // reload leaves them as they were.
   let overview = false;
+  const OV_OPEN = "lookout.ovopen." + R.id;
+  const ovOpen = new Set((() => { try { return JSON.parse(sessionStorage.getItem(OV_OPEN) || "[]"); } catch { return []; } })());
+  const saveOvOpen = () => { try { sessionStorage.setItem(OV_OPEN, JSON.stringify([...ovOpen])); } catch { /* private window */ } };
+  // The first sentence: up to a stop followed by a capital (so "e.g. x" holds).
+  const firstSentence = s => { const t = String(s || "").trim(); const m = t.match(/^[\s\S]*?[.!?](?=\s+[A-Z("'`]|$)/); return m ? m[0] : t; };
+  const LOST = "lost";
+  // A group's section (or the notes whose files left the diff, key LOST).
+  function ovSection(key) {
+    const lost = key === LOST;
+    const g = lost ? null : (R.groups || []).find(x => x.id === key);
+    const mine = notesOf().filter(n => lost ? !n.group : n.group === key);
+    if (!lost && !g) return null;
+    const band = lost ? null : g.band || bandOf(g.risk);
+    const files = lost ? [...new Set(mine.flatMap(n => n.files))] : g.files;
+    const isOpenNow = ovOpen.has(key);
+    const first = mine[0];
+    const ask = mine.some(asking);
+    const headline = lost ? "Notes on files no longer in the diff"
+      : !first ? "No note for this group"
+      : asking(first) ? "The note shows once its question is answered" : firstSentence(first.direction);
+    const findings = files.reduce((k, p) => k + openFindings(p).length, 0);
+    const watch = mine.reduce((k, n) => k + (asking(n) ? 0 : (n.watch || []).length), 0);
+    const counts = [lost ? plural(mine.length, "note") : plural(files.length, "file"),
+      findings ? plural(findings, "finding") : null, watch ? `${watch} to watch` : null].filter(Boolean).join(" · ");
+    const why = lost ? [] : [...new Set((g.edges || []).map(e => e.why))];
+    const title = [lost ? null : `${g.id}, ${band} risk`, why.length ? "Grouped: " + why.join("; ") : null,
+      first && !asking(first) ? first.direction : null].filter(Boolean).join("\n");
+    // Marks once each: one "stale" for the group, a "partial" per note.
+    const seen = new Set();
+    const rowMarks = mine.flatMap(marks).filter(m => m && !seen.has(m.textContent) && seen.add(m.textContent));
+    const toggle = () => {
+      isOpenNow ? ovOpen.delete(key) : ovOpen.add(key);
+      saveOvOpen();
+      const next = ovSection(key);
+      // A fresher review may have dropped this group: its row goes.
+      if (!next) { sec.remove(); return; }
+      sec.replaceWith(next);
+      next.querySelector(".ov-sum").focus({ preventScroll: true });
+    };
+    const sum = el("div", { class: "ov-sum", role: "button", tabindex: "0", "aria-expanded": String(isOpenNow), "data-key": key, title,
+      onclick: e => { if (!e.target.closest("a")) toggle(); },
+      onkeydown: e => {
+        if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        else if (e.key === "Escape" && isOpenNow && $("keys").hidden) { e.preventDefault(); toggle(); }
+        else if (/^(ArrowDown|ArrowUp|Home|End)$/.test(e.key)) {
+          const all = [...document.querySelectorAll("#diff .ov-sum")];
+          const i = all.indexOf(e.currentTarget);
+          const to = e.key === "Home" ? 0 : e.key === "End" ? all.length - 1 : Math.max(0, Math.min(all.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
+          e.preventDefault();
+          all[to].focus();
+        }
+      } },
+      el("span", { class: "dot" + (lost ? " lost" : " band-" + band) }),
+      el("span", { class: "gband" }, lost ? "" : band),
+      el("span", { class: "ov-hl" + (lost ? "" : !first || asking(first) ? " none" : "") }, headline),
+      el("span", { class: "ov-meta" },
+        ask ? el("span", { class: "ov-q", title: "A question waits before this group's note: open the group to answer it." }, "? answer first") : null,
+        ...rowMarks,
+        el("span", { class: "ov-counts" }, counts)),
+      el("span", { class: "chev", "aria-hidden": "true" }, isOpenNow ? "▾" : "▸"));
+    const body = isOpenNow ? el("div", { class: "ov-body",
+      onkeydown: e => {
+        if (e.key !== "Escape" || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || !$("keys").hidden) return;
+        e.preventDefault(); toggle();
+      } },
+      mine.length ? mine.map((n, i) => noteCard(n, { lead: i === 0 && !asking(n) && n.direction.trim() === headline, files: lost ? null : files, gone: lost })) : null,
+      lost ? null : fileLinks(files)) : null;
+    const sec = el("section", { class: "ov-group" + (band ? " band-" + band : "") + (isOpenNow ? " open" : ""), "data-group": key }, sum, body);
+    return sec;
+  }
   function drawOverview() {
     const groups = R.groups || [];
     const ns = notesOf();
     const waiting = ns.filter(asking).length;
+    const watching = ns.reduce((k, n) => k + (asking(n) ? 0 : (n.watch || []).length), 0);
     const head = [el("span", { class: "path" }, "Overview"),
       el("span", { class: "from" }, `${plural(groups.length, "group")} · ${plural(ns.length, "note")}` +
+        (watching ? ` · ${watching} to watch` : "") +
         (quizOn() ? ` · quiz on${waiting ? `, ${waiting} to answer` : ""}` : ""))];
     $("file-head").replaceChildren(...head);
+    // A redraw (a fresher review) keeps the row that had focus focused.
+    const a = document.activeElement;
+    const focusKey = a && a.classList && a.classList.contains("ov-sum") ? a.dataset.key : null;
     const box = el("div", { class: "ov" });
     if (quizOn() && !served())
       box.append(el("div", { class: "ov-line" }, "This review has the quiz on, which needs crew's intent server to record answers. Opened as a file, the notes are shown in full."));
     if (!R.reviewedAt) box.append(el("div", { class: "ov-line" }, "No reviewer has reported yet: groups are lookout's, and there are no notes."));
     else if (!ns.length) box.append(el("div", { class: "ov-line" }, "The reviewer wrote no notes for this review."));
+    const list = el("div", { class: "ov-list" });
     for (const g of groups) {
-      const files = g.files.map(p => byPath().get(p)).filter(Boolean);
-      const mine = ns.filter(n => n.group === g.id);
       const band = g.band || bandOf(g.risk);
-      if (!mine.length && band === "low") continue;
-      const why = [...new Set((g.edges || []).map(e => e.why))];
-      box.append(el("section", { class: "ov-group band-" + band, "data-group": g.id },
-        el("div", { class: "ov-head" }, el("span", { class: "dot band-" + band }), el("span", { class: "gid" }, g.id),
-          el("span", { class: "gband" }, band),
-          el("span", { class: "gfiles" }, files.map(f => el("a", { href: "#", class: "gfile", title: f.path,
-            onclick: e => { e.preventDefault(); select(f.path); } }, f.path.slice(f.path.lastIndexOf("/") + 1), badge(f.path))))),
-        why.length ? el("div", { class: "ov-why" }, why.join(" · ")) : null,
-        mine.length ? mine.map(noteCard) : el("div", { class: "ov-none" }, "No note for this group.")));
+      if (band === "low" && !ns.some(n => n.group === g.id)) continue;
+      list.append(ovSection(g.id));
     }
+    if (ns.some(n => !n.group)) list.append(ovSection(LOST));
+    if (list.childNodes.length) box.append(list);
     const low = groups.filter(g => (g.band || bandOf(g.risk)) === "low" && !ns.some(n => n.group === g.id));
     if (low.length)
       box.append(el("div", { class: "ov-line" }, `${plural(low.length, "low-risk group")} without notes: `,
         ...low.flatMap(g => g.files).map((p, i) => [i ? ", " : "", el("a", { href: "#", class: "gfile",
           onclick: e => { e.preventDefault(); select(p); } }, p.slice(p.lastIndexOf("/") + 1))])));
-    const lost = ns.filter(n => !n.group);
-    if (lost.length)
-      box.append(el("section", { class: "ov-group" }, el("div", { class: "ov-head" }, "Notes on files no longer in the diff"), lost.map(noteCard)));
     $("diff").replaceChildren(box);
+    if (focusKey) { const r = box.querySelector(`.ov-sum[data-key="${CSS.escape(focusKey)}"]`); if (r) r.focus({ preventScroll: true }); }
   }
 
   // The Map view: the plan's End state map (lookout open --plan-map) against
@@ -710,10 +796,19 @@
     try { history.replaceState(null, "", "#overview"); } catch { /* file:// in some hosts */ }
     for (const r of document.querySelectorAll("#tree .row")) r.classList.remove("sel");
     drawOverviewChrome();
+    // A note asked for (a strip, a link): its group opens, and comes into view.
+    const n = noteId && notesOf().find(x => x.id === noteId);
+    const key = n ? n.group || LOST : null;
+    if (key && !ovOpen.has(key)) { ovOpen.add(key); saveOvOpen(); }
     drawOverview();
     $("main").scrollTop = 0;
-    const c = noteId && document.querySelector(`[data-note="${CSS.escape(noteId)}"]`);
-    if (c) { c.scrollIntoView({ block: "center" }); c.classList.add("flash"); }
+    const sec = key && document.querySelector(`#diff .ov-group[data-group="${CSS.escape(key)}"]`);
+    if (sec) {
+      sec.scrollIntoView({ block: "start" });
+      sec.querySelector(".ov-sum").focus({ preventScroll: true });
+      const c = sec.querySelector(`[data-note="${CSS.escape(noteId)}"]`);
+      if (c) c.classList.add("flash");
+    }
   }
   function drawOverviewChrome() {
     $("ov-btn").setAttribute("aria-pressed", String(overview));
