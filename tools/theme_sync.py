@@ -3,8 +3,9 @@
 
     python3 tools/theme_sync.py           write it where it is out of date
     python3 tools/theme_sync.py --check   exit 1, naming each stale page,
-                                          text token under 4.5:1 or role
-                                          fill under 3:1
+                                          text token under 4.5:1, role
+                                          fill under 3:1 or terminal slot
+                                          under 4.5:1
 
 The pages cannot read theme/ at run time: crew runs from a copy of crew/
 (crew apply), the plugins from their own folders, and deep-plan inlines its
@@ -28,6 +29,14 @@ text-quiet, link, every -t) to 4.5:1 and each fill (the states, focus,
 primary) to GRAPHIC:1 on ROLE_GROUNDS, the primary's ink to 4.5:1 on the
 primary, and the two light copies to the same values. Lines and edges are
 separators and held to nothing.
+
+The --term-* tokens are the app's terminal palette: ground, words, cursor,
+selection and the 16 ANSI slots. --check holds the words and each slot a
+program prints words in to 4.5:1 on --term-bg, the selection's words to
+4.5:1 on the selection, the cursor to GRAPHIC:1 on the ground and the
+letter under it to 4.5:1 on the cursor. A selection is a tint, held only
+through its words. The slots a terminal
+paints as grounds (TERM_GROUND_SLOTS) are held to nothing.
 """
 
 import pathlib
@@ -76,9 +85,34 @@ STATES = ("attend", "working", "done", "broken")
 # Every block carries every role, so no surface finds one missing in a mode.
 ROLES = ROLE_WORDS | ROLE_FILLS | ROLE_FREE | {s + "-t" for s in STATES}
 
+# The terminal's own colours, beside the 16 ANSI slots (--term-0 .. --term-15).
+TERM_KEYS = {"bg", "text", "cursor", "cursor-text", "selection", "selection-text"} | {str(i) for i in range(16)}
+# Slots programs paint as grounds rather than print words in: black in dark
+# (Claude Code's dark-ansi theme fills its bash and inverse text with it),
+# bright white in light (its light-ansi theme's bash background).
+TERM_GROUND_SLOTS = {"dark": {"0"}, "light": {"15"}}
+
 
 def tokens(css: str) -> dict[str, str]:
     return dict(re.findall(r"--ef-([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})", css))
+
+
+def terms(css: str) -> dict[str, str]:
+    return dict(re.findall(r"--term-([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})", css))
+
+
+def term_failures(mode: str, t: dict[str, str]) -> list[str]:
+    missing = sorted(TERM_KEYS - t.keys(), key=lambda k: (k.isdigit(), int(k) if k.isdigit() else 0, k))
+    if missing:
+        return [f"{mode}: missing --term-" + ", --term-".join(missing)]
+    out = []
+    pairs = [("text", "bg", FLOOR), ("selection-text", "selection", FLOOR), ("cursor", "bg", GRAPHIC), ("cursor-text", "cursor", FLOOR)]
+    pairs += [(str(i), "bg", FLOOR) for i in range(16) if str(i) not in TERM_GROUND_SLOTS[mode]]
+    for k, g, floor in pairs:
+        r = ratio(t[k], t[g])
+        if r < floor:
+            out.append(f"{mode} --term-{k} {t[k]} on --term-{g} {t[g]} is {r:.2f}:1, under {floor}:1")
+    return out
 
 
 def roles(css: str, ef: dict[str, str]) -> dict[str, str]:
@@ -116,7 +150,8 @@ def contrast_failures() -> list[str]:
     # and that the two say the same.
     dark, media, light = blocks(css)
     out = []
-    if (tokens(media), re.findall(r"--role-[^;]+;", media)) != (tokens(light), re.findall(r"--role-[^;]+;", light)):
+    same = lambda b: (tokens(b), re.findall(r"--role-[^;]+;", b), terms(b))
+    if same(media) != same(light):
         out.append('light: the media block and :root[data-theme="light"] differ')
     for mode, block_ in (("dark", dark), ("light", light)):
         t = tokens(block_)
@@ -130,6 +165,7 @@ def contrast_failures() -> list[str]:
                 if r < FLOOR:
                     out.append(f"{mode} --ef-{k} {t[k]} on --ef-{g} {t[g]} is {r:.2f}:1")
         out += role_failures(mode, t, roles(block_, t))
+        out += term_failures(mode, terms(block_))
     return out
 
 
@@ -211,7 +247,7 @@ def main(argv: list[str]) -> int:
             print("theme sync: out of date, run python3 tools/theme_sync.py: " + ", ".join(stale), file=sys.stderr)
         if stale or weak:
             return 1
-        print(f"theme sync: {len(TARGETS)} pages match theme/everforest.css; every text token and role word is {FLOOR}:1 or better, every role fill {GRAPHIC}:1")
+        print(f"theme sync: {len(TARGETS)} pages match theme/everforest.css; every text token, role word and terminal word slot is {FLOOR}:1 or better, every role fill {GRAPHIC}:1")
         return 0
     print(f"theme sync: wrote {len(stale)} of {len(TARGETS)} pages" + (": " + ", ".join(stale) if stale else ""))
     return 0
