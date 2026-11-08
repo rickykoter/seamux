@@ -54,6 +54,8 @@ type PageState = {
   keys: boolean;
   /** Whether the page's file list shows its own Overview row. */
   ovRow?: boolean;
+  /** Open findings by severity, the set the gate pill counts. */
+  open?: Record<string, number>;
 };
 /**
  * How the header row gives up width when it runs short, one step at a time:
@@ -440,7 +442,9 @@ export class ReviewView {
   }
 
   private async loadFindings(j: Job): Promise<void> {
-    const key = `${runOf(j)}|${JSON.stringify(j.open)}|${j.busy}|${j.ahead}`;
+    // The framed page's counts move first when the reader resolves one there:
+    // the list reloads then, so the button and the gate pill say the same number.
+    const key = `${runOf(j)}|${JSON.stringify(j.open)}|${JSON.stringify(this.pageState?.open ?? null)}|${j.busy}|${j.ahead}`;
     if (this.findings.get(j.id)?.key === key) return;
     this.findings.set(j.id, { key, rows: this.findings.get(j.id)?.rows ?? [] });
     try {
@@ -1026,8 +1030,10 @@ export class ReviewView {
   }
 
   /**
-   * The header's one control for findings, "N findings ▾" ("N findings · M
-   * picked ▾" once some are picked), and what goes under the header row. It
+   * The header's one control for findings, "N open ▾" ("N open · M picked
+   * ▾" once some are picked), and what goes under the header row. N is the
+   * set the gate pill counts ("blocked · N open"): every finding not
+   * resolved or dismissed. It
    * opens one panel: the picker on top (Pick all, Blockers and majors,
    * Clear, then the list), and below it Edit, Fix with commits and Post
    * comments, acting on the picks, and Push. It is the header's one filled
@@ -1045,9 +1051,11 @@ export class ReviewView {
 
     if (j.cross) out.push(el("p", "r-detail bad", "From a fork: its code is untrusted. Editing and fixing run an agent over it; read the diff before trusting a result."));
 
-    // The gate pill counts what is open by severity; this button, how many
-    // are open and picked. Short of width, an icon and "M/N".
-    const words = total ? `${total} finding${total === 1 ? "" : "s"}${n ? ` · ${n} picked` : ""}` : "No open findings";
+    // The same word and set as the gate pill: "N open"; its tooltip gives
+    // the breakdown by severity, as the pill's does. Short of width, an icon and "M/N".
+    const bySev: Record<string, number> = {};
+    for (const f of rows) bySev[f.severity] = (bySev[f.severity] ?? 0) + 1;
+    const words = total ? `${total} open${n ? ` · ${n} picked` : ""}` : "No open findings";
     const short = this.folds("findings");
     const toggle = el("button", `r-btn pickbtn${n ? " primary" : ""}${short ? " short" : ""}`);
     if (short) {
@@ -1055,7 +1063,7 @@ export class ReviewView {
       toggle.setAttribute("aria-label", words);
     } else toggle.textContent = `${words} ▾`;
     toggle.disabled = !total && !canPush;
-    toggle.title = n ? `Edit, fix or post the ${n} picked, or pick others` : total ? "Pick findings to edit, fix or post" : "Push the fixes' commits";
+    toggle.title = (total ? `${openSummary(bySev)}. ` : "") + (n ? `Edit, fix or post the ${n} picked, or pick others` : total ? "Pick findings to edit, fix or post" : "Push the fixes' commits");
 
     const acts: HTMLButtonElement[] = [];
     const none = "Pick findings first";
@@ -1154,7 +1162,11 @@ export class ReviewView {
       });
       const label = el("label");
       label.title = `${f.file}:${f.line}: ${f.summary}`;
-      label.append(cb, el("span", `r-sev ${f.severity}`, f.severity), el("span", "r-loc", `${f.file.split("/").pop()}:${f.line}`), el("span", "r-sum", f.summary));
+      // Chip and place lead the first line; the title flows after them and
+      // wraps to a second line (clamped), so it is not cut mid-word.
+      const text = el("span", "r-find-text");
+      text.append(el("span", `r-sev ${f.severity}`, f.severity), " ", el("span", "r-loc", `${f.file.split("/").pop()}:${f.line}`), " ", el("span", "r-sum", f.summary));
+      label.append(cb, text);
       li.append(label);
       ul.append(li);
     }
