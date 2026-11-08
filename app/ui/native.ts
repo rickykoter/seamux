@@ -41,10 +41,11 @@ type Look = {
  *  the app's own palette. Dark is Ghostty's Dark Hard. Light is seamux's own:
  *  Light Med's hues are 2:1 as words on its cream, so each colour is the
  *  palette's light word colour (theme/everforest.css, 4.5:1 or better on the
- *  ground, the brights a shade deeper), and a selection is a tint that
- *  shows. Bright white stays light: programs print it as a ground. */
+ *  ground, the brights a shade deeper; white and bright black are one
+ *  readable grey), and a selection is a tint that shows. Bright white
+ *  stays light: programs print it as a ground. */
 const DARK_PALETTE = ["#7a8478", "#e67e80", "#a7c080", "#dbbc7f", "#7fbbb3", "#d699b6", "#83c092", "#f2efdf", "#a6b0a0", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#fffbef"];
-const LIGHT_PALETTE = ["#5c6a72", "#ae3b39", "#5d6a01", "#815d00", "#296a8d", "#98477e", "#247053", "#6f7b72", "#5e6a62", "#9c2f2d", "#4f5a00", "#6f5000", "#215b79", "#843a6c", "#1d5f46", "#fffbef"];
+const LIGHT_PALETTE = ["#5c6a72", "#ae3b39", "#5d6a01", "#815d00", "#296a8d", "#98477e", "#247053", "#5e6a62", "#5e6a62", "#9c2f2d", "#4f5a00", "#6f5000", "#215b79", "#843a6c", "#1d5f46", "#fffbef"];
 function everforest(dark: boolean): Look {
   const p = dark ? DARK_PALETTE : LIGHT_PALETTE;
   return {

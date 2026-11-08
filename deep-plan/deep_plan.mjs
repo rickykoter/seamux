@@ -2001,7 +2001,7 @@ ${EVERFOREST_CSS.replace(/(:root[^{]*?)\s*\{/g, "$1 .dpwrap {")}
    palette above is scoped to .dpwrap: the host may inject this fragment
    into its own document, whose :root it must not restyle. */
 .dpsr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.dpwrap{padding:1rem 0}
+.dpwrap{padding:1rem 0;background:var(--surface-0,var(--ef-bg));color:var(--text-primary,var(--role-text))}
 .dpfig{margin:0 0 var(--gap-md,16px)}
 .dpcap{font-size:var(--fs-3,13px);color:var(--text-muted,var(--role-text-quiet));margin-bottom:6px}
 .mermaid{background:var(--surface-1,var(--ef-bg1));border:1px solid var(--border,var(--role-edge));

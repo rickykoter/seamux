@@ -66,6 +66,9 @@ ROLE_GROUNDS = {
     "dark": ["bg-dim", "bg", "bg1", "card", "card3"],
     "light": ["bg-dim", "bg", "bg1", "bg3", "card3"],
 }
+# Words also sit on the tints: lookout puts a gate pill or an addressed
+# finding's status on a green, red or blue wash.
+ROLE_WORD_GROUNDS = {m: g + ["bg-green", "bg-red", "bg-blue"] for m, g in ROLE_GROUNDS.items()}
 ROLE_WORDS = {"text", "text-quiet", "link"}
 ROLE_FILLS = {"attend", "working", "done", "broken", "focus", "primary"}
 ROLE_FREE = {"line", "edge", "on-primary"}
@@ -148,7 +151,7 @@ def role_failures(mode: str, ef: dict[str, str], rs: dict[str, str]) -> list[str
         else:
             out.append(f"{mode} --role-{k}: not a known word, fill or separator role")
             continue
-        for g in ROLE_GROUNDS[mode]:
+        for g in (ROLE_WORD_GROUNDS if floor == FLOOR else ROLE_GROUNDS)[mode]:
             r = ratio(v, ef[g])
             if r < floor:
                 out.append(f"{mode} --role-{k} {v} on --ef-{g} {ef[g]} is {r:.2f}:1, under {floor}:1")
