@@ -6,6 +6,13 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **crew's probes build the seamux they test.** A crew probe used whatever
+  `app/target/debug/seamux` was on disk, so on a fresh worktree it failed
+  with "seamux does not register …" when it ran before the build, and on an
+  old one it tested stale Rust. `crew/tools/crew_impl` now runs
+  `cargo build -q -p seamux-cli` once per process (well under a second when
+  nothing changed) and fails with cargo's output when the build does. Set
+  `SEAMUX_BIN` to skip it (ADR 0083).
 - **The board's cat has company: five sprites on 2px cells.** The tuxedo cat
   is redrawn (soft-yellow eyes, a real tail, a 4-frame walk), and a sandy cat,
   a penguin, an owl and a little robot join it. All five have the same 18
@@ -35,8 +42,7 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   run every time instead of only under `CREW_IMPL`. restack's TypeSafe judge
   now finds `seamux typesafe`, `seamux cat_poses --from-swift` redraws the
   board's cat from crew.swift, and CI runs the crew probes in the macOS app
-  job after building seamux (ADRs 0077, 0078). Build seamux before running
-  a crew probe: `cargo build --manifest-path app/Cargo.toml -p seamux-cli`.
+  job after building seamux (ADRs 0077, 0078).
 
 - **deep-plan: plan pages lead with the bottom line, and the map is easier
   to browse.** The context and non-goals now come before the End state map.
