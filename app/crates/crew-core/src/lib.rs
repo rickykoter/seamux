@@ -23,6 +23,7 @@ pub mod pricing;
 pub mod published;
 pub mod py;
 pub mod pyjson;
+pub mod runs;
 pub mod status;
 pub mod typesafe;
 pub mod upgrade;
@@ -40,6 +41,7 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("crew-native", native::main),
     ("families", families::main),
     ("pricing", pricing::main),
+    ("runs", runs::main),
     ("typesafe", typesafe::main),
     ("workspace-open", workspace_open::main),
     ("workspaces", workspaces::main),

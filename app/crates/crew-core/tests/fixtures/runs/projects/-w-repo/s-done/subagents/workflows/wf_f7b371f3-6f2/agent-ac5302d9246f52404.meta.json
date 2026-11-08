@@ -1,0 +1,1 @@
+{"agentType":"workflow-subagent","isBuiltIn":true,"description":"judge 1","workflowPhase":"Say","spawnDepth":1,"requestShape":"foreground","requestNonInteractive":true,"model":"haiku","pickedEffortModel":"claude-haiku-5-5"}

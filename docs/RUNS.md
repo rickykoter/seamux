@@ -1,0 +1,172 @@
+# Runs and adapters
+
+A run is background work a Claude session started: one background sub-agent,
+or an orchestrated run of many agents, such as a Claude Code workflow.
+seamux reads runs through adapters. Each adapter turns one orchestrator's
+files into the same neutral model, `seamux.run/1`, and the Dock card, the
+transcript page and the run page read only that model. No orchestrator is
+built into the pages.
+
+Whether a session is still working comes from Claude Code's hooks, not from
+adapters. The Stop hook's `background_tasks` list, plus SubagentStart and
+SubagentStop, keep a pane's background list (`crew_core::status`). Adapters
+add the detail: labels, phases, models, times, tokens and results. If an
+adapter breaks, the card still says the session is working and only the
+detail is lost.
+
+`seamux runs <session-id> [--all]` prints a session's report. Without
+`--all`, only the adapters for the pane's current background tasks run.
+
+## The model: `seamux.run/1`
+
+An adapter prints one JSON document:
+
+```json
+{
+  "schema": "seamux.run/1",
+  "runs": [
+    {
+      "id": "wf_f7b371f3-6f2",
+      "kind": "workflow",
+      "name": "review-changes",
+      "task": "w1yenxe1b",
+      "status": "running",
+      "start": 1794147717444,
+      "end": null,
+      "cap": 4,
+      "phases": ["Review", "Verify"],
+      "totals": {"tokens": 21558},
+      "summary": null,
+      "notice": null,
+      "agents": [
+        {
+          "id": "a661f3333b54e409a",
+          "label": "review:bugs",
+          "phase": "Review",
+          "model": "claude-sonnet-5-5",
+          "state": "done",
+          "start": 1794147717463,
+          "end": 1794147719239,
+          "needsYou": false,
+          "tokens": 10779,
+          "result": {"badge": "7", "detail": "{\"score\": 7, \"why\": \"...\"}"},
+          "transcript": "/home/me/.claude/projects/-w-repo/<session>/subagents/workflows/wf_f7b371f3-6f2/agent-a661f3333b54e409a.jsonl"
+        }
+      ]
+    }
+  ]
+}
+```
+
+A run needs only `id` and `status`. An agent needs only `id` and `state`.
+Everything else is optional, and seamux fills the gaps: a missing name or
+label becomes the id, and missing totals are counted from the agents.
+
+| Field | Meaning |
+|---|---|
+| `status` | One of `running`, `done`, `failed`, `cancelled`, `unknown`. |
+| `kind` | `agent` for a lone sub-agent, `workflow` for an orchestrated run, or the adapter's own word. Without it, a run with one agent is `agent`. |
+| `task` | The Claude Code background task id this run is, when known. It ties the run to the pane's background list. |
+| `start`, `end` | Milliseconds since the epoch. |
+| `cap` | How many agents may run at once, if the orchestrator says. The run page draws it on the concurrency strip. |
+| `phases` | Phase titles in order. Agents name theirs in `phase`. |
+| `totals.tokens` | The run's tokens. Agents' `tokens` are summed when it is missing. |
+| `notice` | One line to show about this run, such as a note that the adapter read only part of it. |
+| agent `state` | One of `queued`, `running`, `done`, `failed`, `cancelled`. |
+| agent `needsYou` | The agent waits on the person. The run page raises a banner. |
+| agent `result.badge` | A few characters shown on a finished bar, such as a score or a verdict. Longer badges are cut to 8 characters. |
+| agent `result.detail` | Hover text, cut to 2,000 characters. |
+| agent `transcript` | An absolute path to the agent's JSONL transcript. The transcript page serves only paths an adapter listed. |
+
+seamux refuses a document it cannot read, and names the field: a missing or
+different `schema`, a status or state outside its list, a number that is not
+a number, or a relative transcript path. It keeps the first 50 runs and the
+first 500 agents of each.
+
+### The badge convention
+
+An adapter decides what goes on a bar. The workflow adapter follows one
+convention: when an agent returns an object with a `badge`, `score` or
+`verdict` field, that field is the badge. A string that holds such an
+object counts too, fenced or not. Any other result has no badge, and hover shows its first lines.
+A workflow opts in by what its agents return.
+
+## Command adapters
+
+An adapter is a folder under `~/.config/seamux/adapters/` (or
+`$SEAMUX_ADAPTERS_DIR`). It holds a manifest and a program in any language:
+
+```json
+{
+  "schema": "seamux.adapter/1",
+  "name": "my-orchestrator",
+  "recognizes": ["teammate"],
+  "command": ["python3", "adapter.py"],
+  "timeoutMs": 3000
+}
+```
+
+- `recognizes` lists the Claude Code background task types the adapter
+  reads, as `background_tasks` names them (`subagent`, `workflow`,
+  `teammate` and so on). The board runs an adapter only while a session has
+  a background task of one of its types.
+- `command` runs in the adapter's folder. Its context arrives on stdin, and
+  it prints one `seamux.run/1` document on stdout.
+- `timeoutMs` defaults to 3,000 and is capped at 10,000. A command still
+  running at its timeout is killed.
+
+The context on stdin:
+
+```json
+{
+  "schema": "seamux.context/1",
+  "session": "9c328a5c-81d2-4f6f-95bc-605f17e4fc05",
+  "sessionDir": "/home/me/.claude/projects/-w-repo/9c328a5c-81d2-4f6f-95bc-605f17e4fc05",
+  "transcript": "/home/me/.claude/projects/-w-repo/9c328a5c-81d2-4f6f-95bc-605f17e4fc05.jsonl",
+  "cwd": "/w/repo",
+  "background": [
+    {"kind": "workflow", "id": "w1yenxe1b", "label": "review-changes", "at": 1794147717000}
+  ]
+}
+```
+
+seamux caches each result until a file under the session's folder or the
+adapter's own folder changes, so an adapter runs only when there is
+something new to read.
+
+### When an adapter is missing or fails
+
+A background task type that no adapter recognizes is reported as a notice:
+"2 background tasks from teammate: no adapter". So is an adapter that fails:
+"adapter my-orchestrator failed: exited with 1: <its first stderr line>".
+A failure is a non-zero exit, a timeout, output that is not JSON, or a
+document that does not validate. One adapter's failure does not hide the
+others' runs. A folder whose manifest cannot be read is reported the same
+way.
+
+## The built-in Claude Code adapters
+
+Both read Claude Code's files under `~/.claude/projects/<project>/<session>/`.
+That layout is undocumented. What follows was seen with Claude Code 2.1.319,
+and the fixtures in `app/crates/crew-core/tests/fixtures/runs` are trimmed
+copies of it.
+
+**claude-subagents** (recognizes `subagent`) reads each
+`subagents/agent-<id>.meta.json` that has `"requestShape": "background"`.
+Claude Code writes the meta file at launch and adds `"finished": true` when
+the agent ends. The transcript beside it gives the times, the model, the
+tokens and the last reply, which becomes the result. The agent id is also
+the background task's id.
+
+**claude-workflow** (recognizes `workflow`) reads a run from these files:
+
+| File | Written | Gives |
+|---|---|---|
+| `workflows/scripts/<name>-<run>.js` | at the start | the name and phase titles, from its `meta` |
+| `subagents/workflows/<run>/journal.jsonl` | as agents start and return | each agent's label, phase and result |
+| `subagents/workflows/<run>/agent-<id>.{jsonl,meta.json}` | per agent | its transcript and model |
+| `workflows/<run>.json` | only when the run ends | the status, the background task id, each agent's state and times, the totals and the summary |
+
+A run with no run file yet is running while the pane's background list names
+its workflow, or while its files changed in the last 10 minutes. After that
+it reads as `unknown`, since it was most likely killed.

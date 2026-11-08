@@ -1,0 +1,5 @@
+{"type":"launched"}
+{"type":"started","key":"v2:e1f08809469c327b230d0f75437a7a70782e938201805da91355076eac59de6c","agentId":"a661f3333b54e409a","label":"judge 0","phase":"Say"}
+{"type":"started","key":"v2:0c6181cb3de7187f064f07cae9ea091a3ba5f98c8cb6f4f8fd43419602c79200","agentId":"ac5302d9246f52404","label":"judge 1","phase":"Say"}
+{"type":"result","key":"v2:e1f08809469c327b230d0f75437a7a70782e938201805da91355076eac59de6c","agentId":"a661f3333b54e409a","result":"{\"score\": 7}","remoteControlDeviceReport":false}
+{"type":"result","key":"v2:0c6181cb3de7187f064f07cae9ea091a3ba5f98c8cb6f4f8fd43419602c79200","agentId":"ac5302d9246f52404","result":"{\"score\": 8}","remoteControlDeviceReport":false}
