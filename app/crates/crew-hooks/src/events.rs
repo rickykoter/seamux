@@ -722,6 +722,13 @@ fn subagent_stop(h: &mut Hook) {
         return;
     }
     let agent = h.json("agent_id");
+    // A workflow's agent that stops is not waiting on a prompt any more.
+    if seen.background.iter().any(|b| b.waiting.contains(&agent)) {
+        h.settle(false, &[], |p| {
+            p.mark_waiting(&agent, false);
+        });
+    }
+    let Some(seen) = status::read(&h.state, &k) else { return };
     let payload: Value = serde_json::from_str(&h.payload).unwrap_or(Value::Null);
     let now = crew_core::history::now_ms();
     // The shells this agent left running, by its own transcript.
@@ -759,6 +766,33 @@ fn subagent_stop(h: &mut Hook) {
 fn agent_transcripts(main: &str, agents: &[String]) -> Vec<PathBuf> {
     let Some(dir) = main.strip_suffix(".jsonl") else { return Vec::new() };
     agents.iter().map(|a| Path::new(dir).join("subagents").join(format!("agent-{a}.jsonl"))).collect()
+}
+
+/// PermissionRequest (`on`) and PermissionDenied: a background agent
+/// stopped on a permission prompt, and the answer it got. Only a sub-agent's
+/// (a payload with agent_id) is marked here; the main agent's own prompt is
+/// the Notification hook's. A mark makes the card say it needs you.
+fn permission(h: &mut Hook, on: bool) {
+    let agent = h.json("agent_id");
+    if agent.is_empty() {
+        return;
+    }
+    let k = status::key(&h.ws, &surface()).to_string();
+    let Some(seen) = status::read(&h.state, &k) else { return };
+    let mut probe = seen.clone();
+    if !probe.mark_waiting(&agent, on) {
+        return;
+    }
+    h.settle(true, &[], |p| {
+        p.mark_waiting(&agent, on);
+    });
+    if on {
+        h.history("working", "agent-permission");
+        let who = seen.background.iter().find(|b| b.id == agent).map(|b| b.label.clone())
+            .unwrap_or_else(|| "A background agent".into());
+        let what = h.json("tool_name");
+        h.notify("crew:blocked", &format!("{who} is waiting on a permission prompt{}", if what.is_empty() { String::new() } else { format!(" ({what})") }));
+    }
 }
 
 /// The errors a resume can wait out: a usage limit (rate_limit) or a spend
@@ -813,8 +847,21 @@ fn stopfail(h: &mut Hook) {
 /// still waits keeps the workspace waiting.
 fn pretool() -> i32 {
     // seamux-hook.sh passes the payload only when it names agent_id: a tool
-    // use inside a subagent leaves the main agent's hold alone.
-    if from_subagent(&read_payload()) {
+    // use inside a subagent leaves the main agent's hold alone. A background
+    // agent that was stopped on a permission prompt is moving again: its
+    // mark goes (the pane holds while one waits, so this call is seen).
+    let payload = read_payload();
+    if from_subagent(&payload) {
+        let agent = serde_json::from_str::<Value>(&payload).ok()
+            .and_then(|v| v.get("agent_id").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
+        let state = state_dir();
+        let ws = crew_core::ident::workspace_id().unwrap_or_else(|| "none".into());
+        let k = status::key(&ws, &surface()).to_string();
+        if status::read(&state, &k).is_some_and(|p| p.background.iter().any(|b| b.waiting.contains(&agent))) {
+            let _ = status::update(&state, &ws, &surface(), "", crew_core::history::now_ms(), |p| {
+                p.mark_waiting(&agent, false);
+            });
+        }
         return 0;
     }
     let state = state_dir();
@@ -949,6 +996,14 @@ pub fn main(args: &[String]) -> i32 {
         }
         "subagentstop" => {
             subagent_stop(&mut h);
+            String::new()
+        }
+        "permreq" => {
+            permission(&mut h, true);
+            String::new()
+        }
+        "permdenied" => {
+            permission(&mut h, false);
             String::new()
         }
         "stopfail" => {

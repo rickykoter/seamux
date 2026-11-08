@@ -25,7 +25,7 @@ fn ctx(session: &str, background: Vec<Background>) -> Context {
 }
 
 fn task(kind: &str, id: &str, label: &str) -> Background {
-    Background { kind: kind.into(), id: id.into(), label: label.into(), at: 1 }
+    Background { kind: kind.into(), id: id.into(), label: label.into(), at: 1, ..Default::default() }
 }
 
 /// A command adapter in its own folder: `sh run.sh` with this body.

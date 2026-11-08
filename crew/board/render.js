@@ -523,7 +523,7 @@ function __boardRender(d) {
   var AST = { running: ["run", "running"], done: ["ok", "done"], failed: ["bad", "failed"],
     cancelled: ["unk", "cancelled"], unknown: ["unk", "no word"] };
   function agentMark(e) {
-    var st = (AST[e.state] || AST.unknown)[0];
+    var st = e.needsYou ? "need" : (AST[e.state] || AST.unknown)[0];
     var C = 2 * Math.PI * 4.5;
     var frac = e.state !== "running" ? 1 : e.n > 0 ? Math.max(0.08, Math.min(1, (e.k || 0) / e.n)) : 0.3;
     var arc = st === "unk" ? '<circle cx="6" cy="6" r="4.5" class="ar" stroke-dasharray="2 2"/>'
@@ -554,7 +554,7 @@ function __boardRender(d) {
     var ns = (a.agentNotices || []).filter(function (n) { return n && String(n.surface || "").toUpperCase() === up; });
     if (!es.length && !ns.length) return "";
     return es.map(function (e) {
-      var st = AST[e.state] || AST.unknown;
+      var st = e.needsYou ? ["need", "needs you"] : (AST[e.state] || AST.unknown);
       var run = e.kind === "workflow";
       var what = run ? [e.phase || "", typeof e.n === "number" && e.n > 0 ? (e.k || 0) + "/" + e.n : ""].filter(Boolean).join(" · ")
         : String(e.model || "");
@@ -568,7 +568,7 @@ function __boardRender(d) {
       return '<div class="ag ' + st[0] + (fresh ? " new" : "") + (shell ? " sh" : "") + '"' + (shell ? ' data-a="none"' : ' data-a="' + (run ? "run" : "agent") + '" data-x="' + esc(e.id) +
         '" data-path="/' + (run ? "run" : "agent") + "/" + esc(e.session || "") + "/" + esc(e.id) + '"') + ' title="' + esc(tip) + '">' +
         agentMark(e) + '<span class="ak">' + esc(e.label || e.id) + "</span>" +
-        (what ? '<span class="aw">' + esc(what) + "</span>" : "") + agentTime(e) +
+        (e.needsYou ? '<span class="aw nd">needs you</span>' : what ? '<span class="aw">' + esc(what) + "</span>" : "") + agentTime(e) +
         (e.badge ? '<span class="ab">' + esc(e.badge) + "</span>" : "") + "</div>";
     }).join("") + ns.map(function (n) {
       // Create adapter: a new session here that writes (or fixes) one.

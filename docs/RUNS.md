@@ -73,7 +73,7 @@ label becomes the id, and missing totals are counted from the agents.
 | `totals.tokens` | The run's tokens. Agents' `tokens` are summed when it is missing. |
 | `notice` | One line to show about this run, such as a note that the adapter read only part of it. |
 | agent `state` | One of `queued`, `running`, `done`, `failed`, `cancelled`. |
-| agent `needsYou` | The agent waits on the person. The run page raises a banner. |
+| agent `needsYou` | The agent waits on the person. The run page raises a banner, and the card asks for you. For Claude Code agents the hooks know it first: a `PermissionRequest` from a sub-agent puts its id on the background entry's `waiting` list (see the context below), and the agent's next tool call, a `PermissionDenied` or its stop takes it off. |
 | agent `result.badge` | A few characters shown on a finished bar, such as a score or a verdict. Longer badges are cut to 8 characters. |
 | agent `result.detail` | Hover text, cut to 2,000 characters. |
 | agent `transcript` | An absolute path to the agent's JSONL transcript. The transcript page serves only paths an adapter listed. |
@@ -125,10 +125,14 @@ The context on stdin:
   "transcript": "/home/me/.claude/projects/-w-repo/9c328a5c-81d2-4f6f-95bc-605f17e4fc05.jsonl",
   "cwd": "/w/repo",
   "background": [
-    {"kind": "workflow", "id": "w1yenxe1b", "label": "review-changes", "at": 1794147717000}
+    {"kind": "workflow", "id": "w1yenxe1b", "label": "review-changes", "at": 1794147717000, "waiting": ["a661f3333b54e409a"]}
   ]
 }
 ```
+
+A background entry's `waiting` lists the agents of that task stopped on a
+permission prompt (only while one is). An adapter sets `needsYou` on those
+agents.
 
 seamux caches each result until a file under the session's folder or the
 adapter's own folder changes, so an adapter runs only when there is

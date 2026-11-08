@@ -248,8 +248,10 @@ fn live(ctx: &Context, run: &str, dir: &Path, script: Option<&Path>, taken: &mut
         let meta = read_json(&dir.join(format!("agent-{id}.meta.json")));
         let model = f.model.clone().or_else(|| meta.as_ref().and_then(|m| m.get("model").and_then(Value::as_str).map(str::to_string)));
         let done = results.get(id);
+        // The hooks marked this agent stopped on a permission prompt.
+        let needs_you = done.is_none() && ctx.background.iter().any(|b| b.waiting.iter().any(|w| w == id));
         json!({
-            "id": id, "label": if label.is_empty() { id.clone() } else { label.clone() }, "phase": phase,
+            "id": id, "label": if label.is_empty() { id.clone() } else { label.clone() }, "phase": phase, "needsYou": needs_you,
             "model": model, "state": if done.is_some() { "done" } else { "running" },
             "start": f.start, "end": done.and(f.end), "tokens": f.tokens, "result": result_json(done),
             "transcript": tr.map(|t| t.display().to_string()),

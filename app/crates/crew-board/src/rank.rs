@@ -539,9 +539,20 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
         let gate_allow = plan.map(|p| truthy(get(get(p, "gate"), "allow"))).unwrap_or(true);
         let blocked = plan.map(|p| get(progress(p), "blocked")).filter(|b| truthy(b));
 
+        let stuck: Vec<&crew_core::status::Background> = bg.iter().filter(|b| !b.waiting.is_empty()).collect();
         if has(d, "phase:waiting") {
             (kind, badge) = (Some("attend"), "asked you");
             said = "Waiting on an answer.".into();
+            chips = vec!["jump".into()];
+        } else if !stuck.is_empty() {
+            // A background agent stopped on a permission prompt: only you
+            // can let it go on.
+            (kind, badge) = (Some("attend"), "agent needs you");
+            let n: usize = stuck.iter().map(|b| b.waiting.len()).sum();
+            said = match (stuck.as_slice(), n) {
+                ([one], 1) => format!("{{{{{}}}}} is waiting on a permission prompt.", one.label.replace("{{", "{ {").replace("}}", "} }")),
+                (_, n) => format!("{n} background agents are waiting on a permission prompt."),
+            };
             chips = vec!["jump".into()];
         } else if plan.is_some() && phase == "review" {
             (kind, badge) = (Some("attend"), "review");
@@ -890,7 +901,7 @@ mod tests {
             json!({"id": "w-three", "title": "three", "cwd": "/w/three", "desc": "phase:working", "running": true}),
             json!({"id": "w-wf", "title": "wf", "cwd": "/w/wf", "desc": "phase:working", "running": true}),
         ];
-        let b = |kind: &str, id: &str, label: &str| Background { kind: kind.into(), id: id.into(), label: label.into(), at: 1 };
+        let b = |kind: &str, id: &str, label: &str| Background { kind: kind.into(), id: id.into(), label: label.into(), at: 1, ..Default::default() };
         let mut bg = std::collections::HashMap::new();
         bg.insert("W-THREE".to_string(), vec![b("subagent", "a1", "judge"), b("subagent", "a2", "judge"), b("subagent", "a3", "lookout")]);
         bg.insert("W-WF".to_string(), vec![b("workflow", "w1", "review-changes")]);
@@ -921,6 +932,18 @@ mod tests {
     }
 
     #[test]
+    fn a_background_agent_on_a_permission_prompt_makes_the_card_need_you() {
+        use crew_core::status::Background;
+        let wss = vec![json!({"id": "w-p", "title": "p", "cwd": "/w/p", "desc": "phase:working", "running": true})];
+        let mut bg = std::collections::HashMap::new();
+        bg.insert("W-P".to_string(), vec![Background { kind: "subagent".into(), id: "a1".into(), label: "Lookout review".into(), at: 1,
+                                                       waiting: vec!["a1".into()] }]);
+        let (rows, _) = rank_with(&wss, &Map::new(), false, Default::default(), bg);
+        assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("attend"), Some("agent needs you")));
+        assert_eq!(rows[0]["said"], "{{Lookout review}} is waiting on a permission prompt.");
+    }
+
+    #[test]
     fn a_failed_check_waits_while_background_agents_run_and_shows_once_they_finish() {
         use crew_core::status::Background;
         let wss = vec![json!({"id": "w-p", "title": "p", "cwd": "/w/p", "desc": "phase:working", "running": true})];
@@ -929,7 +952,7 @@ mod tests {
             "checksOutstanding": [{"n": 2, "id": "review-code-review", "status": "fail"}],
             "progress": {"open": [{"title": "Runs"}]}}));
         let mut bg = std::collections::HashMap::new();
-        bg.insert("W-P".to_string(), vec![Background { kind: "subagent".into(), id: "a1".into(), label: "Lookout review".into(), at: 1 }]);
+        bg.insert("W-P".to_string(), vec![Background { kind: "subagent".into(), id: "a1".into(), label: "Lookout review".into(), at: 1, ..Default::default() }]);
         let (rows, _) = rank_with(&wss, &plans, false, Default::default(), bg);
         assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("running"), Some("working · 1 agent")));
         assert_eq!(rows[0]["said"], "{{Increment 2's check `review-code-review`}} waits on 1 background agent.");

@@ -64,7 +64,7 @@ pub struct Pane {
 pub const BACKGROUND_KINDS: [&str; 3] = ["subagent", "workflow", "teammate"];
 
 /// One background task, as Claude Code's background_tasks lists it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Background {
     /// Claude Code's task type: subagent, workflow, shell, monitor and so on.
     pub kind: String,
@@ -73,17 +73,27 @@ pub struct Background {
     pub label: String,
     /// When this pane first saw it, in ms since the epoch.
     pub at: u64,
+    /// The agents of this task stopped on a permission prompt (Claude
+    /// Code's PermissionRequest, by agent_id): the sub-agent itself, or a
+    /// workflow's agents. Cleared when the agent moves on.
+    pub waiting: Vec<String>,
 }
 
 impl Background {
     pub fn to_json(&self) -> Value {
-        json!({"kind": self.kind, "id": self.id, "label": self.label, "at": self.at})
+        let mut v = json!({"kind": self.kind, "id": self.id, "label": self.label, "at": self.at});
+        if !self.waiting.is_empty() {
+            v["waiting"] = json!(self.waiting);
+        }
+        v
     }
 
     pub fn from_json(v: &Value) -> Option<Background> {
         let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let id = s("id");
-        (!id.is_empty()).then(|| Background { kind: s("kind"), id, label: s("label"), at: v.get("at").and_then(Value::as_u64).unwrap_or(0) })
+        let waiting = v.get("waiting").and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        (!id.is_empty()).then(|| Background { kind: s("kind"), id, label: s("label"), at: v.get("at").and_then(Value::as_u64).unwrap_or(0), waiting })
     }
 
     /// The agent tasks (BACKGROUND_KINDS) in a hook payload's
@@ -112,8 +122,10 @@ impl Background {
             }
             let label = [s(t, "name"), s(t, "description"), s(t, "agent_type"), s(t, "type")]
                 .into_iter().find(|l| !l.is_empty()).unwrap_or_default();
-            let at = known.iter().find(|b| b.id == id).map(|b| b.at).unwrap_or(now_ms);
-            Some(Background { kind, id, label, at })
+            let had = known.iter().find(|b| b.id == id);
+            let at = had.map(|b| b.at).unwrap_or(now_ms);
+            let waiting = had.map(|b| b.waiting.clone()).unwrap_or_default();
+            Some(Background { kind, id, label, at, waiting })
         }).collect()
     }
 
@@ -234,7 +246,42 @@ impl Pane {
     /// hot path tests the hold marker this keeps. A limit stop is one: the
     /// pane at work again is no longer stopped.
     pub fn holds(&self) -> bool {
-        self.state == "needs_input" || self.review || self.asked.is_some() || self.limited.is_some()
+        self.state == "needs_input" || self.review || self.asked.is_some() || self.limited.is_some() || self.waiting()
+    }
+
+    /// A background agent of this pane is stopped on a permission prompt.
+    pub fn waiting(&self) -> bool {
+        self.background.iter().any(|b| !b.waiting.is_empty())
+    }
+
+    /// Mark (or clear) `agent` as stopped on a permission prompt: on its own
+    /// entry, else on the one workflow entry it may belong to. True when
+    /// something changed.
+    pub fn mark_waiting(&mut self, agent: &str, on: bool) -> bool {
+        if agent.is_empty() {
+            return false;
+        }
+        if !on {
+            let mut changed = false;
+            for b in self.background.iter_mut() {
+                let n = b.waiting.len();
+                b.waiting.retain(|a| a != agent);
+                changed |= b.waiting.len() != n;
+            }
+            return changed;
+        }
+        let i = self.background.iter().position(|b| b.id == agent)
+            .or_else(|| {
+                let flows: Vec<usize> = self.background.iter().enumerate().filter(|(_, b)| b.kind == "workflow").map(|(i, _)| i).collect();
+                (flows.len() == 1).then(|| flows[0])
+            });
+        match i {
+            Some(i) if !self.background[i].waiting.iter().any(|a| a == agent) => {
+                self.background[i].waiting.push(agent.to_string());
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The file's JSON. `limited`, `background` and `bg_only` are written
@@ -999,7 +1046,20 @@ mod tests {
     }
 
     fn bg(id: &str) -> Background {
-        Background { kind: "subagent".into(), id: id.into(), label: "judge".into(), at: 1 }
+        Background { kind: "subagent".into(), id: id.into(), label: "judge".into(), at: 1, ..Default::default() }
+    }
+
+    #[test]
+    fn a_background_agent_on_a_permission_prompt_is_marked_and_held_until_it_moves_on() {
+        let mut p = pane("S1", "working", 1);
+        p.background = vec![bg("a1"), Background { kind: "workflow".into(), id: "w1".into(), label: "review".into(), at: 1, ..Default::default() }];
+        assert!(!p.holds());
+        assert!(p.mark_waiting("a1", true) && p.waiting() && p.holds(), "its own entry; the pane holds so its next tool use is seen");
+        assert!(p.mark_waiting("x9", true), "an agent not on the list is a workflow's");
+        assert_eq!(p.background[1].waiting, vec!["x9".to_string()]);
+        assert_eq!(Pane::from_json(&p.to_json()), Some(p.clone()), "round-trips");
+        assert!(p.mark_waiting("a1", false) && p.mark_waiting("x9", false) && !p.waiting());
+        assert!(!p.mark_waiting("a1", false), "nothing left to clear");
     }
 
     #[test]

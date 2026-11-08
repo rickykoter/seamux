@@ -713,6 +713,31 @@ hook("stop", stdin=payload(background_tasks=[AGENT]))
 hook("stop", stdin=payload(background_tasks=[DEV]))
 check("a shell no departing agent's transcript names is never adopted", pane_file()["state"] == "idle", pane_file())
 
+# A background agent stopped on a permission prompt (PermissionRequest
+# carries its agent_id, seen with Claude Code 2.1.319): the pane holds, the
+# card needs you, and its next tool use, a PermissionDenied, or its stop
+# clears it.
+reset([row(desc="phase:working")])
+hook("stop", stdin=payload(background_tasks=[AGENT]))
+open(CLOG, "w").close()
+hook("permreq", stdin=payload(agent_id="a1", agent_type="general-purpose", tool_name="Bash",
+                              tool_input={"command": "touch x"}))
+P, L = pane_file(), log()
+check("a background agent's permission request marks it waiting and holds the pane",
+      P["background"][0].get("waiting") == ["a1"] and os.path.exists(os.path.join(STATE, "hold-ws-1")), P)
+check("…and raises a banner naming it",
+      any("crew:blocked" in l and "judge is waiting on a permission prompt (Bash)" in l for l in L), L)
+hook("pretool", stdin=payload(tool_name="Bash", agent_id="a1", agent_type="general-purpose"))
+P = pane_file()
+check("its next tool use clears the mark and the hold",
+      "waiting" not in P["background"][0] and not os.path.exists(os.path.join(STATE, "hold-ws-1")), P)
+hook("permreq", stdin=payload(agent_id="a1", tool_name="Bash"))
+hook("permdenied", stdin=payload(agent_id="a1", tool_name="Bash"))
+check("a PermissionDenied clears it too", "waiting" not in pane_file()["background"][0], pane_file())
+hook("permreq", stdin=payload(tool_name="Bash"))
+check("the main agent's own permission request is the Notification hook's, not marked here",
+      "waiting" not in pane_file()["background"][0], pane_file())
+
 reset([row(desc="phase:working")])
 hook("stop", stdin=payload(background_tasks=[
     {"id": "b1", "type": "shell", "status": "running", "description": "npm run dev"},

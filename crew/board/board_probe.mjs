@@ -2484,6 +2484,9 @@ if (live && Array.isArray(live.rows)) {
   render({ rows: [R("ag", { kind: "wilt", agents: [shellRow] })], quiet: "" });
   checks.push(["agents: a shell a sub-agent left running is a row with no link",
     /class="ag run (new )?sh" data-a="none" title="A command a sub-agent left running: sleep 20"/.test(els.rows.innerHTML) && !/data-x="b3"/.test(els.rows.innerHTML), els.rows.innerHTML.slice(els.rows.innerHTML.indexOf('class="ag'), els.rows.innerHTML.indexOf('class="ag') + 300)]);
+  render({ rows: [R("ag", { kind: "attend", agents: [ag("a1", { label: "Lookout review", needsYou: true, model: "sonnet" })] })], quiet: "" });
+  checks.push(["agents: an agent stopped on a permission prompt is an amber row that says so",
+    /class="ag need( new)?" data-a="agent" data-x="a1"[^>]*>[^]*?<span class="aw nd">needs you</.test(els.rows.innerHTML), els.rows.innerHTML.slice(els.rows.innerHTML.indexOf('class="ag'), els.rows.innerHTML.indexOf('class="ag') + 300)]);
   render({ rows: [R("am", { tuck: "mute" })], quiet: "" });
   checks.push(["agents: a muted card draws no rows", !/class="ag /.test(els.rows.innerHTML)]);
 }

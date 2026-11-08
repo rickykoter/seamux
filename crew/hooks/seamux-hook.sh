@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # crew — the Claude Code hook entry point, on seamux.
 #
-#   seamux-hook.sh <session|pretool|posttool|ask|answered|task|notification|stop|stopfail|subagentstart|subagentstop|end>
+#   seamux-hook.sh <session|pretool|posttool|ask|answered|task|notification|stop|stopfail|subagentstart|subagentstop|permreq|permdenied|end>
 #
 # subagentstart and subagentstop are SubagentStart and SubagentStop: they keep
 # a pane's list of background sub-agents and workflows (crew_core::status).
+# permreq and permdenied are PermissionRequest and PermissionDenied: a
+# background agent stopped on a permission prompt, and its answer.
 #
 # stopfail is StopFailure for a usage limit (rate_limit, billing_error): it
 # has no bash copy, and goes straight to the binary like the rest.

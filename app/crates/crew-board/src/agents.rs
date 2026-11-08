@@ -132,6 +132,9 @@ pub fn entry(run: &Run, surface: &str, session: &str) -> Value {
     if let Some(b) = badge {
         v["badge"] = json!(b);
     }
+    if run.agents.iter().any(|a| a.needs_you && a.state == "running") {
+        v["needsYou"] = json!(true);
+    }
     if workflow {
         v["k"] = json!(run.totals.done + run.totals.failed);
         v["n"] = json!(run.totals.agents);
@@ -159,16 +162,21 @@ pub fn rows_for(p: &Pane, rep: Option<&Report>, since: u64) -> Vec<Value> {
     let runs: &[Run] = rep.map(|r| r.runs.as_slice()).unwrap_or(&[]);
     let mut live: Vec<Value> = Vec::new();
     for b in &p.background {
-        match runs.iter().find(|r| r.task.as_deref() == Some(b.id.as_str()) || r.id == b.id) {
-            Some(r) => live.push(entry(r, &p.surface, &p.session)),
+        let mut row = match runs.iter().find(|r| r.task.as_deref() == Some(b.id.as_str()) || r.id == b.id) {
+            Some(r) => entry(r, &p.surface, &p.session),
             None => {
                 // A workflow's run is often read before its task id is known.
                 match runs.iter().find(|r| r.status == "running" && r.task.is_none() && r.name == b.label) {
-                    Some(r) => live.push(entry(r, &p.surface, &p.session)),
-                    None => live.push(pending(b, &p.surface, &p.session)),
+                    Some(r) => entry(r, &p.surface, &p.session),
+                    None => pending(b, &p.surface, &p.session),
                 }
             }
+        };
+        // The hooks know first when one of its agents stops on a prompt.
+        if !b.waiting.is_empty() {
+            row["needsYou"] = json!(true);
         }
+        live.push(row);
     }
     let shown = |v: &Value| v["id"].as_str().map(str::to_string);
     let have: Vec<String> = live.iter().filter_map(shown).collect();
@@ -246,7 +254,7 @@ mod tests {
         let mut p = Pane::new("W1", surface);
         p.session = "s1".into();
         p.state = if bg.is_empty() { "idle".into() } else { "working".into() };
-        p.background = bg.iter().map(|(k, id, l)| Background { kind: k.to_string(), id: id.to_string(), label: l.to_string(), at: 100 }).collect();
+        p.background = bg.iter().map(|(k, id, l)| Background { kind: k.to_string(), id: id.to_string(), label: l.to_string(), at: 100, ..Default::default() }).collect();
         p
     }
 

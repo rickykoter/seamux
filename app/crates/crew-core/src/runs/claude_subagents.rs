@@ -53,8 +53,10 @@ pub fn adapter(ctx: &Context) -> Value {
         };
         let start = f.start.or_else(|| super::mtime_ms(&e.path()));
         let end = if finished { f.end } else { None };
+        // The hooks marked it stopped on a permission prompt.
+        let needs_you = !finished && ctx.background.iter().any(|b| b.waiting.iter().any(|w| w == id));
         let agent = json!({
-            "id": id, "label": label, "model": model, "state": if finished { "done" } else { "running" },
+            "id": id, "label": label, "model": model, "state": if finished { "done" } else { "running" }, "needsYou": needs_you,
             "start": start, "end": end, "tokens": f.tokens, "result": result,
             "transcript": transcript.is_file().then(|| transcript.display().to_string()),
         });
