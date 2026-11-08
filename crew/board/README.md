@@ -349,23 +349,25 @@ says `nothing needs you`, which is the question it can actually answer; the tall
 answers the rest. The probe asserts the headline never claims all-clear over a
 broken board.
 
-**The cat** (`#cat`) is the sidebar's cat, not a new one: `seamux cat_poses --from-swift`
-reads the six pose arrays out of `sidebars/crew.swift` and emits them as `<path>`s,
-so both boards show the same animal pixel for pixel and neither can drift silently
-(`--check` fails the probe if they do). Charcoal body, white bib, green eye, pink
-nose — 726 pixels, ~30 paths. It sits on a dark plinth, which is both the shelf
-crew.swift describes it pacing along and a necessity: the charcoal body was chosen
-against the sidebar's near-black ground and is *lighter* than this board's, so
-without it only the white bib rendered. In light the plinth and skies are pale and
-the charcoal reads on them instead. Its geometry lives in `board.html`, not `render.js`,
-because the renderer is re-sent on every push and the cat never changes; only the
-mood class crosses the wire.
+**The sprite** (`#cat`) is one of five: the tuxedo cat, a sandy cat, a penguin,
+an owl and a little robot. Each is a JSON file in `sprites/`: a palette and the
+same 18 frames of 24x15 cells, drawn at 2px a cell. `seamux sprites` turns each
+into one SVG sheet (its frames side by side, as a `data:` image) in the page's
+generated `SPRITES` block, along with the `sp-*` keyframes that step through
+them, and writes the same grids to the app's `app/ui/sprites.gen.ts`.
+`seamux sprites --check` fails the probe when either copy is stale, and
+`--sheet out.html` draws every frame of every sprite. `#cat`'s `data-sprite`
+picks the sheet; with none it is the tuxedo. The sprites sit on a plinth that is
+dark in dark mode and pale in light, and every sprite has an outline that reads
+on both. Their geometry lives in `board.html`, not `render.js`, because the
+renderer is re-sent on every push and the sprites never change; only the mood
+class crosses the wire.
 
 | mood | when | what it does |
 |---|---|---|
-| `swat` | a human is being waited on | crouches, lunges 3px on alternate seconds, *"hey. hey. HEY."*, *"{row} is waiting on you"* |
-| `pace` | anything working **or** broken | walks the **full width** of the shelf, turns around at the halfway point, *"supervising"*, *"keeping an eye on {row}"* |
-| `nap` | nothing is happening | breathes on a 6s cycle, three z's drift up, *"off duty"*, *"all quiet. nap time."* |
+| `swat` | a human is being waited on | swats at you 4 times a second, with a blink now and then, *"hey. hey. HEY."*, *"{row} is waiting on you"* |
+| `pace` | anything working **or** broken | walks in bursts (about 6s at 8 fps, then 4s sitting and looking about), three bursts out along the shelf and three back, *"supervising"*, *"keeping an eye on {row}"* |
+| `nap` | nothing is happening | breathes on a 6s cycle, opens one eye or flicks its tail now and then, three z's drift up, *"off duty"*, *"all quiet. nap time."* |
 
 **What it says** (`#says`) rotates through a few lines per mood. The first of
 each is the sidebar's `catSays()`; the rest are the board's own, and some name
@@ -384,18 +386,10 @@ each row's tier):
 
 One at a time, in that order, and only for the push that caused it; never on a
 page's first push, when every row is new. `render.js` adds the reaction's class
-beside the mood. Each plays once and hides the mood's own frames for exactly as
-long, so the mood is simply back when it ends and nothing has to take the class
-off in time.
-
-Those poses are **the board's own**. `seamux cat_poses` draws them as ASCII grids,
-in crew.swift's 3px cells and palette, and writes them into a second marker
-block nested inside the sprite, so they walk and turn with the cat.
-`--from-swift` emits that block empty, keeps it when it rewrites the sprite,
-and leaves it out of its `--check`: a change to the sidebar's cat does not
-reach them, and nothing checks them against it. `seamux cat_poses --sheet
-out.html` draws every pose, old and new, side by side; both checks run in the
-probe.
+beside the mood. Each reaction is a timeline of its own, listed after the
+mood's in the same `animation` (of two animations on one property, the later
+wins while it runs), so it plays once, the mood is simply back when it ends,
+and nothing has to take the class off in time.
 
 `pace` covers broken as well as working because the sidebar's `catMood()` does
 (`bucket == 1 || bucket == 5`) — the row badges already say which, and the cat is

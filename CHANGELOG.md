@@ -6,6 +6,24 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **crew's probes build the seamux they test.** A crew probe used whatever
+  `app/target/debug/seamux` was on disk, so on a fresh worktree it failed
+  with "seamux does not register …" when it ran before the build, and on an
+  old one it tested stale Rust. `crew/tools/crew_impl` now runs
+  `cargo build -q -p seamux-cli` once per process (well under a second when
+  nothing changed) and fails with cargo's output when the build does. Set
+  `SEAMUX_BIN` to skip it (ADR 0083).
+- **The board's cat has company: five sprites on 2px cells.** The tuxedo cat
+  is redrawn (soft-yellow eyes, a real tail, a 4-frame walk), and a sandy cat,
+  a penguin, an owl and a little robot join it. All five have the same 18
+  frames, kept as JSON in `crew/board/sprites/`. `seamux sprites` writes them
+  into the board as CSS sprite sheets and into `app/ui/sprites.gen.ts`, and
+  `--check` fails if either is stale (ADRs 0081 and 0082). The shelf walks in
+  bursts at 8 fps instead of a constant 1 Hz. In the app, a click on the
+  shelf opens a Tray of all five; the pick is saved in the app and shown on
+  the shelf, in the pane peek and in search's empty state. `seamux
+  cat_poses` and the board's link to crew.swift's cat are gone; the Swift
+  sidebar keeps its cat, and cmux's Dock outside the app shows the tuxedo.
 - **The board's news footer is now a log of the notifications seamux sent.**
   Every banner seamux posts, and every one it skipped because you were looking
   at that pane, is one line in `~/.claude/crew/notifications/<day>.jsonl`
@@ -24,8 +42,7 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   run every time instead of only under `CREW_IMPL`. restack's TypeSafe judge
   now finds `seamux typesafe`, `seamux cat_poses --from-swift` redraws the
   board's cat from crew.swift, and CI runs the crew probes in the macOS app
-  job after building seamux (ADRs 0077, 0078). Build seamux before running
-  a crew probe: `cargo build --manifest-path app/Cargo.toml -p seamux-cli`.
+  job after building seamux (ADRs 0077, 0078).
 
 - **deep-plan: plan pages lead with the bottom line, and the map is easier
   to browse.** The context and non-goals now come before the End state map.

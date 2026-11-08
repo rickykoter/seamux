@@ -13,7 +13,6 @@ pub mod act;
 pub mod ask;
 pub mod backend;
 pub mod board_feed;
-pub mod cat_poses;
 pub mod cmux_cli;
 pub mod companion;
 pub mod judgments;
@@ -26,6 +25,7 @@ pub mod routes;
 pub mod selftest;
 pub mod server;
 pub mod settle;
+pub mod sprites;
 pub mod state;
 pub mod tucked;
 pub mod usage;
@@ -33,7 +33,7 @@ pub mod wake;
 
 /// The seamux tools this crate provides, by the Python script's basename.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
-    ("cat_poses", cat_poses::main),
+    ("sprites", sprites::main),
     ("companion", companion::main),
     ("crew-board", state::main),
     ("crew-board-intent", server::main),

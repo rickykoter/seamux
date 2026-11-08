@@ -1,0 +1,15 @@
+/* The Tray (tray.ts): the shelf's sprites in tiles, dropped under the board's
+   shelf, over its rows; all five on one row at the board's default 340px.
+   The current sprite's tile is marked. */
+.tray { position: absolute; z-index: 6; left: 6px; right: 6px; box-sizing: border-box;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(54px, 1fr)); gap: 6px; padding: 8px;
+  background: var(--card); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 14px 36px var(--shade); }
+.tray[hidden] { display: none; }
+.tray-tile { display: grid; justify-items: center; align-content: start; gap: 3px; min-width: 0; padding: 6px 2px 4px;
+  border: 1px solid var(--line2); border-radius: 7px; background: var(--bg); color: var(--fg);
+  font: inherit; font-size: var(--fs-2); cursor: pointer; }
+.tray-tile span:last-child { max-width: 100%; text-align: center; line-height: 1.2; overflow-wrap: anywhere; }
+.tray-tile:hover { background: var(--on); }
+.tray-tile[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-t); font-weight: 600; }
+.tray-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tray-art { line-height: 0; }

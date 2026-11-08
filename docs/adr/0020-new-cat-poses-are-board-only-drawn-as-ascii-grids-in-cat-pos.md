@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Status
 
-Accepted
+Superseded by [0081](0081-the-five-sprites-live-as-json-grids-in-crew-board-sprites-an.md): the board's sprites are JSON grids with one generator, and the board no longer copies crew.swift's cat.
 
 ## Context
 
