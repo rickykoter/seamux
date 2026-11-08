@@ -59,6 +59,13 @@ fn main_repo() -> String {
 /// The most entries "what pinged you" prints.
 const PINGED_CAP: usize = 20;
 
+/// A log entry's text as one plain terminal line: control characters (an
+/// escape sequence, a newline) become spaces. A body is often a question a
+/// Claude wrote, and the log is no reason to trust it with the terminal.
+fn plain_line(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
 /// "what pinged you": the notification log's last hours, newest first, one
 /// line each, coloured by kind; a banner seamux skipped is dim and says so.
 pub fn pinged_lines(notes: &[crew_core::notifications::Entry]) -> Vec<String> {
@@ -71,12 +78,13 @@ pub fn pinged_lines(notes: &[crew_core::notifications::Entry]) -> Vec<String> {
                 "finished" | "turn" => GREEN,
                 _ => DIM,
             };
-            let body = if n.body.is_empty() { String::new() } else { format!(" {}", n.body) };
+            let (title, body) = (plain_line(&n.title), plain_line(&n.body));
+            let body = if body.is_empty() { String::new() } else { format!(" {body}") };
             let hm = clock(n.at);
             if n.shown {
-                format!("  {ink}●{RESET} {DIM}{hm}{RESET} {BOLD}{}{RESET}{body}", n.title)
+                format!("  {ink}●{RESET} {DIM}{hm}{RESET} {BOLD}{title}{RESET}{body}")
             } else {
-                format!("  {DIM}○ {hm} {}{body} · not shown{RESET}", n.title)
+                format!("  {DIM}○ {hm} {title}{body} · not shown{RESET}")
             }
         })
         .collect()
@@ -564,6 +572,11 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains(AMBER) && lines[0].contains("api · waiting on you") && lines[0].ends_with(" b"));
         assert!(lines[1].contains("○") && lines[1].ends_with(&format!("docs · done b · not shown{RESET}")));
+        // A title or body cannot drive the terminal: its control characters print as spaces.
+        let evil = Entry { body: "ok\x1b]0;pwned\x07\nnext".into(), ..e("waiting", "a\x1b[2Jb", true) };
+        let line = &pinged_lines(&[evil])[0];
+        assert!(line.contains("a [2Jb") && line.ends_with(" ok ]0;pwned  next"), "{line:?}");
+        assert!(!line.contains('\x07') && !line.contains('\n') && line.matches('\x1b').count() == 6, "only the digest's own colours: {line:?}");
     }
 
     #[test]
