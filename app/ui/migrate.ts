@@ -379,16 +379,24 @@ export class MigrateBanner {
     }
   }
 
-  /** Under the banner, at least as wide as it, over the rail and the
-   *  terminal; the list is cut on whole rows to fit the window. */
+  /** Beside the rail, level with the banner, over the terminal: the rail
+   *  stays in view, so the card that needs you is never covered. Where the
+   *  window is too narrow for that, under the banner instead. The list is
+   *  cut on whole rows to fit the window. */
   private place(): void {
     const r = this.el.getBoundingClientRect();
+    const rail = (this.el.closest(".dock-board") ?? this.el).getBoundingClientRect();
     // Wide enough for a failure's reason beside its name.
-    const w = Math.min(Math.max(r.width, this.failed.size ? 560 : 420), window.innerWidth - r.left - 8);
-    this.pop.style.left = `${Math.round(r.left)}px`;
-    this.pop.style.top = `${Math.round(r.bottom + 4)}px`;
+    const want = this.failed.size ? 560 : 420;
+    const beside = window.innerWidth - rail.right - 16 >= Math.min(want, 360);
+    const left = beside ? rail.right + 8 : r.left;
+    const top = beside ? r.top : r.bottom + 4;
+    const w = Math.min(beside ? want : Math.max(r.width, want), window.innerWidth - left - 8);
+    this.pop.style.left = `${Math.round(left)}px`;
+    this.pop.style.top = `${Math.round(top)}px`;
     this.pop.style.width = `${Math.round(w)}px`;
-    const room = window.innerHeight - r.bottom - 4 - 16 - this.popHead.offsetHeight - (this.say.hidden ? 0 : this.say.offsetHeight) - 16;
+    this.pop.classList.toggle("beside", beside);
+    const room = window.innerHeight - top - 16 - this.popHead.offsetHeight - (this.say.hidden ? 0 : this.say.offsetHeight) - 16;
     const fit = Math.max(2, Math.min(MAX_ROWS, Math.floor(room / ROW_H)));
     this.list.style.maxHeight = `${fit * ROW_H}px`;
     this.fade();
@@ -477,7 +485,6 @@ export class MigrateBanner {
     const no = button("×", "migrate-no");
     no.title = o.kind === "restart" ? "Don't restart it, and forget it" : o.kind === "revive" ? "Leave it in cmux" : "Leave it where it is";
     no.setAttribute("aria-label", no.title);
-    no.tabIndex = -1;
     no.addEventListener("click", () => void this.decline(o));
     row.append(no);
     return row;
