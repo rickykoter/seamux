@@ -13,6 +13,22 @@
   --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
   --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
   --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
+  /* roles: what a colour means, the same on every surface. A page maps its
+     own names onto these and never picks a hue for a state itself. Each state
+     has a fill (rings, dots, borders: 3:1) and a word colour (-t: 4.5:1).
+     A role names a palette token where one passes; a raw hex is a palette
+     hue made darker or lighter to pass. Amber is needs-you and nothing else;
+     working, links and focus share the teal accent in both modes (in light,
+     a teal of their own: --ef-accent stays Everforest's blue, a palette
+     colour that means nothing). Lines and edges are separators, held to no floor. */
+  --role-attend: #dfa000; --role-attend-t: var(--ef-text-mark);
+  --role-working: var(--ef-blue); --role-working-t: var(--ef-text-accent);
+  --role-done: var(--ef-green); --role-done-t: var(--ef-text-green);
+  --role-broken: var(--ef-red); --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: var(--ef-text-accent); --role-focus: var(--ef-accent);
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   /* type scale: every page sizes words with these, never a px value of its own.
      1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
@@ -35,6 +51,14 @@
     --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
     --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
     --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+    --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+    --role-working: #2a8079; --role-working-t: #22675f;
+    --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+    --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+    --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+    --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+    --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+    --role-link: #22675f; --role-focus: #2a8079;
   }
 }
 :root[data-theme="light"] {
@@ -50,6 +74,14 @@
   --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
   --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
   --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+  --role-working: #2a8079; --role-working-t: #22675f;
+  --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+  --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: #22675f; --role-focus: #2a8079;
 }
 /* everforest:end */
 /* The review page in seamux's palette (theme/everforest.css), as
