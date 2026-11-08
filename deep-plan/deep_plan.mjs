@@ -1335,11 +1335,16 @@ const EVERFOREST_CSS = `/* everforest:start */
      green, yellow, blue, magenta, cyan, white; 8-15 their brights). Dark is
      Ghostty's Everforest Dark Hard. Each slot a program prints words in is
      4.5:1 or better on --term-bg (theme_sync.py --check); the slots it paints
-     as grounds are held to nothing (TERM_GROUND_SLOTS). */
+     as grounds are held to nothing (TERM_GROUND_SLOTS). Six 256-colour
+     slots keep their usual sense but take seamux's tints per mode, so a
+     Claude theme on slots (seamux foam) gets tints that follow the flip:
+     22 and 52 diff lines, 28 and 88 changed words (dark green and red),
+     236 and 237 raised bands (a grey a step off the ground). */
   --term-bg: #1e2326; --term-text: #d3c6aa; --term-cursor: #e69875; --term-cursor-text: #4c3743;
   --term-selection: #4c3743; --term-selection-text: #d3c6aa;
   --term-0: #7a8478; --term-1: #e67e80; --term-2: #a7c080; --term-3: #dbbc7f; --term-4: #7fbbb3; --term-5: #d699b6; --term-6: #83c092; --term-7: #f2efdf;
   --term-8: #a6b0a0; --term-9: #f85552; --term-10: #8da101; --term-11: #dfa000; --term-12: #3a94c5; --term-13: #df69ba; --term-14: #35a77c; --term-15: #fffbef;
+  --term-22: #384532; --term-52: #5f3538; --term-28: #425237; --term-88: #753c3f; --term-236: #343f44; --term-237: #2d353b;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   /* type scale: every page sizes words with these, never a px value of its own.
      1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
@@ -1372,12 +1377,16 @@ const EVERFOREST_CSS = `/* everforest:start */
     --role-link: #22675f; --role-focus: #2a8079;
     /* terminal, light: Light Med's hues are 2:1 as words on its cream, so
        each slot is the palette's light word colour, the brights a shade
-       deeper; white and bright black are one readable grey, and bright white
-       stays light, since programs print it as a ground. */
-    --term-bg: #efebd4; --term-text: #4b575e; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+       deeper. The words are the palette's text, darker than Light Med's, so a
+       tint can sit a step off the ground and still hold them at 4.5:1; black
+       is darker still, white is the words' colour, bright black the quiet
+       grey, and bright white stays light, since programs print it as a
+       ground. */
+    --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
     --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
-    --term-0: #5c6a72; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #5e6a62;
-    --term-8: #5e6a62; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+    --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+    --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+    --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
   }
 }
 :root[data-theme="light"] {
@@ -1401,10 +1410,11 @@ const EVERFOREST_CSS = `/* everforest:start */
   --role-line: #ddd8bf; --role-edge: #b9bea6;
   --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
   --role-link: #22675f; --role-focus: #2a8079;
-  --term-bg: #efebd4; --term-text: #4b575e; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+  --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
   --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
-  --term-0: #5c6a72; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #5e6a62;
-  --term-8: #5e6a62; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+  --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+  --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+  --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
 }
 /* everforest:end */`;
 

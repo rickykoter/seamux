@@ -34,27 +34,21 @@ each mode it serves.
 - **seamux dark** and **seamux light** use seamux's exact colours on Claude
   Code's dark and light bases. Each one reads well in its own mode only, so
   switch in `/theme` when you flip the app's appearance.
-- **seamux foam** names terminal slots (`ansi:blue`, `ansi:green`) instead of
-  colours, so it repaints the moment the terminal's palette changes, and
+- **seamux foam** names terminal slots (`ansi:blue`, `ansi256(22)`) instead
+  of colours, so it repaints the moment the terminal's palette changes, and
   needs no `/theme` change when you flip. It builds on Claude Code's
-  `light-ansi` base.
+  `light-ansi` base. Its diffs and the bands behind your messages use six
+  256-colour slots that seamux's terminal tints per mode: 22 and 52 for diff
+  lines, 28 and 88 for changed words, 236 and 237 for bands. Other programs
+  that print those slots get the same tints, which keep their usual sense
+  (dark green and red, a raised grey).
 
-Foam pays for that with what a slot can't give in both modes. In seamux's
-terminal:
+Diff tints are held off the terminal ground (1.2:1 for a line, 1.4:1 for a
+changed word, in every theme and mode), so changed lines show.
 
-- Text is the black slot, a mid grey in dark: 4.1:1 on the ground and 3.8:1
-  on the bright white bands under your messages and bash output. Those bands
-  are soft in light and glaring in dark.
-- Quiet text (hints, inactive items) is a light grey in dark, faint on those
-  bands.
-- Diff lines lie on the green and red slots, which are word colours, so the
-  code on them is hard to read in both modes.
-- The word on a coloured chip is bright white, faint on dark mode's light
-  chips.
-
-The check names these as foam's known limits and fails on any new one. For
-diffs, or long sessions in one mode, seamux dark or seamux light reads
-better.
+Foam has one known limit: the word on a coloured chip is bright white, which
+is faint on dark mode's light chips. Outside seamux's terminal, foam's
+256-colour slots take that terminal's own colours.
 
 ## How it finds things
 
