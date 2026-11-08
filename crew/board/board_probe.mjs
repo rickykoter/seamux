@@ -249,7 +249,20 @@ render({ rows: [{ id: "dw", name: "dw", kind: "running", badge: "b", said: "", c
   meta: "1/4 increments", branch: "sam/checkout-flow", dirty: true, ref: "workspace:3" }], quiet: "" });
 checks.push(["a footer with uncommitted work wraps rather than clip its branch",
   /<div class="foot"><span class="branch"[^>]*>sam\/checkout-flow<\/span><span class="dirty"/.test(els.rows.innerHTML)]);
-checks.push(["the increments count sits in the footer after the branch, where it can share its line",
+// The ring carries the count: a card whose dial shows progress drops it from
+// the footer, and the dial's tooltip and the header's still say it.
+{
+  const dw = els.rows.innerHTML;
+  const dwFoot = (dw.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
+  checks.push(["a ringed card's footer drops the increments count; the dial and header tooltips keep it",
+    !/increments/.test(dwFoot) && /<title>1 of 4 increments<\/title>/.test(dw) &&
+    /class="top[^"]*"[^>]*title="[^"]*1\/4 increments/.test(dw), dwFoot]);
+}
+render({ rows: [{ id: "hb", name: "hb", kind: "running", badge: "b", said: "", chips: [], frac: 0.5,
+  meta: "2/4 increments \u00b7 held 3: waits on api", branch: "sam/x", ref: "workspace:3" }], quiet: "" });
+checks.push(["...and keeps the rest of its meta (a parent's hold)",
+  /<span class="meta">held 3: waits on api<\/span>/.test(els.rows.innerHTML)]);
+checks.push(["a card with a dot for a ring (no progress) keeps the increments count in its footer, after the branch",
   fFoot0.indexOf('class="branch"') < fFoot0.indexOf('class="meta"') && !/class="foot one"/.test(fFoot0)]);
 render({ rows: [{ id: "lk", name: "lk", kind: "running", badge: "b", said: "", chips: [], frac: 0.33,
   meta: "1/3 increments", branch: "sam/coupons-api", dirty: true, ref: "workspace:3", cwd: "/tmp/wt",
@@ -567,19 +580,29 @@ render({ rows: [{ id: "c", name: "c", kind: "running", badge: "b", said: "", chi
 checks.push(["a worktree colour that is not a hex never reaches a style attribute",
   !els.rows.innerHTML.includes("url(") && !els.rows.innerHTML.includes("owned")]);
 
-// One filled button, and only where the row asks something of you.
+// One filled button, and only on a card that needs you: attend, and a broken
+// card whose first verb fixes something. A merged card's reclaim and a broken
+// card whose first chip is only "jump" are outlined, so nothing competes with
+// the needs-you card's button.
 const tiers = ["attend", "wilt", "done", "running"].map((kind) => ({
   id: kind, name: kind, kind, badge: "b", said: "", chips: ["first", "second"], frac: 0.5,
-  meta: "", ref: "workspace:1" }));
+  meta: "", ref: "workspace:1" })).concat([
+  { id: "merged", name: "merged", kind: "done", badge: "merged", said: "", chips: ["reclaim", "jump"], frac: 1, meta: "", ref: "workspace:2" },
+  { id: "stuck", name: "stuck", kind: "wilt", badge: "stuck", said: "", chips: ["jump", "diff"], frac: null, meta: "", ref: "workspace:3" }]);
 render({ rows: tiers, quiet: "" });
 const pri = els.rows.innerHTML;
 const priOf = (id) => {
   const card = pri.split('data-id="' + id + '"')[1].split('<div class="row ')[0];
   return (card.match(/class="chip pri"[^>]*>(\w+)</g) || []).map((m) => m.replace(/.*>/, "").replace("<", ""));
 };
-checks.push(["attend, wilt and done fill their first button, and only that one",
-  ["attend", "wilt", "done"].every((k) => priOf(k).join() === "first")]);
-checks.push(["a working card's buttons are all ghosts", priOf("running").length === 0]);
+checks.push(["attend and a broken card with a fix-it verb fill their first button, and only that one",
+  ["attend", "wilt"].every((k) => priOf(k).join() === "first")]);
+checks.push(["a working card's and a done card's buttons are all outlined",
+  priOf("running").length === 0 && priOf("done").length === 0]);
+checks.push(["a merged card's reclaim is outlined, not a second filled button beside jump",
+  priOf("merged").length === 0 && /data-id="merged"[^]*?<span class="chip" title="Dry-run[^"]*">reclaim</.test(pri)]);
+checks.push(["a broken card whose first chip is only jump fills nothing, folded or open",
+  !/chip pri/.test(pri.split('data-id="stuck"')[1] || "chip pri")]);
 // Round 12: one primary style across the app. The filled button is the
 // neutral text tier with the ground's ink, never the tier's colour: the needs-
 // you card spent amber on its tally, ring, badge, frame AND button.

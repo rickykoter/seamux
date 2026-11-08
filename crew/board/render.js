@@ -450,10 +450,20 @@ function __boardRender(d) {
   // collector orders them that way -- and it is filled only on the tiers that
   // ask something of you. Actionable signals follow as ghost buttons in their
   // own colour; the collector has already dropped any that repeat a chip.
-  var FILLED = { attend: true, wilt: true, done: true };
+  // Only a card that needs you fills it: attend, and a broken card whose first
+  // verb fixes something (checks, plan, diff, pr). A broken card whose first
+  // chip is only "jump" has nothing to press but the header it already is. A
+  // merged card's reclaim, a done plan's close and a working card's buttons
+  // are outlined: a second filled button beside the needs-you card's competed
+  // with the one thing on the board that asks.
+  function fills(a) {
+    var first = chipsOf(a)[0];
+    return !!first && (a.kind === "attend" || (a.kind === "wilt" && first !== "jump"));
+  }
   function buttons(a) {
+    var fill = fills(a);
     var out = chipsOf(a).map(function (c, i) {
-      return '<span class="chip' + (i === 0 && FILLED[a.kind] ? " pri" : "") +
+      return '<span class="chip' + (i === 0 && fill ? " pri" : "") +
         '" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     });
     var arm = armedChip(a);
@@ -553,7 +563,7 @@ function __boardRender(d) {
   // increments count are words in the UI's sans. Branch, PR and
   // issue are targets; status signals, progress and spend are read, not
   // clicked, so they do not react.
-  function foot(a) {
+  function foot(a, ringed) {
     var out = "";
     // A footer of only the plain facts (no PR, issue or signal) keeps to one
     // line. Uncommitted work is a word now, and at rail width it would clip
@@ -588,7 +598,13 @@ function __boardRender(d) {
       out += '<span class="sig' + sa.cls + '"' + sa.style +
         ' title="' + esc(e.h) + '">' + esc(word) + "</span>";
     });
-    if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
+    // The increments count is the ring's: a card whose dial shows progress
+    // says "1 of 4 increments" in the dial's tooltip and the header's, so the
+    // footer drops it and keeps any other words (a parent's "held ..."). A
+    // row with no ring (a quiet row) or a dot for one keeps it here.
+    var meta = String(a.meta || "");
+    if (ringed && typeof a.frac === "number") meta = meta.replace(/^\d+\/\d+ increments(\s*\u00b7\s*)?/, "");
+    if (meta) out += '<span class="meta">' + esc(meta) + "</span>";
     // Spend is in the header's tooltip (factsOf), not here: at rail width it
     // wrapped onto a line of its own.
     // The footer shows only on an open card, at rest, in the card's own
@@ -860,7 +876,7 @@ function __boardRender(d) {
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
-    return (a.said || a.limited || reasonOf(a) ? '<p class="said">' + saidOf(a) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
+    return (a.said || a.limited || reasonOf(a) ? '<p class="said">' + saidOf(a) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a, true);
   }
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot
@@ -903,7 +919,7 @@ function __boardRender(d) {
   // its first chip, filled, on the header line, as a family child does.
   function loudChip(a) {
     var first = chipsOf(a)[0];
-    return (a.kind === "attend" || a.kind === "wilt") && first ?
+    return fills(a) ?
       '<span class="chip pri fq" title="' + esc(chipTip(first)) + '">' + esc(first) + "</span>" : "";
   }
   function card(a, kids, roll, g) {
@@ -947,7 +963,7 @@ function __boardRender(d) {
   function kid(a, inCard) {
     var loud = a.kind === "attend" || a.kind === "wilt";
     var first = chipsOf(a)[0];
-    var inline = loud && first ? '<span class="chip pri" title="' + esc(chipTip(first)) + '">' +
+    var inline = fills(a) ? '<span class="chip pri" title="' + esc(chipTip(first)) + '">' +
       esc(first) + "</span>" : "";
     return opening(a, " fam kid", inCard, foldCls(a.id, a.kind, true, true)) +
       topOpen(a, " kidhd" + (inline ? " loud" : ""), true) + dial(a.frac, a.kind, a.meta) +

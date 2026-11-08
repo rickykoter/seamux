@@ -60,7 +60,7 @@ actually last said. It costs a socket call per row, which is why it is opt-in.
 ▾ ◔ checkout-flow                  NEEDS YOU        header = jump · ▾ = fold · ◔ = progress
   Gate shut: Coupon at capture needs your go-ahead. the reason, then what was said, 2 lines
   [ go 3 ] ( diff ) ( jump ) ( ● CI )               28px buttons; the first is filled
-  dev/checkout-flow ○ uncommitted #142 ✓ approved 1/4 increments   footer: links in mono, words in sans
+  dev/checkout-flow ○ uncommitted #142 ✓ approved   footer: links in mono, words in sans
 ```
 
 No edge stripe. The tier is on the badge, the dial and the card's frame, and the
@@ -70,7 +70,8 @@ before the branch in the footer and the ring round the row you stand in: beside
 the name it read as a second state dot.
 
 The dial is an arc with no number in it (one that small could not be read); its
-tooltip says how far, "1 of 4 increments". A card that needs you says so on its
+tooltip says how far, "1 of 4 increments", and so does the header's, so the
+footer does not repeat the count under it. A card that needs you says so on its
 badge, in the headline's words, and its reason opens its said line ("Question:",
 "Gate shut:") unless the line already says it; the other tiers keep their reason
 on the badge. A row a usage limit stopped wears one pill, "back 2:04 PM",
@@ -80,20 +81,24 @@ the badge on hover, never over it, so the badge and the pill read in full; the
 name gives it the room by its ellipsis.
 
 The **button row** is everything you can do. The first chip is the verb that
-resolves the row (the collector orders them that way), and on the tiers that ask
-something of you (attend, wilt, done) it is filled, in the app's one primary style:
+resolves the row (the collector orders them that way), and on a card that needs
+you it is filled, in the app's one primary style:
 the neutral text colour as its ground and the page's ground as its words, the same
 on every card and in both modes. It never wears the tier's colour: the card that
 needs you already says amber on its tally, ring, badge and frame, and a fifth amber
-thing, the button, left the colour nothing to mean. A working card asks nothing,
-so its buttons stay ghosts: filling every card's first button made the board a
-wall of colour. Actionable signals (`● CI`, `allow`, `deny`, a Jira key, the
+thing, the button, left the colour nothing to mean. "Needs you" is attend, and a
+broken (wilt) card whose first verb fixes something (`checks`, `plan`, `diff`,
+`pr`); a broken card whose first chip is only `jump` fills nothing, since its
+header already jumps. Every other card's first button is outlined: a working card
+asks nothing, and a merged card's filled `reclaim` competed with the needs-you
+card's `jump`. Filling every card's first button made the board a wall of colour. Actionable signals (`● CI`, `allow`, `deny`, a Jira key, the
 sandbox) follow as ghosts in their own colour, except amber: a signal the collector
 sends in amber (`● CI` running, a Jira ticket in review) wears the link colour, since
 it is not asking you anything. Every button is at least 28px tall.
 
 The **footer** is what you recognise the row by: branch, uncommitted work, PR,
-issue, status signals (`✓ approved`, `draft`, `⚠ conflicts`) and progress, in one
+issue, status signals (`✓ approved`, `draft`, `⚠ conflicts`) and, where the dial is a
+dot with no progress to show, the increments count, in one
 line that wraps only when it must. Branch, PR and issue are code tokens in mono and
 links, at least 24px tall; the signals and the increments count are words in the
 UI's sans. Uncommitted work is a small hollow ring in the neutral text colour and the
@@ -134,7 +139,7 @@ it, on a darker well:
 ┃ ◔ ● billing-revamp                  1 NEEDS YOU   the badge counts the children
 ┃ Split the ledger in progress.
 ┃ ( diff ) ( jump )
-┃ dev/billing-revamp  1/3 increments
+┃ dev/billing-revamp
 ┃ ┌───────────────────────────────────────────┐
 ┃ │ ▸ ◔ ● billing-ledger            [ go 2 ]  │   needs you: its line and button, inline
 ┃ │     Ledger schema needs your go-ahead.    │
