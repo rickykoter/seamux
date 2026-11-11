@@ -147,6 +147,18 @@ function check(): SVGSVGElement {
   return s;
 }
 
+/** A small cross, for failed checks. */
+function cross(): SVGSVGElement {
+  const s = document.createElementNS(SVG, "svg");
+  s.setAttribute("viewBox", "0 0 12 12");
+  s.setAttribute("aria-hidden", "true");
+  s.setAttribute("class", "r-cross");
+  const p = document.createElementNS(SVG, "path");
+  p.setAttribute("d", "M3 3l6 6M9 3l-6 6");
+  s.append(p);
+  return s;
+}
+
 /** Three dots, for the menu that holds what is used less. */
 function dots(): SVGSVGElement {
   const s = document.createElementNS(SVG, "svg");
@@ -269,7 +281,13 @@ export class ReviewView {
   private drawn = "";
   private framed = "";
 
-  private findings = new Map<string, { key: string; rows: Finding[] }>();
+  private findings = new Map<string, { key: string; rows: Finding[]; loaded?: boolean }>();
+  /**
+   * What a done post or a Re-review asks of the reader, for the review it
+   * was done on (`sel`): shown in that review's detail line, not as an
+   * error, and dropped when another review is picked.
+   */
+  private note: { sel: string; text: string; link?: string; code?: string } | null = null;
   /** Per job: the ticked findings (the picks) and a pending confirm. */
   private ticked = new Map<string, Set<string>>();
   /** The job whose ⋯ menu is open, if any. */
@@ -439,7 +457,9 @@ export class ReviewView {
       return;
     }
     const o = this.others.find((x) => `other:${x.id}` === sel);
-    if (o) this.err.textContent = `Re-review it from the session that opened it, at the new head: lookout open in ${o.root}, then a fresh reviewer (lookout prompt ${o.id}).`;
+    if (!o) return;
+    this.note = { sel, text: "Re-review from its session:", code: `lookout prompt ${o.id}` };
+    this.render(true);
   }
 
   /** main.ts: the Lookout tab came into view, or left it. */
@@ -637,6 +657,7 @@ export class ReviewView {
     // Picking another review drops a banner target still waiting for its own.
     const p = this.pendingFocus;
     if (p && sel !== `job:${this.jobs.find((j) => j.review_id === p.review)?.id}` && sel !== `other:${p.review}`) this.pendingFocus = null;
+    if (sel !== this.selected) this.note = null;
     this.selected = sel;
     try {
       if (sel) localStorage.setItem(SEL_KEY, sel);
@@ -708,8 +729,14 @@ export class ReviewView {
       items.push(el("h3", "r-sec", "From terminals"));
       for (const o of this.others) {
         const n = Object.values(o.open).reduce((a, b) => a + b, 0);
-        const pr = o.gh ? ` · PR #${o.gh.pr}${o.gh.fail ? ` ✗${o.gh.fail}` : ""}` : "";
-        const line = el("span", "r-item-line", `${n ? `${n} open` : "all closed"}${pr} · ${ago(o.updated)}`);
+        const line = el("span", "r-item-line", `${n ? `${n} open` : "all closed"}${o.gh ? ` · PR #${o.gh.pr}` : ""}`);
+        // Failed checks in words, a red cross before them: not a bare glyph.
+        if (o.gh?.fail) {
+          const f = el("span", "r-fail");
+          f.append(cross(), `${o.gh.fail} check${o.gh.fail === 1 ? "" : "s"} failed`);
+          line.append(" · ", f);
+        }
+        if (o.updated) line.append(` · updated ${ago(o.updated)}`);
         items.push(row(`other:${o.id}`, o.title, line, n ? "open" : "closed"));
       }
     }
@@ -738,7 +765,7 @@ export class ReviewView {
     }
     this.tellLooking();
 
-    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
+    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.note, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
     if (force || key !== this.drawn) {
       this.drawn = key;
       const draw = () => (job ? this.drawJob(job) : other ? this.drawOther(other) : this.drawEmpty());
@@ -990,21 +1017,26 @@ export class ReviewView {
     const dir = o.root.split("/").filter(Boolean).pop() ?? o.root;
     const g = o.gh;
     const key = `other:${o.id}`;
-    const where = `from a terminal · ${dir}${o.branch ? ` · ${o.branch}` : ""}`;
-    const meta = `${where}${g ? ` · PR #${g.pr} ${g.draft ? "draft" : g.state.toLowerCase()}` : ""} · ${ago(o.updated)}`;
+    // The framed page's PR strip owns the PR's number, state and checks:
+    // the meta says only where the review came from, and when. The branch
+    // once: not again when the title already names it.
+    const branch = o.branch && !o.title.includes(o.branch) ? ` · ${o.branch}` : "";
+    const meta = `from a terminal · ${dir}${branch}${o.updated ? ` · updated ${ago(o.updated)}` : ""}`;
     const buttons: HTMLElement[] = [];
     const below: HTMLElement[] = [];
+    const got = this.findings.get(key);
+    const rows = (got?.rows ?? []).filter((f) => !(f as Finding & { github?: { postedAt?: string } }).github?.postedAt);
     // A linked review posts from here, as a pasted one does; edits and fixes
-    // stay with the session that opened it.
-    if (g) {
-      const rows = (this.findings.get(key)?.rows ?? []).filter((f) => !(f as Finding & { github?: { postedAt?: string } }).github?.postedAt);
+    // stay with the session that opened it. No Findings menu while none is
+    // left to post, nor on a merged or closed PR: it takes nothing more.
+    const ended = !!g && ["merged", "closed"].includes(g.state.toLowerCase());
+    if (g && rows.length && !ended) {
       const ticked = this.ticked.get(key) ?? new Set<string>();
       const picked = [...ticked].filter((id) => rows.some((r) => r.id === id));
       const n = picked.length;
       const busy = this.posting === o.id;
-      const toggle = el("button", `r-btn pickbtn${n ? " primary" : ""}`, rows.length ? `${rows.length} unposted${n ? ` · ${n} picked` : ""} ▾` : "Nothing to post");
-      toggle.disabled = !rows.length;
-      toggle.title = rows.length ? "Pick findings to post as one review on the pull request" : "Every open finding is posted, or none is open";
+      const toggle = el("button", `r-btn pickbtn${n ? " primary" : ""}`, `Findings${n ? ` · ${n} picked` : ""} ▾`);
+      toggle.title = "Pick findings to post as one review on the pull request";
       const post = btn(busy ? "Posting…" : "Post comments", () => {
         this.confirm.set(key, "post");
         this.render(true);
@@ -1013,17 +1045,47 @@ export class ReviewView {
       post.title = n ? `The ${n} picked as one review on PR #${g.pr}` : "Pick findings first";
       const sep = el("div", "r-menu-sep");
       sep.setAttribute("role", "separator");
-      const top = rows.length ? [this.picker(key, rows, ticked, busy), sep] : [];
-      buttons.push(this.menu(`find:${key}`, toggle, [post], "", top, { role: "dialog", cls: "r-find-panel", label: "Findings" }));
+      buttons.push(this.menu(`find:${key}`, toggle, [post], "", [this.picker(key, rows, ticked, busy), sep], { role: "dialog", cls: "r-find-panel", label: "Findings" }));
       if (this.confirm.get(key) === "post")
         below.push(this.confirmBox(key, `Post ${n} finding${n === 1 ? "" : "s"} as one review on ${g.repo} PR #${g.pr}? Everyone watching the pull request is notified, and the text is the reviewer's, not yours.`, "Post", () => void this.postOther(o, picked)));
     }
     this.headOf(o.title, null, meta, g?.url || null, buttons, { key, items: [] });
-    const say = g
-      ? `${openSummary(o.open)}${g.stale ? ` · ${g.stale} stale` : ""}. Edit and fix from the session that opened it; post its findings here.`
-      : `${openSummary(o.open)}. Not linked to a pull request: edit, fix and post from the session that opened it.`;
-    this.ctl.replaceChildren(el("p", "r-detail", say), ...below);
+    // The detail line says what can be done, as the Findings menu can do it.
+    const parts = [openSummary(o.open)];
+    if (g?.stale) parts.push(`${g.stale} stale`);
+    let say: string;
+    if (!g) say = `${parts.join(" · ")}. Not linked to a pull request: edit, fix and post from the session that opened it.`;
+    else if (ended) say = `${parts.join(" · ")}. PR #${g.pr} is ${g.state.toLowerCase()}: nothing more goes to GitHub. Edit and fix from the session that opened it.`;
+    else if (rows.length) say = `${parts.join(" · ")}. ${rows.length} finding${rows.length === 1 ? "" : "s"} not on GitHub: post ${rows.length === 1 ? "it" : "them"} from Findings ▾. Edit and fix from the session that opened it.`;
+    else {
+      if (got?.loaded && Object.values(o.open).some((c) => c > 0)) parts.push("all posted");
+      say = `${parts.join(" · ")}. Edit and fix from the session that opened it.`;
+    }
+    this.ctl.replaceChildren(el("p", "r-detail", say), ...this.noteFor(key), ...below);
     if (g) void this.loadOtherFindings(o);
+  }
+
+  /** The note for review `sel`, if it has one: its words, a link, and a command with Copy. */
+  private noteFor(sel: string): HTMLElement[] {
+    const n = this.note;
+    if (!n || n.sel !== sel) return [];
+    const p = el("p", "r-note", n.text);
+    if (n.link) {
+      const a = el("a", "r-link", "↗");
+      a.href = n.link;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      a.setAttribute("aria-label", "Open on GitHub");
+      p.append(" ", a);
+    }
+    if (n.code) {
+      const code = n.code;
+      const copy = btn("Copy", () => {
+        void navigator.clipboard.writeText(code).then(() => (copy.textContent = "Copied"), (e) => (this.err.textContent = String(e)));
+      }, "r-btn quiet r-copy");
+      p.append(" ", el("code", "r-code", code), " ", copy);
+    }
+    return [p];
   }
 
   private async loadOtherFindings(o: Other): Promise<void> {
@@ -1034,7 +1096,7 @@ export class ReviewView {
     try {
       const all = await invoke<Finding[]>("review_other_findings", { id: o.id });
       if (this.findings.get(key)?.key !== stamp) return;
-      this.findings.set(key, { key: stamp, rows: all.filter((f) => f.status !== "resolved" && f.status !== "dismissed") });
+      this.findings.set(key, { key: stamp, rows: all.filter((f) => f.status !== "resolved" && f.status !== "dismissed"), loaded: true });
       this.render(true);
     } catch (e) {
       this.err.textContent = String(e);
@@ -1049,7 +1111,8 @@ export class ReviewView {
       const url = await invoke<string>("review_other_post", { id: o.id, ids });
       this.ticked.delete(`other:${o.id}`);
       this.findings.delete(`other:${o.id}`);
-      this.err.textContent = `Posted: ${url}`;
+      const pr = o.gh ? ` to PR #${o.gh.pr}` : "";
+      this.note = { sel: `other:${o.id}`, text: `Posted ${ids.length} finding${ids.length === 1 ? "" : "s"}${pr}`, link: /^https:\/\/github\.com\//.test(url) ? url : undefined };
     } catch (e) {
       this.err.textContent = String(e);
     }

@@ -88,17 +88,35 @@ tree (single-child folders folded together), one file's diff on the right.
   with the finding's id.
 - **The pull request**: once `lookout gh sync` has linked the review to a
   PR (the page's server asks for a sync while the page is in view, at most
-  once a minute), a strip under the header shows the PR and its state. It
-  says how many commits the PR's head is past the reviewed one; in the
-  seamux app it also offers Re-review. It counts open items that are stale
-  or still pending, and the checks as passed, failed and running. A click
-  on the checks lists them, failed first, each linked to its run. GitHub's
-  own review threads are cards on their lines, marked GitHub, while the
-  review is at the PR's head, and are otherwise listed above the diff. You
-  reply to them on GitHub. A card the review posted links to its comment
-  (posted ↗) and carries GitHub's replies under its own thread. One not
-  posted says pending. One whose code changed on the PR's head says stale,
-  and its tooltip says why.
+  once a minute), a strip under the header shows the PR, its link and its
+  state. It says how many commits the PR's head is past the reviewed one,
+  with both shas; when lookout cannot tell, it says "drift unknown" and
+  why. In the seamux app it also offers Re-review. The checks button comes
+  next and names the worst news in words ("2 failed"); a click lists the
+  checks under it, failed first, each linked to its run. The strip counts
+  open items that are stale or not on GitHub, and a click on either count
+  goes to the next one. A sync error shows in words, clipped, and opens to
+  the full text. "GitHub as of" says when GitHub last had news. On a
+  merged or closed PR the strip says nothing more goes to GitHub, drops the
+  not-on-GitHub count and mutes stale; cards drop their pending chip and
+  mute stale too, and the Lookout tab offers no Post. When the strip redraws, the control
+  that had the keyboard focus keeps it, and a hidden status line reads out
+  the new counts to a screen reader. GitHub's own review threads are
+  cards on their lines, marked GitHub, while the review is at the PR's
+  head. Otherwise they are listed above the diff, under a line saying why.
+  You reply to them on GitHub. Folded, one shows who began it, how many
+  replies it has and when the last came. An open card the review posted
+  links to its comment (posted ↗); folded, the chip just says posted. It
+  has two parts: "On GitHub", right under its body, with who posted it,
+  GitHub's replies (each one's author and time link to it on GitHub) and
+  "resolved on GitHub" when it is; then "In lookout only", with the replies lookout keeps. Those are
+  never posted, so its button says Reply here, and a link beside it replies
+  on GitHub. One not posted says pending, in a filled chip since it is
+  still to do. One whose code changed on the PR's head says stale, and when
+  open, says why under its title. These chips sit just after the severity.
+  Status changes one person makes in a row, minutes apart, show as one
+  line with the net result, or none when it ends where it began. "Changed
+  4 times" opens to each change.
 
 ## In the seamux app
 

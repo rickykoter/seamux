@@ -47,6 +47,8 @@
 .r-item-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .r-item-name { font-size: var(--fs-3); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .r-item-line { font-size: var(--fs-2); color: var(--muted); padding-left: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r-fail { color: var(--bad-t); }
+.r-cross { width: 9px; height: 9px; margin-right: 3px; vertical-align: -0.5px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .r-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: 0.6; }
 .r-dot.ready, .r-dot.closed { background: var(--good); opacity: 1; }
 .r-dot.open { background: var(--accent); opacity: 1; }
@@ -70,6 +72,9 @@
 .r-meta { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .r-grow { flex: 1; }
 .r-link { font-size: var(--fs-2); color: var(--accent-t); overflow-wrap: anywhere; }
+/* The header's GitHub link is one quiet link: the framed page's PR strip carries the PR. */
+.r-mhead-row .r-link { color: var(--muted); text-decoration: none; white-space: nowrap; }
+.r-mhead-row .r-link:hover { color: var(--fg); text-decoration: underline; }
 .r-chip { font-size: var(--fs-1); padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--term); color: var(--muted); }
 .r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good-t); }
 /* The page's gate pill colour: a blocked review reads as a blocker does. */
@@ -100,6 +105,11 @@
 .r-ctl { padding: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; }
 .r-detail { margin: 0; font-size: var(--fs-2); color: var(--muted); overflow-wrap: anywhere; }
 .r-detail.bad { color: var(--bad-t); }
+/* A done post or a Re-review's ask, in its review's detail line: news, not an error. */
+.r-note { margin: 0; font-size: var(--fs-2); color: var(--fg); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+.r-note .r-link { text-decoration: none; }
+.r-code { font: var(--fs-2) ui-monospace, Menlo, monospace; padding: 1px 6px; border-radius: 6px; background: var(--term); user-select: all; }
+.r-copy { font-size: var(--fs-2); padding: 1px 8px; }
 .r-now { margin: 0; font: var(--fs-2) ui-monospace, Menlo, monospace; color: var(--fg); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the ⋯ menu */
 .r-more { position: relative; }
