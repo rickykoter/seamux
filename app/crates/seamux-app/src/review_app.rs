@@ -18,8 +18,8 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use seamux_app::review::{
-    branch_ok, depth_guide, gh_summary, parse_target, remote_for, review_id, GhSummary, What,
-    DEPTHS, MODELS,
+    branch_ok, depth_guide, gh_summary, panel_phase, panel_prompt, panel_tools, parse_target,
+    remote_for, review_id, GhSummary, What, DEPTHS, MODELS, REVIEWERS,
 };
 
 const REVIEW_TIME: Duration = Duration::from_secs(45 * 60);
@@ -58,6 +58,9 @@ pub struct Job {
     pub cross: bool,
     pub depth: String,
     pub model: String,
+    /// "agent" (one reviewer; also an empty field, from before panels) or
+    /// "panel" (lookout's review panel workflow).
+    pub reviewer: String,
     /// resolving, cloning, fetching, opening, reviewing, ready or failed.
     pub status: String,
     pub detail: String,
@@ -905,7 +908,9 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
     );
     // --pr links the review to its pull request for `lookout gh sync`.
     let pr_ref = pr.map(|n| format!("{}#{n}", t.repo));
-    let mut args = vec!["open", "--no-open", "--id", &rid, "--base", &base_sha, "--title", &title];
+    let panel = job.reviewer == "panel";
+    let mut args = vec!["open", "--no-open", "--id", &rid, "--base", &base_sha, "--title", &title,
+        "--reviewer", if panel { "panel" } else { "agent" }];
     if let Some(r) = &pr_ref {
         args.extend(["--pr", r.as_str()]);
     }
@@ -919,27 +924,46 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
     note(id, o.out.trim());
     // --reply: the reviewer has no file tool, and Claude Code refuses JSON
     // inside a Bash command, so it answers with the JSON and the app ingests it.
-    let brief = ok(
-        Ok(lookout(&wt, &["prompt", &rid, "--reply"])?),
-        "lookout prompt",
-    )?;
+    // A panel is one turn that runs lookout's review workflow; its agents
+    // print their own briefs. One reviewer gets the brief itself.
+    let (brief, tools) = if panel {
+        (panel_prompt(&panel_script(&wt)?.display().to_string(), &rid), panel_tools(REVIEWER_TOOLS))
+    } else {
+        (ok(Ok(lookout(&wt, &["prompt", &rid, "--reply"])?), "lookout prompt")?, REVIEWER_TOOLS.to_string())
+    };
 
     stage(
         id,
         "reviewing",
-        &format!("a fresh reviewer is reading the diff ({} depth)", job.depth),
+        &if panel {
+            "a review panel is reading the diff".to_string()
+        } else {
+            format!("a fresh reviewer is reading the diff ({} depth)", job.depth)
+        },
     );
-    let (session, mut said) = claude(
+    let watcher = panel.then(|| watch_panel(id, &wt));
+    let ran = claude(
         &wt,
         &brief,
         &job.model,
         &job.depth,
-        REVIEWER_TOOLS,
+        &tools,
         Some(depth_guide(&job.depth)),
         None,
         REVIEW_TIME,
         Some(id),
-    )?;
+    );
+    if let Some(w) = watcher {
+        w.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let (session, mut said) = ran?;
+    if panel {
+        if let Some(n) = serde_json::from_str::<Value>(&said).ok().as_ref()
+            .and_then(|v| v.get("dropped")).and_then(Value::as_array).map(Vec::len).filter(|n| *n > 0)
+        {
+            note(id, &format!("the panel's skeptics refuted {n} finding(s); the run's reply lists them"));
+        }
+    }
     update(id, |j| j.session = session.clone());
     let mut round = 0;
     let heard = loop {
@@ -977,7 +1001,7 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
             &ask,
             &job.model,
             &job.depth,
-            REVIEWER_TOOLS,
+            &tools,
             Some(depth_guide(&job.depth)),
             Some(&session),
             SLOW,
@@ -996,6 +1020,39 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
     refresh(id);
     stage(id, "ready", "review done");
     Ok(())
+}
+
+/// lookout's review panel script, beside the engine `lookout engine` names.
+fn panel_script(wt: &Path) -> Result<PathBuf, String> {
+    let o = lookout(wt, &["engine"])?;
+    let root = serde_json::from_str::<Value>(&o.out).ok()
+        .and_then(|v| v.get("root").and_then(Value::as_str).map(PathBuf::from))
+        .ok_or("lookout engine said nothing readable")?;
+    let script = root.join("workflows").join("review.js");
+    if script.is_file() {
+        Ok(script)
+    } else {
+        Err(format!("this lookout ({}) has no review panel yet; update it, or pick One reviewer", root.display()))
+    }
+}
+
+/// While a panel runs, its phase on the job's status line every two
+/// seconds, read from the session's workflow run. Store true to stop.
+fn watch_panel(id: &str, wt: &Path) -> Arc<std::sync::atomic::AtomicBool> {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (flag, id, cwd) = (stop.clone(), id.to_string(), wt.display().to_string());
+    std::thread::spawn(move || {
+        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+            let session = get(&id).map(|j| j.session).unwrap_or_default();
+            if let Some(ctx) = (!session.is_empty()).then(|| crew_core::runs::context_for(&session, &cwd)).flatten() {
+                if let Some(p) = panel_phase(&crew_core::runs::claude_workflow::adapter(&ctx)) {
+                    update(&id, |j| j.activity = p);
+                }
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+    stop
 }
 
 /// One headless Claude turn in `wt`. Returns its session id and final text.
@@ -1036,12 +1093,21 @@ fn claude(
     }
     let on_line: Option<LineFn> = watch.map(|id| {
         let id = id.to_string();
+        let panel = get(&id).map(|j| j.reviewer == "panel").unwrap_or(false);
         Box::new(move |line: &str| {
-            if let Some(a) = serde_json::from_str::<Value>(line)
-                .ok()
-                .as_ref()
-                .and_then(activity_of)
+            let v = serde_json::from_str::<Value>(line).ok();
+            // The session is known from the first event, so a panel's
+            // progress can be read while the turn is still running.
+            if let Some(s) = v.as_ref().filter(|v| v.get("type").and_then(Value::as_str) == Some("system"))
+                .and_then(|v| v.get("session_id")).and_then(Value::as_str)
             {
+                let s = s.to_string();
+                update(&id, |j| if j.session.is_empty() { j.session = s });
+            }
+            if panel {
+                return;
+            }
+            if let Some(a) = v.as_ref().and_then(activity_of) {
                 update(&id, |j| j.activity = a);
             }
         }) as LineFn
@@ -1286,19 +1352,20 @@ pub fn review_jobs() -> Vec<Job> {
 
 /// Async: it reads and deletes worktrees, which is too slow for the main thread.
 #[tauri::command]
-pub async fn review_start(input: String, depth: String, model: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || start_review(input, depth, model))
+pub async fn review_start(input: String, depth: String, model: String, reviewer: Option<String>) -> Result<String, String> {
+    let reviewer = reviewer.unwrap_or_else(|| "agent".into());
+    tauri::async_runtime::spawn_blocking(move || start_review(input, depth, model, reviewer))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn start_review(input: String, depth: String, model: String) -> Result<String, String> {
+fn start_review(input: String, depth: String, model: String, reviewer: String) -> Result<String, String> {
     let t = parse_target(&input)?;
     if t.what == What::Default {
         return Err("name a branch or a pull request: owner/repo@branch, owner/repo#123, or a /tree/ or /pull/ URL".into());
     }
-    if !DEPTHS.contains(&depth.as_str()) || !MODELS.contains(&model.as_str()) {
-        return Err("unknown depth or model".into());
+    if !DEPTHS.contains(&depth.as_str()) || !MODELS.contains(&model.as_str()) || !REVIEWERS.contains(&reviewer.as_str()) {
+        return Err("unknown depth, model or reviewer".into());
     }
     // One card per branch or pull request: reviewing it again replaces the
     // old run (its worktree too), unless that run has work not yet pushed,
@@ -1344,6 +1411,7 @@ fn start_review(input: String, depth: String, model: String) -> Result<String, S
         repo: t.repo.clone(),
         depth,
         model,
+        reviewer,
         status: "resolving".into(),
         started: now(),
         stage_at: now(),
