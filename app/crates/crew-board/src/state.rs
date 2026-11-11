@@ -988,19 +988,26 @@ fn ensure_server() -> bool {
     false
 }
 
-/// Open a served page (/board, /usage) in a cmux browser tab.
+/// Open a served page (/board, /usage): a cmux browser tab, or the browser on tmux.
 fn open_page(path: &str) -> i32 {
     if !ensure_server() {
         eprintln!("seamux crew-board: the intent server did not start; see {}", crate::server::log_file().display());
         return 1;
     }
     let url = page_url(path);
-    let (ok, text) = cmux(&["open", &url]);
+    // On the app's tmux the page goes to the browser; cmux opens it as a tab.
+    let (ok, text) = match crate::backend::tmux() {
+        Some(_) => match crate::companion::open_in_browser(&url) {
+            Ok(_) => (true, String::new()),
+            Err(e) => (false, e),
+        },
+        None => cmux(&["open", &url]),
+    };
     if ok {
         println!("{url}");
         0
     } else {
-        eprintln!("seamux crew-board: cmux could not open {url}: {text}");
+        eprintln!("seamux crew-board: could not open {url}: {text}");
         1
     }
 }

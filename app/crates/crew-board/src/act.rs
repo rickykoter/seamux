@@ -214,6 +214,13 @@ pub fn surface_keep(name: &str) -> std::path::PathBuf {
 /// Show a URL in the Dock in the tab kept under `keep`, navigating it in
 /// place when it is still there rather than stacking another.
 fn dock_tab(keep: &str, url: &str) -> (bool, String) {
+    // On the app's tmux there is no cmux Dock: the browser shows the page.
+    if crate::backend::tmux().is_some() {
+        return match crate::companion::open_in_browser(url) {
+            Ok(_) => (true, url.to_string()),
+            Err(e) => (false, e),
+        };
+    }
     let path = surface_keep(keep);
     let sid = std::fs::read_to_string(&path).map(|s| s.trim().to_string()).unwrap_or_default();
     if !sid.is_empty() && cmux_out(&["browser", "--surface", &sid, "get", "url"]).0 == 0 {
