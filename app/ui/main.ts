@@ -73,6 +73,7 @@ const tabs = new Tabs(
 tabs.onSelect = (id) => {
   if (id === "dock") dockView.shown();
   if (id === "wake") wakeView.shown();
+  reviewView.setShown(id === "review");
 };
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
 // at the end of the strip. Choosing a session shows it in the Dock.
@@ -92,6 +93,13 @@ void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 void listen<{ ws: string; pane: string }>("notify:jump", (e) => {
   tabs.select("dock");
   dockView.jump(e.payload.ws, e.payload.pane);
+});
+
+// A click on a PR banner (crates/seamux-app/src/pr_watch.rs) lands on its
+// review in the Lookout tab, on the comment or the checks it names.
+void listen<{ review: string; item: string }>("notify:review", (e) => {
+  tabs.select("review");
+  void reviewView.focus(e.payload.review, e.payload.item);
 });
 
 // ⌘. (a shell.rs shortcut, so it works in a framed page too): on to the next

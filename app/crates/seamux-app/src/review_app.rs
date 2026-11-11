@@ -101,7 +101,7 @@ pub struct Job {
 static JOBS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
-fn base_dir() -> PathBuf {
+pub(crate) fn base_dir() -> PathBuf {
     crew_core::py::home().join(".cache/seamux/reviews")
 }
 
@@ -270,14 +270,14 @@ fn tool_path() -> String {
 /// Called with each line of a program's stdout as it arrives.
 type LineFn = Box<dyn FnMut(&str) + Send>;
 
-struct Out {
-    code: i32,
-    out: String,
-    err: String,
+pub(crate) struct Out {
+    pub(crate) code: i32,
+    pub(crate) out: String,
+    pub(crate) err: String,
 }
 
 /// Run a program to completion, its stdin fed `stdin`, killed after `limit`.
-fn exec(
+pub(crate) fn exec(
     program: &str,
     args: &[&str],
     cwd: Option<&Path>,
@@ -1604,7 +1604,7 @@ pub struct Picks {
 }
 
 /// Unix seconds of a UTC ISO time ("2026-10-26T12:21:17Z"; GitHub's and lookout's).
-fn iso_secs(t: &str) -> u64 {
+pub(crate) fn iso_secs(t: &str) -> u64 {
     crew_store::epoch19(t).map(|s| s.max(0) as u64).unwrap_or(0)
 }
 

@@ -52,6 +52,10 @@ pub enum NoteKind {
     Reminder,
     Finished,
     Blocked,
+    /// Someone else commented on a lookout review's pull request (pr_watch.rs).
+    Comment,
+    /// A check on a lookout review's pull request went red.
+    CiFailed,
 }
 
 impl NoteKind {
@@ -62,6 +66,8 @@ impl NoteKind {
             NoteKind::Reminder => "reminder",
             NoteKind::Finished => "finished",
             NoteKind::Blocked => "blocked",
+            NoteKind::Comment => "pr-comment",
+            NoteKind::CiFailed => "ci-failed",
         }
     }
 
@@ -71,6 +77,8 @@ impl NoteKind {
             NoteKind::Reminder => "Purr",
             NoteKind::Finished => "Glass",
             NoteKind::Blocked => "Basso",
+            NoteKind::Comment => "Pop",
+            NoteKind::CiFailed => "Sosumi",
         }
     }
 }
@@ -112,6 +120,11 @@ pub struct Note {
     /// When the question was asked (its record's `at`), so a late pick can
     /// tell the question it answers is still the open one.
     pub asked_at: Option<u64>,
+    /// A review banner's target (pr_watch.rs): the lookout review a click
+    /// opens in the Lookout tab, and the item there ("checks", a finding,
+    /// or "c<GitHub comment id>"). Empty for a pane's banner.
+    pub review: String,
+    pub item: String,
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -154,7 +167,7 @@ fn options_of(p: &PaneView) -> (Vec<String>, Option<u64>) {
 }
 
 fn note(kind: NoteKind, p: &PaneView, title: String, body: String) -> Note {
-    Note { kind, title, body, pane: p.id.clone(), ws: p.ws.clone(), options: Vec::new(), asked_at: None }
+    Note { kind, title, body, pane: p.id.clone(), ws: p.ws.clone(), options: Vec::new(), asked_at: None, review: String::new(), item: String::new() }
 }
 
 pub fn waiting(p: &PaneView) -> Note {
@@ -231,6 +244,9 @@ pub fn merge(notes: Vec<Note>) -> Vec<Note> {
                 NoteKind::Reminder => format!("{count} agents are still waiting"),
                 NoteKind::Finished => format!("{count} agents finished"),
                 NoteKind::Blocked => format!("bash-guard blocked {count} commands"),
+                // pr_watch.rs posts these one by one (post_review), never through merge.
+                NoteKind::Comment => format!("{count} reviews have new comments"),
+                NoteKind::CiFailed => format!("checks failed on {count} reviews"),
             };
             // Each one's label is the part of its title before " · ".
             let mut names: Vec<&str> = Vec::new();
@@ -456,10 +472,42 @@ fn post(app: &AppHandle, n: &Note) {
     let _ = b.show();
 }
 
-/// Bring the app forward on the note's pane.
+/// Bring the app forward on the note's pane, or on its review in the Lookout tab.
 fn jump(app: &AppHandle, n: &Note) {
     crate::shell::summon(app);
+    if !n.review.is_empty() {
+        let _ = app.emit("notify:review", serde_json::json!({"review": n.review, "item": n.item}));
+        return;
+    }
     let _ = app.emit("notify:jump", serde_json::json!({"ws": n.ws, "pane": n.pane}));
+}
+
+/// The review the Lookout tab shows while it is the tab in view, as the page last said.
+fn review_looking() -> &'static Mutex<Option<String>> {
+    static L: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    L.get_or_init(Default::default)
+}
+
+/// The Lookout tab says which review it shows (None when another tab is in view).
+#[tauri::command]
+pub fn notify_review_looking(review: Option<String>) {
+    *review_looking().lock().unwrap_or_else(|p| p.into_inner()) = review.filter(|r| !r.is_empty());
+}
+
+/// A banner about a lookout review's pull request (pr_watch.rs). Recorded in
+/// the notification log either way; not posted while that review is on
+/// screen with the app in front.
+pub fn review_note(kind: NoteKind, title: String, body: String, review: &str, item: &str) -> Note {
+    Note { kind, title, body, pane: String::new(), ws: String::new(), options: Vec::new(), asked_at: None,
+           review: review.into(), item: item.into() }
+}
+pub fn post_review(app: &AppHandle, n: &Note) {
+    let here = review_looking().lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let seen = here.as_deref() == Some(n.review.as_str()) && crate::shell::in_front(app);
+    crew_core::notifications::record(entry(n, !seen));
+    if !seen {
+        post(app, n);
+    }
 }
 
 /// Answer the note's question with option `k` if it is still the open one.

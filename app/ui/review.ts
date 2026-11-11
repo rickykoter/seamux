@@ -73,6 +73,8 @@ type PageState = {
  */
 const FOLDS = ["github", "view", "findings"] as const;
 type Fold = (typeof FOLDS)[number];
+/** How long a banner's target waits for its review's page to be ready. */
+const FOCUS_WAIT_MS = 90_000;
 /** The title keeps this much width before anything folds. */
 const TITLE_MIN = 160;
 
@@ -275,6 +277,12 @@ export class ReviewView {
   /** Logs the reader opened or closed, so a redraw keeps them that way. */
   private logOpen = new Map<string, boolean>();
   private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable" | "orphan" | "stop-orphan">();
+  /** Whether the Lookout tab is the one in view (main.ts says). */
+  private shown = false;
+  /** A banner's target, waiting for its review's page to say it is ready. */
+  private pendingFocus: { review: string; item: string; at: number } | null = null;
+  /** The review last told to the notifier as on screen. */
+  private told: string | null | undefined = undefined;
   /** The terminal review whose findings are being posted, or "". */
   private posting = "";
   /** Per job: the run its ticks, findings and confirm belong to. */
@@ -385,6 +393,7 @@ export class ReviewView {
       else if (d.lookout === "rereview") this.rereview();
       else if (d.lookout === "state" && d.gate && typeof d.gate === "object" && d.mode && typeof d.mode === "object") {
         this.pageState = d as unknown as PageState;
+        this.flushFocus();
         this.render();
       }
     });
@@ -416,6 +425,61 @@ export class ReviewView {
     }
     const o = this.others.find((x) => `other:${x.id}` === sel);
     if (o) this.err.textContent = `Re-review it from the session that opened it, at the new head: lookout open in ${o.root}, then a fresh reviewer (lookout prompt ${o.id}).`;
+  }
+
+  /** main.ts: the Lookout tab came into view, or left it. */
+  setShown(on: boolean): void {
+    this.shown = on;
+    this.tellLooking();
+  }
+
+  /**
+   * The notifier skips a PR banner for the review on screen
+   * (notify_app.rs notify_review_looking): say which that is, on a change.
+   */
+  private tellLooking(): void {
+    const now = this.shown && this.framed ? this.framed : null;
+    if (now === this.told) return;
+    this.told = now;
+    void invoke("notify_review_looking", { review: now }).catch(() => {});
+  }
+
+  /**
+   * A PR banner's click: show review `review` (a pasted one's review id, or
+   * a terminal review's) and have its page go to `item`, once the page has
+   * said it is ready. A terminal review past the list's newest twelve is
+   * looked for once more before giving up.
+   */
+  async focus(review: string, item: string): Promise<void> {
+    const find = () => {
+      const j = this.jobs.find((x) => x.review_id === review);
+      if (j) return `job:${j.id}`;
+      const o = this.others.find((x) => x.id === review);
+      return o ? `other:${o.id}` : null;
+    };
+    let sel = find();
+    if (!sel) {
+      await this.loadOthers();
+      sel = find();
+    }
+    if (!sel) {
+      this.err.textContent = `That review (${review}) is no longer listed.`;
+      return;
+    }
+    this.pendingFocus = { review, item, at: Date.now() };
+    if (this.selected !== sel) this.pick(sel);
+    this.flushFocus();
+  }
+
+  /** Hands a waiting banner target to the framed page, once it is that review's and ready. */
+  private flushFocus(): void {
+    const p = this.pendingFocus;
+    // A target waits only for its own review's page, and not for long: the
+    // reader may have moved on, and a page should not jump unasked later.
+    if (p && (Date.now() - p.at > FOCUS_WAIT_MS || (this.framed && this.framed !== p.review && this.pageState))) this.pendingFocus = null;
+    if (!p || this.pendingFocus !== p || this.framed !== p.review || !this.pageState) return;
+    this.pendingFocus = null;
+    this.tell("focus", { item: p.item });
   }
 
   // ---- data ----
@@ -555,6 +619,9 @@ export class ReviewView {
   }
 
   private pick(sel: string | null): void {
+    // Picking another review drops a banner target still waiting for its own.
+    const p = this.pendingFocus;
+    if (p && sel !== `job:${this.jobs.find((j) => j.review_id === p.review)?.id}` && sel !== `other:${p.review}`) this.pendingFocus = null;
     this.selected = sel;
     try {
       if (sel) localStorage.setItem(SEL_KEY, sel);
@@ -654,6 +721,7 @@ export class ReviewView {
       this.frameBox.hidden = !page;
       if (page) this.showFrame(page, job ? this.title(job) : other?.title ?? page);
     }
+    this.tellLooking();
 
     const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
     if (force || key !== this.drawn) {
