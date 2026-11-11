@@ -170,6 +170,21 @@ export function followRenamed(root, a, config) {
   return null;
 }
 
+// An applied ADR whose number another file in its folder also carries, under
+// a different name: someone else's ADR landed on the same number (a rebase
+// onto a branch that added one). Ours is the one to move.
+export function numberTaken(root, a, config) {
+  if (!a || !a.applied || !Number.isInteger(a.number)) return false;
+  let names = [];
+  try { names = fs.readdirSync(path.join(root, a.dir)); } catch { return false; }
+  const re = compileScan(config && config.numberScan);
+  return names.some(n => {
+    if (n === a.file || DATED.test(n)) return false;
+    const m = re.exec(n);
+    return !!m && m[1] !== undefined && parseInt(m[1], 10) === a.number;
+  });
+}
+
 // ---------------------------------------------------------------- discovery
 
 const SKIP_DIRS = new Set(["node_modules", "vendor", ".git", ".hg", "dist", "build"]);

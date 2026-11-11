@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import { execSync, execFileSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
-import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport, followRenamed } from "./lib/adr.mjs";
+import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport, followRenamed, numberTaken } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd, handoffMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
 import { buildMap } from "./lib/map.mjs";
@@ -3569,6 +3569,17 @@ function adrApply(slug) {
       log1(st, `adr ${a.n}: followed a renumber on disk, ${a.applied} -> ${mv.applied}`);
       Object.assign(a, mv);
     }
+    // Applied, but another ADR in the folder now holds the same number (a
+    // rebase onto a branch that added one): move ours to a free number.
+    if (a.applied && numberTaken(st.root, a, config)) {
+      const fresh = nextNumber(dirAbs, config.numberScan);
+      const file = adrFileName(fresh, entry.decision, config.filePattern);
+      say(`adr ${a.n}: number ${a.number} is taken by another ADR in ${a.dir}; moving ${a.file} to ${file}`);
+      log1(st, `adr ${a.n}: reallocated ${a.number} -> ${fresh}, another ADR holds ${a.number}`);
+      const old = path.join(st.root, a.applied);
+      if (fs.existsSync(old)) fs.rmSync(old);
+      Object.assign(a, { number: fresh, file, applied: path.join(a.dir, file) });
+    }
     if (!a.applied) {
       const miss = adrScanReport(dirAbs, config.numberScan);
       if (miss)
@@ -6459,6 +6470,9 @@ const [, , cmd, ...rest] = process.argv;
 }
 const flags = {};
 const args = [];
+// Only these commands have a dry run. Anywhere else --dry-run is refused, so it
+// never quietly does the real thing (render archived a plan with it).
+const DRY_RUN_OK = new Set(["redraw"]);
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--force") flags.force = true;
   // Resolved here: state outlives this cwd, and the gate reads a relative root
@@ -6466,7 +6480,10 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--root") flags.root = rest[++i] && path.resolve(rest[i]);
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
-  else if (rest[i] === "--dry-run") flags.dry = true;
+  else if (rest[i] === "--dry-run") {
+    if (!DRY_RUN_OK.has(cmd)) die(`${cmd || "deep-plan"} has no --dry-run; it would do the real thing (only ${[...DRY_RUN_OK].join(", ")} takes it)`);
+    flags.dry = true;
+  }
   else if (rest[i] === "--inline") flags.inline = true;
   else if (rest[i] === "--write") flags.write = true;
   else if (rest[i] === "--out") flags.out = rest[++i];
