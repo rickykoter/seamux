@@ -47,8 +47,9 @@ It prints the review id, the page and the store, and shows the page where
 this session can. In cmux it is a browser tab beside the terminal, opened
 without taking focus (a second open of the same review refreshes that tab
 instead of adding one). Everywhere else the page line says `served at <url>
-(host: …)`, from lookout's own server: in Claude desktop open that URL in
-the browser pane with `preview_start`, and in a plain terminal give the
+(host: …)`. In the seamux app crew serves it and the Dock shows it beside
+the terminal; elsewhere lookout's own server does. In Claude desktop open
+that URL in the browser pane with `preview_start`, and in a plain terminal give the
 person the link. A remote host has no live page. `--no-open` skips the
 page, `--json` prints the same as JSON, `--id` names the review yourself.
 
@@ -116,7 +117,8 @@ marked addressed still holds the gate until the human closes it.
 `{"quiz": true}`, or a plan's `review.quiz`) is fixed when the review is
 created; a re-open neither adds nor removes it. On the served page each
 high group's question hides its note until the human answers, and the
-server that served the page (lookout's own, or crew's in cmux) records the
+server that served the page (lookout's own, or crew's in cmux and
+the seamux app) records the
 answer once. It never gates. A wrong answer
 reaches you at the human's next prompt, beside their comments: if they
 ask, explain the gap from the code, not from the note. Never answer a

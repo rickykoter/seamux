@@ -8,8 +8,8 @@ description: Plans a change as a reviewable artifact — spec → markdown plan 
 Plan as artifact, gate per increment. Every increment is gated on its checks
 (tests, e2e runs, observability signals, manual steps), run by the engine
 from per-project recipes where it can and recorded by hand where it cannot.
-A plan's live pages are served at `/plan/<slug>`, by crew in cmux and by
-deep-plan's own server everywhere else; the cutover bundle is how a plan
+A plan's live pages are served at `/plan/<slug>`, by crew in cmux and in
+the seamux app, and by deep-plan's own server everywhere else; the cutover bundle is how a plan
 reaches a ticket system.
 
 ## Must hold
@@ -132,7 +132,8 @@ These survive a compaction; everything below them is how.
    other types, and one on each ADR decision
    ([spec.md](references/spec.md#the-quiz)). `deep-plan page <slug> --review`
    shows it where this session can and prints `served at <url> (host: …)`.
-   In cmux it opens beside the terminal. In Claude desktop, open that URL in
+   In cmux it opens beside the terminal; in the seamux app the Dock shows
+   it beside the terminal. In Claude desktop, open that URL in
    the browser pane with `preview_start`, and prefer the inline widget for
    the quiz itself. In a plain terminal, give the person the link or the
    text quiz. On a remote host there is no live
@@ -181,7 +182,7 @@ These survive a compaction; everything below them is how.
    its patch and its review; the first edit inside the root marks it
    `working`. `deep-plan done <slug> <n>` closes it and writes its patch to
    `~/.claude/plans/<slug>.inc<n>.patch`. `deep-plan diff <slug> [n]` opens
-   it in lookout (or `cmux diff`) when someone wants to look. A bug or idea
+   it in lookout (or `cmux diff`, in cmux only) when someone wants to look. A bug or idea
    found outside the current increment's plan goes into `deep-plan note
    "<what you found>"`, not into the spec or the code; `deep-plan notes`
    lists the repo's open ones ([sharing.md](references/sharing.md#notes)).
