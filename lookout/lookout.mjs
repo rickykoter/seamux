@@ -35,6 +35,7 @@ import { brief } from "./lib/prompt.mjs";
 import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
+import * as GH from "./lib/github.mjs";
 import { comparePlan } from "./lib/planmap.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 
@@ -53,7 +54,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -324,6 +325,9 @@ function cmdOpen() {
     patchHash: hash,
     ...(context !== undefined ? { context } : {}),
     ...(planMap ? { planMap } : planMap === null ? { planMap: undefined } : {}),
+    // --pr: the pull request this review belongs to, for `lookout gh sync`
+    // (else it is found from the branch). Kept across re-opens without it.
+    ...(opt("pr") ? { prRef: opt("pr") } : {}),
     stats: { files: meta.length, adds: meta.reduce((x, f) => x + f.adds, 0), dels: meta.reduce((x, f) => x + f.dels, 0) },
     files: meta,
     edges: found.edges,
@@ -333,6 +337,7 @@ function cmdOpen() {
   // Who may close findings is decided when a review is created, never on a
   // later open: otherwise the agent the policy restrains could re-open its
   // own review with the flag and grant itself the right.
+  if (opt("pr") && !GH.parsePrRef(opt("pr"))) die(`--pr: cannot read "${opt("pr")}" (123, owner/repo#123 or a github.com /pull/ URL)`);
   if (flag("agent-may-close")) {
     if (S.exists(id) && !(S.read(id).policy || {}).agentMayClose)
       die(`review ${id} was created without --agent-may-close, and that is not changed on a re-open. ` +
@@ -347,6 +352,11 @@ function cmdOpen() {
   else if (flag("quiz") && !(S.read(id).policy || {}).quiz)
     quizNote = `review ${id} was created without the quiz, and a re-open does not add it; open a new review (--id) to quiz`;
   const review = S.update(id, cur => {
+    // Items made before findings kept `at` were read on the head this
+    // re-open replaces: stamp it, so staleness measures from there.
+    const was = cur && cur.source && cur.source.head;
+    if (was && was !== fresh.source.head)
+      for (const x of [...(cur.findings || []), ...(cur.threads || [])]) if (x && !x.at) x.at = was;
     const m = S.merge(cur, fresh);
     m.policy = { agentMayClose: false, quiz: false, ...(m.policy || {}) };
     return arrange(m);
@@ -576,6 +586,7 @@ function usage() {
   lookout open [--base REF | --worktree | --range A..B | --patch FILE |
                 --turn [SESSION/]N|last | --since-prompt]
                [--id ID] [--title T] [--plan SLUG --inc N|all] [--agent-may-close] [--quiz]
+               [--pr N|owner/repo#N|URL] (the pull request it belongs to; else found from the branch)
                [--context-file F] (text the reviewer brief prints beside the plan)
                [--plan-map F | --no-plan-map] (a deep-plan End state map for the page's Map view, or drop the one kept)
                [--plain] [--no-jev] [--rescore] [--view-only] [--no-open] [--json]
@@ -603,6 +614,12 @@ function usage() {
   lookout resolve|dismiss <id> <f#> [note]  refused unless opened --agent-may-close
   lookout reopen <id> <f#|t#> [note]
   lookout gate <id> | --plan SLUG --inc N   exit 0 pass, 1 blocker/major open, 3 no review
+  lookout gh link <id> [--pr REF]   find (or set) the review's pull request and sync it
+  lookout gh sync <id> [--force]    read the PR's head, review threads and checks; mark stale items
+  lookout gh post <id> <f#|t#>… [--intro TEXT] [--again]
+                            post those items as one GitHub review and keep each comment's id.
+                            This sends text to GitHub: only when the person asks.
+  lookout gh status <id> [--json]   what the last sync saw
   lookout render <id>       redraw the page from the store
   lookout sync <id>         re-rank and redraw (crew's intent server runs it after a page edit)
   lookout show <id> [--json]
@@ -697,6 +714,59 @@ function cmdTurns() {
 
 // `lookout serve`: start the server if needed and print a page's URL, run it
 // in the foreground (what the detached start runs), or stop it.
+// A review's pull request on GitHub (lib/github.mjs): link, sync, post, status.
+function cmdGh() {
+  const [sub, id, ...more] = positional();
+  if (!["link", "sync", "post", "status"].includes(sub || "")) die("gh link|sync|post|status <review-id> …");
+  if (!id || !S.ID_OK.test(id) || !S.exists(id)) die(`gh ${sub} wants a review id (lookout list)`);
+  const json = flag("json");
+  const out = v => { if (json) process.stdout.write(JSON.stringify(v, null, 2) + "\n"); };
+  if (sub === "link" || sub === "sync") {
+    if (sub === "link" && opt("pr")) {
+      if (!GH.parsePrRef(opt("pr"))) die(`--pr: cannot read "${opt("pr")}"`);
+      S.update(id, cur => { cur.prRef = opt("pr"); if (cur.github) cur.github = { ...cur.github, pr: null }; return cur; });
+    }
+    const r = GH.sync(id, { force: sub === "link" || flag("force"), visible: flag("visible") });
+    if (r.changed) renderPage(id);
+    out(r);
+    if (json) { if (r.error) process.exitCode = 1; return; }
+    if (r.skipped) return say(`lookout gh ${id}: skipped (${r.skipped})`);
+    if (r.linked === false) return say(`lookout gh ${id}: not linked (${r.why})`);
+    if (r.error && !(r.github && r.github.pr)) die(r.error);
+    return say(ghSummary(id, r.changed));
+  }
+  if (sub === "status") {
+    const g = S.read(id).github;
+    out(g || null);
+    if (!json) say(g && g.pr ? ghSummary(id, null) : `lookout gh ${id}: not linked (lookout gh link ${id} [--pr N])`);
+    return;
+  }
+  // Every word must name an item: a typo must not post less than was named.
+  // (positional() has already set aside --intro's text.)
+  const bad = more.filter(x => !/^[ft]\d+$/.test(x));
+  if (bad.length) die(`gh post: not a finding or comment id: ${bad.join(", ")} (f1, t2, …)`);
+  const ids = more;
+  if (!ids.length) die("gh post <review-id> <f#|t#> … (the findings or comments to post)");
+  try {
+    const r = GH.post(id, ids, { intro: opt("intro") || "", again: flag("again") });
+    renderPage(id);
+    out(r);
+    if (!json) say(`posted ${r.posted.join(", ")}${r.folded ? " (in one body: GitHub refused a line)" : ""}: ${r.url || "(no URL returned)"}`);
+  } catch (e) { die(e.message); }
+}
+
+function ghSummary(id, changed) {
+  const g = S.read(id).github || {};
+  const by = b => (g.checks || []).filter(c => c.bucket === b).length;
+  const stale = Object.keys(g.stale || {});
+  return [`lookout gh ${id}: ${g.repo}#${g.pr} ${String(g.state || "").toLowerCase()}${g.draft ? " (draft)" : ""}` +
+            (changed === false ? "  (no change)" : ""),
+          `  head  ${String(g.head || "").slice(0, 12)}${g.behind ? `, ${g.behind} commit${g.behind === 1 ? "" : "s"} past the review` : g.behind === 0 ? ", the reviewed head" : ""}`,
+          `  threads ${(g.threads || []).length} on GitHub; checks ${by("pass")} passed, ${by("fail") + by("cancel")} failed, ${by("pending")} pending`,
+          stale.length ? `  stale ${stale.join(", ")}` : "",
+          g.error ? `  note  ${g.error}` : ""].filter(Boolean).join("\n");
+}
+
 function cmdServe() {
   if (flag("foreground")) { SV.serveForeground({ version: V.engineVersion(HERE), root: HERE }); return; }
   if (flag("stop")) { say(SV.stopServer() ? "stopped lookout serve" : "lookout serve was not running"); return; }
@@ -738,6 +808,7 @@ switch (verb) {
   case "pull":   cmdPull(); break;
   case "install-repo": cmdInstallRepo(); break;
   case "turns":  cmdTurns(); break;
+  case "gh":     cmdGh(); break;
   case "engine": {
     // The pointer as written by this run, plus the host it detected (not
     // stored in the pointer: the host belongs to the session, not the copy).

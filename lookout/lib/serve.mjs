@@ -84,6 +84,27 @@ export function syncReview(id) {
   } catch { /* the page polls the record either way */ }
 }
 
+// A visible page's poll asks for a GitHub sync of its review, at most once
+// a minute per review from this server (`lookout gh sync` has its own floor,
+// shared with the app's background watcher). A hidden tab's poll never does.
+export const GH_KICK_MS = Number(process.env.LOOKOUT_GH_KICK_MS) || 60 * 1000;
+export function ghKicker(run = ghSync, every = GH_KICK_MS) {
+  const last = new Map();
+  return (id, now = Date.now()) => {
+    if (last.has(id) && now - last.get(id) < every) return false;
+    last.set(id, now);
+    run(id);
+    return true;
+  };
+}
+export function ghSync(id) {
+  try {
+    const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "lookout.mjs");
+    // --visible: the page is in view, so a closed or idle review is synced too.
+    spawn(process.execPath, [cli, "gh", "sync", id, "--visible"], { detached: true, stdio: "ignore", env: process.env }).unref();
+  } catch { /* the page shows what the record has */ }
+}
+
 // ---------------------------------------------------------------- server
 
 function send(res, code, ctype, body) {
@@ -101,7 +122,7 @@ function readBody(req, limit) {
   });
 }
 
-export function makeServer({ version, root, token, onRequest = () => {}, sync }) {
+export function makeServer({ version, root, token, onRequest = () => {}, sync, kick = ghKicker() }) {
   let port = 0;
   const server = http.createServer(async (req, res) => {
     onRequest(req);
@@ -120,6 +141,7 @@ export function makeServer({ version, root, token, onRequest = () => {}, sync })
           if (!ctEq(u.searchParams.get("t") || "", token)) { log("DENY bad token on /review json from 127.0.0.1"); return reply(res, 403, { error: "bad token" }); }
           const f = reviewPath(rest.slice(0, -5), ".json");
           if (!f) return reply(res, 404, { error: "no such review" });
+          if (u.searchParams.get("bg") !== "1") kick(rest.slice(0, -5));
           return send(res, 200, "application/json", fs.readFileSync(f));
         }
         const f = reviewPath(rest, ".html");

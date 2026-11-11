@@ -34,6 +34,8 @@ export const isOpen = f => !CLOSED.has(f.status || "open");
 const MAX_TEXT = 4000;
 const clip = (s, n = MAX_TEXT) => String(s ?? "").trim().slice(0, n);
 const now = () => new Date().toISOString();
+// The commit a finding or comment was made against (lib/github.mjs reads it).
+const headOf = review => review.source && review.source.head ? { at: review.source.head } : {};
 
 // One finding as a reviewer writes it. The whole output (findings with the
 // reviewer's edges and notes) is notes.mjs outputSchema, printed by
@@ -155,7 +157,8 @@ export function ingest(review, accepted, by = "reviewer") {
   for (const x of accepted) {
     if (have.has(key(x))) continue;
     have.add(key(x));
-    const f = { id: "f" + n++, ...x, status: "open", by, createdAt: now(), thread: [] };
+    // `at`: the head it was read on, so a later PR head can say it is stale.
+    const f = { id: "f" + n++, ...x, status: "open", by, createdAt: now(), ...headOf(review), thread: [] };
     review.findings.push(f);
     added.push(f);
   }
@@ -195,7 +198,7 @@ export function comment(review, { file, line, side = "new", text }, by = "human"
   if (side !== "new" && side !== "old") throw new Error("side must be new or old");
   if (!clip(text)) throw new Error("an empty comment says nothing");
   review.threads = review.threads || [];
-  const t = { id: "t" + nextNum(review.threads, "t"), file, line, side, status: "open", by, createdAt: now(), messages: [] };
+  const t = { id: "t" + nextNum(review.threads, "t"), file, line, side, status: "open", by, createdAt: now(), ...headOf(review), messages: [] };
   message(t.messages, by, text);
   review.threads.push(t);
   return t;

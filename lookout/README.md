@@ -92,6 +92,23 @@ does not is filed as a `plan-drift` finding, always major or worse. It
 holds the review check until you close it; dismissing it records that the
 deviation was meant.
 
+## Following a pull request
+
+When the branch under review has an open pull request, lookout follows it.
+The page shows a strip under its header with the PR, how many commits its
+head is past the review, and its checks; a click on the checks lists them,
+failed first. GitHub's review threads sit on their lines beside lookout's
+own findings. A finding is marked pending until it is posted and posted
+once it is, with a link and GitHub's replies under it. One whose code
+changed on the PR's head is marked stale.
+
+`lookout gh post <id> f1 f3` posts findings as one GitHub review; the seamux
+app's Lookout tab does the same from its Post button, for a pasted PR or a
+review a session opened. The app also watches linked PRs and raises a
+banner for a new comment from someone else or a check that turns red; a
+click opens that review on the comment or the checks. lookout never
+answers or resolves GitHub's threads itself, and never starts a fix.
+
 ## Reviews in a plan
 
 `lookout gate` answers 0 when no blocker or major finding is open. A

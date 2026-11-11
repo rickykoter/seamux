@@ -1,8 +1,10 @@
 //! The Lookout tab's pure parts: what a pasted repo or branch means, the
-//! reviewer's depth, and the GitHub review a set of findings becomes. The
-//! processes that act on them live in review_app.rs.
+//! reviewer's depth, and what a review's pull request looks like from its
+//! record. The processes that act on them live in review_app.rs; posting
+//! to GitHub is lookout's (`lookout gh post`).
 
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 
 /// What was pasted: a repository and the branch or pull request in it.
 #[derive(Debug, PartialEq, Clone)]
@@ -163,55 +165,68 @@ pub fn depth_guide(depth: &str) -> &'static str {
     }
 }
 
-/// One finding as a line comment's text.
-fn comment_text(f: &Value) -> String {
-    let s = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("");
-    let sev = s("severity");
-    let scenario = s("failure_scenario");
-    let mut t = format!(
-        "**{}** · {} — {}",
-        if sev.is_empty() { "finding" } else { sev },
-        s("category"),
-        s("summary")
-    );
-    if !scenario.is_empty() {
-        t.push_str("\n\n");
-        t.push_str(scenario);
-    }
-    t
+/// A lookout review id: the rule lookout itself applies (lib/store.mjs
+/// ID_OK), so an id from the page can only name a file in the reviews dir.
+pub fn id_ok(id: &str) -> bool {
+    let b = id.as_bytes();
+    !b.is_empty()
+        && b.len() <= 121
+        && b[0].is_ascii_lowercase() | b[0].is_ascii_digit()
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(c))
 }
 
-/// The body of `POST /repos/{o}/{r}/pulls/{n}/reviews` for `findings`, pinned
-/// to the commit that was reviewed. `folded` puts every finding in the body
-/// instead of on a line, the retry for a line GitHub says is not in the diff.
-pub fn review_payload(findings: &[Value], sha: &str, intro: &str, folded: bool) -> Value {
-    let at = |f: &Value| {
-        let file = f.get("file").and_then(Value::as_str).unwrap_or("");
-        format!(
-            "`{}:{}`",
-            file,
-            f.get("line").and_then(Value::as_u64).unwrap_or(0)
-        )
-    };
-    if folded {
-        let list: Vec<String> = findings
-            .iter()
-            .map(|f| format!("- {} {}", at(f), comment_text(f).replace('\n', "\n  ")))
-            .collect();
-        return json!({"commit_id": sha, "event": "COMMENT", "body": format!("{intro}\n\n{}", list.join("\n"))});
+/// A review's pull request as its record's `github` block says (written by
+/// `lookout gh sync`): what the tab shows beside a terminal review.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct GhSummary {
+    pub repo: String,
+    pub pr: u64,
+    pub url: String,
+    pub state: String,
+    pub draft: bool,
+    /// Commits the PR's head is past the reviewed one, when known.
+    pub behind: Option<u64>,
+    pub pass: u32,
+    pub fail: u32,
+    pub pending: u32,
+    /// Open findings or comments whose code changed on the PR's head.
+    pub stale: u32,
+    /// Open findings or comments not yet posted.
+    pub unposted: u32,
+}
+
+pub fn gh_summary(review: &Value) -> Option<GhSummary> {
+    let g = review.get("github")?;
+    let pr = g.get("pr").and_then(Value::as_u64)?;
+    let s = |k: &str| g.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let mut out = GhSummary { repo: s("repo"), pr, url: s("url"), state: s("state"),
+        draft: g.get("draft").and_then(Value::as_bool).unwrap_or(false),
+        behind: g.get("behind").and_then(Value::as_u64), ..Default::default() };
+    if !out.url.starts_with("https://github.com/") {
+        out.url.clear();
     }
-    let comments: Vec<Value> = findings
-        .iter()
-        .map(|f| {
-            json!({
-                "path": f.get("file").and_then(Value::as_str).unwrap_or(""),
-                "line": f.get("line").and_then(Value::as_u64).unwrap_or(1),
-                "side": if f.get("side").and_then(Value::as_str) == Some("old") { "LEFT" } else { "RIGHT" },
-                "body": comment_text(f),
-            })
-        })
-        .collect();
-    json!({"commit_id": sha, "event": "COMMENT", "body": intro, "comments": comments})
+    for c in g.get("checks").and_then(Value::as_array).into_iter().flatten() {
+        match c.get("bucket").and_then(Value::as_str).unwrap_or("") {
+            "pass" | "skipping" => out.pass += 1,
+            "fail" | "cancel" => out.fail += 1,
+            "pending" => out.pending += 1,
+            _ => {}
+        }
+    }
+    let stale = g.get("stale");
+    let open = |x: &&Value| !matches!(x.get("status").and_then(Value::as_str), Some("resolved" | "dismissed"));
+    for list in ["findings", "threads"] {
+        for x in review.get(list).and_then(Value::as_array).into_iter().flatten().filter(open) {
+            let id = x.get("id").and_then(Value::as_str).unwrap_or("");
+            if stale.and_then(|m| m.get(id)).is_some() {
+                out.stale += 1;
+            }
+            if x.get("github").and_then(|p| p.get("postedAt")).is_none() {
+                out.unposted += 1;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// The name of the git remote in `remote -v` output whose URL is GitHub's
@@ -248,6 +263,7 @@ pub fn remote_for(remote_v: &str, repo: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn t(repo: &str, what: What) -> Result<Target, String> {
         Ok(Target {
@@ -341,22 +357,28 @@ mod tests {
     }
 
     #[test]
-    fn findings_become_line_comments_or_one_folded_body() {
-        let fs = vec![
-            json!({"file": "a.rs", "line": 3, "severity": "major", "category": "correctness", "summary": "bad", "failure_scenario": "x -> y"}),
-            json!({"file": "b.rs", "line": 9, "side": "old", "severity": "nit", "summary": "meh"}),
-        ];
-        let p = review_payload(&fs, "abc", "Reviewed by Lookout", false);
-        assert_eq!(p["commit_id"], "abc");
-        assert_eq!(p["event"], "COMMENT");
-        assert_eq!(p["comments"][0]["side"], "RIGHT");
-        assert_eq!(p["comments"][1]["side"], "LEFT");
-        assert!(p["comments"][0]["body"]
-            .as_str()
-            .unwrap()
-            .contains("x -> y"));
-        let f = review_payload(&fs, "abc", "Reviewed by Lookout", true);
-        assert!(f.get("comments").is_none());
-        assert!(f["body"].as_str().unwrap().contains("`b.rs:9`"));
+    fn a_review_id_follows_lookouts_rule() {
+        assert!(id_ok("gh-o-r-pr12") && id_ok("plan-inc1.x_y"));
+        assert!(!id_ok("") && !id_ok("-x") && !id_ok("A") && !id_ok("../x") && !id_ok("a/b"));
+    }
+
+    #[test]
+    fn a_linked_review_summarizes_its_pull_request() {
+        let r = json!({
+            "github": {"repo": "o/r", "pr": 7, "url": "https://github.com/o/r/pull/7", "state": "OPEN",
+                "behind": 2, "stale": {"f1": "changed"},
+                "checks": [{"bucket": "pass"}, {"bucket": "fail"}, {"bucket": "cancel"}, {"bucket": "pending"}]},
+            "findings": [
+                {"id": "f1", "status": "open"},
+                {"id": "f2", "status": "open", "github": {"postedAt": "t"}},
+                {"id": "f3", "status": "resolved"}],
+            "threads": [{"id": "t1", "status": "open"}]
+        });
+        let g = gh_summary(&r).unwrap();
+        assert_eq!((g.pr, g.behind, g.pass, g.fail, g.pending), (7, Some(2), 1, 2, 1));
+        assert_eq!((g.stale, g.unposted), (1, 2));
+        assert!(gh_summary(&json!({"github": {"error": "x"}})).is_none());
+        let bad = gh_summary(&json!({"github": {"pr": 1, "url": "javascript:alert(1)"}})).unwrap();
+        assert_eq!(bad.url, "");
     }
 }

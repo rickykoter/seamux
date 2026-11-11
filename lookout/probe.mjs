@@ -29,6 +29,12 @@ const ENV = {
   // Authoritative and empty: no TypeSafe client, so no open in the probe can
   // reach the network. The scoring block below points it at a mock.
   LOOKOUT_TYPESAFE_CLIENT: "",
+  // gh is lookout's fake, answering from a map no section has written until
+  // it wants one: nothing in the probe can reach GitHub.
+  LOOKOUT_GH: path.join(HERE, "tools", "fake-gh"),
+  FAKE_GH_MAP: path.join(TMP, "gh-map.json"),
+  FAKE_GH_LOG: path.join(TMP, "gh-log.jsonl"),
+  LOOKOUT_GH_STATE: path.join(TMP, "gh-sync.json"),
 };
 delete ENV.TYPESAFE_BASE_URL;
 delete ENV.LOOKOUT_ENGINE;
@@ -1765,7 +1771,7 @@ if (want("page script")) {
      /function firstBlocking\(\) \{[\s\S]{0,400}x\.severity === "blocker" \|\| x\.severity === "major"[\s\S]{0,200}goTo\(list\[0\]\.id\);\s*else stepFinding\(1\);/.test(js));
   ok("page: a card puts its title first and shows a status pill only when it is not open",
      /el\("span", \{ class: "title", title: x\.id[^\n]*\n(\s*\/\/[^\n]*\n)*\s*finding \? el\("span", \{ class: "meta" \}, el\("span", \{ class: "cat" \}, metaWords\(x\)\)\) : null,/.test(js) &&
-     js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.status)) : null);'));
+     js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.gh ? "resolved on GitHub" : x.status)) : null,'));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
   const lookoutPageMd = fs.readFileSync(path.join(HERE, "references", "page.md"), "utf8");
@@ -1783,7 +1789,7 @@ if (want("page script")) {
      !app.includes("btn(`Findings · ${openSummary(j.open)}"));
   ok("app: the findings button opens one panel: the picker on top (Pick all, Blockers and majors, Clear, then the list), Edit, Fix with commits, Post comments and Push below, acting on the picks",
      app.includes('const bar = [this.menu(`find:${j.id}`, toggle, acts, "", top, { role: "dialog", cls: "r-find-panel", label: "Findings" })];') &&
-     app.includes('top.push(this.picker(j, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));') &&
+     app.includes('top.push(this.picker(j.id, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));') &&
      app.includes("if (total) acts.push(edit, fix, post);") && app.includes("acts.push(push);") &&
      app.includes("edit.disabled = fix.disabled = busy || !n;") && app.includes("post.disabled = busy || !j.pr || !n;") &&
      ['q("Pick all", "all"', 'q("Blockers and majors", "bm"', 'q("Clear", "none"'].every(k => app.includes(k)) &&
@@ -1853,7 +1859,7 @@ if (want("page script")) {
      app.includes('const op = ({ o: "overview", m: "map", v: "layout", "?": "keys" } as Record<string, string>)[e.key];') &&
      app.includes('this.tell(op, op === "layout" ? { layout: p.layout === "split" ? "unified" : "split" } : {});'));
   ok("page+app: one Overview: the app drops its Overview button while the page's file list shows its own Overview row (o still opens it)",
-     js.includes('ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length }, hostOrigin);') &&
+     js.includes('ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length,') && js.includes("github: prSummary() }, hostOrigin);") &&
      /function drawSide\(\) \{[\s\S]*?\$\("tree"\)\.prepend\(el\("div", \{ class: "row ov-row"[\s\S]*?postState\(\);\n  \}/.test(js) &&
      app.includes("ovRow?: boolean;") && app.includes('if (!p.ovRow) view.push(item("Overview", "o",') &&
      js.includes('else if (e.key === "o") { toggleOverview(); e.preventDefault(); }'));
@@ -1875,7 +1881,7 @@ if (want("page script")) {
   // that was not listening yet.
   ok("page: the host's origin is pinned after the handshake, and hello repeats until answered",
      js.includes('if (hostOrigin !== "*" && e.origin !== hostOrigin) return;') &&
-     /keys: !\$\("keys"\)\.hidden,[\s\S]{0,200}\}, hostOrigin\);/.test(js) &&
+     /keys: !\$\("keys"\)\.hidden,[\s\S]{0,400}\}, hostOrigin\);/.test(js) &&
      /helloTimer = setInterval\(\(\) => \{ if \(hosted \|\| \+\+tries > 10\) clearInterval\(helloTimer\); else hello\(\); \}, 500\);/.test(js));
   ok("page: unframed, or framed by an app that never answers, the page keeps its own tools row",
      !/:root\[data-embed\][^{]*\.tools[^{]*\{[^}]*display: none/.test(css) && js.includes("let hosted = false;"));
@@ -1970,7 +1976,7 @@ if (want("page script")) {
   ok("page: blocker and major cards stay open; a minor, nit or comment folds to one row (chip and short title) unless current or holding a draft, and opens on click, Enter or n/p",
      js.includes('const holdsOpen = x => x.severity === "blocker" || x.severity === "major";') &&
      js.includes('const foldedCard = x => isOpen(x) && !holdsOpen(x) && x.id !== curFinding && !draftText("r:" + x.id).trim();') &&
-     /if \(foldedCard\(x\)\) \{[\s\S]{0,300}class: "card folded"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false"[\s\S]{0,300}onclick: e => pickCard\(x\.id, e\),[\s\S]{0,200}e\.key === "Enter" \|\| e\.key === " "[\s\S]{0,100}openCard\(x\.id, true\);[\s\S]{0,100}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\)\)\);/.test(js) &&
+     /if \(foldedCard\(x\)\) \{[\s\S]{0,300}class: "card folded"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false"[\s\S]{0,300}onclick: e => pickCard\(x\.id, e\),[\s\S]{0,200}e\.key === "Enter" \|\| e\.key === " "[\s\S]{0,100}openCard\(x\.id, true\);[\s\S]{0,100}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\), chips\)\);/.test(js) &&
      /function goTo\(id\) \{[\s\S]{0,500}redrawCards\(\[prev, id\]\);/.test(js) &&
      /function stepFinding\(d\) \{\s*let list = \(R\.findings \|\| \[\]\)\.filter\(isOpen\);/.test(js) &&
      css.includes(".card.folded .card-head { padding: 3px 10px; flex-wrap: nowrap; }"));
@@ -2012,7 +2018,7 @@ if (want("page script")) {
      js.includes('reasons.length ? el("span", { class: "reasons" }, " · " + reasons.join(", ")) : null) : null,'));
   ok("page: a closed finding has its own look: one row by default (opened by a click or Enter, folded again by its head), its severity chip and title muted, a muted resolved or dismissed chip, Reopen and no Resolve",
      js.includes("const foldedClosed = x => !isOpen(x) && !expandedClosed.has(x.id);") &&
-     /if \(foldedClosed\(x\)\) \{[\s\S]{0,400}class: "card folded closed"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false",[\s\S]{0,700}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\), closedChip\)\);/.test(js) &&
+     /if \(foldedClosed\(x\)\) \{[\s\S]{0,400}class: "card folded closed"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false",[\s\S]{0,700}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\), closedChip, chips\)\);/.test(js) &&
      js.includes("e.stopPropagation(); expandedClosed.delete(x.id); redrawCards([x.id]);") &&
      js.includes('open ? el("button", { type: "button", onclick: go("resolve") }, "Resolve") : null,') &&
      js.includes('!open ? el("button", { type: "button", onclick: go("reopen") }, "Reopen") : null,') &&
@@ -2085,7 +2091,270 @@ if (want("page script")) {
        /const own = gone \|\| \(files && /.test(js) && js.includes('class: "gfile gone"') && js.includes("gone: lost })") &&
        js.includes("if (!next) { sec.remove(); return; }"));
   }
+  // The PR (lookout gh sync's R.github): a strip, GitHub's threads as cards, and chips.
+  ok("page: the PR strip has its own grid row under the banner, hidden until the review is linked",
+     tpl.includes('<div id="banner" hidden></div>\n  <div id="pr" hidden></div>') &&
+     css.includes('grid-template-areas: "top top" "banner banner" "pr pr" "side main";') && css.includes("#pr[hidden] { display: none; }") &&
+     /function drawPR\(\) \{\s*const g = GH\(\), box = \$\("pr"\);\s*if \(!g\) \{ box\.hidden = true;/.test(js) && js.includes("    drawPR();\n    postState();"));
+  ok("page: the strip says how far the PR's head is past the review, offers Re-review only to its host, and lists checks failed first",
+     js.includes('`${plural(g.behind, "commit")} past the review`') &&
+     js.includes('postMessage({ lookout: "rereview", id: R.id }, hostOrigin)') && /const rereview = g\.behind > 0 && hosted/.test(js) &&
+     js.includes("[...fails, ...pend, ...pass].map(c =>") && js.includes('"aria-controls": "pr-checks"'));
+  ok("page: GitHub threads are cards on their lines only while the review is at the PR's head; one a posted item began is that item's card",
+     js.includes("line: g.behind === 0 ? t.line || t.originalLine : null,") &&
+     js.includes("!mine.has(t.comments[0].id)") && js.includes("...ghItems()];") &&
+     js.includes("body ? (x.gh ? ghOpen(x) : actions(x)) : null);") && js.includes("body && !x.gh ? ghReplies(x) : null,"));
+  ok("page: a card says stale (with why), posted (linked) or pending, and GitHub's own outdated",
+     js.includes('el("span", { class: "chip stale", title: why[0].toUpperCase()') && js.includes('"posted ↗"') &&
+     js.includes('el("span", { class: "chip pending",') && js.includes('el("span", { class: "chip outdated",') &&
+     css.includes(".chip.stale {") && css.includes(".chip.pending {") && css.includes(".chip.posted {"));
+  ok("page: only github.com links are drawn as links; the record is data",
+     js.includes("const ghUrl = u => /^https:\\/\\/github\\.com\\//.test(String(u || \"\")) ? u : null;") &&
+     !/href: (g\.url|c\.url|c\.link|x\.github\.url)\b/.test(js));
+  ok("page: the host's focus op goes to a card, a GitHub comment (c<id>) or the checks list",
+     js.includes('else if (d.op === "focus" && typeof d.item === "string") focusItem(d.item);') &&
+     /function focusItem\(item\) \{\s*if \(item === "checks"\) \{ checksOpen = true; drawPR\(\);/.test(js) &&
+     js.includes("const m = /^c(\\d+)$/.exec(item);"));
+  ok("page: a GitHub sync redraws the page though updatedAt does not move",
+     js.includes("if (j && (j.updatedAt !== R.updatedAt || ghAt(j) !== ghAt(R))) take(j);"));
+  ok("page: GitHub's mark is drawn as SVG, no emoji", js.includes("function ghMark()") && js.includes('createElementNS("http://www.w3.org/2000/svg", "svg")'));
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
+}
+
+// ---------------------------------------------------------------- github
+if (want("github: link, sync, staleness, post")) {
+  const GHL = await import("./lib/github.mjs");
+  const SV = await import("./lib/serve.mjs");
+  const d = repo("gh-repo");
+  sh(d, "git remote add origin https://github.com/o/r.git");
+  sh(d, "git checkout -q -b feature");
+  const lines = n => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+  write(d, "a.txt", lines(30));
+  sh(d, `${G} add -A && ${G} commit -q -m one`);
+  const one = sh(d, "git rev-parse HEAD").trim();
+  const o = cli(d, "open", "--base", "main", "--no-open", "--json");
+  ok("gh: a review opens on the branch", o.status === 0, o.stderr);
+  const id = JSON.parse(o.stdout).id;
+  const fpath = path.join(TMP, "gh-findings.json");
+  fs.writeFileSync(fpath, JSON.stringify([
+    { file: "a.txt", line: 3, severity: "major", summary: "near the change", failure_scenario: "x" },
+    { file: "a.txt", line: 20, severity: "minor", summary: "far from it", failure_scenario: "y" }]));
+  const fa = cli(d, "findings", "add", id, fpath);
+  ok("gh: findings ingest", fa.status === 0, fa.stderr);
+  ok("gh: a finding records the head it was read on", S.read(id).findings.every(f => f.at === one));
+
+  write(d, "a.txt", lines(30).replace("line 4\n", "line four\n"));
+  sh(d, `${G} commit -q -am two`);
+  const two = sh(d, "git rev-parse HEAD").trim();
+  const view = { number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, title: "t", headRefName: "feature", headRefOid: two };
+  const threads = { data: { repository: { pullRequest: { reviewThreads: { nodes: [
+    { id: "PRRT_1", path: "a.txt", line: 9, originalLine: 9, diffSide: "RIGHT", isOutdated: false, isResolved: false,
+      comments: { nodes: [{ databaseId: 501, author: { login: "alice" }, body: "why?", createdAt: "2026-11-01T00:00:00Z", url: "https://github.com/o/r/pull/7#discussion_r501" }] } },
+    { id: "PRRT_2", path: "a.txt", line: null, originalLine: 2, diffSide: "LEFT", isOutdated: true, isResolved: true, comments: { nodes: [] } }] } } } } };
+  const checks = [{ name: "test", state: "FAILURE", bucket: "fail", link: "https://github.com/o/r/actions/runs/1/job/2", workflow: "ci", startedAt: "2026-11-01T00:00:00Z", completedAt: "2026-11-01T00:05:00Z" },
+                  { name: "lint", state: "SUCCESS", bucket: "pass", link: "", workflow: "ci", startedAt: "", completedAt: "" }];
+  const map = {
+    "pr view feature --json": { stdout: view }, "pr view 7 -R o/r --json": { stdout: view },
+    "api graphql": { stdout: threads }, "pr checks 7 -R o/r": { stdout: JSON.stringify(checks), status: 1 },
+    "api user": { stdout: "probe-user\n" },
+  };
+  const setMap = m => fs.writeFileSync(ENV.FAKE_GH_MAP, JSON.stringify(m));
+  setMap(map);
+  const sy = cli(d, "gh", "sync", id, "--json");
+  const g = S.read(id).github || {};
+  ok("gh: sync links the review to the branch's PR", g.repo === "o/r" && g.pr === 7 && g.head === two, sy.stdout + sy.stderr);
+  ok("gh: threads keep side, outdated and resolved", g.threads.length === 2 && g.threads[0].side === "new" && g.threads[1].side === "old" &&
+     g.threads[1].outdated && g.threads[1].resolved && g.threads[0].comments[0].author === "alice", JSON.stringify(g.threads));
+  ok("gh: checks parse even when gh exits non-zero for a failed one", g.checks.length === 2 && g.checks[0].bucket === "fail" && g.checks[0].link, JSON.stringify(g.checks));
+  ok("gh: the viewer is known, so others' comments can be told apart", g.viewer === "probe-user");
+  ok("gh: one commit past the review", g.behind === 1 && g.reviewed === one, String(g.behind));
+  const [f1, f2] = S.read(id).findings;
+  ok("gh: a finding beside the changed line is stale", !!g.stale[f1.id], JSON.stringify(g.stale));
+  ok("gh: a finding far from it is not", !g.stale[f2.id]);
+
+  const again = cli(d, "gh", "sync", id, "--json");
+  ok("gh: a second sync moments later is skipped", /moments ago/.test(again.stdout), again.stdout);
+  const before = S.read(id).updatedAt;
+  const quiet = JSON.parse(cli(d, "gh", "sync", id, "--force", "--json").stdout);
+  ok("gh: nothing new on GitHub leaves the record unwritten", quiet.changed === false && S.read(id).updatedAt === before, JSON.stringify(quiet));
+
+  setMap({ ...map, "api graphql": { status: 1, stderr: "GraphQL: API rate limit exceeded for user" } });
+  cli(d, "gh", "sync", id, "--force", "--json");
+  ok("gh: a rate limit is recorded and backed off", /rate limit/i.test(S.read(id).github.error || "") &&
+     JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"))[id].backoffUntil > Date.now(), S.read(id).github.error);
+  const st = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st[id].at = 0; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st));
+  ok("gh: while backing off, a sync asks nothing", /backing off/.test(cli(d, "gh", "sync", id, "--json").stdout));
+  ok("gh: the threads seen before the limit are kept", S.read(id).github.threads.length === 2);
+
+  // Posting: one review pinned to the commit read, and each comment's id kept.
+  const body = GHL.commentText(f1);
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { stdout: { id: 55, html_url: "https://github.com/o/r/pull/7#pullrequestreview-55" } },
+    "api repos/o/r/pulls/7/reviews/55/comments?per_page=100&page=1": { stdout: JSON.stringify([{ id: 901, path: "a.txt", line: 3, body, html_url: "https://github.com/o/r/pull/7#discussion_r901" }]) } });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  const po = cli(d, "gh", "post", id, f1.id, "--intro", "Lookout review (high depth): 1 finding(s).");
+  ok("gh: post succeeds", po.status === 0, po.stderr);
+  const sent = fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).find(x => x.argv.includes("POST"));
+  const payload = sent ? JSON.parse(sent.input) : {};
+  ok("gh: the review is pinned to the commit the finding was read on", payload.commit_id === one && payload.comments[0].path === "a.txt" &&
+     payload.comments[0].line === 3 && payload.comments[0].side === "RIGHT" && payload.body.startsWith("Lookout review (high"), JSON.stringify(payload));
+  const pf = S.read(id).findings[0].github || {};
+  ok("gh: the posted finding keeps its comment id and links", pf.commentId === 901 && /discussion_r901/.test(pf.url) && /review-55/.test(pf.reviewUrl), JSON.stringify(pf));
+  const twice = cli(d, "gh", "post", id, f1.id);
+  ok("gh: posting it again is refused without --again", twice.status !== 0 && /already posted/.test(twice.stderr), twice.stderr);
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { status: 1, stderr: "gh: Unprocessable Entity (HTTP 422)" } });
+  const p422 = cli(d, "gh", "post", id, f2.id, f2.id);
+  ok("gh: a refused line ends in an error, not a silent success", p422.status !== 0, p422.stdout);
+  const sends = fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).filter(x => x.argv.includes("POST"));
+  const last = JSON.parse(sends[sends.length - 1].input);
+  ok("gh: a 422 is retried with every item folded into the body", !last.comments && last.body.includes("`a.txt:20`"), JSON.stringify(last));
+  ok("gh: an id named twice is posted once", last.body.split("`a.txt:20`").length === 2, last.body);
+  ok("gh: the threads query sends the owner and name as strings", fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").includes('"-f","owner=o","-f","name=r"') ||
+     JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"))._viewer.login === "probe-user");
+  ok("gh: the login is cached under a key no review id can take", JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"))._viewer.login === "probe-user");
+  ok("gh: a --pr naming the saved PR in another case is not a switch",
+     !GHL.switching({ prRef: "O/R#7", github: { repo: "o/r", pr: 7 } }) && GHL.switching({ prRef: "o/r#8", github: { repo: "o/r", pr: 7 } }));
+  ok("gh: a 403 alone is a permission error, not a rate limit",
+     !GHL.limited({ status: 1, err: "HTTP 403: Resource not accessible by integration" }) && GHL.limited({ status: 1, err: "API rate limit exceeded" }));
+
+  // Threads past the first page are followed.
+  const page = (nodes, next) => ({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: !!next, endCursor: next || null }, nodes } } } } });
+  const th = (i, more) => ({ id: "PRRT_p" + i, path: "a.txt", line: 9, originalLine: 9, diffSide: "RIGHT", isOutdated: false, isResolved: false,
+    comments: { totalCount: more ? 101 : 1, nodes: [{ databaseId: 600 + i, author: { login: "bob" }, body: "b", createdAt: "", url: "" }] } });
+  setMap({ ...map, "api graphql -f owner=o -f name=r -F n=7 -f": { stdout: JSON.stringify(page([th(1, true)], "C1")) },
+    "api graphql -f owner=o -f name=r -F n=7 -f after=C1": { stdout: JSON.stringify(page([th(2)], null)) } });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  cli(d, "gh", "sync", id, "--force");
+  const pg = S.read(id).github.threads;
+  ok("gh: a second page of threads is read", pg.length === 2 && pg[1].id === "PRRT_p2", JSON.stringify(pg.map(t => t.id)));
+  ok("gh: comments past a thread's first hundred are counted", pg[0].more === 100);
+  ok("gh: the names went as strings (-f), the number as a number (-F)", /"-f","owner=o","-f","name=r","-F","n=7"/.test(fs.readFileSync(ENV.FAKE_GH_LOG, "utf8")));
+
+  // The delivery review's fixes.
+  const readSt = () => JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"));
+  const writeSt = st => fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st));
+  const typo = cli(d, "gh", "post", id, "f1", "f3x");
+  ok("gh: a word that names no item is refused, so nothing posts short", typo.status !== 0 && /f3x/.test(typo.stderr), typo.stderr);
+  // A sync is not activity: updatedAt stays, changedAt moves.
+  setMap({ ...map, "pr checks 9 -R o/r": { stdout: "[]" }, "pr view 9": { stdout: { ...view, number: 9, url: "https://github.com/o/r/pull/9" } },
+    "pr checks 7 -R o/r": { stdout: JSON.stringify([...checks, { name: "new", bucket: "pending", state: "PENDING", link: "", workflow: "ci", startedAt: "", completedAt: "" }]), status: 8 } });
+  const upd0 = S.read(id).updatedAt, ch0 = (S.read(id).github || {}).changedAt;
+  cli(d, "gh", "sync", id, "--force");
+  ok("gh: what GitHub says moves github.changedAt, not the review's updatedAt", S.read(id).updatedAt === upd0 && S.read(id).github.changedAt !== ch0,
+     `${upd0} ${S.read(id).updatedAt}`);
+  // Two items read on different heads go as two reviews, each pinned to its own.
+  const posts = () => fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).filter(x => x.argv.includes("POST")).map(x => JSON.parse(x.input));
+  S.update(id, cur => { const [a1, a2] = cur.findings; delete a1.github; delete a2.github; a2.at = two; return cur; });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  const big = Array.from({ length: 100 }, (_, i) => ({ id: 1000 + i, path: "z.txt", line: 1, body: "other", html_url: "" }));
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { stdout: { id: 55, html_url: "https://github.com/o/r/pull/7#pullrequestreview-55" } },
+    "api repos/o/r/pulls/7/reviews/55/comments?per_page=100&page=1": { stdout: JSON.stringify(big) },
+    "api repos/o/r/pulls/7/reviews/55/comments?per_page=100&page=2": { stdout: JSON.stringify([
+      { id: 901, path: "a.txt", line: 3, body: GHL.commentText(S.read(id).findings[0]), html_url: "u1" },
+      { id: 902, path: "a.txt", line: 20, body: GHL.commentText(S.read(id).findings[1]), html_url: "u2" }]) } });
+  const two_ = cli(d, "gh", "post", id, "f1", "f2");
+  const sent2 = posts();
+  ok("gh: items read on different heads go as one review per head", two_.status === 0 && sent2.length === 2 &&
+     sent2.map(p => p.commit_id).sort().join() === [one, two].sort().join(), two_.stderr + JSON.stringify(sent2.map(p => p.commit_id)));
+  ok("gh: a review's comments past the first hundred are read for their ids", S.read(id).findings[0].github.commentId === 901 &&
+     S.read(id).findings[1].github.commentId === 902, JSON.stringify(S.read(id).findings.map(f => f.github)));
+  // A folded retry pins the PR's head (the item's own commit may be gone),
+  // and a post that fails outright marks nothing posted.
+  S.update(id, cur => { for (const f of cur.findings) delete f.github; cur.findings[1].at = two; return cur; });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { status: 1, stderr: "HTTP 422 Unprocessable Entity" } });
+  const fold = cli(d, "gh", "post", id, "f2");
+  const fsent = posts();
+  ok("gh: a folded retry is pinned to the PR's head", fsent.length === 2 && fsent[1].commit_id === two && !fsent[1].comments, JSON.stringify(fsent.map(p => p.commit_id)));
+  ok("gh: a post that fails outright marks nothing posted", fold.status !== 0 && !S.read(id).findings[1].github);
+
+  // An item read on a commit the checkout no longer has is stale.
+  S.update(id, cur => { cur.findings[1].at = "0".repeat(40); return cur; });
+  setMap(map);
+  cli(d, "gh", "sync", id, "--force");
+  ok("gh: an item read on a commit that is gone is stale, saying why", /gone/.test((S.read(id).github.stale || {}).f2 || ""), JSON.stringify(S.read(id).github.stale));
+  // A closed PR is looked at again when its page is in view, or a day on.
+  setMap({ ...map, "pr view 7 -R o/r --json": { stdout: { ...view, state: "CLOSED" } } });
+  cli(d, "gh", "sync", id, "--force");
+  let st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; delete st4[id].backoffUntil; writeSt(st4);
+  ok("gh: unseen, a closed PR is left alone for a day", /closed/.test(cli(d, "gh", "sync", id, "--json").stdout));
+  setMap({ ...map, "pr view 7 -R o/r --json": { stdout: { ...view, state: "OPEN" } } });
+  st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; writeSt(st4);
+  cli(d, "gh", "sync", id, "--visible");
+  ok("gh: with its page in view, a reopened PR is seen open again", S.read(id).github.state === "OPEN");
+  // An idle review in view is synced too.
+  S.withLock(id, () => { const cur = S.read(id); cur.updatedAt = "2020-01-01T00:00:00Z"; S.writeAtomic(S.paths(id).json, JSON.stringify(cur)); });
+  st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; writeSt(st4);
+  ok("gh: unseen, an idle review is left alone", /idle/.test(cli(d, "gh", "sync", id, "--json").stdout));
+  st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; writeSt(st4);
+  ok("gh: in view, an idle review syncs", !/skipped/.test(cli(d, "gh", "sync", id, "--visible").stdout));
+  ok("gh: the page server's sync says the page is in view", fs.readFileSync(path.join(HERE, "lib", "serve.mjs"), "utf8").includes('[cli, "gh", "sync", id, "--visible"]'));
+  ok("gh: a review whose checkout is gone says so, not that gh is missing",
+     /checkout is gone/.test(GHL.gh(["pr", "view"], { cwd: path.join(TMP, "no-such-dir") }).error || ""));
+  S.update(id, cur => { cur.updatedAt = new Date().toISOString(); return cur; });
+
+  // A --pr given on a re-open wins over the PR a sync saved.
+  setMap({ ...map, "pr view 9": { stdout: { ...view, number: 9, url: "https://github.com/o/r/pull/9" } },
+    "pr checks 9 -R o/r": { stdout: "[]" } });
+  S.update(id, cur => { cur.prRef = "9"; return cur; });
+  cli(d, "gh", "sync", id, "--force");
+  ok("gh: a newer --pr is followed, not the saved PR", S.read(id).github.pr === 9, String(S.read(id).github.pr));
+
+  // A merged PR had its last sync: later ones ask nothing unless forced.
+  setMap({ ...map, "pr view 9": { stdout: { ...view, number: 9, state: "MERGED", url: "https://github.com/o/r/pull/9" } },
+    "pr checks 9 -R o/r": { stdout: "[]" } });
+  cli(d, "gh", "sync", id, "--force");
+  const st2 = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st2[id].at = Date.now() - 60 * 60 * 1000; delete st2[id].backoffUntil; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st2));
+  const msync = cli(d, "gh", "sync", id, "--json").stdout;
+  ok("gh: a merged PR is not synced again unless forced", S.read(id).github.state === "MERGED" && /merged/.test(msync),
+     S.read(id).github.state + " " + msync + " " + JSON.stringify(st2[id]));
+
+  // A re-open with another --pr switches even from a merged PR, and a failed
+  // read on the new PR does not carry the old one's threads over.
+  S.update(id, cur => { cur.prRef = "11"; return cur; });
+  setMap({ ...map, "pr view 11": { stdout: { ...view, number: 11, url: "https://github.com/o/r/pull/11" } },
+    "api graphql": { status: 1, stderr: "GraphQL: Something went wrong" }, "pr checks 11 -R o/r": { stdout: "[]" } });
+  const st3 = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st3[id].at = 0; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st3));
+  cli(d, "gh", "sync", id);
+  const g11 = S.read(id).github;
+  ok("gh: a --pr switch is followed by an unforced sync, even from a merged PR", g11.pr === 11, String(g11.pr));
+  ok("gh: a failed read on the new PR keeps none of the old PR's threads", g11.threads.length === 0 && /threads/.test(g11.error || ""), JSON.stringify(g11.threads.map(t => t.id)));
+
+  // Items from before `at` existed keep the head they were read on when a
+  // re-open moves the review to a newer one.
+  S.update(id, cur => { for (const f of cur.findings) delete f.at; return cur; });
+  const reo = cli(d, "open", "--base", "main", "--no-open", "--id", id);
+  ok("gh: a re-open stamps old findings with the head they were read on", reo.status === 0 &&
+     S.read(id).findings.every(f => f.at === one) && S.read(id).source.head === two, reo.stderr);
+
+  // A patch review has no branch to ask about: nothing goes to gh.
+  const pd = path.join(TMP, "gh-p.patch");
+  fs.writeFileSync(pd, sh(d, "git diff main feature"));
+  const op = JSON.parse(cli(TMP, "open", "--patch", pd, "--no-open", "--json").stdout);
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  const ps = JSON.parse(cli(TMP, "gh", "sync", op.id, "--json").stdout);
+  ok("gh: a patch review is not linked, and asks gh nothing", ps.linked === false && !fs.existsSync(ENV.FAKE_GH_LOG), JSON.stringify(ps));
+  const bad = cli(d, "open", "--base", "main", "--no-open", "--pr", "not-a-pr");
+  ok("gh: an unreadable --pr is refused", bad.status !== 0 && /--pr/.test(bad.stderr));
+
+  ok("gh: PR refs read in every pasted form", JSON.stringify(["12", "#12", "o/r#12", "https://github.com/o/r/pull/12/files"].map(GHL.parsePrRef)) ===
+     JSON.stringify([{ repo: "", pr: 12 }, { repo: "", pr: 12 }, { repo: "o/r", pr: 12 }, { repo: "o/r", pr: 12 }]));
+  const rg = GHL.changedRanges("@@ -4 +4 @@\n-a\n+b\n@@ -10,0 +11,2 @@\n+c\n");
+  ok("gh: hunks read as old-side ranges, an insertion after its line", JSON.stringify(rg) === "[[4,4],[10,11]]", JSON.stringify(rg));
+  ok("gh: within three lines counts as touched", GHL.touches(rg, 1) && !GHL.touches(rg, 0) && GHL.touches(rg, 14) && !GHL.touches(rg, 15));
+
+  // The page server asks for a sync on a visible poll, at most once a minute.
+  const kicked = [];
+  const k = SV.ghKicker(i => kicked.push(i), 60000);
+  ok("gh: the kicker runs once per review per minute", k("a", 1000) && !k("a", 30000) && k("b", 30000) && k("a", 62000) && kicked.join() === "a,b,a");
+  const asked = [];
+  const srv = SV.makeServer({ version: "t", root: TMP, token: "tok", kick: i => asked.push(i) });
+  await new Promise(r => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const get = q => new Promise(r => http.get({ host: "127.0.0.1", port, path: `/review/${id}.json?t=tok${q}`, headers: { host: `127.0.0.1:${port}` } },
+    res => { res.resume(); res.on("end", () => r(res.statusCode)); }));
+  const c1 = await get("&bg=1"), c2 = await get("");
+  srv.close();
+  ok("gh: a hidden tab's poll asks for no sync; a visible one does", c1 === 200 && c2 === 200 && asked.join() === id, asked.join());
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

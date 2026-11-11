@@ -258,7 +258,136 @@
 
   const SEV = ["blocker", "major", "minor", "nit"];
   const isOpen = x => !["resolved", "dismissed"].includes(x.status || "open");
-  const items = () => [...(R.findings || []), ...(R.threads || [])];
+  const items = () => [...(R.findings || []), ...(R.threads || []), ...ghItems()];
+
+  // ---------------------------------------------------------------- the PR
+
+  // The review's pull request, as `lookout gh sync` saw it (lib/github.mjs
+  // writes R.github), or null when the review is not linked to one.
+  const GH = () => (R.github && R.github.pr ? R.github : null);
+  // Only github.com links are drawn as links: the record is data.
+  const ghUrl = u => /^https:\/\/github\.com\//.test(String(u || "")) ? u : null;
+  // A posted item's GitHub thread: the one whose first comment it posted.
+  function threadOf(x) {
+    const g = GH(), id = x.github && x.github.commentId;
+    return g && id ? (g.threads || []).find(t => (t.comments[0] || {}).id === id) || null : null;
+  }
+  // GitHub's own threads as cards ("g<first comment id>"), drawn where the
+  // review's own items are. One that began as a posted item's comment is
+  // that item's card, not a second one. GitHub's line is on the PR's head:
+  // it is used only while the review is at that head, and otherwise the
+  // card goes to "On lines this diff does not show".
+  function ghItems() {
+    const g = GH();
+    if (!g) return [];
+    const mine = new Set([...(R.findings || []), ...(R.threads || [])].map(x => x.github && x.github.commentId).filter(Boolean));
+    const here = (R.files || []).map(f => f.path);
+    return (g.threads || []).filter(t => t.comments.length && !mine.has(t.comments[0].id) && here.includes(t.path)).map(t => ({
+      id: "g" + t.comments[0].id, gh: t, file: t.path, side: t.side,
+      line: g.behind === 0 ? t.line || t.originalLine : null,
+      status: t.resolved ? "resolved" : "open",
+      messages: t.comments.map(c => ({ by: c.author, at: c.at, text: c.body, url: c.url })),
+    }));
+  }
+  // GitHub threads on files this review does not hold, counted on the strip.
+  const ghElsewhere = () => {
+    const g = GH(), here = new Set((R.files || []).map(f => f.path));
+    return g ? (g.threads || []).filter(t => !here.has(t.path)).length : 0;
+  };
+  // A finding or comment of the review's own not yet on GitHub.
+  const unposted = x => !x.gh && !(x.github && x.github.postedAt);
+  // The chips a card's head carries about the PR: GitHub's word on its own
+  // threads, posted or pending on the review's items, and stale.
+  function prChips(x) {
+    const g = GH();
+    if (!g) return [];
+    const out = [];
+    if (x.gh) {
+      if (x.gh.outdated) out.push(el("span", { class: "chip outdated", title: "GitHub says the code under this thread changed" }, "outdated"));
+      return out;
+    }
+    const why = (g.stale || {})[x.id];
+    if (why) out.push(el("span", { class: "chip stale", title: why[0].toUpperCase() + why.slice(1) + "." }, "stale"));
+    const link = x.github && ghUrl(x.github.url || x.github.reviewUrl);
+    if (!unposted(x)) out.push(link ? el("a", { class: "chip posted", href: link, target: "_blank", rel: "noopener", title: "Open it on GitHub" }, "posted ↗")
+                                    : el("span", { class: "chip posted" }, "posted"));
+    else if (isOpen(x)) out.push(el("span", { class: "chip pending", title: "Only in lookout: post it from the Lookout tab, or `lookout gh post`" }, "pending"));
+    return out;
+  }
+  // What GitHub said under an item the review posted, after its own comment.
+  function ghReplies(x) {
+    const t = threadOf(x);
+    const more = t ? t.comments.slice(1) : [];
+    if (!more.length && !(t && (t.outdated || t.resolved))) return null;
+    return el("div", { class: "gh-replies" },
+      el("div", { class: "gh-head" }, ghMark(), "On GitHub",
+        t.resolved ? el("span", { class: "chip" }, "resolved there") : null, t.outdated ? el("span", { class: "chip outdated" }, "outdated") : null),
+      more.map(c => ghMessage(c)));
+  }
+  const ghMessage = c => el("div", { class: "msg by-gh" }, el("div", { class: "who" }, c.author,
+      el("span", { class: "at" }, " · " + when(c.at)), ghUrl(c.url) ? el("a", { class: "at", href: ghUrl(c.url), target: "_blank", rel: "noopener" }, " ↗") : null),
+    el("div", { class: "text" }, c.body));
+  // GitHub's mark, drawn (no emoji, no font).
+  function ghMark() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("class", "ghmark"); svg.setAttribute("aria-hidden", "true");
+    const pth = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    pth.setAttribute("d", "M8 1a7 7 0 0 0-2.2 13.6c.4.1.5-.2.5-.4v-1.3c-2 .4-2.4-.9-2.4-.9-.3-.8-.8-1.1-.8-1.1-.7-.5 0-.5 0-.5.7.1 1.1.8 1.1.8.6 1.1 1.7.8 2.1.6.1-.5.3-.8.5-1-1.6-.2-3.2-.8-3.2-3.5 0-.8.3-1.4.7-1.9 0-.2-.3-.9.1-1.9 0 0 .6-.2 1.9.7a6.6 6.6 0 0 1 3.5 0c1.3-.9 1.9-.7 1.9-.7.4 1 .1 1.7.1 1.9.4.5.7 1.1.7 1.9 0 2.7-1.6 3.3-3.2 3.5.3.2.5.7.5 1.3v2c0 .2.1.5.5.4A7 7 0 0 0 8 1Z");
+    svg.append(pth);
+    return svg;
+  }
+
+  // The strip under the header: the PR, how far its head is past the
+  // review, what is stale or pending, and the checks (a list on a click).
+  let checksOpen = false;
+  function drawPR() {
+    const g = GH(), box = $("pr");
+    if (!g) { box.hidden = true; box.replaceChildren(); return; }
+    box.hidden = false;
+    const st = g.draft ? "draft" : String(g.state || "").toLowerCase() || "open";
+    const by = (...b) => (g.checks || []).filter(c => b.includes(c.bucket));
+    const fails = by("fail", "cancel"), pend = by("pending"), pass = by("pass", "skipping");
+    const own = [...(R.findings || []), ...(R.threads || [])];
+    const stale = own.filter(x => (g.stale || {})[x.id] && isOpen(x)).length;
+    const pending = GH() ? own.filter(x => unposted(x) && isOpen(x)).length : 0;
+    const elsewhere = ghElsewhere();
+    const link = ghUrl(g.url);
+    const drift = g.behind > 0
+      ? el("span", { class: "pr-drift", title: `The PR's head (${String(g.head).slice(0, 8)}) is ${plural(g.behind, "commit")} past the one reviewed (${String(g.reviewed).slice(0, 8)}).` +
+          (hosted ? "" : " Re-open the review to diff the new head: lookout open, then a reviewer.") }, `${plural(g.behind, "commit")} past the review`)
+      : g.behind === 0 ? el("span", { class: "pr-quiet" }, "at the reviewed head") : null;
+    const rereview = g.behind > 0 && hosted
+      ? el("button", { type: "button", class: "pr-btn", onclick: () => window.parent.postMessage({ lookout: "rereview", id: R.id }, hostOrigin) }, "Re-review") : null;
+    const count = (cls, glyph, n, word) => n ? el("span", { class: "ck " + cls, title: plural(n, word) }, glyph + " " + n) : null;
+    const checks = (g.checks || []).length
+      ? el("button", { type: "button", class: "pr-checks-btn" + (fails.length ? " bad" : ""), "aria-expanded": String(checksOpen), "aria-controls": "pr-checks",
+          title: "The PR's checks on its head", onclick: () => { checksOpen = !checksOpen; drawPR(); } },
+          count("pass", "✓", pass.length, "passed check"), count("fail", "✗", fails.length, "failed check"), count("pend", "●", pend.length, "running check"), " ▾")
+      : el("span", { class: "pr-quiet" }, "no checks");
+    box.replaceChildren(...[
+      el("div", { class: "pr-row" },
+        ghMark(),
+        link ? el("a", { class: "pr-link", href: link, target: "_blank", rel: "noopener", title: g.title || "" }, `PR #${g.pr}`) : el("span", { class: "pr-link" }, `PR #${g.pr}`),
+        el("span", { class: "pr-state st-" + st }, st),
+        drift, rereview,
+        stale ? el("span", { class: "chip stale", title: "Open findings or comments whose code changed on the PR's head" }, `${stale} stale`) : null,
+        pending ? el("span", { class: "chip pending", title: "Open findings or comments not yet posted to GitHub" }, `${pending} pending`) : null,
+        elsewhere ? el("span", { class: "pr-quiet", title: "GitHub threads on files this review does not show" }, `${plural(elsewhere, "thread")} on other files`) : null,
+        el("span", { class: "pr-gap" }),
+        checks,
+        g.error ? el("span", { class: "pr-err", title: g.error }, "sync trouble") : null,
+        g.changedAt ? el("span", { class: "pr-quiet", title: "When GitHub last told lookout something new" }, "as of " + when(g.changedAt)) : null),
+      checksOpen ? el("div", { class: "pr-checks", id: "pr-checks" },
+        [...fails, ...pend, ...pass].map(c => {
+          const k = fails.includes(c) ? "fail" : pend.includes(c) ? "pend" : "pass";
+          const name = (c.workflow ? c.workflow + " / " : "") + c.name;
+          const at = k === "pend" ? (c.startedAt ? "running since " + when(c.startedAt) : "queued") : c.completedAt ? "ran " + when(c.completedAt) : "";
+          return el("div", { class: "pr-check " + k },
+            el("span", { class: "ck " + k }, k === "fail" ? "✗" : k === "pend" ? "●" : "✓"),
+            ghUrl(c.link) ? el("a", { href: ghUrl(c.link), target: "_blank", rel: "noopener" }, name) : el("span", null, name),
+            el("span", { class: "pr-quiet" }, at));
+        })) : null].filter(Boolean));
+  }
   const openFindings = p => (R.findings || []).filter(x => x.file === p && isOpen(x));
 
   // A file's open findings as one badge, colored by the worst of them.
@@ -330,7 +459,10 @@
     const finding = x.id.startsWith("f");
     const closed = !isOpen(x);
     const body = !closed || expandedClosed.has(x.id);
-    const sev = finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment");
+    const sev = finding ? el("span", { class: "sev sev-" + x.severity }, x.severity)
+      : x.gh ? el("span", { class: "sev sev-github", title: "A thread on GitHub" }, ghMark(), "GitHub")
+      : el("span", { class: "sev sev-comment" }, "comment");
+    const chips = prChips(x);
     const mark = picked.has(x.id) ? checkIcon() : null;
     const closedChip = closed ? el("span", { class: "status st-" + x.status }, x.status) : null;
     if (foldedClosed(x)) {
@@ -341,7 +473,7 @@
         title: `${x.id} (${x.status}): open it to read its thread` + (finding ? "\n" + metaWords(x) : ""),
         onclick: e => { if (!e.target.closest("button, a, textarea, input") && !String(getSelection() || "")) open(); },
         onkeydown: e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); expandedClosed.add(x.id); openCard(x.id, true); } } },
-        el("div", { class: "card-head" }, mark, sev, el("span", { class: "title" }, title), closedChip));
+        el("div", { class: "card-head" }, mark, sev, el("span", { class: "title" }, title), closedChip, chips));
     }
     if (foldedCard(x)) {
       const title = finding ? x.short_summary || x.summary : ((x.messages || [])[0] || {}).text || "";
@@ -349,7 +481,7 @@
         tabindex: "0", role: "button", "aria-expanded": "false", title: x.id + ": open this " + (finding ? "finding" : "comment"),
         onclick: e => pickCard(x.id, e),
         onkeydown: e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); openCard(x.id, true); } } },
-        el("div", { class: "card-head" }, mark, sev, el("span", { class: "title" }, title)));
+        el("div", { class: "card-head" }, mark, sev, el("span", { class: "title" }, title), chips));
     }
     // An opened closed card's head folds it back, in place.
     const head = el("div", { class: "card-head", title: closed ? "Fold it to one row" : null,
@@ -366,7 +498,8 @@
       // blocker or major still blocks the gate, and its pill says so.
       (x.status || "open") !== "open" ? (stillBlocks(x)
         ? el("span", { class: "status st-addressed blocks", title: "Still blocks the gate until you resolve it" }, "addressed · still blocks")
-        : el("span", { class: "status st-" + x.status }, x.status)) : null);
+        : el("span", { class: "status st-" + x.status }, x.gh ? "resolved on GitHub" : x.status)) : null,
+      chips);
     const thread = finding ? x.thread || [] : (x.messages || []).slice(1);
     // The latest status change, when it is the one the pill shows.
     const last = [...thread].reverse().find(m => m.kind === "status");
@@ -382,8 +515,14 @@
       body && finding ? el("div", { class: "card-body" },
         el("div", { class: "failure" }, el("span", { class: "label" }, "Fails when: "), el("span", { class: "scenario" }, x.failure_scenario))) : null,
       body ? el("div", { class: "msgs" }, thread.map(m => message(m, pill, folded))) : null,
-      body ? actions(x) : null);
+      body && !x.gh ? ghReplies(x) : null,
+      // GitHub's threads are answered on GitHub.
+      body ? (x.gh ? ghOpen(x) : actions(x)) : null);
   }
+  const ghOpen = x => {
+    const u = ghUrl((x.messages[x.messages.length - 1] || {}).url) || ghUrl((x.messages[0] || {}).url);
+    return u ? el("div", { class: "actions" }, el("a", { class: "gh-open", href: u, target: "_blank", rel: "noopener" }, "Reply on GitHub ↗")) : null;
+  };
   // A click on a card makes it the current one, as n/p do, which opens a
   // folded card and shows its Reply / Resolve / Dismiss row. Not a click on
   // a control, and not the end of a text selection.
@@ -1151,6 +1290,7 @@
         " (drafts are kept)") : "",
       stale && notes.length ? "  " : "", notes.join("  "));
     $("banner").hidden = !notes.length && !stale;
+    drawPR();
     postState();
   }
   function gateTitle(g) {
@@ -1166,6 +1306,15 @@
   // row, posts what the row would show, and takes the app's clicks back as
   // commands. An app that never answers leaves the page's own row in place.
   // What goes up is what the row shows (the gate's counts, live or not).
+  function prSummary() {
+    const g = GH();
+    if (!g) return null;
+    const n = (...b) => (g.checks || []).filter(c => b.includes(c.bucket)).length;
+    const own = [...(R.findings || []), ...(R.threads || [])].filter(isOpen);
+    return { pr: g.pr, repo: g.repo, url: ghUrl(g.url), state: g.state, draft: !!g.draft, behind: g.behind,
+             pass: n("pass", "skipping"), fail: n("fail", "cancel"), pending: n("pending"),
+             stale: own.filter(x => (g.stale || {})[x.id]).length, unposted: own.filter(unposted).length };
+  }
   function postState() {
     if (!hosted) return;
     const g = gateText(), gt = gateTitle(g);
@@ -1178,7 +1327,9 @@
       mode: { cls: $("mode").className.replace("mode ", ""), text: $("mode").textContent, title: $("mode").title },
       layout, auto: cramped(), overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden,
       // The list's own Overview row: while it shows, the app needs no Overview button.
-      ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length }, hostOrigin);
+      ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length,
+      // The PR as the strip shows it, for the app's header and list.
+      github: prSummary() }, hostOrigin);
   }
   if (embedded && window.parent !== window) {
     window.addEventListener("message", e => {
@@ -1202,6 +1353,7 @@
         else if (d.op === "layout" && (d.layout === "split" || d.layout === "unified")) setLayout(d.layout);
         else if (d.op === "keys") toggleKeys();
         else if (d.op === "picks" && Array.isArray(d.ids)) setPicked(d.ids);
+        else if (d.op === "focus" && typeof d.item === "string") focusItem(d.item);
       }
     });
     // Hello carries nothing but the id, so it may go anywhere. It repeats for
@@ -1211,6 +1363,22 @@
     hello();
     let tries = 0;
     helloTimer = setInterval(() => { if (hosted || ++tries > 10) clearInterval(helloTimer); else hello(); }, 500);
+  }
+
+  // The app's banner click lands here (op "focus"): "checks" opens the
+  // strip's check list; f#/t#/g# goes to that card; "c<id>" is a GitHub
+  // comment, found on its own card or on the posted item it replies to.
+  function focusItem(item) {
+    if (item === "checks") { checksOpen = true; drawPR(); $("pr").scrollIntoView({ block: "nearest" }); return; }
+    let id = item;
+    const m = /^c(\d+)$/.exec(item);
+    if (m) {
+      const cid = Number(m[1]);
+      const t = ((GH() || {}).threads || []).find(t => t.comments.some(c => c.id === cid));
+      const own = t && [...(R.findings || []), ...(R.threads || [])].find(x => x.github && x.github.commentId === (t.comments[0] || {}).id);
+      id = own ? own.id : t ? "g" + t.comments[0].id : "";
+    }
+    if (id && items().some(x => x.id === id)) goTo(id);
   }
 
   // Swap in a fresher review (the served page polls for one) and redraw what
@@ -1286,7 +1454,10 @@
         .then(j => {
           // Nothing answered: no take(), which could reload onto a dead server.
           if (j === UNREACHED) return;
-          if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending);
+          // A GitHub sync writes github.changedAt without moving updatedAt
+          // (it is not activity on the review): either is news.
+          const ghAt = r => (r && r.github && r.github.changedAt) || "";
+          if (j && (j.updatedAt !== R.updatedAt || ghAt(j) !== ghAt(R))) take(j); else if (live.pending && !busy()) take(live.pending);
         })
         .catch(() => { /* a bad body: the next poll asks again */ });
     };

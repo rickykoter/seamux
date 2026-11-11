@@ -171,8 +171,8 @@ button { font: inherit; color: inherit; }
 #app {
   display: grid; height: 100vh;
   grid-template-columns: minmax(220px, 22%) 1fr;
-  grid-template-rows: auto auto 1fr;
-  grid-template-areas: "top top" "banner banner" "side main";
+  grid-template-rows: auto auto auto 1fr;
+  grid-template-areas: "top top" "banner banner" "pr pr" "side main";
 }
 #top {
   grid-area: top; display: flex; align-items: center; gap: 14px;
@@ -552,3 +552,43 @@ tr.line.flash td { background: var(--flash); transition: background .6s; }
 
 /* A keyboard ring on anything Tab reaches; a mouse click draws none. */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The PR strip (review.js drawPR): the review's pull request, its drift
+   past the review, what is stale or pending, and its checks. */
+#pr { grid-area: pr; border-bottom: 1px solid var(--border); background: var(--side); font-size: var(--fs-2); }
+#pr[hidden] { display: none; }
+.pr-row { display: flex; align-items: center; gap: 10px; padding: 5px 16px; flex-wrap: wrap; min-width: 0; }
+.pr-gap { flex: 1; }
+.pr-link { color: var(--accent-t); font-weight: 600; text-decoration: none; }
+.pr-link:hover { text-decoration: underline; }
+.pr-state { font-size: var(--fs-1); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; color: var(--muted); }
+.pr-state.st-open { color: var(--pass); border-color: var(--pass-edge); }
+.pr-state.st-merged { color: var(--accent-t); border-color: var(--accent); }
+.pr-drift { color: var(--sev-major); }
+.pr-quiet { color: var(--muted); font-size: var(--fs-1); }
+.pr-err { color: var(--sev-blocker); font-size: var(--fs-1); cursor: help; }
+.pr-btn, .pr-checks-btn { font: inherit; font-size: var(--fs-1); padding: 1px 8px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer; }
+.pr-checks-btn { display: inline-flex; gap: 8px; align-items: center; }
+.pr-checks-btn.bad { border-color: var(--sev-blocker); }
+.ck { font: var(--fs-1) var(--mono); }
+.ck.pass { color: var(--pass); } .ck.fail { color: var(--sev-blocker); } .ck.pend { color: var(--addressed); }
+.pr-checks { padding: 2px 16px 8px 40px; display: grid; gap: 2px; max-height: 40vh; overflow: auto; }
+.pr-check { display: flex; gap: 8px; align-items: baseline; }
+.pr-check a { color: var(--fg); }
+.ghmark { width: 13px; height: 13px; fill: currentColor; color: var(--muted); flex: none; vertical-align: -2px; }
+
+/* Chips a card carries about the PR, and GitHub's own threads. */
+.chip { font-size: var(--fs-1); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; color: var(--muted);
+  white-space: nowrap; text-decoration: none; }
+.chip.stale { color: var(--sev-major); border-color: var(--sev-major); border-style: dashed; cursor: help; }
+.chip.pending { color: var(--muted); border-style: dashed; }
+.chip.posted { color: var(--accent-t); border-color: var(--accent); }
+.chip.outdated { color: var(--muted); border-style: dashed; }
+.sev.sev-github { --sev: var(--fg); display: inline-flex; gap: 4px; align-items: center; }
+.sev.sev-github .ghmark { color: inherit; }
+.gh-replies { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 4px; }
+.gh-head { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: var(--fs-1); }
+.gh-open { color: var(--accent-t); font-size: var(--fs-2); }
+.msg.by-gh a.at { color: var(--muted); text-decoration: none; }
+.msg.by-gh a.at:hover { color: var(--accent-t); }

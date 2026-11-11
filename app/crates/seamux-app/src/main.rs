@@ -9,6 +9,7 @@ mod newws_app;
 mod notify_app;
 mod migrate_app;
 mod pane_app;
+mod pr_watch;
 mod pty_app;
 mod reclaim_app;
 mod resume;
@@ -202,6 +203,7 @@ fn main() {
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
             review_app::start(app.handle().clone());
+            pr_watch::start(app.handle().clone());
             // Armed sessions a usage limit stopped, continued at the reset.
             resume_watch::start(app.handle().clone());
             Ok(())
@@ -209,6 +211,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             backend_status,
             notify_app::notify_looking,
+            notify_app::notify_review_looking,
             shell::intent_server,
             shell::intent_page,
             shell::hide_overlay,
@@ -231,6 +234,8 @@ fn main() {
             review_app::review_stop_orphan,
             review_app::review_suggest,
             review_app::review_others,
+            review_app::review_other_findings,
+            review_app::review_other_post,
             pane_app::open_url,
             pane_app::copy_text,
             pane_app::open_in_vscode,
