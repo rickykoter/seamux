@@ -32,8 +32,10 @@ type Job = {
   pushed: boolean;
   posted: string;
 };
+/** A review's pull request, as review.rs gh_summary reads its record. */
+type GhSummary = { repo: string; pr: number; url: string; state: string; draft: boolean; behind: number | null; pass: number; fail: number; pending: number; stale: number; unposted: number };
 /** A lookout review opened from a terminal session. */
-type Other = { id: string; title: string; root: string; branch: string; updated: number; open: Record<string, number> };
+type Other = { id: string; title: string; root: string; branch: string; updated: number; open: Record<string, number>; gh: GhSummary | null };
 type Pick = { input: string; repo: string; title: string; updated: number };
 type Picks = { requested: Pick[]; mine: Pick[]; branches: Pick[]; problem: string };
 type Finding = { id: string; file: string; line: number; severity: string; summary: string; status?: string };
@@ -273,6 +275,8 @@ export class ReviewView {
   /** Logs the reader opened or closed, so a redraw keeps them that way. */
   private logOpen = new Map<string, boolean>();
   private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable" | "orphan" | "stop-orphan">();
+  /** The terminal review whose findings are being posted, or "". */
+  private posting = "";
   /** Per job: the run its ticks, findings and confirm belong to. */
   private runs = new Map<string, string>();
 
@@ -378,6 +382,7 @@ export class ReviewView {
         this.sentPicks = "";
         f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);
       }
+      else if (d.lookout === "rereview") this.rereview();
       else if (d.lookout === "state" && d.gate && typeof d.gate === "object" && d.mode && typeof d.mode === "object") {
         this.pageState = d as unknown as PageState;
         this.render();
@@ -395,6 +400,22 @@ export class ReviewView {
     this.take(await invoke<Job[]>("review_jobs"));
     void this.loadOthers();
     window.setInterval(() => void this.loadOthers(), 30_000);
+  }
+
+  /**
+   * The framed page's Re-review (its PR strip offers it when the PR's head
+   * has moved past the review). A pasted review runs again from the new
+   * head; a terminal review's reviewer belongs to its session.
+   */
+  private rereview(): void {
+    const sel = this.selected ?? "";
+    const job = this.jobs.find((j) => `job:${j.id}` === sel);
+    if (job) {
+      if (!RUNNING.has(job.status) && !job.busy) void this.start(job.input, job.depth, job.model, job);
+      return;
+    }
+    const o = this.others.find((x) => `other:${x.id}` === sel);
+    if (o) this.err.textContent = `Re-review it from the session that opened it, at the new head: lookout open in ${o.root}, then a fresh reviewer (lookout prompt ${o.id}).`;
   }
 
   // ---- data ----
@@ -605,7 +626,8 @@ export class ReviewView {
       items.push(el("h3", "r-sec", "From terminals"));
       for (const o of this.others) {
         const n = Object.values(o.open).reduce((a, b) => a + b, 0);
-        const line = el("span", "r-item-line", `${n ? `${n} open` : "all closed"} · ${ago(o.updated)}`);
+        const pr = o.gh ? ` · PR #${o.gh.pr}${o.gh.fail ? ` ✗${o.gh.fail}` : ""}` : "";
+        const line = el("span", "r-item-line", `${n ? `${n} open` : "all closed"}${pr} · ${ago(o.updated)}`);
         items.push(row(`other:${o.id}`, o.title, line, n ? "open" : "closed"));
       }
     }
@@ -883,9 +905,73 @@ export class ReviewView {
 
   private drawOther(o: Other): void {
     const dir = o.root.split("/").filter(Boolean).pop() ?? o.root;
-    this.headOf(o.title, null, `from a terminal · ${dir}${o.branch ? ` · ${o.branch}` : ""} · ${ago(o.updated)}`, null, [], { key: `other:${o.id}`, items: [] });
-    const p = el("p", "r-detail", `${openSummary(o.open)}. Edit, fix and post from the session that opened it.`);
-    this.ctl.replaceChildren(p);
+    const g = o.gh;
+    const key = `other:${o.id}`;
+    const where = `from a terminal · ${dir}${o.branch ? ` · ${o.branch}` : ""}`;
+    const meta = `${where}${g ? ` · PR #${g.pr} ${g.draft ? "draft" : g.state.toLowerCase()}` : ""} · ${ago(o.updated)}`;
+    const buttons: HTMLElement[] = [];
+    const below: HTMLElement[] = [];
+    // A linked review posts from here, as a pasted one does; edits and fixes
+    // stay with the session that opened it.
+    if (g) {
+      const rows = (this.findings.get(key)?.rows ?? []).filter((f) => !(f as Finding & { github?: { postedAt?: string } }).github?.postedAt);
+      const ticked = this.ticked.get(key) ?? new Set<string>();
+      const picked = [...ticked].filter((id) => rows.some((r) => r.id === id));
+      const n = picked.length;
+      const busy = this.posting === o.id;
+      const toggle = el("button", `r-btn pickbtn${n ? " primary" : ""}`, rows.length ? `${rows.length} unposted${n ? ` · ${n} picked` : ""} ▾` : "Nothing to post");
+      toggle.disabled = !rows.length;
+      toggle.title = rows.length ? "Pick findings to post as one review on the pull request" : "Every open finding is posted, or none is open";
+      const post = btn(busy ? "Posting…" : "Post comments", () => {
+        this.confirm.set(key, "post");
+        this.render(true);
+      }, "r-btn quiet");
+      post.disabled = busy || !n;
+      post.title = n ? `The ${n} picked as one review on PR #${g.pr}` : "Pick findings first";
+      const sep = el("div", "r-menu-sep");
+      sep.setAttribute("role", "separator");
+      const top = rows.length ? [this.picker(key, rows, ticked, busy), sep] : [];
+      buttons.push(this.menu(`find:${key}`, toggle, [post], "", top, { role: "dialog", cls: "r-find-panel", label: "Findings" }));
+      if (this.confirm.get(key) === "post")
+        below.push(this.confirmBox(key, `Post ${n} finding${n === 1 ? "" : "s"} as one review on ${g.repo} PR #${g.pr}? Everyone watching the pull request is notified, and the text is the reviewer's, not yours.`, "Post", () => void this.postOther(o, picked)));
+    }
+    this.headOf(o.title, null, meta, g?.url || null, buttons, { key, items: [] });
+    const say = g
+      ? `${openSummary(o.open)}${g.stale ? ` · ${g.stale} stale` : ""}. Edit and fix from the session that opened it; post its findings here.`
+      : `${openSummary(o.open)}. Not linked to a pull request: edit, fix and post from the session that opened it.`;
+    this.ctl.replaceChildren(el("p", "r-detail", say), ...below);
+    if (g) void this.loadOtherFindings(o);
+  }
+
+  private async loadOtherFindings(o: Other): Promise<void> {
+    const key = `other:${o.id}`;
+    const stamp = `${o.updated}|${JSON.stringify(o.open)}|${o.gh?.unposted}`;
+    if (this.findings.get(key)?.key === stamp) return;
+    this.findings.set(key, { key: stamp, rows: this.findings.get(key)?.rows ?? [] });
+    try {
+      const all = await invoke<Finding[]>("review_other_findings", { id: o.id });
+      if (this.findings.get(key)?.key !== stamp) return;
+      this.findings.set(key, { key: stamp, rows: all.filter((f) => f.status !== "resolved" && f.status !== "dismissed") });
+      this.render(true);
+    } catch (e) {
+      this.err.textContent = String(e);
+    }
+  }
+
+  private async postOther(o: Other, ids: string[]): Promise<void> {
+    this.err.textContent = "";
+    this.posting = o.id;
+    this.render(true);
+    try {
+      const url = await invoke<string>("review_other_post", { id: o.id, ids });
+      this.ticked.delete(`other:${o.id}`);
+      this.findings.delete(`other:${o.id}`);
+      this.err.textContent = `Posted: ${url}`;
+    } catch (e) {
+      this.err.textContent = String(e);
+    }
+    this.posting = "";
+    await this.loadOthers();
   }
 
   private drawJob(j: Job): void {
@@ -934,9 +1020,9 @@ export class ReviewView {
       const commits = j.ahead > 0 && !j.pushed ? j.ahead : 0;
       const edits = changed ? ` Uncommitted edits to ${changed} file${changed === 1 ? "" : "s"} are deleted.` : "";
       const unpushed = commits ? ` Its ${commits} unpushed commit${commits === 1 ? " is" : "s are"} lost.` : "";
-      parts.push(this.confirmBox(j, `Remove this review and its worktree?${edits}${unpushed}`, "Remove", () => void this.remove(j, changed, commits, false)));
+      parts.push(this.confirmBox(j.id, `Remove this review and its worktree?${edits}${unpushed}`, "Remove", () => void this.remove(j, changed, commits, false)));
     } else if (this.confirm.get(j.id) === "remove-unreadable") {
-      parts.push(this.confirmBox(j, "Git couldn't read this review's worktree, so what it holds is unknown. Remove the review and delete the worktree anyway, with whatever is in it?", "Delete anyway", () => void this.remove(j, 0, 0, true)));
+      parts.push(this.confirmBox(j.id, "Git couldn't read this review's worktree, so what it holds is unknown. Remove the review and delete the worktree anyway, with whatever is in it?", "Delete anyway", () => void this.remove(j, 0, 0, true)));
     } else if (this.confirm.get(j.id) === "orphan") {
       const c = el("div", "r-confirm");
       c.append(
@@ -952,7 +1038,7 @@ export class ReviewView {
       );
       parts.push(c);
     } else if (this.confirm.get(j.id) === "stop-orphan") {
-      parts.push(this.confirmBox(j, "Stop the agent still running from the last session in this worktree?", "Stop it", () => void this.stopOrphan(j)));
+      parts.push(this.confirmBox(j.id, "Stop the agent still running from the last session in this worktree?", "Stop it", () => void this.stopOrphan(j)));
     }
     if (running) parts.push(this.progress(j));
     else if (j.status === "failed") {
@@ -1094,7 +1180,7 @@ export class ReviewView {
     if (total) {
       const sep = el("div", "r-menu-sep");
       sep.setAttribute("role", "separator");
-      top.push(this.picker(j, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));
+      top.push(this.picker(j.id, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));
     }
     const bar = [this.menu(`find:${j.id}`, toggle, acts, "", top, { role: "dialog", cls: "r-find-panel", label: "Findings" })];
 
@@ -1114,7 +1200,7 @@ export class ReviewView {
     const pending = this.confirm.get(j.id);
     if (pending === "post" || pending === "push") {
       const say = pending === "post" ? `Post ${n} finding${n === 1 ? "" : "s"} as one review on ${j.repo} PR #${j.pr}? Everyone watching the pull request is notified, and the text is the reviewer's, not yours.` : `Push ${j.ahead} commit${j.ahead === 1 ? "" : "s"} to ${j.repo}:${j.branch}? It is never forced. Read the diff in the review first.`;
-      out.push(this.confirmBox(j, say, pending === "post" ? "Post" : "Push", () => void this.run(j, pending === "post" ? "review_post" : "review_push", pending === "post" ? { ids: picked } : {})));
+      out.push(this.confirmBox(j.id, say, pending === "post" ? "Post" : "Push", () => void this.run(j, pending === "post" ? "review_post" : "review_push", pending === "post" ? { ids: picked } : {})));
     }
     return { buttons: bar, below: out };
   }
@@ -1124,11 +1210,11 @@ export class ReviewView {
    * A pick redraws the header with the panel still open, and gives the focus
    * back to what was clicked.
    */
-  private picker(j: Job, rows: Finding[], ticked: Set<string>, busy: boolean): HTMLElement {
+  private picker(key: string, rows: Finding[], ticked: Set<string>, busy: boolean): HTMLElement {
     const box = el("div", "r-picker");
     const refocus = (sel: string) => this.head.querySelector<HTMLElement>(`.r-find-panel ${sel}`)?.focus();
     const set = (ids: string[], which: string) => {
-      this.ticked.set(j.id, new Set(ids));
+      this.ticked.set(key, new Set(ids));
       this.render(true);
       refocus(`[data-quick="${which}"]`);
     };
@@ -1155,10 +1241,10 @@ export class ReviewView {
       cb.dataset.fid = f.id;
       cb.setAttribute("aria-label", `${f.severity}: ${f.summary}`);
       cb.addEventListener("change", () => {
-        const t = this.ticked.get(j.id) ?? new Set<string>();
+        const t = this.ticked.get(key) ?? new Set<string>();
         if (cb.checked) t.add(f.id);
         else t.delete(f.id);
-        this.ticked.set(j.id, t);
+        this.ticked.set(key, t);
         this.render(true);
         refocus(`input[data-fid="${CSS.escape(f.id)}"]`);
       });
@@ -1177,16 +1263,16 @@ export class ReviewView {
   }
 
   /** A yes/cancel strip; yes clears the pending confirm, then acts. */
-  private confirmBox(j: Job, say: string, yes: string, act: () => void): HTMLElement {
+  private confirmBox(key: string, say: string, yes: string, act: () => void): HTMLElement {
     const c = el("div", "r-confirm");
     c.append(
       el("span", "", say),
       btn(yes, () => {
-        this.confirm.delete(j.id);
+        this.confirm.delete(key);
         act();
       }, "r-btn primary"),
       btn("Cancel", () => {
-        this.confirm.delete(j.id);
+        this.confirm.delete(key);
         this.render(true);
       }, "r-btn quiet"),
     );

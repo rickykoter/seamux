@@ -231,6 +231,8 @@ fn main() {
             review_app::review_stop_orphan,
             review_app::review_suggest,
             review_app::review_others,
+            review_app::review_other_findings,
+            review_app::review_other_post,
             pane_app::open_url,
             pane_app::copy_text,
             pane_app::open_in_vscode,

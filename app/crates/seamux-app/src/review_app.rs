@@ -18,8 +18,8 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use seamux_app::review::{
-    branch_ok, depth_guide, parse_target, remote_for, review_id, review_payload, What, DEPTHS,
-    MODELS,
+    branch_ok, depth_guide, gh_summary, parse_target, remote_for, review_id, GhSummary, What,
+    DEPTHS, MODELS,
 };
 
 const REVIEW_TIME: Duration = Duration::from_secs(45 * 60);
@@ -903,19 +903,13 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
         t.repo,
         pr.map(|n| format!("PR #{n}")).unwrap_or(branch.clone())
     );
-    let o = lookout(
-        &wt,
-        &[
-            "open",
-            "--no-open",
-            "--id",
-            &rid,
-            "--base",
-            &base_sha,
-            "--title",
-            &title,
-        ],
-    )?;
+    // --pr links the review to its pull request for `lookout gh sync`.
+    let pr_ref = pr.map(|n| format!("{}#{n}", t.repo));
+    let mut args = vec!["open", "--no-open", "--id", &rid, "--base", &base_sha, "--title", &title];
+    if let Some(r) = &pr_ref {
+        args.extend(["--pr", r.as_str()]);
+    }
+    let o = lookout(&wt, &args)?;
     if o.code != 0 {
         return Err(format!(
             "lookout open: {}",
@@ -1435,69 +1429,23 @@ pub fn review_fix(id: String, ids: Vec<String>, commit: bool) -> Result<(), Stri
     Ok(())
 }
 
-/// Post findings `ids` as one GitHub review on the pull request, pinned to the
-/// commit that was reviewed. A line GitHub won't take falls back to one body.
+/// Post findings `ids` as one GitHub review on the pull request, through
+/// `lookout gh post`: pinned to the commit they were read on, a line GitHub
+/// won't take folded into one body, and each comment's id kept on its
+/// finding so the review page shows GitHub's replies under it.
 #[tauri::command]
 pub fn review_post(id: String, ids: Vec<String>) -> Result<(), String> {
     let j = get(&id)?;
-    let Some(pr) = j.pr else {
+    if j.pr.is_none() {
         return Err("this branch has no open pull request to comment on".into());
-    };
+    }
     if ids.is_empty() {
         return Err("pick at least one finding".into());
     }
     let j = claim(&id, "commenting")?;
     std::thread::spawn(move || {
-        let run = || -> Result<String, String> {
-            let all = findings_of(&j)?;
-            let picked: Vec<Value> = all
-                .into_iter()
-                .filter(|f| {
-                    f.get("id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|i| ids.iter().any(|x| x == i))
-                })
-                .collect();
-            if picked.is_empty() {
-                return Err("none of those findings exist any more".into());
-            }
-            let intro = format!(
-                "Lookout review ({} depth): {} finding(s).",
-                j.depth,
-                picked.len()
-            );
-            let path = format!("repos/{}/pulls/{pr}/reviews", j.repo);
-            let post = |folded: bool| {
-                exec(
-                    "gh",
-                    &["api", "-X", "POST", &path, "--input", "-"],
-                    None,
-                    Some(&review_payload(&picked, &j.head_sha, &intro, folded).to_string()),
-                    QUICK,
-                )
-            };
-            let mut o = post(false)?;
-            if o.code != 0 && (o.err.contains("422") || o.out.contains("Unprocessable")) {
-                note(&j.id, "GitHub refused a line comment (not in the diff); posting the findings in one body");
-                o = post(true)?;
-            }
-            if o.code != 0 {
-                return Err(format!(
-                    "gh api: {}",
-                    format!("{}{}", o.out, o.err)
-                        .trim()
-                        .chars()
-                        .take(400)
-                        .collect::<String>()
-                ));
-            }
-            let v: Value = serde_json::from_str(&o.out).unwrap_or(Value::Null);
-            Ok(v.get("html_url")
-                .and_then(Value::as_str)
-                .unwrap_or("posted")
-                .to_string())
-        };
-        match run() {
+        let intro = format!("Lookout review ({} depth): {} finding(s).", j.depth, ids.len());
+        match post_via_lookout(Path::new(&j.wt), &j.review_id, &ids, &intro) {
             Ok(url) => {
                 note(&j.id, &format!("posted: {url}"));
                 update(&j.id, |x| x.posted = url);
@@ -1505,8 +1453,19 @@ pub fn review_post(id: String, ids: Vec<String>) -> Result<(), String> {
             Err(e) => note(&j.id, &e),
         }
         release(&j.id);
+        refresh(&j.id);
     });
     Ok(())
+}
+
+/// `lookout gh post <rid> <ids…>` in `dir`: the URL of the GitHub review it made.
+fn post_via_lookout(dir: &Path, rid: &str, ids: &[String], intro: &str) -> Result<String, String> {
+    let mut args: Vec<&str> = vec!["gh", "post", rid];
+    args.extend(ids.iter().map(String::as_str));
+    args.extend(["--intro", intro, "--json"]);
+    let out = ok(Ok(exec("lookout", &args, Some(dir), None, QUICK)?), "lookout gh post")?;
+    let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    Ok(v.get("url").and_then(Value::as_str).filter(|u| !u.is_empty()).unwrap_or("posted").to_string())
 }
 
 /// Push the fix commits to the branch they came from. Never forced: a branch
@@ -1794,6 +1753,8 @@ pub struct Other {
     pub updated: u64,
     /// Findings not resolved or dismissed, by severity.
     pub open: std::collections::BTreeMap<String, u32>,
+    /// Its pull request, once `lookout gh sync` has linked it.
+    pub gh: Option<GhSummary>,
 }
 
 /// The newest terminal reviews. Each record is re-read only when it changes.
@@ -1875,7 +1836,51 @@ fn read_other(path: &Path, id: &str) -> Option<Other> {
         branch: s(src, "branch"),
         updated: iso_secs(&s(&d, "updatedAt")),
         open,
+        gh: gh_summary(&d),
     })
+}
+
+fn other_record(id: &str) -> Result<Value, String> {
+    if !seamux_app::review::id_ok(id) {
+        return Err(format!("not a review id: {id}"));
+    }
+    let path = crew_board::review::reviews_dir().join(format!("{id}.json"));
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+/// A terminal review's findings, as lookout stores them.
+#[tauri::command]
+pub async fn review_other_findings(id: String) -> Result<Vec<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let d = other_record(&id)?;
+        Ok(d.get("findings").and_then(Value::as_array).cloned().unwrap_or_default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Post a terminal review's findings `ids` to its pull request, from the
+/// checkout it was opened in. Returns the GitHub review's URL.
+#[tauri::command]
+pub async fn review_other_post(id: String, ids: Vec<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if ids.is_empty() {
+            return Err("pick at least one finding".to_string());
+        }
+        let d = other_record(&id)?;
+        if gh_summary(&d).is_none() {
+            return Err("this review is not linked to a pull request yet".into());
+        }
+        let root = d.get("source").and_then(|s| s.get("root")).and_then(Value::as_str).unwrap_or("");
+        if root.is_empty() || !Path::new(root).is_dir() {
+            return Err(format!("its checkout is gone: {root}"));
+        }
+        let intro = format!("Lookout review: {} finding(s).", ids.len());
+        post_via_lookout(Path::new(root), &id, &ids, &intro)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

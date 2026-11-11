@@ -1789,7 +1789,7 @@ if (want("page script")) {
      !app.includes("btn(`Findings · ${openSummary(j.open)}"));
   ok("app: the findings button opens one panel: the picker on top (Pick all, Blockers and majors, Clear, then the list), Edit, Fix with commits, Post comments and Push below, acting on the picks",
      app.includes('const bar = [this.menu(`find:${j.id}`, toggle, acts, "", top, { role: "dialog", cls: "r-find-panel", label: "Findings" })];') &&
-     app.includes('top.push(this.picker(j, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));') &&
+     app.includes('top.push(this.picker(j.id, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));') &&
      app.includes("if (total) acts.push(edit, fix, post);") && app.includes("acts.push(push);") &&
      app.includes("edit.disabled = fix.disabled = busy || !n;") && app.includes("post.disabled = busy || !j.pr || !n;") &&
      ['q("Pick all", "all"', 'q("Blockers and majors", "bm"', 'q("Clear", "none"'].every(k => app.includes(k)) &&
