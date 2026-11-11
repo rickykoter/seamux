@@ -20,7 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as V from "./lib/vendor.mjs";
 import * as S from "./lib/store.mjs";
 import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenerated,
@@ -374,9 +374,21 @@ function cmdOpen() {
   S.writeAtomic(p.rows, JSON.stringify(rows));
   const page = renderPage(id);
   const shown = showPage(id, page, src.root || cwd);
+  // --link (deep-plan passes it): a review not yet linked to its PR syncs in
+  // the background now, instead of on the first sync from the page or the
+  // app. An ordinary sync, so its rate limit and no-PR back-off still hold.
+  let linking = false;
+  if (flag("link") && src.kind !== "patch" && !(review.github && review.github.pr)) {
+    try {
+      const child = spawn(process.execPath, [path.join(HERE, "lookout.mjs"), "gh", "sync", id],
+        { cwd: src.root || cwd, detached: true, stdio: "ignore", env: process.env });
+      child.unref();
+      linking = true;
+    } catch { /* the page or the app links it later */ }
+  }
   if (flag("json")) {
     process.stdout.write(JSON.stringify({ id, page, store: p.json, patch: p.patch, files: meta.length,
-      shown: shown || null, highlight: review.highlight, quiz: !!review.policy.quiz, reviewer: review.policy.reviewer,
+      shown: shown || null, highlight: review.highlight, quiz: !!review.policy.quiz, reviewer: review.policy.reviewer, linking,
       scoring: { ok: review.scoring.ok, content: !!review.scoring.content, why: review.scoring.why || "" } }, null, 2) + "\n");
     return;
   }
@@ -640,6 +652,8 @@ function usage() {
         sendContent: true) and grouped by how they relate. --quiz (or
         .seamux/lookout.json quiz: true) puts a question before each high
         group's note; it never gates, and is fixed when the review is created.
+        --link starts a background gh sync of a review not yet linked to its
+        pull request (deep-plan passes it).
         --reviewer agent|panel (or .seamux/lookout.json reviewer) says who
         reviews: ONE fresh subagent, or the /lookout:review panel; a re-open
         may change it.

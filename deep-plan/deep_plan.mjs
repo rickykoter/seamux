@@ -717,8 +717,10 @@ function openReview(st, inc, base = "") {
   if (bad) return { ok: false, out: `the recorded start sha ${sha.slice(0, 8)} cannot be a base: ${bad} — give one: ` +
     `deep-plan ${all ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>` };
   const pol = reviewPolicy(st.slug);
+  // --link: lookout links the review to its PR in the background at once,
+  // by branch or else by the reviewed commit.
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
-    ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
+    ...planMapFlag(st.slug), ...pol.flags, "--link"], { cwd: st.root });
   return { ...r, agent: pol.agent, quiz: pol.quiz, reviewer: pol.reviewer };
 }
 
@@ -789,7 +791,7 @@ function familyDeliver(st, spec) {
     if (g.code === 3) {
       const r = runLookout(["open", "--id", id, "--title", `${slug} family review · ${m.slug}`,
         "--plan", m.slug, "--inc", "all", "--base", sha, "--at", m.root, "--context-file", ctx, "--no-open",
-        ...planMapFlag(m.slug), ...pol.flags], { cwd: m.root });
+        ...planMapFlag(m.slug), ...pol.flags, "--link"], { cwd: m.root });
       if (!r.ok) { problems.push(`${m.slug}: lookout open failed — ${r.out.split("\n")[0]}`); continue; }
       spawn.push(id);
     } else if (g.code === 0) passed.push(id);

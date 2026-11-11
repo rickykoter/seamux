@@ -2288,6 +2288,57 @@ if (want("page script")) {
 }
 
 // ---------------------------------------------------------------- github
+// A review whose branch has no PR finds one by its commit, and open --link
+// links a fresh review in the background.
+if (want("github: link by commit, and on open")) {
+  const GHL = await import("./lib/github.mjs");
+  const d = repo("gh-commit");
+  sh(d, "git remote add origin https://github.com/o/r.git");
+  write(d, "a.txt", "1\n"); sh(d, `${G} add -A && ${G} commit -q -m one`);
+  const head = sh(d, "git rev-parse HEAD").trim();
+  sh(d, "git checkout -q --detach");
+  write(d, "a.txt", "2\n");
+  const id = JSON.parse(cli(d, "open", "--base", "main", "--no-open", "--json").stdout).id;
+  const view = n => ({ number: n, url: `https://github.com/o/r/pull/${n}`, state: "OPEN", isDraft: false, title: "t", headRefName: "parent", headRefOid: head });
+  const pulls = `api repos/{owner}/{repo}/commits/${head}/pulls`;
+  // A list stdout is a sequence to the fake gh; GitHub's array goes as text.
+  const setMap = m => fs.writeFileSync(ENV.FAKE_GH_MAP, JSON.stringify(Object.fromEntries(Object.entries(m).map(([k, v]) =>
+    [k, Array.isArray(v.stdout) ? { ...v, stdout: JSON.stringify(v.stdout) } : v]))));
+  setMap({ [pulls]: { stdout: [
+    { number: 3, state: "closed", merged_at: null }, { number: 5, state: "closed", merged_at: "2026-11-01T00:00:00Z" },
+    { number: 4, state: "closed", merged_at: "2026-10-01T00:00:00Z" }, { number: 9, state: "open", merged_at: null }] },
+    "pr view 9 --json": { stdout: view(9) } });
+  let f = GHL.findLink(S.read(id));
+  ok("gh: a detached HEAD finds its PR by the reviewed commit, an open one first", f.link && f.link.pr === 9 && f.link.repo === "o/r", JSON.stringify(f));
+  setMap({ [pulls]: { stdout: [{ number: 3, state: "closed", merged_at: null }, { number: 4, state: "closed", merged_at: "2026-10-01T00:00:00Z" },
+    { number: 5, state: "closed", merged_at: "2026-11-01T00:00:00Z" }] }, "pr view 5 --json": { stdout: view(5) } });
+  f = GHL.findLink(S.read(id));
+  ok("gh: with no open PR, the one merged last", f.link && f.link.pr === 5, JSON.stringify(f));
+  setMap({ [pulls]: { stdout: [{ number: 3, state: "closed", merged_at: null }] } });
+  f = GHL.findLink(S.read(id));
+  ok("gh: a PR closed without merging is never the link", !!f.none && !f.link, JSON.stringify(f));
+  setMap({ [pulls]: { stdout: "", stderr: "API rate limit exceeded", status: 1 } });
+  ok("gh: a rate limit on the commit lookup backs off like any other", GHL.findLink(S.read(id)).limited === true);
+
+  // open --link: a sync starts in the background and links the review.
+  setMap({ [pulls]: { stdout: [{ number: 9, state: "open", merged_at: null }] }, "pr view 9 --json": { stdout: view(9) },
+    "pr view 9 -R o/r --json": { stdout: view(9) }, "api graphql": { stdout: { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } } },
+    "pr checks 9 -R o/r": { stdout: "[]" }, "api user": { stdout: "probe-user\n" } });
+  const quiet = cli(d, "open", "--base", "main", "--no-open", "--id", "gh-commit-nolink", "--json");
+  ok("gh: without --link, open starts no sync", JSON.parse(quiet.stdout).linking === false);
+  const lk = cli(d, "open", "--base", "main", "--no-open", "--id", "gh-commit-link", "--link", "--json");
+  ok("gh: open --link says it is linking", JSON.parse(lk.stdout).linking === true, lk.stdout);
+  let linked = null;
+  for (let i = 0; i < 100 && !linked; i++) {
+    const g = S.read("gh-commit-link").github;
+    if (g && g.pr) linked = g; else await new Promise(r => setTimeout(r, 100));
+  }
+  ok("gh: …and the background sync links it to the commit's PR", linked && linked.pr === 9, JSON.stringify(S.read("gh-commit-link").github));
+  ok("gh: a review with no --link stays unlinked", !(S.read("gh-commit-nolink").github || {}).pr);
+  const again = cli(d, "open", "--base", "main", "--no-open", "--id", "gh-commit-link", "--link", "--json");
+  ok("gh: a linked review starts no second sync on re-open", JSON.parse(again.stdout).linking === false);
+}
+
 if (want("github: link, sync, staleness, post")) {
   const GHL = await import("./lib/github.mjs");
   const SV = await import("./lib/serve.mjs");

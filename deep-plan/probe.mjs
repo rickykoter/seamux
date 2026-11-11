@@ -53,6 +53,15 @@ const ENV = {
   // Authoritative and empty: no lookout, so `diff` falls back to cmux diff and
   // nothing reaches the machine's real reviews. The review block sets its own.
   LOOKOUT_ENGINE: "",
+  // Every review deep-plan opens asks lookout to link it to its PR in the
+  // background (lookout open --link). Here gh is lookout's fake with no map,
+  // so it answers nothing, and its sync state and the engine pointer stay
+  // under TMP: no probe run reaches GitHub or the real lookout state.
+  LOOKOUT_GH: path.join(HERE, "..", "lookout", "tools", "fake-gh"),
+  FAKE_GH_MAP: path.join(TMP, "no-gh-map.json"),
+  LOOKOUT_GH_STATE: path.join(TMP, "lookout-gh-sync.json"),
+  FAKE_GH_LOG: path.join(TMP, "lookout-gh-log.jsonl"),
+  LOOKOUT_ENGINE_FILE: path.join(TMP, "lookout-engine.json"),
   // State pushes on transitions give up after a few seconds; a loaded
   // machine must not turn that into a flaky case.
   DEEP_PLAN_SYNC_TIMEOUT_MS: "60000",
@@ -5611,6 +5620,15 @@ if (want("review checks (lookout)")) {
     const mapJson = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "rv-1.map.json"), "utf8"));
     ok("review check: the review it opens carries the plan's map (--plan-map)",
       !!opened.planMap && JSON.stringify(opened.planMap) === JSON.stringify(mapJson) && JSON.stringify(stOf("rv-1").map) === JSON.stringify(mapJson));
+  }
+  {
+    // openReview passes --link: lookout's background sync asks the fake gh.
+    let asked = "";
+    for (let i = 0; i < 100 && !/"pr","view"/.test(asked); i++) {
+      try { asked = fs.readFileSync(ENV.FAKE_GH_LOG, "utf8"); } catch { /* not yet */ }
+      if (!/"pr","view"/.test(asked)) await new Promise(res => setTimeout(res, 100));
+    }
+    ok("review check: the review it opens is linked to its PR in the background (lookout open --link)", /"pr","view"/.test(asked), asked.slice(0, 300));
   }
   ok("review check: the last line is the board's: spawn a reviewer",
     r.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-1-inc1", r.stdout);
