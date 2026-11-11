@@ -303,6 +303,11 @@ impl Hook {
             .unwrap_or_default()
     }
 
+    /// The app's tmux registry, for a pane of the tmux backend (no cmux).
+    fn registry(&self) -> Option<crew_core::backend::tmux::TmuxBackend> {
+        (self.cmux.is_none() && crew_core::backend::tmux::chosen()).then(crew_core::backend::tmux::TmuxBackend::default)
+    }
+
     fn desc_put(&self, new: &str) {
         if self.cli_transport() {
             if new.is_empty() {
@@ -332,6 +337,16 @@ impl Hook {
     /// `tokens`, and with `pin` (a directory) the root: token of its git
     /// toplevel added when the description has none (a pin is never moved).
     pub fn tokens_with(&self, phase: &str, clear: &[&str], pin: Option<&str>) {
+        if let Some(t) = self.registry() {
+            // On the app's tmux the pane files carry the phase and crew-sync
+            // the rest: a hook only pins a new workspace (one write ever).
+            if let (Some(dir), Some((_, cur))) = (pin.filter(|d| !d.is_empty()), t.title_and_description(&self.ws)) {
+                if let Some(new) = pinned(&cur, dir) {
+                    let _ = t.set_facts(&self.ws, Some(&new), None);
+                }
+            }
+            return;
+        }
         let cur = self.desc_get();
         let mut toks: Vec<String> = split_tokens(&cur)
             .into_iter()
@@ -544,6 +559,21 @@ fn question(payload: &str) -> String {
     strip_newlines(&text).to_string()
 }
 
+/// `cur` with the root: token of `dir`'s git toplevel added, or None when
+/// it already has one (a pin is never moved) or `dir` is not in git.
+fn pinned(cur: &str, dir: &str) -> Option<String> {
+    if crew_core::worktree::root_of(cur).is_some() {
+        return None;
+    }
+    let root = toplevel(dir);
+    if root.is_empty() {
+        return None;
+    }
+    let mut toks: Vec<String> = split_tokens(cur).into_iter().map(String::from).collect();
+    toks.push(crew_core::worktree::root_tok(&root));
+    Some(toks.join(" "))
+}
+
 fn session(h: &mut Hook) {
     // `crew adopt` replays this event and must not leave the marker.
     if std::env::var("CREW_ADOPT").map(|v| v != "1").unwrap_or(true) {
@@ -564,6 +594,11 @@ fn session(h: &mut Hook) {
         h.cli(&["rename-workspace", &label]);
     } else if let Some(c) = &h.cmux {
         let _ = c.rename_workspace(&h.ws, &label);
+    } else if let Some(t) = h.registry() {
+        // The app's tmux: its registry holds the title, written only on a change.
+        if t.title_and_description(&h.ws).is_some_and(|(title, _)| title != label) {
+            let _ = t.set_title(&h.ws, &label);
+        }
     }
     let tab = if br.is_empty() { dir.clone() } else { format!("{dir} · {br}") };
     h.cli(&["rename-tab", &tab]);
@@ -1189,5 +1224,14 @@ mod tests {
         assert!(question_record("{}", "", 0).is_none());
         assert!(question_record(r#"{"tool_input": {"questions": []}}"#, "", 0).is_none());
         assert!(question_record("not json", "", 0).is_none());
+    }
+
+    #[test]
+    fn a_tmux_workspace_is_pinned_once_to_its_worktree() {
+        let here = env!("CARGO_MANIFEST_DIR");
+        let new = pinned("ci:pass", here).expect("this crate is in git");
+        assert!(new.starts_with("ci:pass root:"), "{new}");
+        assert_eq!(pinned(&new, here), None, "a pin is never moved");
+        assert_eq!(pinned("", "/"), None, "/ is not in git");
     }
 }

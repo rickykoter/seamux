@@ -458,6 +458,23 @@ impl TmuxBackend {
             .collect())
     }
 
+    /// Workspace `ws`'s (title, description), read without pruning (cheap
+    /// enough for a hook), or None when the registry has no such workspace.
+    pub fn title_and_description(&self, ws: &str) -> Option<(String, String)> {
+        let reg = self.read().ok()?;
+        list(&reg, "workspaces").iter().find(|w| s(w, "id").eq_ignore_ascii_case(ws)).map(|w| (s(w, "title"), s(w, "description")))
+    }
+
+    /// Rename workspace `ws`. Unknown workspaces are an error.
+    pub fn set_title(&self, ws: &str, title: &str) -> Result<(), String> {
+        self.update(|reg| {
+            let all = reg["workspaces"].as_array_mut().ok_or("the registry has no workspaces list")?;
+            let w = all.iter_mut().find(|w| s(w, "id").eq_ignore_ascii_case(ws)).ok_or_else(|| format!("no workspace {ws:?}"))?;
+            w["title"] = json!(title);
+            Ok(())
+        })
+    }
+
     /// Set workspace `ws`'s description ("" clears it) and/or pull request
     /// (Null clears it); None leaves that one as it is. Unknown workspaces
     /// are an error.
@@ -725,6 +742,22 @@ mod tests {
         assert_eq!((f[0].1.as_str(), &f[0].2["n"]), ("ci:fail pr:draft", &json!(7)));
         assert_eq!(b.workspaces().unwrap()[0].title, "shop", "the record keeps its other fields");
         assert!(b.set_facts("W9", Some(""), None).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_title_and_description_round_trip_through_the_registry() {
+        let dir = PathBuf::from(format!("/tmp/sx-title-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let b = TmuxBackend::at(dir.clone());
+        fs::write(dir.join("workspaces.json"), r#"{"version":1,"workspaces":[{"id":"W1","title":"shop","cwd":"/w","description":"ci:pass"}],"panes":[]}"#).unwrap();
+        assert_eq!(b.title_and_description("w1"), Some(("shop".into(), "ci:pass".into())));
+        b.set_title("W1", "PAY-12").unwrap();
+        assert_eq!(b.title_and_description("W1").unwrap().0, "PAY-12");
+        assert_eq!(b.facts().unwrap()[0].1, "ci:pass", "the description is kept");
+        assert!(b.set_title("W9", "x").is_err());
+        assert_eq!(b.title_and_description("W9"), None);
         let _ = fs::remove_dir_all(&dir);
     }
 
