@@ -56,6 +56,12 @@ pub enum NoteKind {
     Comment,
     /// A check on a lookout review's pull request went red.
     CiFailed,
+    /// crew-sync: a workspace's PR changed (CI, review, merged), from a note file.
+    Pr,
+    /// crew-digest --notify, from a note file.
+    Digest,
+    /// A session's prompt cache is about to lapse (cachefacts), from a note file.
+    Stale,
 }
 
 impl NoteKind {
@@ -68,6 +74,9 @@ impl NoteKind {
             NoteKind::Blocked => "blocked",
             NoteKind::Comment => "pr-comment",
             NoteKind::CiFailed => "ci-failed",
+            NoteKind::Pr => "pr",
+            NoteKind::Digest => "digest",
+            NoteKind::Stale => "stale",
         }
     }
 
@@ -79,6 +88,9 @@ impl NoteKind {
             NoteKind::Blocked => "Basso",
             NoteKind::Comment => "Pop",
             NoteKind::CiFailed => "Sosumi",
+            NoteKind::Pr => "Tink",
+            NoteKind::Digest => "Submarine",
+            NoteKind::Stale => "Funk",
         }
     }
 }
@@ -222,6 +234,26 @@ pub fn take_blocked(dir: &Path, pane: &dyn Fn(&str) -> Option<PaneView>) -> Vec<
         .collect()
 }
 
+/// A note-<id>.json from crew-sync, the digest or cachefacts (ADR 0087), as
+/// a banner. `pane` finds the workspace's label for the title. None for a
+/// kind this app does not know.
+pub fn sent_note(v: &Value, pane: &dyn Fn(&str) -> Option<PaneView>) -> Option<Note> {
+    let kind = match v.get("kind").and_then(Value::as_str)? {
+        "pr" => NoteKind::Pr,
+        "digest" => NoteKind::Digest,
+        "stale" => NoteKind::Stale,
+        _ => return None,
+    };
+    let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let title = s("title");
+    if title.is_empty() {
+        return None;
+    }
+    let p = pane(&s("pane")).unwrap_or_else(|| PaneView { id: s("pane"), ws: s("ws"), ..Default::default() });
+    let ws = if p.ws.is_empty() { s("ws") } else { p.ws.clone() };
+    Some(Note { ws, ..note(kind, &p, title, clip(&s("body"), 200)) })
+}
+
 /// Banners of one kind that are due together, as one: "3 agents finished",
 /// naming them. A lone banner passes through unchanged.
 pub fn merge(notes: Vec<Note>) -> Vec<Note> {
@@ -247,6 +279,9 @@ pub fn merge(notes: Vec<Note>) -> Vec<Note> {
                 // pr_watch.rs posts these one by one (post_review), never through merge.
                 NoteKind::Comment => format!("{count} reviews have new comments"),
                 NoteKind::CiFailed => format!("checks failed on {count} reviews"),
+                NoteKind::Pr => format!("{count} pull requests changed"),
+                NoteKind::Digest => format!("{count} digests"),
+                NoteKind::Stale => format!("{count} sessions' caches are going stale"),
             };
             // Each one's label is the part of its title before " · ".
             let mut names: Vec<&str> = Vec::new();
@@ -651,6 +686,12 @@ pub fn start(app: AppHandle) {
             let (seen, blocked): (Vec<Note>, Vec<Note>) = take_blocked(&state, &find).into_iter().partition(|n| here(n));
             notes.extend(blocked);
             skipped.extend(seen);
+            // What crew-sync, the digest and cachefacts sent (ADR 0087).
+            let sent: Vec<Note> = crew_core::notifications::take_notes(&state, crew_core::history::now_ms())
+                .iter()
+                .filter_map(|v| sent_note(v, &find))
+                .collect();
+            notes.extend(sent);
             // One line per pane, before merge: "3 agents finished" is three.
             for note in &skipped {
                 crew_core::notifications::record(entry(note, false));
@@ -938,5 +979,15 @@ mod tests {
         let l = |at| (at, "W".to_string(), "P".to_string());
         assert_eq!(fresh_link(l(1_000), 1_000 + LINK_KEEP_MS), Some(("W".into(), "P".into())));
         assert_eq!(fresh_link(l(1_000), 1_001 + LINK_KEEP_MS), None);
+    }
+
+    #[test]
+    fn a_sent_note_is_a_banner_of_its_kind_and_an_unknown_kind_is_not() {
+        let none = |_: &str| None;
+        let n = sent_note(&serde_json::json!({"kind": "pr", "title": "api", "body": "#12 CI red: build", "ws": "W"}), &none).unwrap();
+        assert_eq!((n.kind, n.title.as_str(), n.body.as_str(), n.ws.as_str()), (NoteKind::Pr, "api", "#12 CI red: build", "W"));
+        assert_eq!(n.kind.key(), "pr");
+        assert!(sent_note(&serde_json::json!({"kind": "turn", "title": "x"}), &none).is_none());
+        assert!(sent_note(&serde_json::json!({"kind": "digest", "title": ""}), &none).is_none());
     }
 }

@@ -208,6 +208,48 @@ pub fn tmux_sessions_of(records: &[Value]) -> HashMap<String, Vec<(String, Value
     out
 }
 
+/// The PRs a lookout review follows, as pr_watch picks them (ADR 0084 and
+/// #212's pr_watch.rs): a review record whose github block names an OPEN PR,
+/// touched in the last 14 days (by its file's time). On tmux, pr_watch posts
+/// those PRs' red checks, so crew-sync leaves their CI lines out.
+pub fn reviewed_prs(reviews: &Path, now: std::time::SystemTime) -> HashSet<(String, u64)> {
+    const IDLE: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
+    let mut out = HashSet::new();
+    for e in std::fs::read_dir(reviews).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else { continue };
+        if id.ends_with(".rows") || id.ends_with(".seen") || id.ends_with(".incoming") || id.starts_with("wake-") {
+            continue;
+        }
+        let fresh = e.metadata().and_then(|m| m.modified()).ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age < IDLE);
+        if !fresh {
+            continue;
+        }
+        let Some(g) = read_json(&e.path().to_string_lossy()).and_then(|d| d.get("github").cloned()) else { continue };
+        if g.get("state").and_then(Value::as_str).unwrap_or("OPEN") != "OPEN" {
+            continue;
+        }
+        let Some(n) = g.get("pr").and_then(Value::as_u64) else { continue };
+        let repo = g.get("repo").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_string)
+            .or_else(|| g.get("url").and_then(Value::as_str).and_then(pr_key).map(|(r, _)| r));
+        if let Some(r) = repo {
+            out.insert((r.to_ascii_lowercase(), n));
+        }
+    }
+    out
+}
+
+/// (owner/repo, number) of a GitHub PR url.
+pub fn pr_key(url: &str) -> Option<(String, u64)> {
+    let rest = url.split("github.com/").nth(1)?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 4 || parts[2] != "pull" {
+        return None;
+    }
+    let n = parts[3].split(['#', '?']).next()?.parse().ok()?;
+    Some((format!("{}/{}", parts[0], parts[1]).to_ascii_lowercase(), n))
+}
+
 /// Whether a session record's Claude still runs: its pid answers, or (on
 /// tmux, which records no pid) it says so.
 pub fn live(r: &Value) -> bool {
@@ -1262,5 +1304,28 @@ mod tests {
         assert_eq!(w[0].1["agentLifecycle"], "running");
         assert!(live(&w[0].1));
         assert!(!live(&w[1].1));
+    }
+
+    #[test]
+    fn a_fresh_open_reviewed_pr_is_owned_by_pr_watch() {
+        assert_eq!(pr_key("https://github.com/RickyKoter/seamux/pull/212"), Some(("rickykoter/seamux".into(), 212)));
+        assert_eq!(pr_key("https://github.com/a/b/pull/7#discussion"), Some(("a/b".into(), 7)));
+        assert_eq!(pr_key("https://github.com/a/b/issues/7"), None);
+        let d = std::env::temp_dir().join(format!("reviews-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let w = |name: &str, v: Value| std::fs::write(d.join(name), v.to_string()).unwrap();
+        w("open.json", json!({"github": {"repo": "a/B", "pr": 7, "state": "OPEN"}}));
+        w("by-url.json", json!({"github": {"url": "https://github.com/a/b/pull/8", "pr": 8}}));
+        w("merged.json", json!({"github": {"repo": "a/b", "pr": 9, "state": "MERGED"}}));
+        w("unlinked.json", json!({"source": {"branch": "x"}}));
+        w("wake-x.json", json!({"github": {"repo": "a/b", "pr": 10}}));
+        let got = reviewed_prs(&d, std::time::SystemTime::now());
+        let mut v: Vec<_> = got.into_iter().collect();
+        v.sort();
+        assert_eq!(v, vec![("a/b".to_string(), 7), ("a/b".to_string(), 8)]);
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(15 * 24 * 3600);
+        assert!(reviewed_prs(&d, later).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

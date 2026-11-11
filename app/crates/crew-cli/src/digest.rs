@@ -14,7 +14,6 @@
 
 use std::time::Duration;
 
-use cmux::{Cmux, Notify};
 use crew_core::py::{civil_from_days, days_from_civil, percent_g, splitlines};
 use serde_json::Value;
 
@@ -530,14 +529,7 @@ fn run(args: &[String]) -> i32 {
             bits.push(format!("{} reclaimable", ripe.len()));
         }
         if !bits.is_empty() {
-            if let Ok(c) = Cmux::connect() {
-                let _ = c.notify(&Notify {
-                    title: "crew digest".into(),
-                    subtitle: Some("crew:digest".into()),
-                    body: Some(bits.join(" · ")),
-                    workspace: None,
-                });
-            }
+            crew_core::notifications::post("digest", "crew digest", &bits.join(" · "), "");
         }
     }
     0

@@ -172,7 +172,17 @@ impl Writer {
         self.write(|c| c.workspace_status_set(ws, "auto"));
     }
 
+    /// A banner: cmux's notify, or on the app's tmux a note file its
+    /// notifier posts (ADR 0087).
     pub fn notify(&self, n: Notify) {
+        if self.c.is_none() && self.tmux.is_some() {
+            if !self.dry {
+                let kind = n.subtitle.as_deref().and_then(|s| s.strip_prefix("crew:")).unwrap_or("pr");
+                crew_core::notifications::write_note(&crew_core::home::home_cache(), kind, &n.title,
+                    n.body.as_deref().unwrap_or(""), n.workspace.as_deref().unwrap_or(""), "");
+            }
+            return;
+        }
         self.write(|c| c.notify(&n));
     }
 }
