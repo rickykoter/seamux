@@ -24,14 +24,14 @@ import { spawnSync } from "node:child_process";
 import * as V from "./lib/vendor.mjs";
 import * as S from "./lib/store.mjs";
 import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenerated,
-         generatedByAttr, LARGE_LINES, repoInfo } from "./lib/patch.mjs";
+         generatedByAttr, LARGE_LINES, repoInfo, moved } from "./lib/patch.mjs";
 import * as TU from "./lib/turns.mjs";
 import * as SC from "./lib/score.mjs";
 import * as GR from "./lib/group.mjs";
 import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
-import { brief } from "./lib/prompt.mjs";
+import { brief, DIMENSIONS } from "./lib/prompt.mjs";
 import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
@@ -54,10 +54,12 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro", "--dimension", "--reviewer"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
+// Who reviews: one fresh agent, or a panel (lookout/workflows/review.js).
+const REVIEWERS = ["agent", "panel"];
 // A reader that stopped early (`lookout show … | head`) is not a failure: stop
 // writing, and keep whatever exit code the verb already set (gate's verdict).
 process.stdout.on("error", e => {
@@ -347,6 +349,9 @@ function cmdOpen() {
   // The quiz too: --quiz or the repo's default, fixed at creation, so a
   // re-open (with or without the flag) neither starts nor stops it.
   const quizAsked = flag("quiz") || cfg.quiz === true;
+  const reviewerAsked = opt("reviewer");
+  if (rest.includes("--reviewer") && !REVIEWERS.includes(reviewerAsked))
+    die(`--reviewer wants ${REVIEWERS.join(" or ")}`);
   let quizNote = "";
   if (!S.exists(id)) fresh.policy = { ...(fresh.policy || {}), quiz: quizAsked };
   else if (flag("quiz") && !(S.read(id).policy || {}).quiz)
@@ -359,6 +364,10 @@ function cmdOpen() {
       for (const x of [...(cur.findings || []), ...(cur.threads || [])]) if (x && !x.at) x.at = was;
     const m = S.merge(cur, fresh);
     m.policy = { agentMayClose: false, quiz: false, ...(m.policy || {}) };
+    // Who reviews (one agent, or a panel) grants nothing, so unlike the two
+    // above a re-open may change it. Unset, it is the repo's default.
+    if (reviewerAsked) m.policy.reviewer = reviewerAsked;
+    else if (!REVIEWERS.includes(m.policy.reviewer)) m.policy.reviewer = REVIEWERS.includes(cfg.reviewer) ? cfg.reviewer : "agent";
     return arrange(m);
   });
   S.writeAtomic(p.patch, text);
@@ -367,7 +376,7 @@ function cmdOpen() {
   const shown = showPage(id, page, src.root || cwd);
   if (flag("json")) {
     process.stdout.write(JSON.stringify({ id, page, store: p.json, patch: p.patch, files: meta.length,
-      shown: shown || null, highlight: review.highlight, quiz: !!review.policy.quiz,
+      shown: shown || null, highlight: review.highlight, quiz: !!review.policy.quiz, reviewer: review.policy.reviewer,
       scoring: { ok: review.scoring.ok, content: !!review.scoring.content, why: review.scoring.why || "" } }, null, 2) + "\n");
     return;
   }
@@ -384,7 +393,9 @@ function cmdOpen() {
   say(`  store: ${p.json}`);
   // --view-only: someone only wants to look (deep-plan diff); no reviewer hint.
   if (!flag("view-only") && !review.reviewedAt)
-    say(`  next:  brief ONE reviewer subagent with \`lookout prompt ${id}\``);
+    say(review.policy.reviewer === "panel"
+      ? `  next:  run the review panel: the /lookout:review workflow with args {"reviews": ["${id}"], "ingest": "agent"}`
+      : `  next:  brief ONE reviewer subagent with \`lookout prompt ${id}\``);
 }
 
 // ---------------------------------------------------------------- findings
@@ -422,17 +433,44 @@ function cmdPrompt() {
   // could never be saved.
   const inbox = path.join(os.tmpdir(), "lookout");
   fs.mkdirSync(inbox, { recursive: true });
+  // A panel's finders and skeptics (lookout/workflows/review.js). A round is
+  // one reviewer's brief: sealing it once per agent would spend both rounds.
+  const dimension = opt("dimension"), skeptic = flag("skeptic");
+  if (rest.includes("--dimension") && !DIMENSIONS.includes(dimension))
+    die(`--dimension wants one of ${DIMENSIONS.join(", ")}`);
+  if (dimension && skeptic) die("--dimension and --skeptic are two different briefs; pick one");
+  if ((dimension || skeptic) && flag("round")) die("--round is one reviewer's brief; it takes no --dimension or --skeptic");
+  // The brief is built from the stored patch, so a source that has moved on
+  // since the review was opened would describe a tree nobody can see. Refused
+  // before a round is sealed, so a stale print cannot spend the round.
+  const now = moved(r.source);
+  if (now) {
+    const src = r.source || {};
+    const how = src.plan ? (src.inc === "all" ? `deep-plan deliver ${src.plan}` : `deep-plan review ${src.plan} ${src.inc}`)
+      : "lookout open with the same target";
+    die(`${id} was opened on tree ${String(src.newRev).slice(0, 8)}, and the working tree is now ${now.slice(0, 8)}: ` +
+      `re-open it first (${how}), then print the brief`);
+  }
   let round = null;
   if (flag("round")) {
     const pending = FD.pendingRound(r);
-    if (!pending.length) die(`${id} has no addressed findings waiting on a re-review`);
-    if ((r.rounds || []).length >= FD.MAX_ROUNDS)
-      die(`${id} has had ${FD.MAX_ROUNDS} re-review rounds: stop and ask the person how to go on`);
-    const { out } = mutate(id, cur => FD.sealRound(cur, pending.map(f => f.id)));
-    round = { n: out.n, findings: pending };
+    const last = (r.rounds || []).slice(-1)[0];
+    if (!pending.length && last) {
+      // Nothing new waits: the last sealed round's brief again, for a
+      // reviewer that never got it. It seals nothing.
+      process.stderr.write(`lookout: nothing new waits on a re-review; printing round ${last.n} again\n`);
+      round = { n: last.n, findings: (r.findings || []).filter(f => last.findings.includes(f.id)) };
+    } else {
+      if (!pending.length) die(`${id} has no addressed findings waiting on a re-review`);
+      if ((r.rounds || []).length >= FD.MAX_ROUNDS)
+        die(`${id} has had ${FD.MAX_ROUNDS} re-review rounds: stop and ask the person how to go on`);
+      const { out } = mutate(id, cur => FD.sealRound(cur, pending.map(f => f.id)));
+      round = { n: out.n, findings: pending };
+    }
   }
   process.stdout.write(brief(r, { patchPath: p.patch, plansDir: path.dirname(S.REVIEWS_DIR),
-                                  outPath: path.join(inbox, id + ".incoming.json"), reply: flag("reply"), round }));
+                                  outPath: path.join(inbox, id + ".incoming.json"), reply: flag("reply"), round,
+                                  dimension, skeptic }));
 }
 
 function cmdFindings() {
@@ -602,10 +640,18 @@ function usage() {
         sendContent: true) and grouped by how they relate. --quiz (or
         .seamux/lookout.json quiz: true) puts a question before each high
         group's note; it never gates, and is fixed when the review is created.
+        --reviewer agent|panel (or .seamux/lookout.json reviewer) says who
+        reviews: ONE fresh subagent, or the /lookout:review panel; a re-open
+        may change it.
   lookout prompt <id>       the reviewer brief: give it to ONE fresh subagent
         --reply: the reviewer answers with its JSON instead of writing a file,
         and the caller pipes that to findings add (for a reviewer that has
         no file-writing tool).
+        --round: a re-review of the addressed findings; prints the last
+        sealed round again when nothing new waits.
+        --dimension correctness|security|performance, --skeptic: a panel
+        finder's and a panel skeptic's brief (lookout/workflows/review.js).
+        Refused while the working tree has moved past the review: re-open it.
   lookout findings add <id> <file|->     validate and ingest a reviewer's JSON:
                             {findings, edges, notes}, or a bare array of findings
   lookout findings list <id> [--open] [--json]

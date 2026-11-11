@@ -658,7 +658,10 @@ if (want("re-review rounds")) {
     /## Re-review, round 1/.test(b) && /- f1 major a\.js:1: bug 1\n  what changed: guarded the empty case/.test(b) &&
     /\+1 −1|a\.js/.test(b) && !/ b\.js  \+/.test(b), b.slice(0, 1500));
   ok("rounds: the round is sealed on the review", (S.read(id).rounds || []).length === 1 && S.read(id).rounds[0].findings.join() === "f1");
-  ok("rounds: a sealed round is not briefed again", /no addressed findings waiting/.test(cli(RR, "prompt", id, "--round").stderr));
+  const again = cli(RR, "prompt", id, "--round");
+  ok("rounds: with nothing new waiting, the last sealed round is printed again and nothing is sealed",
+    again.status === 0 && /## Re-review, round 1/.test(again.stdout) && /printing round 1 again/.test(again.stderr) &&
+    (S.read(id).rounds || []).length === 1, again.stderr);
   cli(RR, "address", id, "f2", "fixed b");
   ok("rounds: round 2 briefs the next addressed finding", /## Re-review, round 2/.test(cli(RR, "prompt", id, "--round").stdout));
   S.update(id, cur => { FD.ingest(cur, [F(3, "a.js")]); return cur; });
@@ -667,6 +670,67 @@ if (want("re-review rounds")) {
   r = cli(RR, "prompt", id, "--round");
   ok("rounds: …and a third round is refused", r.status !== 0 && /2 re-review rounds: stop and ask the person/.test(r.stderr), r.stderr);
   ok("rounds: the gate is unchanged by rounds", cli(RR, "gate", id).status === 1);
+}
+
+// A panel's briefs (lookout/workflows/review.js), the stale-tree refusal and
+// the reviewer policy.
+if (want("panel briefs")) {
+  const FD = await import("./lib/findings.mjs");
+  const RP = repo("rp");
+  write(RP, "a.js", "1\n"); sh(RP, `git add -A && ${G} commit -q -m base`);
+  write(RP, "a.js", "2\n");
+  const o = JSON.parse(cli(RP, "open", "--worktree", "--json").stdout);
+  const id = o.id;
+  ok("reviewer: a review is one agent's unless asked", o.reviewer === "agent" && S.read(id).policy.reviewer === "agent");
+  const sec = cli(RP, "prompt", id, "--dimension", "security").stdout;
+  ok("panel: a finder's brief keeps its one dimension and owes no notes or edges",
+    /look only for\nsecurity defects/.test(sec) && /- security —/.test(sec) && !/- correctness —/.test(sec) &&
+    !/## Notes/.test(sec) && !/## Edges/.test(sec) && !/Groups \(lookout's/.test(sec) && /panel merges your findings/.test(sec), sec.slice(0, 800));
+  const perf = cli(RP, "prompt", id, "--dimension", "performance").stdout;
+  ok("panel: the performance finder also owns smells", /- performance —/.test(perf) && /- smell —/.test(perf) && !/- security —/.test(perf));
+  const cor = cli(RP, "prompt", id, "--dimension", "correctness").stdout;
+  ok("panel: the correctness finder also owns maintainability", /- correctness —/.test(cor) && /- maintainability —/.test(cor));
+  const sk = cli(RP, "prompt", id, "--skeptic").stdout;
+  ok("panel: a skeptic's brief asks it to refute and ends where the finding goes",
+    /Try to refute it/.test(sk) && /"refuted"/.test(sk) && /## The finding to refute\n\n$/.test(sk) && !/## How to review/.test(sk), sk.slice(-400));
+  ok("panel: an unknown dimension is refused", cli(RP, "prompt", id, "--dimension", "style").status !== 0);
+  ok("panel: --dimension and --skeptic together are refused", cli(RP, "prompt", id, "--dimension", "security", "--skeptic").status !== 0);
+  const F = { file: "a.js", line: 1, side: "new", severity: "major", category: "correctness", verdict: "PLAUSIBLE",
+    summary: "bug", short_summary: "bug", failure_scenario: "f", outside: false };
+  S.update(id, cur => { FD.ingest(cur, [F]); cur.reviewedAt = new Date().toISOString(); return cur; });
+  cli(RP, "address", id, "f1", "fixed");
+  const dr = cli(RP, "prompt", id, "--round", "--dimension", "security");
+  ok("panel: a round takes no finder or skeptic brief, and seals nothing", dr.status !== 0 && /one reviewer's brief/.test(dr.stderr) &&
+    !(S.read(id).rounds || []).length, dr.stderr);
+
+  // The fix lands after the review was opened: its brief would show the old tree.
+  write(RP, "a.js", "3\n");
+  const st = cli(RP, "prompt", id, "--round");
+  ok("stale: a round brief is refused while the tree has moved past the review, and the round stays unsealed",
+    st.status !== 0 && /re-open it first \(lookout open with the same target\)/.test(st.stderr) && !(S.read(id).rounds || []).length, st.stderr);
+  ok("stale: so is a plain brief", cli(RP, "prompt", id).status !== 0);
+  cli(RP, "open", "--worktree");
+  const fresh = cli(RP, "prompt", id, "--round");
+  ok("stale: after a re-open the round brief prints and seals", fresh.status === 0 && /## Re-review, round 1/.test(fresh.stdout) &&
+    (S.read(id).rounds || []).length === 1, fresh.stderr);
+  S.update(id, cur => { cur.source = { ...cur.source, plan: "p1", inc: 2 }; return cur; });
+  write(RP, "a.js", "4\n");
+  ok("stale: a plan's review names deep-plan review to re-open it", /re-open it first \(deep-plan review p1 2\)/.test(cli(RP, "prompt", id).stderr));
+  const rid = JSON.parse(cli(RP, "open", "--range", "HEAD~0..HEAD", "--json").stdout).id;
+  write(RP, "a.js", "5\n");
+  ok("stale: a range review is fixed and never refused", cli(RP, "prompt", rid).status === 0);
+
+  const pn = cli(RP, "open", "--worktree", "--id", "rp-panel", "--reviewer", "panel");
+  ok("reviewer: --reviewer panel is stored and open names the workflow",
+    S.read("rp-panel").policy.reviewer === "panel" && /\/lookout:review workflow with args \{"reviews": \["rp-panel"\]/.test(pn.stdout), pn.stdout);
+  cli(RP, "open", "--worktree", "--id", "rp-panel", "--reviewer", "agent");
+  ok("reviewer: a re-open may change it", S.read("rp-panel").policy.reviewer === "agent");
+  cli(RP, "open", "--worktree", "--id", "rp-panel");
+  ok("reviewer: a re-open without the flag keeps it", S.read("rp-panel").policy.reviewer === "agent");
+  ok("reviewer: an unknown reviewer is refused", cli(RP, "open", "--worktree", "--id", "rp-x", "--reviewer", "crowd").status !== 0);
+  write(RP, ".seamux/lookout.json", JSON.stringify({ reviewer: "panel" }));
+  cli(RP, "open", "--worktree", "--id", "rp-cfg");
+  ok("reviewer: the repo's .seamux/lookout.json sets a new review's default", S.read("rp-cfg").policy.reviewer === "panel");
 }
 
 if (want("notes, edges, quiz")) {

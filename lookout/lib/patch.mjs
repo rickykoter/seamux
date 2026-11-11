@@ -163,6 +163,19 @@ function turnSource(o, { root, repo, branch, head }) {
            oldRev: t.start, newRev, label };
 }
 
+// The tree a review's new side would be if it were opened now, when that is
+// not the one it holds; null when it still matches, or when its new side is
+// fixed (a range, an ended turn, a patch file). A brief made from a moved
+// source describes a tree the reviewer cannot see.
+export function moved(src) {
+  if (!src || !src.root || !src.newRev) return null;
+  const live = src.kind === "base" || src.kind === "worktree" || (src.kind === "turn" && src.live);
+  if (!live) return null;
+  let now;
+  try { now = worktreeTree(src.root); } catch { return null; }
+  return now && now !== src.newRev ? now : null;
+}
+
 function emptyTree(root) {
   return line1(git(root, ["hash-object", "-t", "tree", "--stdin"], { input: "" }));
 }
