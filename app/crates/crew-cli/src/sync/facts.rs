@@ -181,6 +181,39 @@ pub fn sessions_by_ws(p: &Paths) -> HashMap<String, Vec<(String, Value)>> {
     sessions_in(&p.store)
 }
 
+/// `sessions_by_ws` on the seamux app's tmux: each pane's session, from
+/// crew_core's pane-file records (ADR 0085), in the store's field names.
+/// `live` stands in for a pid: a claude process runs on the pane's terminal.
+pub fn sessions_from_tmux() -> HashMap<String, Vec<(String, Value)>> {
+    tmux_sessions_of(&crew_core::workspaces::agent_sessions().unwrap_or_default())
+}
+
+/// `sessions_from_tmux` from records already read.
+pub fn tmux_sessions_of(records: &[Value]) -> HashMap<String, Vec<(String, Value)>> {
+    let mut out: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+    for r in records.iter().filter(|r| r.get("source").and_then(Value::as_str) == Some("tmux")) {
+        let ws = r.get("workspace_id").map(py_str).unwrap_or_default();
+        let sid = r.get("session_id").map(py_str).unwrap_or_default();
+        if ws.is_empty() || sid.is_empty() {
+            continue;
+        }
+        let rec = json!({"sessionId": sid, "workspaceId": ws,
+                         "agentLifecycle": r.get("agent_lifecycle").cloned().unwrap_or(Value::Null),
+                         "live": r.get("stored_pid_exists") == Some(&Value::Bool(true))});
+        let list = out.entry(ws).or_default();
+        if !list.iter().any(|(s, _)| *s == sid) {
+            list.push((sid, rec));
+        }
+    }
+    out
+}
+
+/// Whether a session record's Claude still runs: its pid answers, or (on
+/// tmux, which records no pid) it says so.
+pub fn live(r: &Value) -> bool {
+    alive(r.get("pid")) || r.get("live") == Some(&Value::Bool(true))
+}
+
 /// `sessions_by_ws` from the store at `store`.
 pub fn sessions_in(store: &str) -> HashMap<String, Vec<(String, Value)>> {
     let Some(d) = read_json(store).filter(Value::is_object) else { return HashMap::new() };
@@ -1213,5 +1246,21 @@ mod tests {
         assert_eq!(relpath("/a/b/c", "/a"), "b/c");
         assert_eq!(relpath("/a", "/a/b"), "..");
         assert_eq!(relpath("/a", "/a"), ".");
+    }
+
+    #[test]
+    fn tmux_records_read_as_the_stores_sessions() {
+        let recs = vec![
+            json!({"source": "tmux", "workspace_id": "W", "session_id": "s1", "agent_lifecycle": "running", "stored_pid_exists": true}),
+            json!({"source": "tmux", "workspace_id": "W", "session_id": "s2", "agent_lifecycle": "ended", "stored_pid_exists": false}),
+            json!({"source": "tmux", "workspace_id": "W", "session_id": "", "agent_lifecycle": "idle", "stored_pid_exists": true}),
+            json!({"workspace_id": "W", "session_id": "cmux-one"}),
+        ];
+        let m = tmux_sessions_of(&recs);
+        let w = &m["W"];
+        assert_eq!(w.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), vec!["s1", "s2"]);
+        assert_eq!(w[0].1["agentLifecycle"], "running");
+        assert!(live(&w[0].1));
+        assert!(!live(&w[1].1));
     }
 }
