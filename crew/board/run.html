@@ -148,6 +148,9 @@ button{font:inherit;color:inherit}
 
 /* ---- the header: sticks while the swimlane scrolls under it ---- */
 header{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 18px 10px;margin:0 -18px;border-bottom:1px solid var(--line)}
+.back{display:inline-block;margin-bottom:4px;color:var(--role-link);font-size:12.5px;text-decoration:none}
+.back:hover{text-decoration:underline}
+.back[hidden]{display:none}
 .top{display:flex;align-items:baseline;gap:10px;min-width:0}
 h1{font:600 17px/1.25 system-ui;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .pill{flex:none;font:600 12px/1.6 system-ui;padding:0 8px;border-radius:999px;border:1px solid currentColor}
@@ -228,6 +231,7 @@ svg.mk{flex:none;width:10px;height:10px}
 <body>
 <main>
   <header>
+    <a class="back" id="back" hidden></a>
     <div class="top"><h1 id="name">Run</h1><span class="pill unknown" id="status">…</span></div>
     <div class="meta" id="meta"></div>
     <div class="phases" id="phases"></div>

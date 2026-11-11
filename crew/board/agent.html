@@ -227,13 +227,15 @@ pre.plain{font:12.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhe
       .replace(/`([^`\n]+)`/g, "<code>$1</code>");
   }
 
-  // Opened from a run page's bar: a way back to it.
-  var back = "";
+  // Opened from a run page's bar or the session page: a way back to it. A run
+  // page opened from the session page keeps its own way back in its link.
+  var back = "", backToRun = false;
   try { back = new URLSearchParams(location.search).get("back") || ""; } catch (e) { back = ""; }
-  if (/^\/run\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(back)) {
+  backToRun = /^\/run\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+(\?back=%2Fruns%2F[A-Za-z0-9_.-]+)?$/.test(back);
+  if (backToRun || /^\/runs\/[A-Za-z0-9_.-]+$/.test(back)) {
     $("back").href = back;
     $("back").hidden = false;
-    $("back").textContent = "\u2190 The run";
+    $("back").textContent = backToRun ? "\u2190 The run" : "\u2190 All agents";
   }
   var state = { running: true, agent: null, since: 0, steps: {}, prompt: "", lastText: null, dropped: 0 };
   function header(v) {
@@ -247,7 +249,7 @@ pre.plain{font:12.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhe
     if (a.start > 0 && end) bits.push('<span id="el">' + took(end - a.start) + "</span>");
     if (a.tokens > 0) bits.push(tokens(a.tokens) + " tokens");
     if (r.kind === "workflow" && r.name) bits.push("in " + esc(r.name) + (a.phase ? " · " + esc(a.phase) : ""));
-    if (!$("back").hidden && r.name) $("back").textContent = "\u2190 " + r.name;
+    if (backToRun && r.name) $("back").textContent = "\u2190 " + r.name;
     $("meta").innerHTML = bits.join("");
   }
   function stepRow(s, i) {

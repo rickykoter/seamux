@@ -115,6 +115,16 @@
   var boot = {};
   try { boot = JSON.parse(document.getElementById("boot").textContent); } catch (e) { boot = {}; }
   var $ = function (id) { return document.getElementById(id); };
+
+  // Opened from the session page: a way back to it.
+  var back = "";
+  try { back = new URLSearchParams(location.search).get("back") || ""; } catch (e) { back = ""; }
+  if (!/^\/runs\/[A-Za-z0-9_.-]+$/.test(back)) back = "";
+  if (back && $("back")) {
+    $("back").href = back;
+    $("back").hidden = false;
+    $("back").textContent = "← All agents";
+  }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -137,7 +147,7 @@
   function openAgent(a) {
     if (!a || !a.transcript) return;
     location.href = "/agent/" + encodeURIComponent(boot.session || "") + "/" + encodeURIComponent(a.id) +
-      "?back=" + encodeURIComponent(location.pathname);
+      "?back=" + encodeURIComponent(location.pathname + (back ? "?back=" + encodeURIComponent(back) : ""));
   }
 
   function drawHeader(t) {
