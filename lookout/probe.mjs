@@ -2117,6 +2117,10 @@ if (want("page script")) {
      js.includes("const m = /^c(\\d+)$/.exec(item);"));
   ok("page: a GitHub sync redraws the page though updatedAt does not move",
      js.includes("if (j && (j.updatedAt !== R.updatedAt || ghAt(j) !== ghAt(R))) take(j);"));
+  ok("page+app: framed, a GitHub link goes to the host, which opens only github.com through open_url; the tab's own links do too",
+     js.includes('window.parent.postMessage({ lookout: "open", url }, hostOrigin);') && js.includes("const url = a && ghUrl(a.getAttribute(\"href\"));") &&
+     app.includes('else if (d.lookout === "open") {') && app.includes('/^https:\\/\\/github\\.com\\//.test(url)) void invoke("open_url", { url })') &&
+     app.includes(`closest?.('a[target="_blank"]')`) && app.includes('void invoke("open_url", { url: a.href })'));
   ok("page: GitHub's mark is drawn as SVG, no emoji", js.includes("function ghMark()") && js.includes('createElementNS("http://www.w3.org/2000/svg", "svg")'));
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
