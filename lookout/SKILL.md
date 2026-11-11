@@ -12,9 +12,10 @@ shim for the human's own shell and fetches the pinned highlight.js.
 
 ## Must hold
 
-- **The findings come from one fresh reviewer subagent**, briefed with the
-  exact output of `lookout prompt <id>` — never from you, and with nothing of
-  your own opinion added to the brief.
+- **The findings come from one fresh review run**: one reviewer subagent
+  briefed with the exact output of `lookout prompt <id>`, or the review
+  panel when the review is set to it — never from you, and with nothing of
+  your own opinion added to any brief.
 - **Only the human closes a finding** (resolve or dismiss, on the page) unless
   the review was opened with `--agent-may-close`. Never work around the
   refusal, and never ask for the flag.
@@ -93,12 +94,27 @@ change in the context that wrote it reads your intent instead of the code.
 
    `findings add` prints what it rejected and any group still owed a note
    or a question; the subagent fixes those and runs it again.
+
+   **When `lookout open` names the review panel** (the review was opened
+   with `--reviewer panel`, from a plan's `review.reviewer` or the repo's
+   `.seamux/lookout.json`), run the Workflow tool instead of the subagent:
+   name `lookout:review`, args `{"reviews": ["<id>"], "ingest": "agent"}`.
+   A lead runs the brief above, three finders each take one dimension, a
+   skeptic tries to refute each blocker or major, and a last fresh agent
+   saves the result. Each agent prints its own brief, so pass nothing else.
+   If the name is not found, pass `scriptPath`: `workflows/review.js` under
+   the root `lookout engine` prints. With no Workflow tool, brief one
+   subagent as above. Tell the human what the run's `dropped` lists: the
+   findings a skeptic refuted, with why.
 3. When it returns, `lookout findings list <id>` and tell the human what was
    found (counts by severity, the blockers and majors in a line each). The
    page beside the terminal already shows every finding under its line,
    and opens on the Overview of the notes.
 4. Discuss. Fix what is real, then `lookout address <id> <f#> "<what changed>"`;
-   answer anything with `lookout reply <id> <f#|t#> "<text>"`. Your replies,
+   answer anything with `lookout reply <id> <f#|t#> "<text>"`. A re-review
+   round is always one subagent: re-open the review once the fixes are in,
+   then brief it with `lookout prompt <id> --round` (a brief of a tree that
+   has moved on is refused). Your replies,
    address notes and the summary you give the human are prose people read:
    run the `humanize` skill on any that runs past a sentence or two. The
    brief itself stays exactly as `lookout prompt` prints it.

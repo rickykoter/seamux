@@ -403,6 +403,8 @@ function validate(spec, force) {
     const n = (spec.deliverables || []).length;
     for (const k of ["agentMayClose", "quiz", "delivery", "family"])
       if (rv && rv[k] !== undefined && typeof rv[k] !== "boolean") errs.push(`review.${k}: true or false`);
+    if (rv && rv.reviewer !== undefined && !REVIEWERS.includes(rv.reviewer))
+      errs.push(`review.reviewer: ${REVIEWERS.map(r => JSON.stringify(r)).join(" or ")} (one fresh subagent, or lookout's review panel)`);
     // The family review is how a parent's delivery closes, so it needs both
     // a family and a delivery phase to happen in.
     if (rv && rv.family === true && !(Array.isArray(spec.workstreams) && spec.workstreams.length))
@@ -530,11 +532,24 @@ function planSpec(slug) {
 // The plan's review policy as lookout open flags: who may close findings,
 // and the ownership quiz (lookout's group notes). Both are fixed when the
 // review is created, so every open of a plan's review passes both.
+// Who reviews (review.reviewer) may change on a re-open. Unset, it is the
+// repo's .seamux/lookout.json default. The value resolved here is passed on
+// every open, so lookout's stored reviewer and this engine's hint agree.
+const REVIEWERS = ["agent", "panel"];
+function repoReviewer(slug) {
+  const st = readState(slug);
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(st.root, ".seamux", "lookout.json"), "utf8"));
+    return REVIEWERS.includes(cfg.reviewer) ? cfg.reviewer : "agent";
+  } catch { return "agent"; }
+}
 function reviewPolicy(slug) {
   const spec = planSpec(slug);
   const agent = !!(spec.review && spec.review.agentMayClose);
   const quiz = !!(spec.review && spec.review.quiz);
-  return { agent, quiz, flags: [...(agent ? ["--agent-may-close"] : []), ...(quiz ? ["--quiz"] : [])] };
+  const reviewer = spec.review && REVIEWERS.includes(spec.review.reviewer) ? spec.review.reviewer : repoReviewer(slug);
+  return { agent, quiz, reviewer,
+           flags: [...(agent ? ["--agent-may-close"] : []), ...(quiz ? ["--quiz"] : []), "--reviewer", reviewer] };
 }
 
 // lookout's engine: $LOOKOUT_ENGINE, else the root its pointer names. "" when
@@ -567,9 +582,17 @@ const reviewId = (slug, n) => n === "all" ? `${slug}-delivery` : `${slug}-inc${N
 // What the session does once a review is open: the engine opens it, but only
 // the session can spawn the one reviewer subagent (it must not be the context
 // that wrote the change). The last line is for the board, which shows only that.
-const spawnLine = (slug, n) => `review: spawn a reviewer — lookout prompt ${reviewId(slug, n)}`;
+// A panel plan runs lookout's /lookout:review workflow instead.
+const panelArgs = ids => JSON.stringify({ reviews: ids, ingest: "agent" });
+const spawnLine = (slug, n, pol = {}) => pol.reviewer === "panel"
+  ? `review: run the review panel — /lookout:review ${reviewId(slug, n)}`
+  : `review: spawn a reviewer — lookout prompt ${reviewId(slug, n)}`;
 function spawnHint(slug, n, pol = {}) {
-  return `next: spawn ONE fresh reviewer subagent whose prompt is the output of\n  lookout prompt ${reviewId(slug, n)}\n` +
+  const id = reviewId(slug, n);
+  return (pol.reviewer === "panel"
+    ? `next: run the review panel: the Workflow tool, name lookout:review, args ${panelArgs([id])}\n` +
+      `  (no Workflow tool here: spawn ONE fresh reviewer subagent with lookout prompt ${id})\n`
+    : `next: spawn ONE fresh reviewer subagent whose prompt is the output of\n  lookout prompt ${id}\n`) +
     `then: ${n === "all" ? `deep-plan deliver ${slug}` : `deep-plan check run ${slug} ${n}`}` +
     (pol.agent ? "\n(this plan lets the agent close findings too)" : "") +
     (pol.quiz ? "\n(this plan quizzes: the reviewer writes a question for each high-risk group)" : "");
@@ -694,9 +717,11 @@ function openReview(st, inc, base = "") {
   if (bad) return { ok: false, out: `the recorded start sha ${sha.slice(0, 8)} cannot be a base: ${bad} — give one: ` +
     `deep-plan ${all ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>` };
   const pol = reviewPolicy(st.slug);
+  // --link: lookout links the review to its PR in the background at once,
+  // by branch or else by the reviewed commit.
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
-    ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
-  return { ...r, agent: pol.agent, quiz: pol.quiz };
+    ...planMapFlag(st.slug), ...pol.flags, "--link"], { cwd: st.root });
+  return { ...r, agent: pol.agent, quiz: pol.quiz, reviewer: pol.reviewer };
 }
 
 // ---------------------------------------------------------------- family review
@@ -766,7 +791,7 @@ function familyDeliver(st, spec) {
     if (g.code === 3) {
       const r = runLookout(["open", "--id", id, "--title", `${slug} family review · ${m.slug}`,
         "--plan", m.slug, "--inc", "all", "--base", sha, "--at", m.root, "--context-file", ctx, "--no-open",
-        ...planMapFlag(m.slug), ...pol.flags], { cwd: m.root });
+        ...planMapFlag(m.slug), ...pol.flags, "--link"], { cwd: m.root });
       if (!r.ok) { problems.push(`${m.slug}: lookout open failed — ${r.out.split("\n")[0]}`); continue; }
       spawn.push(id);
     } else if (g.code === 0) passed.push(id);
@@ -776,13 +801,20 @@ function familyDeliver(st, spec) {
     (problems.length ? `, ${problems.length} cannot open` : ""));
   for (const p of problems) say("  ✗ " + p);
   for (const b of blocked) say("  ✗ " + b + " — fix, lookout address, then deliver again");
-  if (spawn.length) {
-    say("next: spawn ONE fresh reviewer subagent per review, whose prompt is the output of");
+  // A panel plan reviews every waiting member in one workflow run; a
+  // one-reviewer plan spawns its reviewers side by side, in one message.
+  if (spawn.length && pol.reviewer === "panel") {
+    say(`next: run the review panel over every waiting member: the Workflow tool, name lookout:review, args ${panelArgs(spawn)}`);
+    say("  (no Workflow tool here: spawn ONE fresh reviewer subagent per review with lookout prompt <id>)");
+    say(`then: deep-plan deliver ${slug}` + (pol.agent ? "\n(this plan lets the agent close findings too)" : ""));
+  } else if (spawn.length) {
+    say("next: spawn ONE fresh reviewer subagent per review, side by side in one message, whose prompt is the output of");
     for (const id of spawn) say(`  lookout prompt ${id}`);
     say(`then: deep-plan deliver ${slug}` + (pol.agent ? "\n(this plan lets the agent close findings too)" : ""));
   }
   if (problems.length || blocked.length || spawn.length) {
-    if (spawn.length) say(`review: spawn a reviewer — lookout prompt ${spawn[0]}`);
+    if (spawn.length) say(pol.reviewer === "panel" ? `review: run the review panel — /lookout:review ${spawn.join(" ")}`
+      : `review: spawn a reviewer — lookout prompt ${spawn[0]}`);
     else console.error(`deliver refused: the family review is open on ${problems.length + blocked.length} member(s)`);
     return 1;
   }
@@ -3755,8 +3787,9 @@ function checksRefusal(slug, n, out, root = "") {
     (stale.length ? `\n  re-run the stale:    deep-plan check run ${slug} ${n}` +
       (stale.some(c => !c.recipe) ? `   (a check with no recipe: check pass it again after looking)` : "") : "") +
     `\n  record a verdict:    deep-plan check pass|fail ${slug} ${n} <id> "<what you saw>"` +
-    (review ? `\n  the review:          deep-plan check run ${slug} ${n} opens it; then spawn ONE fresh reviewer ` +
-      `subagent whose prompt is the output of \`lookout prompt ${reviewId(slug, n)}\`` : "") +
+    (review ? `\n  the review:          deep-plan check run ${slug} ${n} opens it; then ` +
+      (reviewPolicy(slug).reviewer === "panel" ? `run the review panel (/lookout:review ${reviewId(slug, n)})`
+        : `spawn ONE fresh reviewer subagent whose prompt is the output of \`lookout prompt ${reviewId(slug, n)}\``) : "") +
     `\n  override (a person's, logged): deep-plan done ${slug} ${n} --force` +
     `\n\ndone refused: ${out.map(c => `${c.id} ${c.status}${c.note ? ` (${short(c.note)})` : ""}`).join("; ")}`;
 }
@@ -5688,9 +5721,11 @@ function checkRun(slug, n, ids, opts) {
         // already there refreshes it to the tree now), and the session is told
         // to spawn the reviewer. It stays failed until a reviewer reports.
         const o = openReview(readState(slug), findInc(readState(slug), n));
-        res.note = o.ok ? `review opened, no reviewer yet — spawn ONE fresh reviewer subagent with lookout prompt ${reviewId(slug, n)}`
+        res.note = o.ok ? (o.reviewer === "panel"
+            ? `review opened, no reviewer yet — run the review panel: /lookout:review ${reviewId(slug, n)}`
+            : `review opened, no reviewer yet — spawn ONE fresh reviewer subagent with lookout prompt ${reviewId(slug, n)}`)
           : `no verdict yet, and the review could not be opened: ${(o.out || "").split("\n").pop()}`;
-        if (o.ok) kickoffs.push({ out: o.out, agent: o.agent });
+        if (o.ok) kickoffs.push({ out: o.out, agent: o.agent, quiz: o.quiz, reviewer: o.reviewer });
       } else res.note = code === 127 ? LOOKOUT_MISSING
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
         : res.note;
@@ -5797,7 +5832,7 @@ function checkRun(slug, n, ids, opts) {
   if (kickoffs.length) {
     const k = kickoffs[kickoffs.length - 1];
     say("\n" + k.out + "\n\n" + spawnHint(slug, n, k));
-    say(spawnLine(slug, n));
+    say(spawnLine(slug, n, k));
   }
   return failed ? 1 : 0;
 }
@@ -6875,7 +6910,7 @@ switch (cmd) {
       const r = openReview(st, "all", base);
       if (!r.ok) die(r.out || "lookout open failed");
       say(r.out + "\n\n" + spawnHint(slug, "all", r));
-      say(spawnLine(slug, "all"));
+      say(spawnLine(slug, "all", r));
       process.exit(1);
     }
     if (g.code !== 0) die(`the delivery review holds the plan open — ${g.out.split("\n")[0]}\n` +

@@ -48,6 +48,10 @@ Then plan the bug with the usual discipline, kept short:
 
    Fan out one scout per hypothesis to run its falsify check, then record
    each `verdict` (`open`, `confirmed` or `refuted`) and its `evidence`.
+   The `deep-plan:scout` workflow does this in one run: pass each
+   hypothesis as `{id, claim, kind: "hypothesis", falsify}`. Its verdicts
+   come back in the `hypotheses` shape, `open` unless the check decided
+   it and the scout cited what it read.
    Render refuses a bug-lane spec with fewer than two hypotheses, or one
    with no `falsify`, and the review page shows them all.
 2. **Reproduce first.** The first increment's first check is a test that

@@ -128,14 +128,41 @@ export function findLink(review) {
   const ref = asked && !(known && known.pr === asked.pr && (!asked.repo || sameRepo(asked.repo, known.repo))) ? asked : known || asked;
   let r;
   if (ref) r = gh(["pr", "view", String(ref.pr), ...(ref.repo ? ["-R", ref.repo] : []), "--json", PR_FIELDS], { cwd: root });
-  else if (src.kind === "patch" || !src.branch) return { none: "no branch to find a pull request for" };
-  else r = gh(["pr", "view", src.branch, "--json", PR_FIELDS], { cwd: root });
-  if (r.error) return { error: r.error };
-  if (limited(r)) return { error: fail(r, "gh pr view"), limited: true };
+  else if (src.kind === "patch") return { none: "no branch to find a pull request for" };
+  else if (src.branch) r = gh(["pr", "view", src.branch, "--json", PR_FIELDS], { cwd: root });
+  if (r && r.error) return { error: r.error };
+  if (r && limited(r)) return { error: fail(r, "gh pr view"), limited: true };
+  if ((!r || r.status !== 0) && !ref) {
+    // No PR by branch name (a detached HEAD, a branch that never had its own
+    // PR, a family child merged into its parent's): the PRs holding the
+    // reviewed commit.
+    const byCommit = prOfCommit(root, src.kind === "range" ? src.newRev : src.head);
+    if (byCommit.error || byCommit.limited) return byCommit;
+    if (!byCommit.pr) return { none: src.branch ? `no pull request for ${src.branch} or its commit` : "no branch or commit to find a pull request for" };
+    r = gh(["pr", "view", String(byCommit.pr), "--json", PR_FIELDS], { cwd: root });
+    if (r.error) return { error: r.error };
+    if (limited(r)) return { error: fail(r, "gh pr view"), limited: true };
+  }
   if (r.status !== 0) return ref ? { error: fail(r, "gh pr view") } : { none: `no pull request for ${src.branch}` };
   const v = parse(r.out);
   if (!v || !v.number) return { error: "gh pr view answered without a PR" };
   return { link: { repo: repoOfUrl(v.url) || (ref && ref.repo) || "", pr: v.number, view: v } };
+}
+
+// The PR a commit belongs to, from GitHub's list of PRs that contain it: an
+// open one first, else the one merged last; a PR closed without merging is
+// never one (findings could be posted to it). { pr } or {} or { error }.
+export function prOfCommit(root, sha) {
+  if (!root || !/^[0-9a-f]{7,40}$/.test(String(sha || ""))) return {};
+  const r = gh(["api", `repos/{owner}/{repo}/commits/${sha}/pulls`], { cwd: root });
+  if (r.error) return { error: r.error };
+  if (limited(r)) return { error: fail(r, "gh api commits/pulls"), limited: true };
+  if (r.status !== 0) return {};
+  const list = Array.isArray(parse(r.out)) ? parse(r.out) : [];
+  const open = list.filter(p => p && p.state === "open" && p.number);
+  if (open.length) return { pr: open[0].number };
+  const merged = list.filter(p => p && p.merged_at && p.number).sort((a, b) => String(b.merged_at).localeCompare(String(a.merged_at)));
+  return merged.length ? { pr: merged[0].number } : {};
 }
 
 // Whether the review was (re-)opened with a --pr other than the one it saved.

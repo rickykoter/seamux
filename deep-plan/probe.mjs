@@ -54,6 +54,15 @@ const ENV = {
   // Authoritative and empty: no lookout, so `diff` falls back to cmux diff and
   // nothing reaches the machine's real reviews. The review block sets its own.
   LOOKOUT_ENGINE: "",
+  // Every review deep-plan opens asks lookout to link it to its PR in the
+  // background (lookout open --link). Here gh is lookout's fake with no map,
+  // so it answers nothing, and its sync state and the engine pointer stay
+  // under TMP: no probe run reaches GitHub or the real lookout state.
+  LOOKOUT_GH: path.join(HERE, "..", "lookout", "tools", "fake-gh"),
+  FAKE_GH_MAP: path.join(TMP, "no-gh-map.json"),
+  LOOKOUT_GH_STATE: path.join(TMP, "lookout-gh-sync.json"),
+  FAKE_GH_LOG: path.join(TMP, "lookout-gh-log.jsonl"),
+  LOOKOUT_ENGINE_FILE: path.join(TMP, "lookout-engine.json"),
   // State pushes on transitions give up after a few seconds; a loaded
   // machine must not turn that into a flaky case.
   DEEP_PLAN_SYNC_TIMEOUT_MS: "60000",
@@ -5647,8 +5656,36 @@ if (want("review checks (lookout)")) {
     ok("review check: the review it opens carries the plan's map (--plan-map)",
       !!opened.planMap && JSON.stringify(opened.planMap) === JSON.stringify(mapJson) && JSON.stringify(stOf("rv-1").map) === JSON.stringify(mapJson));
   }
+  {
+    // openReview passes --link: lookout's background sync asks the fake gh.
+    let asked = "";
+    for (let i = 0; i < 100 && !/"pr","view"/.test(asked); i++) {
+      try { asked = fs.readFileSync(ENV.FAKE_GH_LOG, "utf8"); } catch { /* not yet */ }
+      if (!/"pr","view"/.test(asked)) await new Promise(res => setTimeout(res, 100));
+    }
+    ok("review check: the review it opens is linked to its PR in the background (lookout open --link)", /"pr","view"/.test(asked), asked.slice(0, 300));
+  }
   ok("review check: the last line is the board's: spawn a reviewer",
     r.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-1-inc1", r.stdout);
+  {
+    ok("review.reviewer: anything but agent or panel is refused", /review\.reviewer: "agent" or "panel"/.test(bad([{ kind: "review" }], { review: { reviewer: "crowd" } }).stderr));
+    arm("rv-pn", [{ kind: "review" }], { review: { reviewer: "panel" } });
+    const p = lc(LENV, "check", "run", "rv-pn", "1", "review-code-review");
+    const pstore = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-pn-inc1.json"), "utf8"));
+    ok("review.reviewer panel: check run names the workflow, and the review is stored as the panel's",
+      p.stdout.includes('name lookout:review, args {"reviews":["rv-pn-inc1"],"ingest":"agent"}') &&
+      p.stdout.trim().split("\n").pop() === "review: run the review panel — /lookout:review rv-pn-inc1" &&
+      pstore.policy.reviewer === "panel", JSON.stringify([pstore.policy, p.stdout.trim().split("\n").slice(-6)]));
+    ok("review.reviewer: unset, a review is one agent's", JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json"), "utf8")).policy.reviewer === "agent");
+    fs.mkdirSync(path.join(RV, ".seamux"), { recursive: true });
+    fs.writeFileSync(path.join(RV, ".seamux", "lookout.json"), JSON.stringify({ reviewer: "panel" }));
+    const c = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+    ok("review.reviewer: unset, the repo's lookout.json decides, for the hint and the stored review alike",
+      c.stdout.trim().split("\n").pop() === "review: run the review panel — /lookout:review rv-1-inc1" &&
+      JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json"), "utf8")).policy.reviewer === "panel", JSON.stringify([stOf("rv-1").root, RV, c.stdout.trim().split("\n").slice(-3)]));
+    fs.rmSync(path.join(RV, ".seamux", "lookout.json"));
+    lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  }
   const r2 = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("spike settled: running a synthesized review check never warns about recipe drift",
     !/⚠|drift|changed in|no longer in/.test(r.stderr + r2.stderr), r.stderr + r2.stderr);
@@ -5911,6 +5948,15 @@ if (want("review checks (lookout)")) {
     ok("family review: deliver opens one review per member and names a reviewer for each",
       r.status === 1 && ids.every(id => fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, id + ".json")) && r.stdout.includes(`lookout prompt ${id}`)) &&
       r.stdout.trim().split("\n").pop() === `review: spawn a reviewer — lookout prompt ${ids[0]}`, r.stdout + r.stderr);
+    fs.mkdirSync(path.join(FR, ".seamux"), { recursive: true });
+    fs.writeFileSync(path.join(FR, ".seamux", "lookout.json"), JSON.stringify({ reviewer: "panel" }));
+    const fp = lc(LENV, "deliver", "frv-par");
+    ok("family review: a panel plan names one workflow run over every waiting member",
+      fp.status === 1 && fp.stdout.includes(`name lookout:review, args {"reviews":${JSON.stringify(ids)},"ingest":"agent"}`) &&
+      fp.stdout.trim().split("\n").pop() === `review: run the review panel — /lookout:review ${ids.join(" ")}`, fp.stdout + fp.stderr);
+    fs.rmSync(path.join(FR, ".seamux", "lookout.json"));
+    const one = lc(LENV, "deliver", "frv-par");
+    ok("family review: a one-reviewer plan spawns its reviewers side by side", /side by side in one message/.test(one.stdout), one.stdout);
     const ks = store(ids[1]);
     ok("family review: each is the member's own work, at its root, with the plan's close policy",
       ks.source.root && fs.realpathSync(ks.source.root) === fs.realpathSync(KR) && ks.files.some(f => f.path === "frv-kid-1.txt") &&
@@ -8471,6 +8517,65 @@ if (want("hot-path cost")) {
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
   const ms = Number(process.hrtime.bigint() - t0) / 20e6;
   console.log(`\n  hot path (state files present, path untracked): ${ms.toFixed(1)} ms/call over 20`);
+}
+
+// deep-plan/workflows/scout.js, run here against stub agents: the prompts by
+// kind, read-only agents, and how each answer lands in spec shape.
+if (want("scout workflow")) {
+  const src = fs.readFileSync(path.join(HERE, "workflows", "scout.js"), "utf8");
+  ok("scout: the script starts with a meta literal and avoids what breaks resume",
+    /^export const meta = \{/.test(src) && !/Date\.now\(|Math\.random\(|new Date\(\)/.test(src));
+  const body = src.replace(/^export const meta =/m, "const meta =");
+  const run = async (args, answer) => {
+    const calls = [], logs = [];
+    const agent = async (prompt, opts = {}) => { calls.push({ prompt, ...opts }); return answer(prompt, opts); };
+    const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)));
+    const fn = new Function("agent", "parallel", "phase", "log", "args", `return (async () => {\n${body}\n})()`);
+    const out = await fn(agent, parallel, () => {}, m => logs.push(m), args);
+    return { out, calls, logs };
+  };
+  const qs = [
+    { id: "f1", kind: "fact", claim: "the sweep reads status" },
+    { id: "f2", kind: "fact", claim: "the worker retries inline" },
+    { id: "f3", kind: "fact", claim: "nobody knows" },
+    { id: "c1", kind: "contract", claim: "outbox table" },
+    { id: "h1", kind: "hypothesis", claim: "the clock is the cause", falsify: "run the test with a frozen clock" },
+    { id: "h2", kind: "hypothesis", claim: "a stale cache", falsify: "clear the cache and rerun" },
+  ];
+  const ans = {
+    "fact f1": { verdict: "confirmed", summary: "it does", evidence: [{ path: "./app/sweep.rb", line: 4, says: "where status" }] },
+    "fact f2": { verdict: "refuted", summary: "it enqueues instead", evidence: [{ path: "app/worker.rb", line: 9, says: "enqueue" }] },
+    "fact f3": null,
+    "contract c1": { verdict: "confirmed", summary: "the worker and the sweep", evidence: [
+      { path: "app/worker.rb", line: 3, says: "reads outbox" }, { path: "app/sweep.rb", line: 2, says: "updates outbox" }] },
+    "hypothesis h1": { verdict: "refuted", summary: "passes ten times with a frozen clock", evidence: [{ path: "spec/a_spec.rb", line: 5, says: "freeze" }] },
+    "hypothesis h2": { verdict: "confirmed", summary: "it seemed so", evidence: [] },
+  };
+  const { out, calls, logs } = await run({ questions: [...qs, { id: "bad", kind: "guess", claim: "x" }], root: "/r" }, (p, o) => ans[o.label]);
+  ok("scout: one read-only Explore agent per question, a malformed one skipped and said",
+    calls.length === 6 && calls.every(c => c.agentType === "Explore") && logs.some(m => /skipped 1 malformed/.test(m)));
+  ok("scout: a fact or a reach is a cheap search; a hypothesis keeps the session's model",
+    calls.filter(c => /^(fact|contract)/.test(c.label)).every(c => c.model === "haiku") && calls.filter(c => /^hypothesis/.test(c.label)).every(c => !c.model));
+  ok("scout: each prompt names the repo, the claim, and for a hypothesis its falsify check",
+    calls.every(c => c.prompt.includes("/r") && c.prompt.includes("do not edit any file")) &&
+    calls.find(c => c.label === "hypothesis h1").prompt.includes("run the test with a frozen clock"));
+  ok("scout: a confirmed fact with a cited line becomes a verifiedFact, its path normalized",
+    out.verifiedFacts.some(f => f.id === "f1" && f.claim === "the sweep reads status" && f.evidence === "app/sweep.rb:4"));
+  ok("scout: a refuted fact and a fact with no answer are risks, never facts",
+    out.risks.some(r => r.id === "f2" && /refuted: it enqueues instead/.test(r.risk) && r.note === "app/worker.rb:9") &&
+    out.risks.some(r => r.id === "f3" && /unconfirmed/.test(r.risk)) && !out.verifiedFacts.some(f => f.id === "f2" || f.id === "f3"));
+  ok("scout: a risk carries no disposition: that is the person's",
+    out.risks.every(r => !("disposition" in r)));
+  ok("scout: a contract's reach comes back with each consumer as a cited fact",
+    out.contracts.length === 1 && out.contracts[0].reach === "the worker and the sweep" &&
+    out.verifiedFacts.filter(f => f.id === "c1").map(f => f.evidence).join() === "app/worker.rb:3,app/sweep.rb:2");
+  ok("scout: a hypothesis its check refuted is refuted, with what the check showed",
+    out.hypotheses.some(h => h.id === "h1" && h.verdict === "refuted" && /frozen clock \(spec\/a_spec\.rb:5\)/.test(h.evidence)));
+  ok("scout: a hypothesis 'confirmed' with nothing cited stays open",
+    out.hypotheses.some(h => h.id === "h2" && h.verdict === "open"));
+  let threw = "";
+  try { await run({ questions: [{ id: "h", kind: "hypothesis", claim: "c" }] }, () => null); } catch (e) { threw = e.message; }
+  ok("scout: a hypothesis without a falsify check is refused", /wants \[\{id, claim, kind/.test(threw), threw);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

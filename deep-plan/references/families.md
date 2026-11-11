@@ -73,6 +73,12 @@ the shared contract first, check the whole once everything is in).
   is ever typed into a session. News is as fresh as the last local fetch, so
   restack is how a child actually catches up. `deep-plan family news [slug]`
   shows the same without moving the cursor.
+- **The family review runs side by side.** `deep-plan deliver <parent>`
+  on a parent with `review.family` names every member review still waiting
+  on a reviewer at once: on a panel plan (`review.reviewer: "panel"`) as one
+  `/lookout:review` workflow run over all of them, otherwise as one
+  reviewer subagent each, spawned in one message. Children stay sessions:
+  a workflow agent has no session on the board and cannot ask anyone.
 - **Seeing the family:** `deep-plan family status [slug]`; the `family` field
   on `status --json` rows; a family section in `/plan-pane`; and on the crew
   board and sidebar, the family grouped under its parent in shades of one hue,

@@ -15,6 +15,8 @@ type Job = {
   cross: boolean;
   depth: string;
   model: string;
+  /** "agent" (or "", from before panels) or "panel". */
+  reviewer: string;
   status: string;
   detail: string;
   review_id: string;
@@ -93,6 +95,12 @@ const DEPTH_MEANS: Record<string, string> = {
   xhigh: "Extra high: reads whole files and their callers",
   max: "Max: exhaustive",
 };
+// One fresh reviewer, or lookout's review panel: a lead, three finders and a
+// skeptic on each blocker or major, several times the tokens.
+const REVIEWERS: [string, string][] = [
+  ["agent", "One reviewer"],
+  ["panel", "Panel"],
+];
 const MODELS: [string, string][] = [
   ["", "Default"],
   ["haiku", "Haiku"],
@@ -271,6 +279,7 @@ export class ReviewView {
   private pickBox = el("div", "r-picks");
   private depth = select(DEPTHS, "high");
   private model = select(MODELS, "");
+  private reviewer = select(REVIEWERS, "agent");
   private go = el("button", "r-btn primary", "Review");
   private err = el("p", "r-err");
   private list = el("div", "r-list");
@@ -338,6 +347,8 @@ export class ReviewView {
     this.depth.setAttribute("aria-label", "Depth");
     this.model.setAttribute("aria-label", "Model");
     this.model.title = "Model (Default is Claude Code's own)";
+    this.reviewer.setAttribute("aria-label", "Reviewer");
+    this.reviewer.title = "One fresh reviewer, or a panel: a lead and three finders, then a skeptic on each blocker or major (several times the tokens)";
     const means = () => (this.depth.title = DEPTH_MEANS[this.depth.value] ?? "");
     means();
     this.depth.addEventListener("change", means);
@@ -346,11 +357,11 @@ export class ReviewView {
     const field = el("div", "r-field");
     field.append(this.input, this.pickBox);
     const opts = el("div", "r-opts");
-    opts.append(this.depth, this.model, this.go);
+    opts.append(this.depth, this.model, this.reviewer, this.go);
     form.append(el("span", "r-title", "New review"), field, opts, this.err);
     form.addEventListener("submit", (e) => {
       e.preventDefault();
-      void this.start(this.input.value.trim(), this.depth.value, this.model.value);
+      void this.start(this.input.value.trim(), this.depth.value, this.model.value, this.reviewer.value);
     });
     this.side.append(form, this.list);
     this.main.append(this.head, this.ctl, this.frameBox);
@@ -453,7 +464,7 @@ export class ReviewView {
     const sel = this.selected ?? "";
     const job = this.jobs.find((j) => `job:${j.id}` === sel);
     if (job) {
-      if (!RUNNING.has(job.status) && !job.busy) void this.start(job.input, job.depth, job.model, job);
+      if (!RUNNING.has(job.status) && !job.busy) void this.start(job.input, job.depth, job.model, job.reviewer || "agent", job);
       return;
     }
     const o = this.others.find((x) => `other:${x.id}` === sel);
@@ -586,12 +597,12 @@ export class ReviewView {
   // ---- actions ----
 
   /** `again`: the card being reviewed again, when it is a Re-review. */
-  private async start(input: string, depth: string, model: string, again?: Job): Promise<void> {
+  private async start(input: string, depth: string, model: string, reviewer: string, again?: Job): Promise<void> {
     this.err.textContent = "";
     if (!input) return;
     this.go.disabled = true;
     try {
-      const id = await invoke<string>("review_start", { input, depth, model });
+      const id = await invoke<string>("review_start", { input, depth, model, reviewer });
       this.forget(id);
       if (input === this.input.value.trim()) this.input.value = "";
       this.pickBox.hidden = true;
@@ -1129,11 +1140,11 @@ export class ReviewView {
     const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;
     const chip = state === "blocked" || state === "pass" ? (framed ? null : el("span", `r-chip ${state}`, `${state} · ${openCount(j.open)}`)) : el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
     if (chip && !framed && (state === "blocked" || state === "pass")) chip.title = openSummary(j.open);
-    const meta = `${j.depth} · ${j.model || "default model"}${j.base ? ` · against ${j.base}` : ""}`;
+    const meta = `${j.depth} · ${j.model || "default model"}${j.reviewer === "panel" ? " · panel" : ""}${j.base ? ` · against ${j.base}` : ""}`;
     // The ⋯ menu: Re-review and Remove once it is idle, and the log any time.
     const items: HTMLButtonElement[] = [];
     if (!running && !j.busy) {
-      const again = btn("Re-review", () => void this.start(j.input, j.depth, j.model, j), "r-btn quiet");
+      const again = btn("Re-review", () => void this.start(j.input, j.depth, j.model, j.reviewer || "agent", j), "r-btn quiet");
       again.title = "Review it again from its latest commit. This replaces this run and its worktree.";
       const remove = btn("Remove", () => {
         this.confirm.set(j.id, "remove");

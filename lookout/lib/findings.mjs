@@ -246,6 +246,7 @@ export function roundAdvice(review) {
   if (done >= MAX_ROUNDS)
     return `${pending.length} addressed finding(s) wait, and this review has had ${done} re-review rounds: stop and ask the person how to go on.`;
   return `${pending.length} addressed finding(s) wait on a re-review (round ${done + 1} of ${MAX_ROUNDS}): once every fix is in, ` +
+    "re-open the review so it reads the tree now, then " +
     `spawn ONE fresh reviewer subagent with \`lookout prompt ${review.id} --round\`.`;
 }
 

@@ -14,7 +14,7 @@
 // conceptual ownership instead of inheriting the agent's account.
 import fs from "node:fs";
 import path from "node:path";
-import { SEVERITIES, DRIFT, SMELL } from "./findings.mjs";
+import { SEVERITIES, DRIFT, SMELL, FINDING } from "./findings.mjs";
 import { outputSchema, TOUCHES, MAX_WATCH, MAX_EDGES } from "./notes.mjs";
 
 const PLAN_CAP = 6000;
@@ -53,7 +53,65 @@ export function conventions(root) {
   return [];
 }
 
-export function brief(review, { patchPath, plansDir, outPath, reply = false, round = null }) {
+// A panel (lookout/workflows/review.js) splits the four dimensions over three
+// finders. Each finder's brief keeps only its own and owes no notes or edges:
+// the lead, briefed as one reviewer is, writes those.
+export const DIMENSIONS = ["correctness", "security", "performance"];
+
+// A finder's reply: findings only.
+export function findingsSchema() {
+  return { type: "object", required: ["findings"],
+    properties: { findings: { type: "array", maxItems: 15, items: FINDING, description: "defects; [] when none" } } };
+}
+// A skeptic's reply on the one finding it was given.
+export const SKEPTIC_SCHEMA = {
+  type: "object", required: ["refuted", "why"],
+  properties: {
+    refuted: { type: "boolean", description: "true when the code does not fail as the finding says, or when you could not trace that it does" },
+    why: { type: "string", description: "one or two sentences: what you traced, naming the file and line" },
+  },
+};
+
+// The rubric's dimensions, one bullet each, and which finder owns which:
+// maintainability rides with correctness, smells with performance.
+const BULLETS = [
+  ["correctness", `- correctness — logic errors, wrong conditions, off-by-one, unhandled error
+  paths, broken edge cases (empty, null, very large, concurrent), a contract
+  a caller relies on changed without the caller.`],
+  ["security", `- security — injection (shell, SQL, path, HTML), secrets in code or logs,
+  missing auth or validation at a trust boundary, unsafe deserialization.`],
+  ["performance", `- performance — work that grows badly with input (N+1, quadratic loops),
+  unbounded memory or output, blocking calls on a hot path.`],
+  ["maintainability", `- maintainability — only when it will cause a bug: duplicated logic that
+  will drift, a misleading name or comment that invites a wrong change.`],
+  [SMELL, `- ${SMELL} — code that works but costs the next reader or editor: logic
+  duplicated where the copies will drift, dead code, comments that restate
+  what the code says, an abstraction with one caller and no second in sight,
+  a refactor that would remove a branch or a special case. Always minor or
+  nit (a higher one is refused). It still needs a concrete failure_scenario,
+  naming the cost: the edit that will miss the second copy, the reader the
+  comment misleads, the branch nobody can reach.`],
+];
+const OWNS = { correctness: ["correctness", "maintainability"], security: ["security"], performance: ["performance", SMELL] };
+
+const SKEPTIC_JUDGE = `## How to judge it
+
+Read the hunks the finding points at and the code around them: its callers,
+what it calls, its tests. Then trace the failure_scenario the finding gives.
+
+- refuted: true when the code does not fail that way (a guard upstream, a
+  caller that never passes that input, a test that shows otherwise), or when
+  you could not trace that it does. A finding you cannot confirm is refuted.
+- refuted: false only when you traced the failure through the code to the
+  wrong result the finding names.
+
+Severity and wording are not yours to judge, only whether the failure is real.
+`;
+
+// dimension: one of DIMENSIONS, for a panel finder. skeptic: a panel
+// skeptic's brief, to which the workflow appends the finding to refute.
+export function brief(review, { patchPath, plansDir, outPath, reply = false, round = null, dimension = null, skeptic = false }) {
+  const lead = !dimension && !skeptic;
   // A re-review round looks only at the addressed findings' files.
   if (round) {
     const files = new Set(round.findings.map(f => f.file));
@@ -104,8 +162,16 @@ ${round.findings.map(f => {
     ? `\nThis review already has ${(review.findings || []).length} finding(s) (\`lookout findings list ${review.id}\`). ` +
       "Do not report them again; an exact repeat is skipped anyway.\n" : "";
 
-  return `You are reviewing a code change. Report its real defects, and explain what
-each group of changes means, as one JSON object.
+  const intro = skeptic
+    ? "Another reviewer reported a defect in a code change; it is quoted at the end of\n" +
+      "this brief. Try to refute it, and answer as one JSON object."
+    : dimension
+      ? `You are one of several reviewers of a code change, and you look only for
+${dimension} defects. Report them as one JSON object.`
+      : "You are reviewing a code change. Report its real defects, and explain what\n" +
+        "each group of changes means, as one JSON object.";
+
+  return `${intro}
 
 ## What you are reviewing
 
@@ -114,12 +180,12 @@ The whole diff is in ${patchPath}.${show}
 Files, riskiest first (lookout's ranking; spend your attention in this order):
 
 ${order || "  (no files)"}
-
+${lead ? `
 Groups (lookout's, by imports, test pairs and folders; riskiest first). The
 ones marked "note" are owed a note${quiz ? ', and "note + quiz" a question too' : ""}:
 
 ${groups || "  (no groups)"}
-${plan ? `
+` : ""}${plan ? `
 ## What the change is for (${src.inc === "all" ? "the plan it delivers, every increment" : "the plan increment it implements"})
 
 ${plan.trim()}
@@ -127,28 +193,15 @@ ${plan.trim()}
 ## The context it was opened with
 
 ${String(review.context).trim()}
-` : ""}${prior}
-## How to review
+` : ""}${skeptic ? "" : prior}
+${skeptic ? SKEPTIC_JUDGE : `## How to review
 
-Look for defects that would make this code wrong in use, across four dimensions:
+${dimension
+  ? "Look for defects that would make this code wrong in use, in this one dimension\n(other reviewers cover the rest):"
+  : "Look for defects that would make this code wrong in use, across four dimensions:"}
 
-- correctness — logic errors, wrong conditions, off-by-one, unhandled error
-  paths, broken edge cases (empty, null, very large, concurrent), a contract
-  a caller relies on changed without the caller.
-- security — injection (shell, SQL, path, HTML), secrets in code or logs,
-  missing auth or validation at a trust boundary, unsafe deserialization.
-- performance — work that grows badly with input (N+1, quadratic loops),
-  unbounded memory or output, blocking calls on a hot path.
-- maintainability — only when it will cause a bug: duplicated logic that
-  will drift, a misleading name or comment that invites a wrong change.
-- ${SMELL} — code that works but costs the next reader or editor: logic
-  duplicated where the copies will drift, dead code, comments that restate
-  what the code says, an abstraction with one caller and no second in sight,
-  a refactor that would remove a branch or a special case. Always minor or
-  nit (a higher one is refused). It still needs a concrete failure_scenario,
-  naming the cost: the edit that will miss the second copy, the reader the
-  comment misleads, the branch nobody can reach.
-${conv.length ? `
+${BULLETS.filter(([k]) => !dimension || OWNS[dimension].includes(k)).map(([, b]) => b).join("\n")}
+${conv.length && (!dimension || dimension === "performance") ? `
 This repo's own conventions (from its CLAUDE.md or AGENTS.md) say what counts
 as a smell here; hold the change to them:
 
@@ -160,14 +213,14 @@ Rules:
 - Verify before you report: read the surrounding code and the callers. Mark
   verdict CONFIRMED only when you traced it; otherwise PLAUSIBLE.
 - No formatting or preference comments (a smell names a cost, not a taste).
-  No praise. A finding is a defect, never a summary; what a change means goes
-  in its group's note.
+  No praise. A finding is a defect, never a summary${lead ? `; what a change means goes
+  in its group's note` : ""}.
 - Anchor each finding to a line in the diff: \`side: "new"\` with the new-side
   line number for added or context lines, \`side: "old"\` with the old-side
   number for a removed line. Point at context outside the hunks only when the
   change breaks that line.
 - Report at most 15 findings, most severe first. None is a fine answer: [].
-${plan ? `- Plan drift: when a group heads somewhere the ${src.inc === "all" ? "plan" : "increment"} above does not
+${plan && lead ? `- Plan drift: when a group heads somewhere the ${src.inc === "all" ? "plan" : "increment"} above does not
   say (a different design, scope it did not name, a contract it did not
   mention), file a finding with category "${DRIFT}" at the line that shows
   it. It is always major or worse; the human dismisses it if it was meant.
@@ -178,7 +231,7 @@ Severity:
 - minor — a real but contained problem (a rare edge case, a leak in a
   short-lived process); worth fixing.
 - nit — a small thing that is still a defect, not taste.
-
+`}${lead ? `
 ## Notes: what each group means
 
 Findings say what is wrong. A note says what a group of changes IS, so the
@@ -220,7 +273,7 @@ only join files, groups stay at six files or fewer, and a link the rules
 already made needs no edge. At most ${MAX_EDGES}; [] is the usual answer. Notes are
 matched to groups after your edges apply, so write each note for the files
 it covers and it lands on whichever group holds them.
-
+` : ""}
 ## Writing
 
 Finding and note text is read by a person who reads one word at a time. Say
@@ -231,7 +284,7 @@ decode; state the claim.
 
 ## Output
 
-${reply ? replyOutput(review, quiz) : fileOutput(review, quiz, outPath)}`;
+${skeptic ? skepticOutput() : dimension ? finderOutput() : reply ? replyOutput(review, quiz) : fileOutput(review, quiz, outPath)}`;
 }
 
 // The usual hand-over: the reviewer writes a file and ingests it itself.
@@ -265,5 +318,27 @@ If it rejects anything, or a group is still owed a note${quiz ? " or a question"
 its output; then reply with the whole corrected object again (accepted
 findings are not duplicated, and a note for the same files replaces the
 earlier one).
+`;
+}
+
+// A panel finder replies with its findings; the workflow merges them.
+function finderOutput() {
+  return `Your final reply is ONE JSON object matching this schema, and nothing
+else: no prose before or after it. Do not write a file or run the ingest; the
+panel merges your findings with the other reviewers'.
+
+${JSON.stringify(findingsSchema(), null, 2)}
+`;
+}
+
+// A panel skeptic replies with its verdict; the workflow appends the finding.
+function skepticOutput() {
+  return `Your final reply is ONE JSON object matching this schema, and nothing
+else: no prose before or after it.
+
+${JSON.stringify(SKEPTIC_SCHEMA, null, 2)}
+
+## The finding to refute
+
 `;
 }

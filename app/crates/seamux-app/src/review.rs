@@ -152,6 +152,50 @@ pub fn review_id(repo: &str, label: &str) -> String {
 
 pub const DEPTHS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 pub const MODELS: [&str; 5] = ["", "haiku", "sonnet", "opus", "fable"];
+/// Who reviews: one fresh agent, or lookout's review panel
+/// (lookout/workflows/review.js: a lead, three finders and a skeptic on
+/// each blocker or major).
+pub const REVIEWERS: [&str; 2] = ["agent", "panel"];
+
+/// A panel run's tools: the reviewer's own, plus the Workflow tool that
+/// starts the panel. Its agents inherit the session's permission rules, so
+/// they get no general shell either.
+pub fn panel_tools(reviewer_tools: &str) -> String {
+    format!("{reviewer_tools},Workflow")
+}
+
+/// The one turn that runs the panel. The script holds no brief: each of its
+/// agents prints its own with `lookout prompt`, so the brief still reaches
+/// each reviewer exactly as written. ingest "reply" leaves the saving to the
+/// app, which pipes the reply to `lookout findings add` as for one reviewer.
+pub fn panel_prompt(script: &str, review_id: &str) -> String {
+    let args = serde_json::json!({ "reviews": [review_id], "ingest": "reply" });
+    format!(
+        "Run the Workflow tool with scriptPath {script} and args {args}. Wait for it to finish: \
+         you are told when it does. Then your final reply is ONE JSON object and nothing else: \
+         the findings, edges and notes of the result's reviews[0], unchanged, plus its dropped \
+         list. Add nothing of your own to it."
+    )
+}
+
+/// The panel's progress for the tab's status line, from crew-core's reading
+/// of the session's workflow runs (runs::claude_workflow): the newest review
+/// run, the phase its latest started agent is in, and how many of that
+/// phase's agents are done. None before the run has started an agent.
+pub fn panel_phase(runs: &Value) -> Option<String> {
+    let run = runs.get("runs")?.as_array()?.iter().find(|r| r.get("name").and_then(Value::as_str) == Some("review"))?;
+    let agents = run.get("agents")?.as_array()?;
+    let phase = agents.iter().rev().find_map(|a| a.get("phase").and_then(Value::as_str))?;
+    let of: Vec<&Value> = agents.iter().filter(|a| a.get("phase").and_then(Value::as_str) == Some(phase)).collect();
+    let done = of.iter().filter(|a| a.get("state").and_then(Value::as_str) == Some("done")).count();
+    let what = match phase {
+        "Find" => "finding",
+        "Verify" => "verifying",
+        "Ingest" => "saving",
+        other => other,
+    };
+    Some(format!("{what}: {done} of {} agent(s) done", of.len()))
+}
 
 /// How much the reviewer should report. It goes in the system prompt, so the
 /// brief `lookout prompt` prints reaches the reviewer exactly as written.
@@ -258,6 +302,48 @@ pub fn remote_for(remote_v: &str, repo: &str) -> Option<String> {
         .find(|n| *n == "origin")
         .or(hits.first())
         .cloned()
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_panel_run_adds_only_the_workflow_tool() {
+        let base = "Read,Grep,Glob,Bash(lookout:*),Bash(git diff:*)";
+        let t = panel_tools(base);
+        assert_eq!(t, format!("{base},Workflow"));
+        assert!(!t.contains("Bash,") && !t.ends_with("Bash") && !t.contains("Bash(*)"), "no general shell: {t}");
+    }
+
+    #[test]
+    fn the_panel_prompt_names_the_script_the_review_and_reply_ingest() {
+        let p = panel_prompt("/x/lookout/workflows/review.js", "gh-o-r-pr1");
+        assert!(p.contains("scriptPath /x/lookout/workflows/review.js"));
+        assert!(p.contains(r#"{"ingest":"reply","reviews":["gh-o-r-pr1"]}"#) || p.contains(r#"{"reviews":["gh-o-r-pr1"],"ingest":"reply"}"#), "{p}");
+        assert!(p.contains("ONE JSON object"));
+    }
+
+    #[test]
+    fn the_panel_phase_reads_the_newest_review_run() {
+        assert_eq!(panel_phase(&json!({"runs": []})), None);
+        let runs = json!({"runs": [
+            {"name": "other", "agents": [{"phase": "X", "state": "running"}]},
+            {"name": "review", "agents": [
+                {"phase": "Find", "state": "done"}, {"phase": "Find", "state": "done"},
+                {"phase": "Find", "state": "done"}, {"phase": "Find", "state": "done"},
+                {"phase": "Verify", "state": "done"}, {"phase": "Verify", "state": "running"}]}]});
+        assert_eq!(panel_phase(&runs).as_deref(), Some("verifying: 1 of 2 agent(s) done"));
+        let started = json!({"runs": [{"name": "review", "agents": [{"phase": "Find", "state": "running"}]}]});
+        assert_eq!(panel_phase(&started).as_deref(), Some("finding: 0 of 1 agent(s) done"));
+        assert_eq!(panel_phase(&json!({"runs": [{"name": "review", "agents": []}]})), None);
+    }
+
+    #[test]
+    fn the_reviewers_are_one_agent_or_the_panel() {
+        assert_eq!(REVIEWERS, ["agent", "panel"]);
+    }
 }
 
 #[cfg(test)]
