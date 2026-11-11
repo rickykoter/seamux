@@ -335,7 +335,21 @@ pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
 
 /// The last non-empty thing the agent said; one cmux call, so opt-in.
 pub fn last_line(ws_id: &str) -> String {
-    let (ok, out) = cmux(&["read-screen", "--workspace", ws_id, "--lines", "4"]);
+    let (ok, out) = match crate::backend::tmux() {
+        // On the app's tmux: the workspace's first pane, through tmux.
+        Some(b) => {
+            use crate::ask::Runner;
+            let pane = b.panes(Some(ws_id)).ok().and_then(|p| p.into_iter().next());
+            match pane.and_then(|p| crate::ask::Tmux::for_pane(&p.id).map(|t| (p.id, t))) {
+                Some((id, t)) => {
+                    let (rc, text) = t.run(&["read-screen", "--surface", &id, "--lines", "4"]);
+                    (rc == 0, text)
+                }
+                None => (false, String::new()),
+            }
+        }
+        None => cmux(&["read-screen", "--workspace", ws_id, "--lines", "4"]),
+    };
     if !ok {
         return String::new();
     }
