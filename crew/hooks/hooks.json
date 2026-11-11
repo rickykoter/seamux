@@ -87,7 +87,7 @@
     ],
     "StopFailure": [
       {
-        "matcher": "rate_limit|billing_error",
+        "matcher": "rate_limit|billing_error|overloaded|server_error|unknown|authentication_failed|oauth_org_not_allowed|account_on_hold|verification_required|invalid_request|model_not_found|max_output_tokens|cloud_credential_error",
         "hooks": [
           {
             "type": "command",

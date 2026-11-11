@@ -9,6 +9,7 @@
 
 pub mod asked;
 pub mod backend;
+pub mod bgshells;
 pub mod cachefacts;
 pub mod costs;
 pub mod dp_engine;

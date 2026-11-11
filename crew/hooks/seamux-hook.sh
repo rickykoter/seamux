@@ -8,8 +8,9 @@
 # permreq and permdenied are PermissionRequest and PermissionDenied: a
 # background agent stopped on a permission prompt, and its answer.
 #
-# stopfail is StopFailure for a usage limit (rate_limit, billing_error): it
-# has no bash copy, and goes straight to the binary like the rest.
+# stopfail is StopFailure for a usage limit (rate_limit, billing_error) or
+# another API error: it has no bash copy, and goes straight to the binary
+# like the rest.
 #
 # The same events as the retired crew-hook.sh, with the work done by
 # `seamux crew-hook`.

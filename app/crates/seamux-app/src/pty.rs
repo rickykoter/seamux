@@ -274,6 +274,46 @@ pub fn send_line_key(t: &Target, key: &str) -> Result<(), String> {
 }
 
 
+/// Whether `cmd` (tmux's pane_current_command) is a shell at its prompt:
+/// the companion shell takes a typed command only then; anything else
+/// would take the keys itself.
+pub fn is_shell(cmd: &str) -> bool {
+    SHELLS.contains(&base(cmd.trim()))
+}
+
+/// Run `cmd` in the companion shell: shown (made the first time) and given
+/// the keys, then the command typed and entered. Refused while the shell
+/// is busy with another program, which would take the keys instead.
+pub fn run_in_shell(t: &Target, cmd: &str) -> Result<(), String> {
+    let cmd = cmd.trim();
+    if cmd.is_empty() || cmd.contains('\n') || cmd.contains('\r') {
+        return Err("only a one-line command runs in the shell".into());
+    }
+    let win = format!("{}:", t.session);
+    // The shell's pane, what it runs, and whether Claude is zoomed over it.
+    let shell = || -> Result<Option<(String, String, bool)>, String> {
+        let list = tmux_out(&t.socket, &["list-panes", "-t", &win, "-F", "#{pane_id}|#{@seamux_role}|#{window_zoomed_flag}|#{pane_current_command}"])?;
+        Ok(list
+            .lines()
+            .map(|l| l.splitn(4, SEP).collect::<Vec<_>>())
+            .filter(|r| r.len() == 4 && r[1] == "shell")
+            .map(|r| (r[0].to_string(), r[3].to_string(), r[2] == "1"))
+            .next())
+    };
+    if !matches!(shell()?, Some((_, _, false))) {
+        toggle_shell(t)?;
+    }
+    let (id, now, _) = shell()?.ok_or("the companion shell did not open")?;
+    tmux_ok(&t.socket, &["select-pane", "-t", &id])?;
+    // A shell just made may not have drawn its prompt yet; it reads the
+    // keys once it has. One running something else is left alone.
+    if !now.is_empty() && !is_shell(&now) {
+        return Err(format!("the \u{2318}J shell is busy running {now}"));
+    }
+    tmux_ok(&t.socket, &["send-keys", "-t", &id, "-l", "--", cmd])?;
+    tmux_ok(&t.socket, &["send-keys", "-t", &id, "Enter"])
+}
+
 /// The alert-bell slot seamux's hook takes.
 pub const BELL_HOOK: &str = "alert-bell[87]";
 
@@ -765,6 +805,39 @@ mod tests {
         assert!(scroll_state(&t).unwrap().0);
         leave_scroll(&t).unwrap();
         assert!(!scroll_state(&t).unwrap().0);
+        tmux(&sock, &["kill-server"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_shell_at_its_prompt_takes_a_command() {
+        assert!(is_shell("zsh") && is_shell("-zsh") && is_shell("/bin/bash") && is_shell("fish"));
+        assert!(!is_shell("vim") && !is_shell("node") && !is_shell("claude"));
+    }
+
+    /// Live: a command typed into the companion shell, made, hidden and shown.
+    #[test]
+    fn a_command_runs_in_the_companion_shell() {
+        if Command::new(tmux_bin()).arg("-V").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("seamux-run-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("s.sock").to_string_lossy().into_owned();
+        tmux(&sock, &["-f", "/dev/null", "new-session", "-d", "-s", "r", "-x", "80", "-y", "30", "sh"]);
+        let t = Target { socket: sock.clone(), session: "r".into() };
+        let wait_for = |p: &std::path::Path| (0..50).any(|_| p.exists() || { std::thread::sleep(Duration::from_millis(100)); false }) || p.exists();
+        assert!(run_in_shell(&t, "echo two\nlines").is_err(), "one line only");
+        let first = dir.join("first");
+        run_in_shell(&t, &format!("touch {}", first.display())).unwrap();
+        assert!(wait_for(&first), "the command ran in the new shell");
+        // Hidden (Claude zoomed over it): shown again, and it runs there.
+        toggle_shell(&t).unwrap();
+        let second = dir.join("second");
+        run_in_shell(&t, &format!("touch {}", second.display())).unwrap();
+        let roles = tmux(&sock, &["list-panes", "-t", "r:", "-F", "#{@seamux_role}:#{pane_active}:#{window_zoomed_flag}"]);
+        assert_eq!(roles, ":0:0\nshell:1:0", "the shell shows and has the keys");
+        assert!(wait_for(&second), "the command ran in the shown shell");
         tmux(&sock, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

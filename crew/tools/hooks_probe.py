@@ -984,8 +984,12 @@ def limits(**wins):
               open(os.path.join(STATE, "limits.json"), "w"))
 
 hj = json.load(open(os.path.join(SRC, "hooks", "hooks.json")))["hooks"].get("StopFailure", [])
-check("hooks.json sends StopFailure for rate_limit and billing_error to seamux-hook.sh stopfail",
-      len(hj) == 1 and set(hj[0]["matcher"].split("|")) == {"rate_limit", "billing_error"}
+# Every StopFailure error Claude Code 2.1.322 names (its binary's enum): the
+# limits, and the API errors the app retries or shows on the pane.
+API_ERRORS = {"overloaded", "server_error", "unknown", "authentication_failed", "oauth_org_not_allowed", "account_on_hold",
+              "verification_required", "invalid_request", "model_not_found", "max_output_tokens", "cloud_credential_error"}
+check("hooks.json sends every StopFailure error (the limits and the API errors) to seamux-hook.sh stopfail",
+      len(hj) == 1 and set(hj[0]["matcher"].split("|")) == {"rate_limit", "billing_error"} | API_ERRORS
       and hj[0]["hooks"][0]["command"].endswith("seamux-hook.sh\" stopfail"), hj)
 
 reset([row(desc="phase:working")])
@@ -1014,7 +1018,24 @@ check("the next prompt clears limited and its hold", "limited" not in pane_file(
 
 open(CLOG, "w").close()
 hook("stopfail", stdin=stopfail("overloaded"))
-check("any other StopFailure error is left alone", pane_state("ws-1") == "working" and not log(), log())
+lim = pane_file("ws-1").get("limited") or {}
+check("an overload stops the pane the same way, with what Claude Code said and no window",
+      pane_state("ws-1") == "idle" and lim.get("error") == "overloaded" and lim.get("detail") == "You've hit your limit"
+      and lim.get("window") is None and lim.get("resets_at") is None, pane_file("ws-1"))
+note = [l for l in log() if l.startswith("notify ")]
+check("…and its banner says the app will try again",
+      len(note) == 1 and "--body Stopped: API overloaded (You've hit your limit) · seamux will try again" in note[0], note)
+hook("prompt")
+open(CLOG, "w").close()
+hook("stopfail", stdin=stopfail("authentication_failed"))
+note = [l for l in log() if l.startswith("notify ")]
+check("a lost login is recorded, and promises no retry",
+      (pane_file("ws-1").get("limited") or {}).get("error") == "authentication_failed"
+      and len(note) == 1 and note[0].endswith("--body Stopped: logged out (You've hit your limit)"), note)
+hook("prompt")
+open(CLOG, "w").close()
+hook("stopfail", stdin=stopfail("teapot"))
+check("an error Claude Code does not name is left alone", pane_state("ws-1") == "working" and not log(), log())
 
 os.remove(os.path.join(STATE, "limits.json"))
 open(CLOG, "w").close()

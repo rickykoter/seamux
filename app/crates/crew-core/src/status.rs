@@ -184,7 +184,8 @@ impl Background {
 /// milliseconds since the epoch, as a pane's `at` is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Limited {
-    /// Claude Code's StopFailure error: rate_limit or billing_error.
+    /// Claude Code's StopFailure error: a limit (rate_limit, billing_error)
+    /// or another API error (API_ERRORS: overloaded, server_error, ...).
     pub error: String,
     /// The session the limit stopped: a resume types only into it.
     pub session: String,
@@ -200,12 +201,43 @@ pub struct Limited {
     /// Why the app stopped trying to resume it (a refused screen, an
     /// unconfirmed resume, three tries): it waits for you.
     pub gave_up: Option<String>,
+    /// What Claude Code said of the error (StopFailure's error_details).
+    pub detail: Option<String>,
+}
+
+/// StopFailure's errors other than a limit, as Claude Code 2.1 names them.
+pub const API_ERRORS: [&str; 11] = ["overloaded", "server_error", "unknown", "authentication_failed", "oauth_org_not_allowed",
+    "account_on_hold", "verification_required", "invalid_request", "model_not_found", "max_output_tokens", "cloud_credential_error"];
+
+/// The API errors that pass on their own (an overload, a server fault, a
+/// dropped connection): the app tries the turn again by itself.
+pub const RETRY_ERRORS: [&str; 3] = ["overloaded", "server_error", "unknown"];
+
+/// An error's short name, for a row or a banner.
+pub fn error_label(error: &str) -> &'static str {
+    match error {
+        "rate_limit" => "rate limited",
+        "billing_error" => "spend limit",
+        "overloaded" => "API overloaded",
+        "server_error" => "API server error",
+        "unknown" => "connection error",
+        "authentication_failed" => "logged out",
+        "oauth_org_not_allowed" => "organization not allowed",
+        "account_on_hold" => "account on hold",
+        "verification_required" => "verification needed",
+        "invalid_request" => "request rejected",
+        "model_not_found" => "model not found",
+        "max_output_tokens" => "output limit",
+        "cloud_credential_error" => "cloud credentials",
+        _ => "API error",
+    }
 }
 
 impl Limited {
     pub fn to_json(&self) -> Value {
         json!({"error": self.error, "session": self.session, "at": self.at, "window": self.window,
-               "resets_at": self.resets_at, "tries": self.tries, "next_try": self.next_try, "gave_up": self.gave_up})
+               "resets_at": self.resets_at, "tries": self.tries, "next_try": self.next_try, "gave_up": self.gave_up,
+               "detail": self.detail})
     }
 
     pub fn from_json(v: &Value) -> Option<Limited> {
@@ -219,6 +251,7 @@ impl Limited {
             tries: v.get("tries").and_then(Value::as_u64).unwrap_or(0) as u32,
             next_try: v.get("next_try").and_then(Value::as_u64),
             gave_up: s("gave_up"),
+            detail: s("detail"),
         })
     }
 }
@@ -938,7 +971,7 @@ mod tests {
     fn a_limit_stop_is_kept_through_writes_and_held_until_work_resumes() {
         let d = tmp("limited");
         let lim = Limited { error: "rate_limit".into(), session: "s".into(), at: 2, window: Some("five_hour".into()),
-                            resets_at: Some(9_000), tries: 0, next_try: None, gave_up: None };
+                            resets_at: Some(9_000), tries: 0, next_try: None, gave_up: None, detail: None };
         update(&d, "W", "S", "s", 1, |p| p.state = "working".into());
         let raw: Value = serde_json::from_str(&fs::read_to_string(path(&d, "S")).unwrap()).unwrap();
         assert!(raw.get("limited").is_none(), "no limit, no field");

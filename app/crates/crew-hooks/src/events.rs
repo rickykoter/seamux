@@ -838,8 +838,11 @@ fn permission(h: &mut Hook, on: bool) {
 }
 
 /// The errors a resume can wait out: a usage limit (rate_limit) or a spend
-/// limit (billing_error). hooks.json's matcher passes only these; any other
-/// StopFailure (an auth failure, an overload) is left to Stop's absence.
+/// limit (billing_error). The other API errors (status::API_ERRORS: an
+/// overload, a server fault, a lost login) stop the pane the same way, with
+/// what Claude Code said of them; the app retries the passing ones
+/// (status::RETRY_ERRORS) and shows the rest on the pane. hooks.json's
+/// matcher passes all of them.
 pub const LIMIT_ERRORS: [&str; 2] = ["rate_limit", "billing_error"];
 
 /// StopFailure for a limit: Claude Code fires it instead of Stop, so the pane
@@ -850,14 +853,18 @@ pub const LIMIT_ERRORS: [&str; 2] = ["rate_limit", "billing_error"];
 /// turn did not finish its work. Its banner names the window and the reset.
 fn stopfail(h: &mut Hook) {
     let error = h.json("error");
-    if !LIMIT_ERRORS.contains(&error.as_str()) {
+    let api = status::API_ERRORS.contains(&error.as_str());
+    if !LIMIT_ERRORS.contains(&error.as_str()) && !api {
         return;
     }
+    // What Claude Code said ("Overloaded", "Connection error."), one line, short.
+    let detail = Some(h.json("error_details")).filter(|d| !d.is_empty() && d != "None")
+        .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect::<String>());
     let sid = h.json("session_id");
     let now = crew_core::history::now_ms();
     let now_s = now / 1000;
     let cache = crew_core::limits::read(&h.state);
-    let (window, resets) = crew_core::limits::stopped_by(cache.as_ref(), &error, now_s);
+    let (window, resets) = if api { (None, None) } else { crew_core::limits::stopped_by(cache.as_ref(), &error, now_s) };
     let limited = status::Limited {
         error: error.clone(),
         session: sid.clone(),
@@ -867,6 +874,7 @@ fn stopfail(h: &mut Hook) {
         tries: 0,
         next_try: None,
         gave_up: None,
+        detail: detail.clone(),
     };
     let (before, after, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, now, |p| {
         p.state = "idle".into();
@@ -880,7 +888,14 @@ fn stopfail(h: &mut Hook) {
     }
     h.history("idle", "stopfail");
     h.tokens(after.phase(), &[]);
-    h.notify("crew:limit", &format!("Stopped: {}", crew_core::limits::stop_text(&error, window, resets, now_s)));
+    let text = if api {
+        let what = status::error_label(&error);
+        let what = match &detail { Some(d) => format!("{what} ({d})"), None => what.to_string() };
+        if status::RETRY_ERRORS.contains(&error.as_str()) { format!("{what} · seamux will try again") } else { what }
+    } else {
+        crew_core::limits::stop_text(&error, window, resets, now_s)
+    };
+    h.notify("crew:limit", &format!("Stopped: {text}"));
 }
 
 /// pretool, past seamux-hook.sh's hold test: this pane is at work again, so

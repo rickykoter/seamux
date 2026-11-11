@@ -39,15 +39,17 @@ serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+# A Markdown file a pane links to is shown in the Dock (links_app.rs).
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 
 # The overlay joins other apps' full-screen Spaces (FullScreenAuxiliary),
 # which Tauri's visible-on-all-workspaces does not set. Same versions Tauri
 # already pulls in.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPanel", "NSResponder", "NSWorkspace", "NSRunningApplication", "NSEvent", "NSGraphics", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPanel", "NSResponder", "NSWorkspace", "NSRunningApplication", "NSEvent", "NSGraphics", "NSPasteboard", "NSPasteboardItem", "block2"] }
 block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSData", "NSArray"] }
 # tauri-plugin-notification's notifier, switched to UNUserNotificationCenter.
 # The default NSUserNotificationCenter path reports every banner as dismissed
 # within a second on current macOS (its deliveredNotifications check comes
