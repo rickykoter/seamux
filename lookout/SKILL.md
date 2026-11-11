@@ -140,6 +140,22 @@ its last increment, `--inc all` (id `<slug>-delivery`, base the first
 increment's start sha, every increment's description in the brief), through
 `deep-plan deliver <slug>`.
 
+## The pull request
+
+A review whose branch has an open PR follows it. `lookout gh sync <id>`
+reads the PR's head, its review threads and its checks into the review, and
+marks a finding stale when its code changed on the PR's head. The page's
+server runs it while the page is in view, and the seamux app runs it in the
+background, raising a banner for someone else's comment or a red check. Run
+it yourself to see the state now (`lookout gh status <id>`). `lookout open
+--pr <n|owner/repo#n|url>` names the PR when the branch does not.
+
+`lookout gh post <id> <f#|t#>…` posts findings or comments to the PR as one
+review and keeps each GitHub comment's id, so replies on GitHub show under
+the finding. Posting sends text off the machine to everyone watching the
+PR: post only when the person asks, and only what they named. Replies to
+GitHub's own threads are made on GitHub.
+
 ## The page
 
 VS Code's Source Control layout beside the terminal: changed files on the left
@@ -178,6 +194,8 @@ lookout findings list <id> [--open] [--json]
 lookout reply <id> <f#|t#> <text>    lookout address <id> <f#> [note]
 lookout resolve|dismiss|reopen <id> <f#|t#> [note]
 lookout gate <id> | --plan SLUG --inc N
+lookout gh link|sync|status <id>     the review's pull request (see above)
+lookout gh post <id> <f#|t#>…        post to it, only when the person asks
 lookout show <id> [--json]   files of a review (or the whole store as JSON)
 lookout list [--json]        every review, newest first
 lookout render <id>          redraw the page from the store
