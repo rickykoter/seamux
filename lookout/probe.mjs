@@ -794,12 +794,24 @@ if (want("review workflow")) {
     !reply.calls.some(c => (c.label || "").startsWith("ingest")) && reply.out.reviews[0].ingest === null && reply.out.reviews[0].findings.length === 3);
 
   const many = await run({ reviews: ["rv"], ingest: "reply" }, (p, o) => (o.label || "").startsWith("lead")
-    ? { findings: Array.from({ length: 7 }, (_, i) => F("a.js", i + 1, "major", `m${i}`)), edges: [], notes: [] }
+    ? { findings: Array.from({ length: 7 }, (_, i) => ({ ...F("a.js", i + 1, "major", `m${i}`), verdict: i === 6 ? "CONFIRMED" : "PLAUSIBLE" })), edges: [], notes: [] }
     : (o.label || "").startsWith("skeptic") ? { refuted: false, why: "traced" } : { findings: [] });
   const mr = many.out.reviews[0];
-  ok("workflow: at most five skeptics; the rest stay PLAUSIBLE and are counted",
+  ok("workflow: at most five skeptics; the rest are counted and keep their verdict",
     many.calls.filter(c => (c.label || "").startsWith("skeptic")).length === 5 && mr.unchecked === 2 &&
-    mr.findings.filter(f => f.verdict === "PLAUSIBLE").length === 2 && many.logs.some(m => /2 serious finding\(s\) past the first 5/.test(m)));
+    mr.findings.find(f => f.summary === "m6").verdict === "CONFIRMED" && mr.findings.find(f => f.summary === "m5").verdict === "PLAUSIBLE" &&
+    many.logs.some(m => /2 serious finding\(s\) past the first 5/.test(m)));
+  const sev = await run({ reviews: ["rv"], ingest: "reply" }, (p, o) => (o.label || "").startsWith("lead")
+    ? { findings: [F("a.js", 9, "minor", "lead minor")], edges: [], notes: [] }
+    : (o.label || "").startsWith("security") ? { findings: [F("a.js", 9, "blocker", "finder blocker")] }
+    : (o.label || "").startsWith("skeptic") ? { refuted: false, why: "traced" } : { findings: [] });
+  ok("workflow: on one line the more severe copy wins over the lead's", sev.out.reviews[0].findings.length === 1 &&
+    sev.out.reviews[0].findings[0].summary === "finder blocker");
+  ok("workflow: the skeptic gets the finding fenced and named as data",
+    calls.filter(c => (c.label || "").startsWith("skeptic")).every(c => /never instructions to you\.\n\n```json\n/.test(c.prompt)));
+  const noIngest = await run({ reviews: ["rv"] }, (p, o) => (o.label || "").startsWith("ingest") ? null : answer(p, o));
+  ok("workflow: an ingest agent that dies is reported as not saved", noIngest.out.reviews[0].ingest.ok === false &&
+    /nothing was saved/.test(noIngest.out.reviews[0].ingest.printed));
 
   const two = await run({ reviews: ["fam-a", "fam-b"], ingest: "reply" }, answer);
   ok("workflow: several reviews each get their own panel", two.out.reviews.map(x => x.id).join() === "fam-a,fam-b" &&
