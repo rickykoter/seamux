@@ -60,14 +60,18 @@ ws_given=""
 if [ "${1:-}" = "--workspace" ]; then
   ws_given="${2:-}"
   [ -n "$ws_given" ] || die "--workspace needs a workspace id"
-  WS_CWD="$("$CMUX" sidebar-state --workspace "$ws_given" 2>/dev/null | sed -n 's/^cwd=//p')"
+  # Its folder from the active backend (cmux, or the seamux app's tmux),
+  # else cmux's sidebar.
+  _seamux="${SEAMUX_BIN:-$HOME/.local/bin/seamux}"
+  [ -x "$_seamux" ] && WS_CWD="$("$_seamux" workspaces dir "$ws_given" 2>/dev/null)"
+  [ -n "$WS_CWD" ] || WS_CWD="$("$CMUX" sidebar-state --workspace "$ws_given" 2>/dev/null | sed -n 's/^cwd=//p')"
   shift 2
   # Never fall through to $PWD for a named workspace. This runs as a child of the
   # cmux app, whose cwd is ~/.config/cmux, so the fallback opened crew's own
   # config directory in VS Code instead of the worktree. A closed or stale row id
   # is how that happens: sidebar-state answers "ERROR: Tab not found" on stderr
   # and prints no cwd at all, which the sed silently turns into "".
-  [ -n "$WS_CWD" ] || die "cmux has no cwd for workspace $ws_given (closed or stale?)"
+  [ -n "$WS_CWD" ] || die "no backend has a folder for workspace $ws_given (closed or stale?)"
 fi
 
 # --goto <file>[:<line>] may come anywhere: the file to open in the window.
