@@ -594,11 +594,11 @@ button.chip:hover { color: var(--fg); border-color: var(--fg); }
 .ck { display: inline-flex; }
 .ck.pass { color: var(--pass); } .ck.fail { color: var(--sev-blocker); } .ck.pend { color: var(--addressed); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.pr-checks { padding: 2px 16px 8px 40px; display: grid; gap: 2px; max-height: 40vh; overflow: auto; }
+.pr-checks { padding: 2px 16px 8px; margin-left: 16px; display: grid; gap: 2px; max-height: 40vh; overflow: auto; }
 .pr-check { display: flex; gap: 8px; align-items: baseline; }
 .pr-check .ck { align-self: center; }
 .pr-check a { color: var(--fg); }
-@media (max-width: 760px) { .pr-checks { max-height: 20vh; padding-left: 16px; } .pr-err { max-width: 100%; } }
+@media (max-width: 760px) { .pr-checks { max-height: 20vh; } .pr-err { max-width: 100%; } }
 /* An open card's line on why it is stale. */
 .stale-why { font-size: var(--fs-1); color: var(--sev-major); padding: 0 10px 4px; }
 .stale-why.muted { color: var(--muted); }
