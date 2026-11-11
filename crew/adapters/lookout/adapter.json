@@ -3,5 +3,6 @@
   "name": "lookout",
   "recognizes": ["subagent"],
   "command": ["python3", "adapter.py"],
-  "timeoutMs": 3000
+  "timeoutMs": 3000,
+  "watch": ["$SEAMUX_LOOKOUT_REVIEWS", "~/.claude/plans/reviews"]
 }

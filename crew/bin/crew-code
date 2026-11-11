@@ -3,6 +3,7 @@
 #
 #   crew-code            open or focus the window for this worktree
 #   crew-code <path>     the same, for a specific worktree
+#   crew-code <path> --goto <file>[:<line>]   and open that file at that line
 #   crew-code status     whether this worktree has a window, and what else is open
 #   crew-code windows    one open window folder per line (machine readable)
 #
@@ -69,12 +70,24 @@ if [ "${1:-}" = "--workspace" ]; then
   [ -n "$WS_CWD" ] || die "cmux has no cwd for workspace $ws_given (closed or stale?)"
 fi
 
+# --goto <file>[:<line>] may come anywhere: the file to open in the window.
+GOTO=""
+_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --goto)   GOTO="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --goto=*) GOTO="${1#--goto=}"; shift ;;
+    *)        _args+=("$1"); shift ;;
+  esac
+done
+set -- ${_args[@]+"${_args[@]}"}
+
 cmd="up"
 case "${1:-}" in
   ""|up|open)  [ $# -gt 0 ] && shift ;;
   status)      cmd="status"; shift ;;
   windows)     cmd="windows"; shift ;;
-  -h|--help)   sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help)   sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *)           [ -d "$1" ] || die "unknown '$1' (try --help)" ;;
 esac
 # A path may follow the verb, or stand alone as the only argument.
@@ -164,7 +177,11 @@ cmd_up() {
     "$SEAMUX" crew-color apply "$ROOT" >/dev/null 2>&1 || true
   fi
   say "opening $ROOT${BRANCH:+ ($BRANCH)} in VS Code"
-  "$CODE_BIN" "$ROOT" || die "code exited nonzero"
+  if [ -n "$GOTO" ]; then
+    "$CODE_BIN" "$ROOT" --goto "$GOTO" || die "code exited nonzero"
+  else
+    "$CODE_BIN" "$ROOT" || die "code exited nonzero"
+  fi
   printf '\033[32m✓\033[0m %s\n' "${ROOT/#$HOME/~}"
 }
 

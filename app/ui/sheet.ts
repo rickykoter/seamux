@@ -1271,7 +1271,7 @@ export class Sheet {
 
 function kindOf(path: string): string {
   return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan"
-    : path.startsWith("/agent/") ? "agent" : path.startsWith("/run/") ? "run" : "page";
+    : path.startsWith("/agent/") ? "agent" : path.startsWith("/run/") ? "run" : path.startsWith("/runs/") ? "agents" : "page";
 }
 
 /** Open the worktree `dir` is in, in VS Code; `say` gets an error to show. */

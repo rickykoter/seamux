@@ -62,6 +62,10 @@ pub fn get(req: &mut Request) {
     if path.starts_with("/run/") && crate::run_page::get(req) {
         return;
     }
+    // A session's page: every run it started, and their feed (runs_page.rs).
+    if path.starts_with("/runs/") && crate::runs_page::get(req) {
+        return;
+    }
     match path.as_str() {
         "/health" => return req.reply(200, crate::server::health_body().as_bytes()),
         "/usage" => {
@@ -181,6 +185,12 @@ pub fn post(req: &mut Request) {
     let path = req.path.clone();
     if path.starts_with("/review/") {
         return crate::proxy::post(req, crate::proxy::Plugin::Lookout, review::MAX_BODY);
+    }
+    // A session page's link: a file in its worktree, or a web page.
+    if let Some(session) = crate::runs_page::open_path(&path) {
+        let Some(body) = post_body(req) else { return };
+        let (code, out) = crate::runs_page::open(&session, &body);
+        return req.json(code, &out);
     }
     if path != "/artifacts/keep" && path != "/artifacts/publish" {
         return req.json(404, &json!({"error": "no such path"}));

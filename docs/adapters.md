@@ -24,9 +24,10 @@ below.
 
 ## Start from the template
 
-`crew/adapters/template` is a working adapter in Python, and
-`crew/adapters/lookout` is a fuller one: it gives lookout reviewers their
-findings as a result. Copy it into your
+`crew/adapters/template` is a working adapter in Python.
+`crew/adapters/lookout` and `crew/adapters/explore` are fuller ones: the
+first gives lookout reviewers their findings as a result, the second gives
+Explore agents what they read and cited. Copy it into your
 adapters folder under the name you want:
 
 ```bash
@@ -75,6 +76,49 @@ it, so the card ties the run to its pane. Give each agent's `transcript` as
 an absolute path under `~/.claude/projects` when there is one: the
 transcript page serves nothing else.
 
+## Taking over a Claude Code sub-agent's run
+
+An adapter can add to a run another adapter reports. When two adapters
+report a run with the same id, the later one's run takes its place: the
+built-ins load first, then crew's bundled adapters in folder-name order,
+then yours. So an adapter that recognizes `subagent` and reports a run with
+a sub-agent's id (its agent id, which is also its background task's id)
+replaces that sub-agent's plain row with a richer one. A run you do not
+report stays the built-in's.
+
+`crew/adapters/explore` does this for Claude Code's Explore agents, and is
+the example to read. For each background sub-agent whose meta file says
+`"agentType": "Explore"`, it reads the agent's transcript and reports:
+
+- `result.badge`: how many distinct files the agent's answer cites
+  ("14 files");
+- `metrics`: files read, searches run (Grep, Glob, or a `grep`, `rg` or
+  `find` in Bash) and citations;
+- `links`: the cited files, most cited first, each at its first cited line,
+  which the session page opens in VS Code when they are in the session's
+  worktree;
+- `result.detail`: the answer's opening lines.
+
+It finds the answer in the agent's `SubagentHandback` call, and a short
+citation such as `rank.rs:470` is matched to a file the agent read. The
+transcript reading it shares with other adapters lives in
+`crew/adapters/lib/claude_agent.py`; a folder with no `adapter.json` is not
+an adapter, so seamux skips it.
+
+`crew/adapters/lookout` uses the same fields for lookout reviewers: its
+findings by severity as `metrics`, the review page as a `url` link, and a
+document `summary` with what is still open across the session's reviews.
+
+`crew/adapters/scout` builds on it for deep-plan's scouts: it sets its own
+`group` (the plan the scouts worked for, so they sit together on the
+session page) and a document `summary`, and it loads after explore, so its
+run replaces the Explore adapter's for a scout of type Explore. Order by
+folder name is how one bundled adapter wins over another.
+
+The session page shows a run's `group`, `metrics`, `links` and the
+document's `summary` ([RUNS.md](RUNS.md#fields-for-the-session-page)). You
+need not set `group`: seamux puts a run under the prompt that launched it.
+
 ## Check it
 
 ```bash
@@ -92,7 +136,10 @@ not validate. The card shows the same notice.
 - **Be quick.** The default timeout is 3 seconds, and the most a manifest
   can ask for is 10. seamux runs an adapter again only when a file under the
   session's folder or the adapter's own folder changes, and at most every 2
-  seconds.
+  seconds. If your adapter reads files outside the session's folder (a
+  tool's own state), list their folders in the manifest's `watch`, or a
+  change there will not reach the page until something in the session
+  changes.
 - **Report what you know.** A missing field is filled with a default; a
   wrong one fails the whole document. When you can only read part of a run,
   say so in the run's `notice`.

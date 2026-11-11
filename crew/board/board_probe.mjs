@@ -2489,6 +2489,60 @@ if (live && Array.isArray(live.rows)) {
     /class="ag need( new)?" data-a="agent" data-x="a1"[^>]*>[^]*?<span class="aw nd">needs you</.test(els.rows.innerHTML), els.rows.innerHTML.slice(els.rows.innerHTML.indexOf('class="ag'), els.rows.innerHTML.indexOf('class="ag') + 300)]);
   render({ rows: [R("am", { tuck: "mute" })], quiet: "" });
   checks.push(["agents: a muted card draws no rows", !/class="ag /.test(els.rows.innerHTML)]);
+  render({ rows: [R("as", { agentsMore: 3, agentsMoreSession: "sess-1",
+    agentSessions: [{ surface: "S-A", session: "sess-1" }, { surface: "S-B", session: "../x" }] })], quiet: "" });
+  const hs = els.rows.innerHTML;
+  const allRows = [...hs.matchAll(/class="ag all" data-a="runs" data-x="([^"]*)" data-path="([^"]*)"/g)];
+  checks.push(["agents: a pane with rows ends on All agents, which opens its session page; a session that is not a plain id gets none",
+    allRows.length === 1 && allRows[0][1] === "sess-1" && allRows[0][2] === "/runs/sess-1" &&
+    hs.indexOf('data-x="a3"') < hs.indexOf('class="ag all"') && hs.indexOf('class="ag all"') < hs.indexOf('data-x="S-B"'), hs.slice(0, 2000)]);
+  checks.push(["agents: +N more opens the session of the first row it hides",
+    /class="ag more ln" data-a="runs" data-x="sess-1" data-path="\/runs\/sess-1"[^>]*><span class="aw">\+3 more</.test(hs), hs.slice(hs.indexOf('ag more'), hs.indexOf('ag more') + 200)]);
+}
+// ---- the session page's model (runs.js, with no page) -----------------------
+{
+  const box = createContext({});
+  runInContext(readFileSync(join(HERE, "runs.js"), "utf8"), box);
+  const M = box.__runsPage;
+  const g = (id, label, at, kind) => ({ id, label, at, kind: kind || "prompt" });
+  const r = (id, start, extra) => ({ id, name: id, kind: "agent", status: "done", start, end: start + 10,
+    agents: [{ id, state: "done", transcript: true }], ...extra });
+  const runs = [
+    r("a1", 100, { group: g("p1", "review the branch", 90) }),
+    r("a2", 300, { group: g("p2", "plan the page", 290) }),
+    r("c1", 320, { group: g("p2", "plan the page", 290), parent: "a3" }),
+    r("a3", 310, { group: g("p2", "plan the page", 290) }),
+    r("s1", 200, { group: g("plan-x", "Scouts for x", 0, "plan") }),
+    r("o1", 50),
+  ];
+  const gs = M.groups(runs);
+  checks.push(["session page: groups go newest first by their time or newest run, runs with no group last",
+    gs.map((x) => x.label).join("|") === "plan the page|Scouts for x|review the branch|" + M.OTHER, gs.map((x) => x.label).join("|")]);
+  checks.push(["session page: a group's runs go in launch order, a child right under its parent",
+    gs[0].rows.map((x) => x.run.id + ":" + x.depth).join() === "a2:0,a3:0,c1:1", JSON.stringify(gs[0].rows.map((x) => [x.run.id, x.depth]))]);
+  const cross = M.groups([r("p", 10, { group: g("plan-x", "Scouts for x", 5, "plan") }), r("k", 20, { parent: "p", group: g("p9", "a prompt", 15) })]);
+  checks.push(["session page: a child the host filed under its own prompt sits under its parent, in the parent's group",
+    cross.length === 1 && cross[0].label === "Scouts for x" && cross[0].rows.map((x) => x.run.id + ":" + x.depth).join() === "p:0,k:1",
+    JSON.stringify(cross.map((x) => [x.label, x.rows.map((y) => y.run.id)]))]);
+  const loop = M.nest([r("x", 1, { parent: "y" }), r("y", 2, { parent: "x" })]);
+  const loopG = M.groups([r("x", 1, { parent: "y" }), r("y", 2, { parent: "x" })]);
+  checks.push(["session page: a loop of parents still groups every run", loopG.reduce((n, x) => n + x.rows.length, 0) === 2, JSON.stringify(loopG)]);
+  checks.push(["session page: a loop of parents still shows every run", loop.length === 2, JSON.stringify(loop)]);
+  const need = { id: "w", kind: "workflow", status: "running", agents: [{ id: "q", state: "running", needsYou: true }, { id: "z", state: "done" }] };
+  checks.push(["session page: a run is needs you while one of its agents waits, else its status",
+    M.stateOf(need) === "need" && M.stateOf({ status: "cancelled", agents: [] }) === "failed" && M.stateOf({ status: "odd" }) === "unknown"]);
+  const c = M.counts([need, r("d", 1, { totals: { tokens: 1500 } }), { id: "f", status: "failed", totals: { tokens: 500 } }]);
+  checks.push(["session page: the header counts needs you, done and failed, and sums tokens",
+    c.need === 1 && c.done === 1 && c.failed === 1 && c.tokens === 2000, JSON.stringify(c)]);
+  checks.push(["session page: a lone agent opens its transcript, a workflow its run page, a bad id or no transcript nothing",
+    M.pageOf(r("a1", 1), "s-1") === "/agent/s-1/a1" && M.pageOf(need, "s-1") === "/run/s-1/w" &&
+    M.pageOf(r("a1", 1, { agents: [{ id: "a1", state: "done", transcript: false }] }), "s-1") === "" &&
+    M.pageOf({ id: "../x", kind: "workflow", agents: [] }, "s-1") === "" && M.pageOf(r("a1", 1), "../s") === ""]);
+  const ph = M.phases({ phases: ["Review", "Verify"], agents: [{ phase: "Review", state: "done" }, { phase: "Verify", state: "running" }, { phase: "Sum", state: "queued" }] });
+  checks.push(["session page: a workflow's phase strip is done, running or to come, in its order",
+    ph.map((p) => p.name + "=" + p.state).join() === "Review=done,Verify=running,Sum=todo", JSON.stringify(ph)]);
+  checks.push(["session page: a lone agent's badge is its result's",
+    M.badgeOf(r("b", 1, { agents: [{ id: "b", state: "done", result: { badge: "14 files" } }] })) === "14 files" && M.badgeOf(need) === ""]);
 }
 // ---- the run page's model (run.js, with no page) ----------------------------
 {
@@ -3306,6 +3360,9 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       fs.mkdirSync(proj, { recursive: true });
       fs.cpSync(join(HERE, "..", "..", "app", "crates", "crew-core", "tests", "fixtures", "runs", "projects", "-w-repo", "s-done"),
         join(proj, "s-done"), { recursive: true });
+      // and the session's own transcript, which says what prompt launched each.
+      fs.copyFileSync(join(HERE, "..", "..", "app", "crates", "crew-core", "tests", "fixtures", "runs", "projects", "-w-repo", "s-done.jsonl"),
+        join(proj, "s-done.jsonl"));
       const A = "afbf7fe6ed7060d9e";
       const page = await req("GET", `/agent/s-done/${A}`);
       const data = await req("GET", `/agent/s-done/${A}/data?t=${encodeURIComponent(token)}`);
@@ -3351,6 +3408,61 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
         r.end();
       });
       checks.push(["run page: the event feed sends the run as its first event", /event: run\ndata: \{"id": ?"wf_f7b371f3-6f2"/.test(first), first.slice(0, 200)]);
+    }
+
+    // ---- a session's page: /runs/<session>, its data and its events ---------
+    {
+      const q = "?t=" + encodeURIComponent(token);
+      const page = await req("GET", "/runs/s-done"), data = await req("GET", "/runs/s-done/data" + q);
+      const v = (() => { try { return JSON.parse(data.body); } catch (e) { return {}; } })();
+      checks.push(["session page: the page inlines runs.js with the token and the session, framed like the board",
+        page.status === 200 && page.body.includes("root.__runsPage = model") && page.body.includes('"session": "s-done"') &&
+        page.body.includes('"t": "' + token + '"') && !page.body.includes("/*__RUNS_JS__*/") &&
+        /^frame-ancestors 'self' /.test(String(page.headers["content-security-policy"] || "")), page.body.slice(0, 200)]);
+      const by = (k) => (v.runs || []).find((x) => x.kind === k) || {};
+      checks.push(["session page: its data is every run, each under the prompt that launched it, and never a transcript path",
+        data.status === 200 && (v.runs || []).length === 2 && (by("agent").group || {}).label === "start a background sleeper" &&
+        (by("workflow").group || {}).label === "now run the spike workflow" && !data.body.includes(".jsonl") &&
+        Array.isArray(v.summaries) && Array.isArray(v.notices), data.body.slice(0, 400)]);
+      const noTok = await req("GET", "/runs/s-done/data"), evNoTok = await req("GET", "/runs/s-done/events"), stray = await req("GET", "/runs/s-nope/data" + q);
+      const climb = await req("GET", "/runs/..%2Fetc");
+      checks.push(["session page: no token, the feed without a token, an unknown session and a path are refused",
+        noTok.status === 403 && evNoTok.status === 403 && stray.status === 404 && [404, 400].includes(climb.status),
+        JSON.stringify([noTok.status, evNoTok.status, stray.status, climb.status])]);
+      // A link opens a file in the session's worktree, at its line, in VS Code
+      // (the fake code logs its arguments), and nothing outside it.
+      const proj = join(HOME, ".claude", "projects", "-w-repo");
+      const wt = join(HOME, "wt");
+      fs.mkdirSync(join(wt, "src"), { recursive: true });
+      fs.writeFileSync(join(wt, ".git"), "gitdir: /elsewhere\n");
+      fs.writeFileSync(join(wt, "src", "a.rs"), "x\n");
+      fs.writeFileSync(join(HOME, "outside.txt"), "x\n");
+      fs.mkdirSync(join(proj, "s-open"), { recursive: true });
+      fs.writeFileSync(join(proj, "s-open.jsonl"), JSON.stringify({ type: "user", cwd: wt, promptId: "p1", message: { content: "open things" } }) + "\n");
+      const ad = join(HOME, ".config", "seamux", "adapters", "linker");
+      fs.mkdirSync(ad, { recursive: true });
+      fs.writeFileSync(join(ad, "adapter.json"), JSON.stringify({ schema: "seamux.adapter/1", name: "linker", recognizes: ["teammate"], command: ["sh", "run.sh"] }));
+      const doc = { schema: "seamux.run/1", runs: [{ id: "r1", status: "done", links: [
+        { file: join(wt, "src", "a.rs"), line: 7 }, { file: join(HOME, "outside.txt") }, { url: "https://example.test/x" }] }] };
+      fs.writeFileSync(join(ad, "run.sh"), "cat > /dev/null\nprintf '%s' '" + JSON.stringify(doc) + "'\n");
+      const od = await req("GET", "/runs/s-open/data" + q);
+      const ov = (() => { try { return JSON.parse(od.body); } catch (e) { return {}; } })();
+      const r1 = (ov.runs || []).find((x) => x.id === "r1") || {};
+      checks.push(["session page: each link says whether it opens: a file in the worktree and a web page yes, a file outside no",
+        JSON.stringify((r1.links || []).map((l) => l.opens)) === "[true,false,true]", od.body.slice(0, 400)]);
+      const shownOf = (i) => ((r1.links || [])[i] || {}).shown || "";
+      const op = (link, o) => post({ t: token, run: "r1", link, shown: shownOf(link) }, { path: "/runs/s-open/open", ...o });
+      const logBefore = fs.existsSync(join(HOME, "fake-code.log")) ? fs.readFileSync(join(HOME, "fake-code.log"), "utf8").length : 0;
+      const ok0 = await op(0), out1 = await op(1), none = await op(9), noT = await post({ run: "r1", link: 0 }, { path: "/runs/s-open/open" });
+      const cross = await op(0, { origin: "http://evil.test" });
+      const stale = await post({ t: token, run: "r1", link: 0, shown: "/elsewhere/b.rs:1" }, { path: "/runs/s-open/open" });
+      const logged = fs.existsSync(join(HOME, "fake-code.log")) ? fs.readFileSync(join(HOME, "fake-code.log"), "utf8").slice(logBefore) : "";
+      checks.push(["session page: opening a link runs VS Code on the worktree at the file's line",
+        ok0.status === 200 && logged.includes("--goto") && logged.includes(join("src", "a.rs") + ":7") && logged.split("\n")[0].endsWith("wt"), ok0.body + " :: " + logged]);
+      checks.push(["session page: a file outside the worktree, a link no adapter lists, a link that changed since it was shown, no token and another origin are refused",
+        out1.status === 400 && /outside this session's worktree/.test(out1.body) && none.status === 404 && stale.status === 409 &&
+        noT.status === 403 && cross.status === 403,
+        JSON.stringify([out1.status, out1.body, none.status, stale.status, noT.status, cross.status])]);
     }
 
     // ---- the served board: /board and its /board/events feed ---------------

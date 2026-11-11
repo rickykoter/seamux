@@ -1,0 +1,8 @@
+{
+  "schema": "seamux.adapter/1",
+  "name": "scout",
+  "recognizes": ["subagent"],
+  "command": ["python3", "adapter.py"],
+  "timeoutMs": 10000,
+  "watch": ["$DEEP_PLAN_STATE_DIR", "~/.claude/deep-plan/state", "$DEEP_PLAN_KEYS_DIR", "~/.claude/deep-plan/keys"]
+}
