@@ -19,10 +19,10 @@ use crate::plans::{plan_page, uuid_ok};
 use crate::server::{crew_file, current, log, quote};
 use crate::state::state_dir;
 
-pub const ACTIONS: [&str; 26] = [
+pub const ACTIONS: [&str; 27] = [
     "jump", "pane", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
     "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
-    "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake", "agent", "run", "adapter",
+    "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake", "agent", "run", "runs", "adapter",
 ];
 
 /// The notice row a Create adapter click names: by its task type, or by
@@ -63,6 +63,14 @@ pub fn agent_path(row: &Map<String, Value>, action: &str, id: &str) -> Option<St
     // A lone agent's page is its agent's id, when the adapter gave one apart.
     let page = e.get("agent").and_then(Value::as_str).filter(|a| plain(a) && !a.starts_with('.')).unwrap_or(id);
     (action == want).then(|| format!("/{want}/{session}/{page}"))
+}
+
+/// A card's session page, /runs/<session>, when the card lists that session
+/// among its rows' (agentSessions).
+pub fn runs_path(row: &Map<String, Value>, session: &str) -> Option<String> {
+    let listed = row.get("agentSessions").and_then(Value::as_array)?.iter()
+        .any(|e| e.get("session").and_then(Value::as_str) == Some(session));
+    (listed && crate::runs_page::session_id(session)).then(|| format!("/runs/{session}"))
 }
 
 /// Run a child to completion within `timeout`: Some((code, stdout, stderr)),
@@ -527,6 +535,22 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
                 (run_ok("open", &[&url], None), url)
             }
         }
+        // A card's "all agents" or "+N more": its session's page, the same way.
+        "runs" => {
+            let Some(path) = runs_path(row, extra.trim()) else {
+                return (false, "that session is not this row's".into());
+            };
+            let Some((port, _)) = current() else { return (false, "intent server not answering".into()) };
+            let url = format!("http://127.0.0.1:{port}{path}");
+            if uuid_ok(&wsid) {
+                match crate::companion::open(&url, &format!("runs-{}", extra.trim()), &wsid, "", true) {
+                    Ok(sid) => (true, format!("focused {sid}")),
+                    Err(e) => (false, e),
+                }
+            } else {
+                (run_ok("open", &[&url], None), url)
+            }
+        }
         // A notice row's Create adapter ("no adapter", "adapter failed"):
         // a new session in this row's worktree, started on a prompt that
         // carries what there is to read. Only a notice the row carries.
@@ -695,6 +719,17 @@ mod tests {
         assert_eq!(agent_path(row, "agent", "x"), None, "a session that is not a plain id");
         assert_eq!(agent_path(row, "agent", "run-7").as_deref(), Some("/agent/9c328a5c-81d2/ag-7"), "a lone agent's page is its agent's id");
         assert!(ACTIONS.contains(&"agent") && ACTIONS.contains(&"run") && ACTIONS.contains(&"adapter"));
+    }
+
+    #[test]
+    fn a_session_page_opens_only_for_a_session_the_card_lists() {
+        let row = serde_json::json!({"agentSessions": [{"surface": "S1", "session": "9c328a5c-81d2"}, {"surface": "S2", "session": "../etc"}]});
+        let row = row.as_object().unwrap();
+        assert_eq!(runs_path(row, "9c328a5c-81d2").as_deref(), Some("/runs/9c328a5c-81d2"));
+        assert_eq!(runs_path(row, "other"), None, "a session the card does not list");
+        assert_eq!(runs_path(row, "../etc"), None, "listed, but not a plain id");
+        assert_eq!(runs_path(serde_json::json!({}).as_object().unwrap(), "9c328a5c-81d2"), None);
+        assert!(ACTIONS.contains(&"runs"));
     }
 
     #[test]

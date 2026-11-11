@@ -32,7 +32,8 @@ function __boardRender(d) {
     "close plan": "Retire this plan's gate",
     "go": "Authorize this increment",
     "wake": "Open the Wake: what this workspace's sessions left behind",
-    "adapter": "Open a new session in this worktree that writes a seamux adapter for this work"
+    "adapter": "Open a new session in this worktree that writes a seamux adapter for this work",
+    "runs": "Open every background agent and run this session started"
   };
 
   function esc(s) {
@@ -578,10 +579,26 @@ function __boardRender(d) {
         '<span class="aw">' + esc(n.text) + "</span>" +
         (key ? '<span class="ptag mk" data-a="adapter" data-x="' + esc(key) + '" title="' + esc(TIP.adapter) + '">' +
           (n.kind === "failed" ? "Fix adapter" : "Create adapter") + "</span>" : "") + "</div>";
-    }).join("");
+    }).join("") + allAgents(a, up);
+  }
+  // The session page, /runs/<session>: under a pane that has rows, and on
+  // "+N more" (the session of the first row it hides).
+  // A session id as Claude Code makes them (a uuid), as the app's Dock checks it.
+  var SESSION_ID = /^[A-Za-z0-9_-]+$/;
+  var MORE_CHEV = '<svg class="amk" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path class="ai" d="M4.5 3l3 3-3 3"/></svg>';
+  function runsAttrs(session) {
+    return ' data-a="runs" data-x="' + esc(session) + '" data-path="/runs/' + esc(session) + '" title="' + esc(TIP.runs) + '"';
+  }
+  function allAgents(a, up) {
+    var s = (a.agentSessions || []).filter(function (x) { return x && String(x.surface || "").toUpperCase() === up; })[0];
+    if (!s || !SESSION_ID.test(String(s.session || ""))) return "";
+    return '<div class="ag all"' + runsAttrs(s.session) + ">" + MORE_CHEV + '<span class="ak">All agents</span></div>';
   }
   function agentMore(a) {
-    return a.agentsMore > 0 ? '<div class="ag more"><span class="aw">+' + Number(a.agentsMore) + " more</span></div>" : "";
+    if (!(a.agentsMore > 0)) return "";
+    var s = String(a.agentsMoreSession || "");
+    return SESSION_ID.test(s) ? '<div class="ag more ln"' + runsAttrs(s) + '><span class="aw">+' + Number(a.agentsMore) + " more</span></div>"
+      : '<div class="ag more"><span class="aw">+' + Number(a.agentsMore) + " more</span></div>";
   }
   function paneList(a) {
     if (isMuted(a)) return "";

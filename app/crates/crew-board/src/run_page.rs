@@ -22,7 +22,7 @@ const JS_SLOT: &str = "/*__RUN_JS__*/";
 const TICK: Duration = Duration::from_secs(1);
 const PING: Duration = Duration::from_secs(15);
 
-fn plain_id(x: &str) -> bool {
+pub fn plain_id(x: &str) -> bool {
     !x.is_empty() && x.len() <= 128 && !x.starts_with('.') && x.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
@@ -68,25 +68,24 @@ fn run_of(session: &str, id: &str) -> Result<Option<Run>, String> {
     Ok(rep.runs.into_iter().find(|r| r.id == id))
 }
 
-fn boot(token: &str, session: &str, id: &str) -> String {
+pub fn boot(token: &str, session: &str, id: &str) -> String {
     crew_core::pyjson::dumps(&json!({"t": token, "session": session, "id": id}))
         .replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
 }
 
-fn events(req: &mut Request, session: &str, id: &str) {
+/// A server-sent event stream of `event` whenever `read` gives something
+/// new, a comment every PING otherwise, until the page goes away. The run
+/// page and the session page (runs_page.rs) both stream this way.
+pub fn stream(req: &mut Request, event: &str, read: &dyn Fn() -> String) {
     req.set_write_timeout(Duration::from_secs(30));
     req.start_stream("text/event-stream");
     let mut out = req.push(b"retry: 3000\n\n");
     let mut last = String::new();
     let mut pinged = Instant::now();
     while out.is_ok() {
-        let now = match run_of(session, id) {
-            Ok(Some(r)) => public(&r, session).to_string(),
-            Ok(None) => json!({"gone": true}).to_string(),
-            Err(e) => json!({"error": e}).to_string(),
-        };
+        let now = read();
         if now != last {
-            out = req.push(format!("event: run\ndata: {now}\n\n").as_bytes());
+            out = req.push(format!("event: {event}\ndata: {now}\n\n").as_bytes());
             last = now;
             pinged = Instant::now();
         } else if pinged.elapsed() >= PING {
@@ -95,6 +94,14 @@ fn events(req: &mut Request, session: &str, id: &str) {
         }
         std::thread::sleep(TICK);
     }
+}
+
+fn events(req: &mut Request, session: &str, id: &str) {
+    stream(req, "run", &|| match run_of(session, id) {
+        Ok(Some(r)) => public(&r, session).to_string(),
+        Ok(None) => json!({"gone": true}).to_string(),
+        Err(e) => json!({"error": e}).to_string(),
+    });
 }
 
 /// GET /run/... : true when the path was this route's.

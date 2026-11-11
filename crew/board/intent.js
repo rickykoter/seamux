@@ -19,6 +19,7 @@
 //   resume when it resets the framing app's resume_set      -> a=resume&x=on|off
 //                        (the ⋯ menu item, and the armed chip's disarm)
 //   sub-agent / run row  its transcript or run page           -> a=agent|run&x=<id>
+//   All agents, +N more  the session page, /runs/<session>     -> a=runs&x=<session>
 //                        (framed by an app that says it can: its Sheet)
 //
 // One verb never leaves the page: a=fold, on a card's caret. It folds or
@@ -530,12 +531,12 @@ function __boardIntent(cfg) {
       // A sub-agent or run row, framed by an app that opens those pages
       // itself: the page in its Sheet, beside that workspace's terminal.
       // Anywhere else the server's agent and run actions open it.
-      if (framed() && (t.a === "agent" || t.a === "run") && t.x &&
+      if (framed() && (t.a === "agent" || t.a === "run" || t.a === "runs") && t.x &&
           (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" agents ") >= 0) {
         var path = t.el.getAttribute("data-path") || "";
-        if (/^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(path)) {
-          var lab = t.el.querySelector(".ak");
-          tell({ crew: "page", ws: rid, path: path, title: lab ? lab.textContent : t.x });
+        if (/^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(path) || /^\/runs\/[A-Za-z0-9_-]+$/.test(path)) {
+          var lab = t.a === "runs" ? null : t.el.querySelector(".ak");
+          tell({ crew: "page", ws: rid, path: path, title: t.a === "runs" ? "Background work" : lab ? lab.textContent : t.x });
           mark(rid);
         }
         return;

@@ -47,7 +47,8 @@
   its state, .wait/.work/.idle/.end/.unk/.sh, holding .pg, .pk, .pw and
   .ptag.plan/.outside), .pns > .ag (a pane's background sub-agent or run,
   data-a="agent" or "run" with data-path; + .run/.ok/.bad/.unk, + .new on
-  arrival, + .note or .more; holding svg.amk, .ak, .aw, .at and .ab), .chips > .chip (+ .pri, the one filled button; + .sig, an
+  arrival, + .note or .more; .all and .more.ln are data-a="runs", the
+  session page; holding svg.amk, .ak, .aw, .at and .ab), .chips > .chip (+ .pri, the one filled button; + .sig, an
   actionable signal, + .acc when the collector sent it amber; + .pane on a muted card, its panes' tags), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
   .end > .cost (the spend, held at the right end; also at the end of a quiet
   row's .top),
@@ -619,6 +620,10 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .ag.note,.ag.more,.ag.sh{cursor:default}
 .ag.sh>.ak{font:var(--fs-1)/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg2)}
 .ag.note:hover,.ag.more:hover{background:none}
+/* A pane's All agents row and a +N more that opens the session page. */
+.ag.all{--ac:var(--grey);cursor:pointer} .ag.all>.ak{color:var(--grey);font-size:var(--fs-1)}
+.ag.all:hover>.ak{color:var(--fg)}
+.ag.more.ln{cursor:pointer} .ag.more.ln:hover{background:var(--hover-fg)}
 .ag.note>.aw{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:normal}
 .ag.note>.ptag.mk{cursor:pointer;margin-left:auto}
 .ag.note>.ptag.mk:hover{background:var(--hover-fg)}

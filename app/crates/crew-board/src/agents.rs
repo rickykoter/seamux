@@ -207,7 +207,9 @@ pub fn rows_for(p: &Pane, rep: Option<&Report>, since: u64) -> Vec<Value> {
     live
 }
 
-/// Each row's agents, agentsMore and agentNotices, from its panes' files.
+/// Each row's agents, agentsMore and agentNotices, from its panes' files,
+/// and agentSessions: each pane's session that has rows, which its "all
+/// agents" row opens (/runs/<session>), with agentsMoreSession for "+N more".
 /// `report` gives a pane's report (the worker's, outside tests).
 pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64>,
                  report: &mut dyn FnMut(&Pane, bool) -> Option<Report>) {
@@ -220,6 +222,7 @@ pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64
         }
         let mut all: Vec<Value> = Vec::new();
         let mut notices: Vec<Value> = Vec::new();
+        let mut sessions: Vec<Value> = Vec::new();
         for p in files.iter().filter(|f| surfaces.contains(&f.surface.to_uppercase()) && !f.session.is_empty()) {
             let since = now.saturating_sub(KEEP_MS);
             let had = turns.get(&p.surface.to_uppercase()).is_some_and(|t| *t >= since);
@@ -230,7 +233,11 @@ pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64
                 continue;
             }
             let rep = report(p, !busy);
-            all.extend(rows_for(p, rep.as_ref(), since));
+            let rows = rows_for(p, rep.as_ref(), since);
+            if !rows.is_empty() {
+                sessions.push(json!({"surface": p.surface, "session": p.session}));
+            }
+            all.extend(rows);
             for n in rep.iter().flat_map(|r| r.notices.iter()) {
                 notices.push(json!({"surface": p.surface, "session": p.session, "kind": n.kind, "text": n.text(),
                                     "taskType": n.task_type, "adapter": n.adapter, "why": n.why, "count": n.count}));
@@ -239,7 +246,11 @@ pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64
         let Some(m) = r.as_object_mut() else { continue };
         if all.len() > ROWS_MAX {
             m.insert("agentsMore".into(), json!(all.len() - ROWS_MAX));
+            m.insert("agentsMoreSession".into(), all[ROWS_MAX]["session"].clone());
             all.truncate(ROWS_MAX);
+        }
+        if !sessions.is_empty() {
+            m.insert("agentSessions".into(), Value::Array(sessions));
         }
         if !all.is_empty() {
             m.insert("agents".into(), Value::Array(all));
@@ -320,6 +331,9 @@ mod tests {
         assert_eq!(r["agentsMore"], 3);
         assert_eq!(r["agentNotices"][0]["text"], "1 background task from teammate: no adapter");
         assert_eq!(r["agentNotices"][0]["surface"], "S2");
+        assert_eq!(r["agentSessions"], json!([{"surface": "S1", "session": "s1"}, {"surface": "S2", "session": "s1"}]),
+                   "each pane with rows names its session, for its all agents row");
+        assert_eq!(r["agentsMoreSession"], "s1", "+N more opens the session of the first row it hides");
     }
 
     #[test]

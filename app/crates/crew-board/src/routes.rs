@@ -62,6 +62,10 @@ pub fn get(req: &mut Request) {
     if path.starts_with("/run/") && crate::run_page::get(req) {
         return;
     }
+    // A session's page: every run it started, and their feed (runs_page.rs).
+    if path.starts_with("/runs/") && crate::runs_page::get(req) {
+        return;
+    }
     match path.as_str() {
         "/health" => return req.reply(200, crate::server::health_body().as_bytes()),
         "/usage" => {

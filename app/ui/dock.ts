@@ -17,7 +17,7 @@ import { splitter } from "./splitter";
 import { Tray } from "./tray";
 
 /** A sub-agent's transcript page or a run's page, as the board names them. */
-const AGENT_PAGE = /^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/;
+const AGENT_PAGE = /^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$|^\/runs\/[A-Za-z0-9_-]+$/;
 import { setLevel, setResume, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./tiles";
 
@@ -129,8 +129,9 @@ export class DockView {
         void setResume(d.ws, typeof u.name === "string" ? u.name : d.ws, u.on);
       }
       // A sub-agent or run row: its page in the Sheet, beside that
-      // workspace's terminal. Only an /agent/ or /run/ path is opened; the
-      // intent server serves it only for an agent an adapter listed.
+      // workspace's terminal; All agents and +N more: the session's page.
+      // Only an /agent/, /run/ or /runs/ path is opened; the intent server
+      // serves it only for an agent an adapter listed.
       const g = d as { path?: unknown; title?: unknown } | null;
       if (d?.crew === "page" && typeof d.ws === "string" && d.ws && typeof g?.path === "string" && AGENT_PAGE.test(g.path)) {
         const ws = d.ws;
