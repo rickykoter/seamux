@@ -92,7 +92,11 @@ impl Feed {
         inner.subs.push(q.clone());
         if !inner.watching {
             inner.watching = true;
-            std::thread::spawn(move || self.tail_events());
+            // cmux's events wake the board only when cmux is its backend;
+            // on tmux, watch_plans' pane-file and registry checks do.
+            if crate::backend::kind() == crew_core::backend::Kind::Cmux {
+                std::thread::spawn(move || self.tail_events());
+            }
             std::thread::spawn(move || self.watch_plans());
         }
         if !inner.running {
