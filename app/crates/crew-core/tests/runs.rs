@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crew_core::runs::host::{self, Adapter, Context};
-use crew_core::runs::model::{badge_of, parse_doc};
+use crew_core::runs::model::{badge_of, parse_doc, parse_document};
 use crew_core::status::Background;
 use serde_json::json;
 
@@ -296,4 +296,86 @@ fn the_lookout_adapter_replaces_a_reviewers_row_with_its_findings() {
     assert!(res.detail.as_deref().is_some_and(|d| d.contains("major   f1   b.rs:9  it breaks") && !d.contains("f0") && !d.contains("f2")),
             "not another round's, not a person's: {:?}", res.detail);
     assert_eq!(r.agents[0].model.as_deref(), Some("claude-sonnet-5-5"));
+}
+
+#[test]
+fn the_session_page_fields_validate_and_trim() {
+    let doc = parse_document(&json!({"schema": "seamux.run/1", "summary": "  lookout: 2 major open  ", "runs": [{
+        "id": "r", "status": "done", "parent": "p",
+        "group": {"id": "plan-x", "label": "x".repeat(200), "kind": "plan", "at": 5},
+        "metrics": [{"label": "read", "value": 14}, {"label": "searches", "value": "9"}, {"label": "c", "value": 1},
+                    {"label": "d", "value": 2}, {"label": "past the cap", "value": 3}],
+        "links": [{"file": "/w/repo/src/a.rs", "line": 12}, {"label": "review", "url": "https://example.test/r"}]}]}), "x").unwrap();
+    assert_eq!(doc.summary.as_deref(), Some("lookout: 2 major open"));
+    let r = &doc.runs[0];
+    let g = r.group.as_ref().unwrap();
+    assert_eq!((g.id.as_str(), g.kind.as_deref(), g.at, g.label.chars().count()), ("plan-x", Some("plan"), Some(5), 120));
+    assert_eq!(r.parent.as_deref(), Some("p"));
+    assert_eq!(r.metrics.iter().map(|m| (m.label.as_str(), m.value.as_str())).collect::<Vec<_>>(),
+               vec![("read", "14"), ("searches", "9"), ("c", "1"), ("d", "2")], "four at most");
+    assert_eq!((r.links[0].label.as_str(), r.links[0].line), ("a.rs", Some(12)), "a file link is named by its file");
+    assert_eq!((r.links[1].label.as_str(), r.links[1].url.as_deref()), ("review", Some("https://example.test/r")));
+    let dir = parse_doc(&json!({"schema": "seamux.run/1", "runs": [{"id": "r", "status": "done", "links": [{"file": "/w/repo/src/"}, {"file": "/"}]}]}), "x").unwrap();
+    assert_eq!(dir[0].links.iter().map(|l| l.label.as_str()).collect::<Vec<_>>(), vec!["src", "/"], "a folder is named, never blank");
+    let v = r.to_json();
+    assert_eq!((v["group"]["id"].as_str(), v["metrics"][0]["value"].as_str(), v["links"][0]["file"].as_str()),
+               (Some("plan-x"), Some("14"), Some("/w/repo/src/a.rs")));
+    // A run without them reads as before.
+    let old = parse_doc(&json!({"schema": "seamux.run/1", "runs": [{"id": "r", "status": "done"}]}), "x").unwrap();
+    assert_eq!((old[0].group.is_none(), old[0].metrics.len(), old[0].links.len()), (true, 0, 0));
+}
+
+#[test]
+fn a_bad_link_or_metric_fails_the_document_naming_the_field() {
+    let one = |extra: serde_json::Value| {
+        let mut run = json!({"id": "r", "status": "done"});
+        run.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        parse_doc(&json!({"schema": "seamux.run/1", "runs": [run]}), "x").unwrap_err()
+    };
+    assert_eq!(one(json!({"links": [{"file": "src/a.rs"}]})), "runs[0].links[0].file: \"src/a.rs\" is not an absolute path");
+    assert_eq!(one(json!({"links": [{"url": "file:///etc/hosts"}]})), "runs[0].links[0].url: \"file:///etc/hosts\" is not an http or https URL");
+    assert_eq!(one(json!({"links": [{"file": "/a", "url": "https://x.test"}]})), "runs[0].links[0]: has both a file and a url; give one");
+    assert_eq!(one(json!({"links": [{"label": "x"}]})), "runs[0].links[0]: needs a file or a url");
+    assert_eq!(one(json!({"links": "x"})), "runs[0].links: expected a list, got \"x\"");
+    assert_eq!(one(json!({"metrics": [{"label": "n"}]})), "runs[0].metrics[0].value: missing");
+    assert_eq!(one(json!({"group": {"label": "no id"}})), "runs[0].group.id: missing");
+    assert_eq!(parse_document(&json!({"schema": "seamux.run/1", "runs": [], "summary": 3}), "x").unwrap_err(), "summary: expected a string, got 3");
+}
+
+#[test]
+fn runs_go_under_the_prompt_that_launched_them() {
+    let mut c = ctx("s-done", vec![]);
+    c.transcript = Some(fixture("s-done").with_extension("jsonl"));
+    let rep = host::report(&c, &crew_core::runs::builtins(), true);
+    let group = |kind: &str| rep.runs.iter().find(|r| r.kind == kind).and_then(|r| r.group.clone())
+        .map(|g| (g.label, g.kind));
+    assert_eq!(group("agent"), Some(("start a background sleeper".into(), Some("prompt".into()))));
+    assert_eq!(group("workflow"), Some(("now run the spike workflow".into(), Some("prompt".into()))), "the first line, by its run id");
+    // Without a transcript there is nothing to group by.
+    let bare = host::report(&ctx("s-done", vec![]), &crew_core::runs::builtins(), true);
+    assert!(bare.runs.iter().all(|r| r.group.is_none()));
+}
+
+#[test]
+fn an_adapters_own_group_is_kept_and_a_replacing_run_keeps_the_prompt() {
+    let root = tmp("groups");
+    // One replaces the built-in's agent run without a group, the other adds a
+    // run under a plan, and each says a line about the session.
+    command_adapter(&root, "a-plain", &["subagent"], 2_000,
+        "printf '%s' '{\"schema\":\"seamux.run/1\",\"summary\":\"plain: 1 agent\",\"runs\":[{\"id\":\"afbf7fe6ed7060d9e\",\"status\":\"done\",\"name\":\"richer\"}]}'\n");
+    command_adapter(&root, "b-plan", &["subagent"], 2_000,
+        "printf '%s' '{\"schema\":\"seamux.run/1\",\"runs\":[{\"id\":\"scout-1\",\"status\":\"done\",\"group\":{\"id\":\"plan-x\",\"label\":\"Scouts for x\",\"kind\":\"plan\"}}]}'\n");
+    let (mine, bad) = host::load(&root);
+    assert!(bad.is_empty(), "{bad:?}");
+    let mut adapters = crew_core::runs::builtins();
+    adapters.extend(mine);
+    let mut c = ctx("s-done", vec![task("subagent", "afbf7fe6ed7060d9e", "spike sleeper")]);
+    c.transcript = Some(fixture("s-done").with_extension("jsonl"));
+    let rep = host::report(&c, &adapters, false);
+    let by = |id: &str| rep.runs.iter().find(|r| r.id == id).unwrap();
+    let rich = by("afbf7fe6ed7060d9e");
+    assert_eq!((rich.name.as_str(), rich.group.as_ref().map(|g| g.label.as_str())), ("richer", Some("start a background sleeper")));
+    assert_eq!(by("scout-1").group.as_ref().map(|g| (g.id.as_str(), g.kind.as_deref())), Some(("plan-x", Some("plan"))));
+    assert_eq!(rep.summaries, vec![("a-plain".to_string(), "plain: 1 agent".to_string())]);
+    assert_eq!(rep.to_json()["summaries"][0]["source"].as_str(), Some("a-plain"));
 }

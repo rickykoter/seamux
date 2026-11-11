@@ -22,6 +22,13 @@ pub const DETAIL_MAX: usize = 2_000;
 /// Past these, the rest of a document is dropped: no page needs more.
 pub const RUNS_MAX: usize = 50;
 pub const AGENTS_MAX: usize = 500;
+/// A run shows at most this many named counts, and this many links.
+pub const METRICS_MAX: usize = 4;
+pub const LINKS_MAX: usize = 8;
+/// A group heading quotes this much of its prompt.
+pub const GROUP_LABEL_MAX: usize = 120;
+/// An adapter's line about the whole session.
+pub const SUMMARY_MAX: usize = 200;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AgentResult {
@@ -48,6 +55,36 @@ pub struct Agent {
     pub result: Option<AgentResult>,
     /// The agent's transcript: an absolute path to a JSONL file.
     pub transcript: Option<String>,
+}
+
+/// What a run sits under on the session page: the prompt that launched it
+/// (the host fills that in), or whatever an adapter groups by (a plan).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Group {
+    pub id: String,
+    pub label: String,
+    /// "prompt", "plan", or the adapter's own word.
+    pub kind: Option<String>,
+    /// Milliseconds since the epoch.
+    pub at: Option<u64>,
+}
+
+/// A named count, shown as a chip: "14 read".
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Metric {
+    pub label: String,
+    pub value: String,
+}
+
+/// Something to open: a file at a line, or a web page.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Link {
+    pub label: String,
+    /// An absolute path.
+    pub file: Option<String>,
+    pub line: Option<u64>,
+    /// http or https only.
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -84,6 +121,18 @@ pub struct Run {
     /// Something the adapter wants said about this run (a partial read, an
     /// unknown field it skipped).
     pub notice: Option<String>,
+    pub group: Option<Group>,
+    /// The id of the run that started this one, when an adapter knows it.
+    pub parent: Option<String>,
+    pub metrics: Vec<Metric>,
+    pub links: Vec<Link>,
+}
+
+/// One adapter's document: its runs, and its line about the session.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Doc {
+    pub runs: Vec<Run>,
+    pub summary: Option<String>,
 }
 
 fn trim(s: &str, max: usize) -> String {
@@ -147,6 +196,67 @@ fn agent_of(v: &Value, at: &str) -> Result<Agent, String> {
     })
 }
 
+fn group_of(o: &Map<String, Value>, at: &str) -> Result<Option<Group>, String> {
+    match o.get("group") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(g)) => {
+            let id = opt_str(g, "id").ok_or_else(|| format!("{at}.group.id: missing"))?;
+            Ok(Some(Group {
+                label: trim(&opt_str(g, "label").unwrap_or_else(|| id.clone()), GROUP_LABEL_MAX),
+                kind: opt_str(g, "kind").map(|k| trim(&k, 20)),
+                at: opt_u64(g, "at", &format!("{at}.group"))?,
+                id: trim(&id, 128),
+            }))
+        }
+        Some(other) => Err(format!("{at}.group: expected an object, got {other}")),
+    }
+}
+
+fn list_of<'a>(o: &'a Map<String, Value>, k: &str, at: &str) -> Result<&'a [Value], String> {
+    match o.get(k) {
+        None | Some(Value::Null) => Ok(&[]),
+        Some(Value::Array(a)) => Ok(a.as_slice()),
+        Some(other) => Err(format!("{at}.{k}: expected a list, got {other}")),
+    }
+}
+
+fn metrics_of(o: &Map<String, Value>, at: &str) -> Result<Vec<Metric>, String> {
+    list_of(o, "metrics", at)?.iter().take(METRICS_MAX).enumerate().map(|(i, m)| {
+        let here = format!("{at}.metrics[{i}]");
+        let m = m.as_object().ok_or_else(|| format!("{here}: expected an object"))?;
+        let label = opt_str(m, "label").ok_or_else(|| format!("{here}.label: missing"))?;
+        let value = match m.get("value") {
+            Some(Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+            Some(Value::Number(n)) => n.to_string(),
+            Some(other) => return Err(format!("{here}.value: expected a string or a number, got {other}")),
+            None => return Err(format!("{here}.value: missing")),
+        };
+        Ok(Metric { label: trim(&label, 24), value: trim(&value, 12) })
+    }).collect()
+}
+
+fn links_of(o: &Map<String, Value>, at: &str) -> Result<Vec<Link>, String> {
+    list_of(o, "links", at)?.iter().take(LINKS_MAX).enumerate().map(|(i, l)| {
+        let here = format!("{at}.links[{i}]");
+        let l = l.as_object().ok_or_else(|| format!("{here}: expected an object"))?;
+        let (file, url) = (opt_str(l, "file"), opt_str(l, "url"));
+        let name = match (&file, &url) {
+            (Some(f), None) if f.starts_with('/') => f.rsplit('/').find(|n| !n.is_empty()).unwrap_or(f).to_string(),
+            (Some(f), None) => return Err(format!("{here}.file: {f:?} is not an absolute path")),
+            (None, Some(u)) if u.starts_with("https://") || u.starts_with("http://") => u.clone(),
+            (None, Some(u)) => return Err(format!("{here}.url: {u:?} is not an http or https URL")),
+            (Some(_), Some(_)) => return Err(format!("{here}: has both a file and a url; give one")),
+            (None, None) => return Err(format!("{here}: needs a file or a url")),
+        };
+        Ok(Link {
+            label: trim(&opt_str(l, "label").unwrap_or(name), 60),
+            line: opt_u64(l, "line", &here)?.filter(|n| *n > 0),
+            file,
+            url,
+        })
+    }).collect()
+}
+
 fn run_of(v: &Value, at: &str, source: &str) -> Result<Run, String> {
     let o = v.as_object().ok_or_else(|| format!("{at}: expected an object"))?;
     let id = opt_str(o, "id").ok_or_else(|| format!("{at}.id: missing"))?;
@@ -184,6 +294,10 @@ fn run_of(v: &Value, at: &str, source: &str) -> Result<Run, String> {
         cap: opt_u64(o, "cap", at)?,
         summary: opt_str(o, "summary").map(|s| trim(&s, DETAIL_MAX)),
         notice: opt_str(o, "notice").map(|s| trim(&s, 300)),
+        group: group_of(o, at)?,
+        parent: opt_str(o, "parent").map(|p| trim(&p, 128)),
+        metrics: metrics_of(o, at)?,
+        links: links_of(o, at)?,
         phases,
         agents,
         totals,
@@ -193,6 +307,11 @@ fn run_of(v: &Value, at: &str, source: &str) -> Result<Run, String> {
 
 /// Read an adapter's document, every run tagged with `source`.
 pub fn parse_doc(v: &Value, source: &str) -> Result<Vec<Run>, String> {
+    parse_document(v, source).map(|d| d.runs)
+}
+
+/// Read an adapter's whole document: its runs and its summary line.
+pub fn parse_document(v: &Value, source: &str) -> Result<Doc, String> {
     let o = v.as_object().ok_or("expected a JSON object")?;
     match o.get("schema").and_then(Value::as_str) {
         Some(SCHEMA) => {}
@@ -200,7 +319,15 @@ pub fn parse_doc(v: &Value, source: &str) -> Result<Vec<Run>, String> {
         None => return Err(format!("schema: missing, expected {SCHEMA:?}")),
     }
     let runs = o.get("runs").and_then(Value::as_array).ok_or("runs: expected a list")?;
-    runs.iter().take(RUNS_MAX).enumerate().map(|(i, r)| run_of(r, &format!("runs[{i}]"), source)).collect()
+    let summary = match o.get("summary") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.trim()).filter(|s| !s.is_empty()).map(|s| trim(s, SUMMARY_MAX)),
+        Some(other) => return Err(format!("summary: expected a string, got {other}")),
+    };
+    Ok(Doc {
+        runs: runs.iter().take(RUNS_MAX).enumerate().map(|(i, r)| run_of(r, &format!("runs[{i}]"), source)).collect::<Result<_, _>>()?,
+        summary,
+    })
 }
 
 impl Agent {
@@ -223,6 +350,10 @@ impl Run {
             "totals": {"agents": self.totals.agents, "done": self.totals.done, "failed": self.totals.failed,
                        "tokens": self.totals.tokens},
             "summary": self.summary, "notice": self.notice,
+            "group": self.group.as_ref().map(|g| json!({"id": g.id, "label": g.label, "kind": g.kind, "at": g.at})),
+            "parent": self.parent,
+            "metrics": self.metrics.iter().map(|m| json!({"label": m.label, "value": m.value})).collect::<Vec<_>>(),
+            "links": self.links.iter().map(|l| json!({"label": l.label, "file": l.file, "line": l.line, "url": l.url})).collect::<Vec<_>>(),
         })
     }
 }

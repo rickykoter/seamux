@@ -26,7 +26,7 @@ use super::host::Context;
 use super::model::{badge_of, detail_of, SCHEMA};
 
 /// The newest this many runs are reported.
-pub const MAX: usize = 10;
+pub const MAX: usize = 50;
 
 /// The quoted value after `key:` in `text`, from `from` on: enough of
 /// JavaScript to read a meta literal's strings.

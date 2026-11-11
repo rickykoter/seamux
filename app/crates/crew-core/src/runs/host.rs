@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use super::model::{parse_doc, Run, SCHEMA};
+use super::model::{parse_document, Doc, Run, SCHEMA};
 use crate::status::Background;
 
 pub const MANIFEST: &str = "adapter.json";
@@ -133,6 +133,8 @@ impl Adapter {
 pub struct Report {
     pub runs: Vec<Run>,
     pub notices: Vec<Notice>,
+    /// Each adapter's line about the session, as (adapter, text).
+    pub summaries: Vec<(String, String)>,
 }
 
 impl Report {
@@ -141,6 +143,7 @@ impl Report {
             "schema": SCHEMA,
             "runs": self.runs.iter().map(Run::to_json).collect::<Vec<_>>(),
             "notices": self.notices.iter().map(Notice::to_json).collect::<Vec<_>>(),
+            "summaries": self.summaries.iter().map(|(a, t)| json!({"source": a, "text": t})).collect::<Vec<_>>(),
         })
     }
 }
@@ -348,7 +351,7 @@ pub const FAILED_MS: u128 = 30_000;
 
 /// The stamp the result was read at, when it was read, when the stamp was
 /// last checked, and the result.
-type Cached = (u128, u128, u128, Result<Vec<Run>, String>);
+type Cached = (u128, u128, u128, Result<Doc, String>);
 static CACHE: Mutex<Option<HashMap<(String, String), Cached>>> = Mutex::new(None);
 
 fn now_ms() -> u128 {
@@ -356,15 +359,21 @@ fn now_ms() -> u128 {
 }
 
 /// Whether a cached result still holds at this age.
-fn holds(got: &Result<Vec<Run>, String>, age: u128) -> bool {
+fn holds(got: &Result<Doc, String>, age: u128) -> bool {
     match got {
         Err(_) => age < FAILED_MS,
-        Ok(runs) => age < RUNNING_MS || !runs.iter().any(|r| r.status == "running"),
+        Ok(doc) => age < RUNNING_MS || !doc.runs.iter().any(|r| r.status == "running"),
     }
 }
 
 /// One adapter's runs for this context, from the cache while nothing changed.
 pub fn runs_of(a: &Adapter, ctx: &Context) -> Result<Vec<Run>, String> {
+    doc_of(a, ctx).map(|d| d.runs)
+}
+
+/// One adapter's document for this context, from the cache while nothing
+/// changed.
+pub fn doc_of(a: &Adapter, ctx: &Context) -> Result<Doc, String> {
     let dirs: Vec<PathBuf> = match a {
         Adapter::Command(m) => vec![ctx.session_dir.clone(), m.dir.clone()],
         Adapter::Builtin { watch, .. } => watch.iter().map(|w| ctx.session_dir.join(w)).collect(),
@@ -390,7 +399,7 @@ pub fn runs_of(a: &Adapter, ctx: &Context) -> Result<Vec<Run>, String> {
         Adapter::Builtin { run, .. } => Ok(run(ctx)),
         Adapter::Command(m) => run_command(m, ctx),
     };
-    let got = doc.and_then(|d| parse_doc(&d, a.name()));
+    let got = doc.and_then(|d| parse_document(&d, a.name()));
     let mut c = CACHE.lock().unwrap();
     let map = c.get_or_insert_with(HashMap::new);
     if map.len() > 256 {
@@ -427,8 +436,13 @@ pub fn report(ctx: &Context, adapters: &[Adapter], all: bool) -> Report {
         if !all && wanted == 0 {
             continue;
         }
-        match runs_of(a, ctx) {
-            Ok(runs) => rep.runs.extend(runs),
+        match doc_of(a, ctx) {
+            Ok(doc) => {
+                rep.runs.extend(doc.runs);
+                if let Some(s) = doc.summary {
+                    rep.summaries.push((a.name().to_string(), s));
+                }
+            }
             Err(why) => rep.notices.push(Notice { kind: "failed".into(), adapter: Some(a.name().to_string()), task_type: None, count: wanted, why }),
         }
     }
@@ -443,6 +457,15 @@ pub fn report(ctx: &Context, adapters: &[Adapter], all: bool) -> Report {
         }
     }
     rep.runs = kept;
+    // A run with no group of its own goes under the prompt that launched
+    // it: an adapter that replaced a built-in's run keeps that grouping.
+    if let Some(t) = ctx.transcript.as_ref().filter(|_| rep.runs.iter().any(|r| r.group.is_none())) {
+        let launched = super::launches::of(t);
+        for r in rep.runs.iter_mut().filter(|r| r.group.is_none()) {
+            let ids = std::iter::once(&r.id).chain(r.task.iter()).chain(r.agents.iter().map(|a| &a.id));
+            r.group = ids.filter_map(|id| launched.get(id)).next().map(|p| p.group());
+        }
+    }
     rep.runs.sort_by(|a, b| b.start.unwrap_or(0).cmp(&a.start.unwrap_or(0)).then_with(|| a.id.cmp(&b.id)));
     rep
 }

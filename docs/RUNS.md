@@ -87,6 +87,54 @@ different `schema`, a status or state outside its list, a number that is not
 a number, or a relative transcript path. It keeps the first 50 runs and the
 first 500 agents of each.
 
+### Fields for the session page
+
+The session page (`/runs/<session>`) lists every run a session started. These
+optional fields let an adapter say more there. A document without them reads
+as before.
+
+```json
+{
+  "schema": "seamux.run/1",
+  "summary": "lookout: 2 major open across 1 review",
+  "runs": [
+    {
+      "id": "a3f0c2e1d4b5a6978",
+      "status": "done",
+      "group": {"id": "session-overview", "label": "Scouts for session-overview", "kind": "plan"},
+      "parent": "wf_f7b371f3-6f2",
+      "metrics": [{"label": "read", "value": 14}, {"label": "cites", "value": 31}],
+      "links": [
+        {"file": "/w/repo/crew/board/run.js", "line": 35},
+        {"label": "review", "url": "http://127.0.0.1:7345/review/r1"}
+      ]
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `summary` | One line about the whole session, from this adapter, shown under the page's header. Cut to 200 characters. |
+| `group` | The heading a run sits under: `id` (required), `label` (cut to 120 characters), `kind` (`prompt`, `plan` or the adapter's own word) and `at`. A run without one goes under the prompt that launched it (see below). |
+| `parent` | The id of the run that started this one. The page nests it under that run. |
+| `metrics` | Up to four named counts, shown as chips: `label` (cut to 24 characters) and `value`, a number or a short string (cut to 12). |
+| `links` | Up to eight things to open, each a `file` (an absolute path, with an optional `line`) or a `url` (http or https only), and an optional `label` (the file's name or the URL by default). The page opens a file in the editor only when it lies inside the session's worktree. |
+
+A bad entry fails the document like any other field, named by its path
+(`runs[0].links[1].url: "file:///x" is not an http or https URL`).
+
+**Grouping by prompt.** seamux reads the session's own transcript to learn
+which prompt launched each run. When Claude Code launches a background agent
+or workflow, the tool result line carries the prompt's `promptId` and a
+`toolUseResult` with `agentId`, or with `runId` and `taskId`. The first
+user line with that promptId holds the person's text. A run whose id, task id
+or an agent's id was launched that way, and that has no `group`, gets that
+prompt as its group (`kind: "prompt"`). This happens after adapters replace
+runs by id, so a command adapter that takes over a built-in's run keeps the
+grouping without reading the transcript itself. Launches in a turn that a
+background task's finish started go under the person's last prompt before it.
+
 ### The badge convention
 
 An adapter decides what goes on a bar. The workflow adapter follows one

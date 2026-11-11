@@ -14,7 +14,7 @@ use super::host::Context;
 use super::model::{badge_of, detail_of, SCHEMA};
 
 /// The newest this many sub-agents are reported.
-pub const MAX: usize = 20;
+pub const MAX: usize = 50;
 
 pub fn adapter(ctx: &Context) -> Value {
     let dir = ctx.session_dir.join("subagents");

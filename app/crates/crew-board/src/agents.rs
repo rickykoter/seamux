@@ -276,7 +276,7 @@ mod tests {
     }
 
     fn report(doc: Value) -> Report {
-        Report { runs: parse_doc(&doc, "claude-workflow").unwrap(), notices: Vec::new() }
+        Report { runs: parse_doc(&doc, "claude-workflow").unwrap(), ..Default::default() }
     }
 
     #[test]
@@ -312,7 +312,7 @@ mod tests {
         mark_with(&mut rows, &files, &HashMap::new(), &mut |p, all| {
             asked.push((p.surface.clone(), all));
             (p.surface == "S2").then(|| Report { runs: vec![], notices: vec![host::Notice {
-                kind: "missing".into(), adapter: None, task_type: Some("teammate".into()), count: 1, why: "no adapter".into() }] })
+                kind: "missing".into(), adapter: None, task_type: Some("teammate".into()), count: 1, why: "no adapter".into() }], ..Default::default() })
         });
         assert_eq!(asked, vec![("S1".to_string(), false), ("S2".to_string(), false)], "only this card's panes, and only busy ones");
         let r = &rows[0];
