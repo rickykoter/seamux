@@ -186,6 +186,12 @@ pub fn post(req: &mut Request) {
     if path.starts_with("/review/") {
         return crate::proxy::post(req, crate::proxy::Plugin::Lookout, review::MAX_BODY);
     }
+    // A session page's link: a file in its worktree, or a web page.
+    if let Some(session) = crate::runs_page::open_path(&path) {
+        let Some(body) = post_body(req) else { return };
+        let (code, out) = crate::runs_page::open(&session, &body);
+        return req.json(code, &out);
+    }
     if path != "/artifacts/keep" && path != "/artifacts/publish" {
         return req.json(404, &json!({"error": "no such path"}));
     }

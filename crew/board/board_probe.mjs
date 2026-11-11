@@ -3423,6 +3423,40 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       checks.push(["session page: no token, the feed without a token, an unknown session and a path are refused",
         noTok.status === 403 && evNoTok.status === 403 && stray.status === 404 && [404, 400].includes(climb.status),
         JSON.stringify([noTok.status, evNoTok.status, stray.status, climb.status])]);
+      // A link opens a file in the session's worktree, at its line, in VS Code
+      // (the fake code logs its arguments), and nothing outside it.
+      const proj = join(HOME, ".claude", "projects", "-w-repo");
+      const wt = join(HOME, "wt");
+      fs.mkdirSync(join(wt, "src"), { recursive: true });
+      fs.writeFileSync(join(wt, ".git"), "gitdir: /elsewhere\n");
+      fs.writeFileSync(join(wt, "src", "a.rs"), "x\n");
+      fs.writeFileSync(join(HOME, "outside.txt"), "x\n");
+      fs.mkdirSync(join(proj, "s-open"), { recursive: true });
+      fs.writeFileSync(join(proj, "s-open.jsonl"), JSON.stringify({ type: "user", cwd: wt, promptId: "p1", message: { content: "open things" } }) + "\n");
+      const ad = join(HOME, ".config", "seamux", "adapters", "linker");
+      fs.mkdirSync(ad, { recursive: true });
+      fs.writeFileSync(join(ad, "adapter.json"), JSON.stringify({ schema: "seamux.adapter/1", name: "linker", recognizes: ["teammate"], command: ["sh", "run.sh"] }));
+      const doc = { schema: "seamux.run/1", runs: [{ id: "r1", status: "done", links: [
+        { file: join(wt, "src", "a.rs"), line: 7 }, { file: join(HOME, "outside.txt") }, { url: "https://example.test/x" }] }] };
+      fs.writeFileSync(join(ad, "run.sh"), "cat > /dev/null\nprintf '%s' '" + JSON.stringify(doc) + "'\n");
+      const od = await req("GET", "/runs/s-open/data" + q);
+      const ov = (() => { try { return JSON.parse(od.body); } catch (e) { return {}; } })();
+      const r1 = (ov.runs || []).find((x) => x.id === "r1") || {};
+      checks.push(["session page: each link says whether it opens: a file in the worktree and a web page yes, a file outside no",
+        JSON.stringify((r1.links || []).map((l) => l.opens)) === "[true,false,true]", od.body.slice(0, 400)]);
+      const shownOf = (i) => ((r1.links || [])[i] || {}).shown || "";
+      const op = (link, o) => post({ t: token, run: "r1", link, shown: shownOf(link) }, { path: "/runs/s-open/open", ...o });
+      const logBefore = fs.existsSync(join(HOME, "fake-code.log")) ? fs.readFileSync(join(HOME, "fake-code.log"), "utf8").length : 0;
+      const ok0 = await op(0), out1 = await op(1), none = await op(9), noT = await post({ run: "r1", link: 0 }, { path: "/runs/s-open/open" });
+      const cross = await op(0, { origin: "http://evil.test" });
+      const stale = await post({ t: token, run: "r1", link: 0, shown: "/elsewhere/b.rs:1" }, { path: "/runs/s-open/open" });
+      const logged = fs.existsSync(join(HOME, "fake-code.log")) ? fs.readFileSync(join(HOME, "fake-code.log"), "utf8").slice(logBefore) : "";
+      checks.push(["session page: opening a link runs VS Code on the worktree at the file's line",
+        ok0.status === 200 && logged.includes("--goto") && logged.includes(join("src", "a.rs") + ":7") && logged.split("\n")[0].endsWith("wt"), ok0.body + " :: " + logged]);
+      checks.push(["session page: a file outside the worktree, a link no adapter lists, a link that changed since it was shown, no token and another origin are refused",
+        out1.status === 400 && /outside this session's worktree/.test(out1.body) && none.status === 404 && stale.status === 409 &&
+        noT.status === 403 && cross.status === 403,
+        JSON.stringify([out1.status, out1.body, none.status, stale.status, noT.status, cross.status])]);
     }
 
     // ---- the served board: /board and its /board/events feed ---------------

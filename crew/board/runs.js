@@ -147,11 +147,37 @@
     return r.status === "running" ? '<span class="el" data-t0="' + Number(r.start) + '">' + took(Date.now() - r.start) + "</span>"
       : '<span class="el">' + took((r.end || r.start) - r.start) + "</span>";
   }
+  // A link the server says opens is a button: a file in the session's
+  // worktree opens in VS Code at its line, a web page in the browser. The
+  // rest (a file outside the worktree) is plain text.
   function linksOf(r) {
     return (r.links || []).map(function (l, i) {
       var label = l.file ? l.label + (l.line ? ":" + l.line : "") : l.label;
-      return '<span class="lk" data-link="' + i + '" title="' + esc(l.file || l.url || "") + '">' + esc(label) + "</span>";
+      var tip = l.file ? l.file + (l.line ? ":" + l.line : "") : l.url || "";
+      return l.opens ? '<button type="button" class="lk on" data-link="' + i + '" title="' + esc((l.file ? "Open in VS Code: " : "Open: ") + tip) + '">' + esc(label) + "</button>"
+        : '<span class="lk" title="' + esc(tip + (l.file ? " (outside this session's worktree)" : "")) + '">' + esc(label) + "</span>";
     }).join("");
+  }
+  // What each row last heard back from an open; a link already opening
+  // ignores more clicks. The button stays as drawn until the answer.
+  var said = {}, opening = {};
+  function openLink(id, i) {
+    var r = data && (data.runs || []).filter(function (x) { return x.id === id; })[0];
+    var l = r && (r.links || [])[i];
+    var key = id + "#" + i;
+    if (!l || opening[key]) return;
+    opening[key] = 1;
+    function done(msg) {
+      delete opening[key];
+      said[id] = msg;
+      draw();
+    }
+    fetch("/runs/" + encodeURIComponent(boot.session || "") + "/open", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t: boot.t || "", run: id, link: i, shown: l.shown || "" }),
+    }).then(function (res) { return res.json(); }).then(function (v) {
+      done(v && v.ok ? "" : "Could not open it: " + ((v && (v.detail || v.error)) || "no answer"));
+    }).catch(function () { done("Could not open it: the intent server is not answering."); });
   }
   function row(x) {
     var r = x.run, st = stateOf(r), b = badgeOf(r), page = pageOf(r, boot.session);
@@ -168,6 +194,7 @@
       det = '<div class="det">' + (d ? '<pre class="dt">' + esc(d) + "</pre>" : "") +
         (r.notice ? '<div class="nt">' + esc(r.notice) + "</div>" : "") +
         ((r.links || []).length ? '<div class="links">' + linksOf(r) + "</div>" : "") +
+        (said[r.id] ? '<div class="say">' + esc(said[r.id]) + "</div>" : "") +
         (page ? '<a class="go" href="' + esc(page) + "?back=" + encodeURIComponent(location.pathname) + '">' + (lone(r) ? "Open transcript" : "Open run page") + "</a>" : "") +
         "</div>";
     }
@@ -235,6 +262,11 @@
     if (open[id]) delete open[id]; else open[id] = 1;
     draw();
   }
+  $("groups").addEventListener("click", function (e) {
+    var b = e.target.closest(".lk.on");
+    var el = b && b.closest(".row");
+    if (el) openLink(el.getAttribute("data-id"), Number(b.getAttribute("data-link")));
+  });
   $("groups").addEventListener("click", toggle);
   $("groups").addEventListener("keydown", toggle);
   // A running row's elapsed time ticks without a redraw.

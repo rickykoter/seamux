@@ -480,6 +480,22 @@ write(GDOCK2, '{ "controls": [ { "id": "board" } ] }\n')
 r = run(["bash", os.path.join(CREW, "bin", "crew"), "uninstall"], env=APPLY_ENV)
 check("with no backup, a crew-rendered global Dock is removed", not os.path.exists(GDOCK2), r.stdout)
 
+# --- crew-code: a file at a line, in the worktree's window ---------------------
+WT = os.path.join(T, "wt")
+write(os.path.join(WT, "src", "a.rs"), "x\n")
+CODELOG = os.path.join(T, "code.log")
+write(os.path.join(FAKE, "code"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + CODELOG + "\n", 0o755)
+CODE_ENV = {"CREW_CODE_BIN": os.path.join(FAKE, "code"), "SEAMUX_BIN": os.path.join(T, "no-seamux")}
+at = os.path.join(WT, "src", "a.rs") + ":7"
+r = run(["bash", os.path.join(CREW, "bin", "crew-code"), WT, "--goto", at], env=CODE_ENV)
+got = open(CODELOG).read().split("\n") if os.path.exists(CODELOG) else []
+check("crew-code <worktree> --goto <file>:<line> opens the worktree's window at that file and line",
+      r.returncode == 0 and got[:3] == [WT, "--goto", at], repr(got) + r.stdout + r.stderr)
+os.remove(CODELOG)
+r = run(["bash", os.path.join(CREW, "bin", "crew-code"), WT], env=CODE_ENV)
+got = open(CODELOG).read().split("\n") if os.path.exists(CODELOG) else []
+check("…and without --goto, only the window", r.returncode == 0 and got[:2] == [WT, ""], repr(got))
+
 # --- cleanup -----------------------------------------------------------------
 try:
     spawned += [int(x) for x in open(os.path.join(FAKE, "intent.pids")).read().split()]
