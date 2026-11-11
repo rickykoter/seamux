@@ -2361,6 +2361,43 @@ if (want("github: link, sync, staleness, post")) {
   ok("gh: a hidden tab's poll asks for no sync; a visible one does", c1 === 200 && c2 === 200 && asked.join() === id, asked.join());
 }
 
+// ---------------------------------------------------------------- engine pointer
+// Only the copy the pointer names, a run with no usable pointer, or setup
+// writes it: a worktree's lookout run for a probe or a check must not move
+// every session and the app onto itself.
+if (want("engine pointer")) {
+  const file = path.join(TMP, "pointer", "engine.json");
+  const env = { ...ENV, LOOKOUT_ENGINE_FILE: file };
+  const run = (...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), ...a], { encoding: "utf8", env });
+  const root = () => JSON.parse(fs.readFileSync(file, "utf8")).root;
+  const r0 = run("list");
+  ok("pointer: a run with no pointer writes it", r0.status === 0 && root() === HERE && !/engine pointer names/.test(r0.stderr), r0.stderr);
+  // Another copy: a directory holding a lookout.mjs, as a kept checkout would.
+  const other = path.join(TMP, "kept", "lookout");
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(other, "lookout.mjs"), "");
+  fs.writeFileSync(file, JSON.stringify({ root: other, version: "0.1.0" }, null, 2) + "\n");
+  const r1 = run("list");
+  ok("pointer: another copy's run leaves it and says so", r1.status === 0 && root() === other &&
+     r1.stderr.includes(`the engine pointer names ${other}; left it`), r1.stderr);
+  const e = JSON.parse(run("engine").stdout);
+  ok("pointer: engine reports it was not written", e.root === HERE && e.pointer === "not written");
+  fs.writeFileSync(file, JSON.stringify({ root: other, version: "0.0.1" }, null, 2) + "\n");
+  run("list");
+  ok("pointer: a copy that is not the named one does not refresh its version either", JSON.parse(fs.readFileSync(file, "utf8")).version === "0.0.1");
+  fs.rmSync(other, { recursive: true, force: true });
+  run("list");
+  ok("pointer: a pointer naming a copy that is gone is taken over", root() === HERE);
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(other, "lookout.mjs"), "");
+  fs.writeFileSync(file, JSON.stringify({ root: other, version: "0.1.0" }, null, 2) + "\n");
+  const s = run("setup");
+  ok("pointer: setup moves it to its own copy", root() === HERE && /engine pointer ->/.test(s.stdout), s.stdout + s.stderr);
+  fs.writeFileSync(file, "{ not json");
+  run("list");
+  ok("pointer: an unreadable pointer is rewritten", root() === HERE);
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`lookout probe: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

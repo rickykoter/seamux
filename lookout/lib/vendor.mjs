@@ -170,13 +170,28 @@ export function engineVersion(root) {
   catch { return "dev"; }
 }
 
+// The root the pointer names now, or null when there is no usable pointer:
+// none, unreadable, or naming a copy that is gone.
+export function pointedRoot() {
+  let o;
+  try { o = JSON.parse(fs.readFileSync(ENGINE_FILE, "utf8")); } catch { return null; }
+  const root = o && typeof o.root === "string" ? o.root : "";
+  return root && fs.existsSync(path.join(root, "lookout.mjs")) ? root : null;
+}
+
 // One key per line is part of the contract: the shim reads "root" with sed.
-// Written only when the content changes.
-export function writeEnginePointer(root) {
+// Written only when the content changes, and only by the copy the pointer
+// already names (a version bump), by any copy when there is no usable
+// pointer, or by `lookout setup` (force). Any other copy (a worktree's, run
+// for a probe or a check) leaves it alone and returns null, so it cannot
+// move every session and the app onto itself.
+export function writeEnginePointer(root, { force = false } = {}) {
   const body = JSON.stringify({ root, version: engineVersion(root) }, null, 2) + "\n";
   let cur = null;
   try { cur = fs.readFileSync(ENGINE_FILE, "utf8"); } catch { /* first write */ }
   if (cur === body) return body;
+  const named = pointedRoot();
+  if (!force && named && path.resolve(named) !== path.resolve(root)) return null;
   fs.mkdirSync(path.dirname(ENGINE_FILE), { recursive: true });
   const tmp = ENGINE_FILE + ".tmp-" + process.pid;
   fs.writeFileSync(tmp, body);

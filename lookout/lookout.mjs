@@ -781,10 +781,17 @@ function cmdServe() {
 }
 
 // ---------------------------------------------------------------- dispatch
-// Every run refreshes the pointer, so whichever copy ran last is the one the
-// shim finds. Never at the cost of the command itself.
+// A run refreshes the pointer only when it names this copy or names nothing
+// usable; `lookout setup` moves it. Another copy (a worktree's) says so and
+// leaves it, so a probe or a check cannot move every session onto itself.
+// Never at the cost of the command itself.
 let pointerBody = null;
-try { pointerBody = V.writeEnginePointer(HERE); } catch { /* read-only home */ }
+try {
+  pointerBody = V.writeEnginePointer(HERE, { force: verb === "setup" });
+  if (pointerBody === null)
+    process.stderr.write(`lookout: running ${HERE}, but the engine pointer names ${V.pointedRoot()}; ` +
+      "left it (lookout setup here moves it)\n");
+} catch { /* read-only home */ }
 
 switch (verb) {
   case "open":   cmdOpen(); break;
@@ -812,7 +819,9 @@ switch (verb) {
   case "engine": {
     // The pointer as written by this run, plus the host it detected (not
     // stored in the pointer: the host belongs to the session, not the copy).
-    let o; try { o = JSON.parse(pointerBody); } catch { o = { root: HERE, pointer: "not written" }; }
+    // A pointer left to another copy says which one it names.
+    let o = null; try { o = JSON.parse(pointerBody); } catch { /* not written */ }
+    if (!o) o = { root: HERE, pointer: "not written", ...(V.pointedRoot() ? { names: V.pointedRoot() } : {}) };
     process.stdout.write(JSON.stringify({ ...o, ...detectHost() }, null, 2) + "\n");
     break;
   }
