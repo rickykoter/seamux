@@ -12,8 +12,13 @@ seamux_data_root() {
   [ -n "${SEAMUX_HOST:-}" ] && h=$(printf '%s' "$SEAMUX_HOST" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
   case "$h" in
     remote) ;;
-    cmux|desktop|terminal) return 1 ;;
-    *) [ -z "${CMUX_WORKSPACE_ID:-}" ] && [ "${CLAUDE_CODE_REMOTE:-}" = true ] || return 1 ;;
+    cmux|seamux|desktop|terminal) return 1 ;;
+    *)
+      # cmux (a CMUX_WORKSPACE_ID a tmux-backend pane did not inherit), then
+      # the seamux app's tmux, come before remote, as in host.mjs.
+      [ -n "${CMUX_WORKSPACE_ID:-}" ] && [ "${SEAMUX_BACKEND:-}" != tmux ] && return 1
+      [ -n "${SEAMUX_PANE_ID:-}" ] && return 1
+      [ "${CLAUDE_CODE_REMOTE:-}" = true ] || return 1 ;;
   esac
   # The main checkout (the shared .git's parent), as host.mjs finds it.
   g=$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1

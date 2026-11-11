@@ -260,6 +260,11 @@ pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, wo
         let text = port_file().and_then(|p| std::fs::read_to_string(p).ok()).ok_or("no port file: the intent server has not started")?;
         let port = parse_port(&text).ok_or("bad port file")?;
         let url = format!("http://127.0.0.1:{port}{path}");
+        // On the app's tmux there is no cmux: a ⌘-click opens the page in
+        // the browser instead.
+        if seamux_app::backend::kind() == crew_core::backend::Kind::Tmux {
+            return crew_board::companion::open_in_browser(&url).map(|_| ());
+        }
         let c = cmux::Cmux::connect().map_err(|e| e.to_string())?;
         // The workspace comes forward first, so its companion is on screen
         // and sized; then the page opens there, focused: the person asked.

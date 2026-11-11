@@ -638,6 +638,7 @@ name = "crew-hooks"
 version = "0.1.0"
 dependencies = [
  "cmux",
+ "crew-cli",
  "crew-core",
  "libc",
  "serde_json",

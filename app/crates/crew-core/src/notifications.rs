@@ -191,6 +191,90 @@ pub fn prune(dir: &Path, now_ms: u64, keep_days: i64) -> usize {
         .count()
 }
 
+// --- note files (ADR 0087) ------------------------------------------------------
+
+/// A note older than this when the app reads it is dropped unposted: it was
+/// written while no app ran, and its news is stale.
+pub const NOTE_MAX_AGE_MS: u64 = 10 * 60_000;
+
+/// One banner for the app's notifier to post: `note-<id>.json` in `dir`
+/// (crew's state dir, beside bash-guard's blocked files). Written whole,
+/// then renamed in, so the notifier never reads half a note.
+pub fn write_note(dir: &Path, kind: &str, title: &str, body: &str, ws: &str, pane: &str) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    if title.is_empty() {
+        return false;
+    }
+    let id = format!("{}-{}-{}", now_ms(), std::process::id(), N.fetch_add(1, Ordering::Relaxed));
+    let note = json!({"kind": kind, "title": title, "body": body, "ws": ws, "pane": pane, "at": now_ms()});
+    let _ = fs::create_dir_all(dir);
+    prune_notes(dir, now_ms());
+    crate::py::write_atomic(&dir.join(format!("note-{id}.json")), note.to_string().as_bytes()).is_ok()
+}
+
+/// Delete note files older than NOTE_MAX_AGE_MS, by their file time. With
+/// the app on cmux nothing takes notes, so a writer keeps the pile bounded.
+fn prune_notes(dir: &Path, now: u64) {
+    let max = std::time::Duration::from_millis(NOTE_MAX_AGE_MS);
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(now);
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("note-") && name.ends_with(".json")) {
+            continue;
+        }
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|a| a > max);
+        if old {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
+/// Every note file in `dir`, oldest first, each read and deleted once. A
+/// note that cannot be read, or is older than NOTE_MAX_AGE_MS at `now`, is
+/// deleted and not returned, so nothing is retried forever.
+pub fn take_notes(dir: &Path, now: u64) -> Vec<Value> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("note-") && n.ends_with(".json")))
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .filter_map(|p| {
+            let v = fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+            let _ = fs::remove_file(&p);
+            let v = v?;
+            let at = v.get("at").and_then(Value::as_u64).unwrap_or(0);
+            (now.saturating_sub(at) <= NOTE_MAX_AGE_MS).then_some(v)
+        })
+        .collect()
+}
+
+/// Post a banner from a sender that is not a hook (crew-sync, the digest,
+/// cachefacts): through cmux notify on the cmux backend, else as a note
+/// file the seamux app's notifier posts and logs (ADR 0087). `kind` is
+/// pr, digest or stale.
+pub fn post(kind: &str, title: &str, body: &str, ws: &str) -> bool {
+    let on_cmux = crate::backend::pick_kind(&|k| env_or(k), &|| cmux::Cmux::connect().is_ok()) == crate::backend::Kind::Cmux;
+    if on_cmux {
+        let Ok(c) = cmux::Cmux::connect() else { return false };
+        return c
+            .notify(&cmux::Notify {
+                title: title.into(),
+                subtitle: Some(format!("crew:{}", if kind == "stale" { "blocked" } else { kind })),
+                body: Some(body.into()),
+                workspace: Some(ws.to_string()).filter(|w| !w.is_empty()),
+            })
+            .is_ok();
+    }
+    write_note(&crate::home::home_cache(), kind, title, body, ws, "")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +348,38 @@ mod tests {
         }
         assert_eq!(prune(&d, today, KEEP_DAYS), 2);
         assert_eq!(fs::read_dir(&d).unwrap().count(), 3);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_note_is_read_once_and_a_stale_or_bad_one_is_dropped() {
+        let d = std::env::temp_dir().join(format!("notes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        assert!(write_note(&d, "pr", "api", "#12 CI red: build", "W", ""));
+        assert!(!write_note(&d, "pr", "", "no title", "W", ""));
+        fs::write(d.join("note-0-bad.json"), "{not json").unwrap();
+        fs::write(d.join("note-1-old.json"), json!({"kind": "pr", "title": "old", "at": 1}).to_string()).unwrap();
+        let got = take_notes(&d, now_ms());
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0]["kind"].as_str(), got[0]["title"].as_str(), got[0]["ws"].as_str()), (Some("pr"), Some("api"), Some("W")));
+        assert!(take_notes(&d, now_ms()).is_empty());
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_write_prunes_notes_nobody_took() {
+        let d = std::env::temp_dir().join(format!("notes-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let old = d.join("note-1-old.json");
+        fs::write(&old, "{}").unwrap();
+        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options().write(true).open(&old).unwrap().set_modified(an_hour_ago).unwrap();
+        fs::write(d.join("other.json"), "{}").unwrap();
+        assert!(write_note(&d, "digest", "t", "b", "W", ""));
+        assert!(!old.exists());
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 2);
         let _ = fs::remove_dir_all(&d);
     }
 }

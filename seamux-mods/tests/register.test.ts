@@ -512,8 +512,18 @@ describe('seamux-mods', () => {
     await ui2.unmount()
   })
 
-  test('the pane links back to the review while in review, and `open review` opens it in cmux', async ($, on) => {
+  test('outside a cmux pane, `open review` toasts the link and never runs cmux', async ($, on) => {
     const w = world(on, { demoOff: true, cwd: '/elsewhere', extra: [plan('far', '/other/repo', 'review', 5, { session: 'sess-1', workspace: '' })] })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    await ui.press({ key: 'open' })
+    expect(w.cmux).toEqual([])
+    expect(w.toasts).toEqual(['Plan page: http://127.0.0.1:7345/plan/far.review.html'])
+    await ui.unmount()
+  })
+
+  test('the pane links back to the review while in review, and `open review` opens it in cmux', async ($, on) => {
+    const w = world(on, { demoOff: true, cwd: '/elsewhere', workspace: 'WS-1', extra: [plan('far', '/other/repo', 'review', 5, { session: 'sess-1', workspace: '' })] })
     await $.command.run({ command: 'plan-pane', args: '' } as never)
     const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
     expect((await ui.find({ key: 'link' }))?.text).toMatch(/http:\/\/127\.0\.0\.1:7345\/plan\/far\.review\.html/)

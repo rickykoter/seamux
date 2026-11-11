@@ -334,6 +334,13 @@ pub struct Tile {
     pub exited: Option<Exited>,
     /// The pane's cwd has left the workspace's pinned worktree.
     pub outside: bool,
+    /// Its Claude's task list, "3/5 · what is in progress" (its pane file).
+    pub progress: Option<String>,
+}
+
+/// Each pane file's task progress, by surface (upper case).
+fn progress_of(dir: &std::path::Path) -> HashMap<String, String> {
+    crew_core::status::all(dir).into_iter().filter_map(|p| Some((p.surface.to_uppercase(), p.progress?))).collect()
 }
 
 /// A native Claude's name: its worktree's folder, then the topic Claude
@@ -401,6 +408,8 @@ struct State {
     colors: HashMap<String, String>,
     pins: HashMap<String, String>,
     owners: HashMap<String, String>,
+    /// Per surface (upper case): its pane file's task progress.
+    progress: HashMap<String, String>,
     /// Per surface: the state last seen, and when it was first seen.
     since: HashMap<String, (String, u64)>,
     /// Per native surface (upper case): the foreground command last seen,
@@ -550,6 +559,7 @@ impl Wall {
         let colors = listing.as_ref().map(colors);
         let pins = listing.as_ref().map(pins);
         let owners = owners(&crew_board::server::dp_state());
+        let progress = progress_of(&crew_board::state::state_dir());
         let mut terms = match &listed {
             Ok(v) => terminals(v),
             Err(_) => self.state.lock().unwrap().terms.clone(),
@@ -578,6 +588,7 @@ impl Wall {
             st.pins = p;
         }
         st.owners = owners;
+        st.progress = progress;
         st.terms = terms;
         st.text = reads;
         self.frame_if_changed(&mut st)
@@ -725,6 +736,7 @@ impl Wall {
                     root: st.pins.get(&t.workspace).cloned().unwrap_or_default(),
                     owner: st.owners.get(&t.surface.to_uppercase()).cloned(),
                     outside: st.pins.get(&t.workspace).is_some_and(|r| is_outside(&t.cwd, r)),
+                    progress: st.progress.get(&t.surface.to_uppercase()).cloned(),
                 }
             })
             .collect();

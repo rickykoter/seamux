@@ -515,21 +515,7 @@ fn resume(mode: &str, s: &Value) -> i32 {
         let _ = std::env::set_current_dir(&cwd);
         return std::process::Command::new("claude").args(["--resume", &id]).status().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
     }
-    // A native session (cmux local-tmux, which the seamux app draws too), as
-    // every new session starts; a plain cmux terminal only if that fails.
-    let rc = match crew_core::native::open_workspace(Path::new(&cwd), &cmd) {
-        Ok((wref, id, how)) => {
-            let _ = crew_core::native::cmux_ok(&["select-workspace", "--workspace", id.as_deref().unwrap_or(&wref)]);
-            if let crew_core::native::Started::Plain(why) = how {
-                eprintln!("crew-resume: not started natively ({why}); it runs in the workspace's cmux terminal");
-            }
-            0
-        }
-        Err(e) => {
-            eprintln!("crew-resume: no new workspace ({e}); trying cmux's own");
-            open_plain(&cwd, &cmd)
-        }
-    };
+    let rc = open_resumed(&cwd, &cmd);
     if rc == 0 {
         println!("✓ resumed {} in a new workspace — {}", head(&id, 8), head(&w::label(s), 60));
         close_ephemeral(); // "here" never closes: Claude has taken this very tab
@@ -537,24 +523,38 @@ fn resume(mode: &str, s: &Value) -> i32 {
     rc
 }
 
-/// `cmd` in a new plain cmux workspace at `cwd`: the CLI itself, waited on
-/// for as long as it takes (no kill that could leave a half-made workspace),
-/// stdout dropped, stderr shown.
-fn open_plain(cwd: &str, cmd: &str) -> i32 {
-    let bin = cmux().and_then(|c| c.cli_bin().ok()).or_else(|| cmux::resolve_cli_bin().ok());
-    match bin {
-        Some(bin) => std::process::Command::new(&bin)
-            .args(["new-workspace", "--cwd", cwd, "--command", cmd, "--focus", "true"])
-            .env("CMUX_QUIET", "1")
-            .stdout(std::process::Stdio::null())
-            .status()
-            .map(|s| s.code().unwrap_or(1))
-            .unwrap_or_else(|e| {
-                eprintln!("crew-resume: cannot run {}: {e}", bin.display());
+/// `cmd` (claude --resume) in a new workspace at `cwd`, on this process's
+/// backend: a native session on cmux, as every new session starts there;
+/// a pane in the seamux app's tmux otherwise, which the app then shows.
+fn open_resumed(cwd: &str, cmd: &str) -> i32 {
+    let (kind, b) = crew_core::backend::pick();
+    if kind == crew_core::backend::Kind::Cmux {
+        return match crew_core::native::open_workspace(Path::new(cwd), cmd) {
+            Ok((wref, id, how)) => {
+                let _ = crew_core::native::cmux_ok(&["select-workspace", "--workspace", id.as_deref().unwrap_or(&wref)]);
+                if let crew_core::native::Started::Plain(why) = how {
+                    eprintln!("crew-resume: not started natively ({why}); it runs in the workspace's cmux terminal");
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("crew-resume: cmux opened no workspace ({e})");
                 1
-            }),
-        None => {
-            eprintln!("crew-resume: no cmux to open a workspace with");
+            }
+        };
+    }
+    let opened = b.and_then(|b| crew_core::workspace_open::open_for(b.as_ref(), Path::new(cwd), cmd, false));
+    match opened {
+        Ok(crew_core::workspace_open::Outcome::Opened { workspace, id }) => {
+            crew_core::focus::open(id.as_deref().unwrap_or(&workspace), None);
+            0
+        }
+        Ok(crew_core::workspace_open::Outcome::Already { workspace }) => {
+            crew_core::focus::open(&workspace, None);
+            0
+        }
+        Err(e) => {
+            eprintln!("crew-resume: the seamux app's tmux opened no workspace ({e})");
             1
         }
     }
@@ -566,7 +566,7 @@ fn open_row(r: &Row) -> i32 {
         "live" => {
             let id = r.ws.as_ref().map(|w| w.id.clone()).unwrap_or_default();
             if !w::select(&id) {
-                eprintln!("crew-resume: cmux would not switch to {}", r.title);
+                eprintln!("crew-resume: could not switch to {} (is cmux or the seamux app running?)", r.title);
                 return 1;
             }
             println!("✓ {}", r.title);
@@ -646,7 +646,7 @@ fn run(args: &[String]) -> i32 {
             Some(Pick::Reindex) => force = true,
             Some(Pick::Archive(r)) => {
                 let id = r.ws.as_ref().map(|w| w.id.clone()).unwrap_or_default();
-                if std::env::var("CMUX_WORKSPACE_ID").ok().as_deref() == Some(id.as_str()) {
+                if crew_core::ident::workspace_id().as_deref() == Some(id.as_str()) {
                     ui.flash = "that is this terminal's workspace — archive it from elsewhere".into();
                 } else {
                     // The picker is down: a --family-ok y/N reads the plain terminal.

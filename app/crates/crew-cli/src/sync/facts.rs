@@ -181,6 +181,98 @@ pub fn sessions_by_ws(p: &Paths) -> HashMap<String, Vec<(String, Value)>> {
     sessions_in(&p.store)
 }
 
+/// `sessions_by_ws` on the seamux app's tmux: each pane's session, from
+/// crew_core's pane-file records (ADR 0085), in the store's field names.
+/// `live` stands in for a pid: a claude process runs on the pane's terminal.
+pub fn sessions_from_tmux() -> HashMap<String, Vec<(String, Value)>> {
+    tmux_sessions_of(&crew_core::workspaces::agent_sessions().unwrap_or_default())
+}
+
+/// `sessions_from_tmux` from records already read.
+pub fn tmux_sessions_of(records: &[Value]) -> HashMap<String, Vec<(String, Value)>> {
+    let mut out: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+    for r in records.iter().filter(|r| r.get("source").and_then(Value::as_str) == Some("tmux")) {
+        let ws = r.get("workspace_id").map(py_str).unwrap_or_default();
+        let sid = r.get("session_id").map(py_str).unwrap_or_default();
+        if ws.is_empty() || sid.is_empty() {
+            continue;
+        }
+        let rec = json!({"sessionId": sid, "workspaceId": ws,
+                         "agentLifecycle": r.get("agent_lifecycle").cloned().unwrap_or(Value::Null),
+                         "live": r.get("stored_pid_exists") == Some(&Value::Bool(true))});
+        let list = out.entry(ws).or_default();
+        if !list.iter().any(|(s, _)| *s == sid) {
+            list.push((sid, rec));
+        }
+    }
+    out
+}
+
+/// Unix seconds of a UTC ISO time's first 19 characters ("2026-10-26T12:21:17Z").
+fn iso_secs(t: &str) -> Option<u64> {
+    let b = t.as_bytes();
+    if b.len() < 19 || !t.is_char_boundary(19) || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let n = |a: usize, z: usize| t[a..z].bytes().all(|c| c.is_ascii_digit()).then(|| t[a..z].parse::<i64>().ok()).flatten();
+    let (y, mo, d, h, mi, s) = (n(0, 4)?, n(5, 7)?, n(8, 10)?, n(11, 13)?, n(14, 16)?, n(17, 19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
+        return None;
+    }
+    u64::try_from(py::days_from_civil(y, mo as u32, d as u32) * 86400 + h * 3600 + mi * 60 + s).ok()
+}
+
+/// The PRs a lookout review follows, as pr_watch picks them (ADR 0084 and
+/// #212's pr_watch.rs): a review record whose github block names an OPEN PR,
+/// updated in the last 14 days (its updatedAt, as pr_watch::wanted reads
+/// it). On tmux, pr_watch posts
+/// those PRs' red checks, so crew-sync leaves their CI lines out.
+pub fn reviewed_prs(reviews: &Path, now: std::time::SystemTime) -> HashSet<(String, u64)> {
+    const IDLE: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
+    let mut out = HashSet::new();
+    for e in std::fs::read_dir(reviews).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else { continue };
+        if id.ends_with(".rows") || id.ends_with(".seen") || id.ends_with(".incoming") || id.starts_with("wake-") {
+            continue;
+        }
+        let Some(d) = read_json(&e.path().to_string_lossy()) else { continue };
+        let updated = d.get("updatedAt").and_then(Value::as_str).and_then(iso_secs);
+        let fresh = updated.and_then(|u| now.duration_since(std::time::UNIX_EPOCH + Duration::from_secs(u)).ok()).is_some_and(|age| age < IDLE);
+        if !fresh {
+            continue;
+        }
+        let Some(g) = d.get("github").cloned() else { continue };
+        if g.get("state").and_then(Value::as_str).unwrap_or("OPEN") != "OPEN" {
+            continue;
+        }
+        let Some(n) = g.get("pr").and_then(Value::as_u64) else { continue };
+        let repo = g.get("repo").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_string)
+            .or_else(|| g.get("url").and_then(Value::as_str).and_then(pr_key).map(|(r, _)| r));
+        if let Some(r) = repo {
+            out.insert((r.to_ascii_lowercase(), n));
+        }
+    }
+    out
+}
+
+/// (owner/repo, number) of a GitHub PR url.
+pub fn pr_key(url: &str) -> Option<(String, u64)> {
+    let rest = url.split("github.com/").nth(1)?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 4 || parts[2] != "pull" {
+        return None;
+    }
+    let n = parts[3].split(['#', '?']).next()?.parse().ok()?;
+    Some((format!("{}/{}", parts[0], parts[1]).to_ascii_lowercase(), n))
+}
+
+/// Whether a session record's Claude still runs: its pid answers, or (on
+/// tmux, which records no pid) it says so.
+pub fn live(r: &Value) -> bool {
+    alive(r.get("pid")) || r.get("live") == Some(&Value::Bool(true))
+}
+
 /// `sessions_by_ws` from the store at `store`.
 pub fn sessions_in(store: &str) -> HashMap<String, Vec<(String, Value)>> {
     let Some(d) = read_json(store).filter(Value::is_object) else { return HashMap::new() };
@@ -1213,5 +1305,51 @@ mod tests {
         assert_eq!(relpath("/a/b/c", "/a"), "b/c");
         assert_eq!(relpath("/a", "/a/b"), "..");
         assert_eq!(relpath("/a", "/a"), ".");
+    }
+
+    #[test]
+    fn tmux_records_read_as_the_stores_sessions() {
+        let recs = vec![
+            json!({"source": "tmux", "workspace_id": "W", "session_id": "s1", "agent_lifecycle": "running", "stored_pid_exists": true}),
+            json!({"source": "tmux", "workspace_id": "W", "session_id": "s2", "agent_lifecycle": "ended", "stored_pid_exists": false}),
+            json!({"source": "tmux", "workspace_id": "W", "session_id": "", "agent_lifecycle": "idle", "stored_pid_exists": true}),
+            json!({"workspace_id": "W", "session_id": "cmux-one"}),
+        ];
+        let m = tmux_sessions_of(&recs);
+        let w = &m["W"];
+        assert_eq!(w.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(), vec!["s1", "s2"]);
+        assert_eq!(w[0].1["agentLifecycle"], "running");
+        assert!(live(&w[0].1));
+        assert!(!live(&w[1].1));
+    }
+
+    #[test]
+    fn a_fresh_open_reviewed_pr_is_owned_by_pr_watch() {
+        assert_eq!(pr_key("https://github.com/RickyKoter/seamux/pull/212"), Some(("rickykoter/seamux".into(), 212)));
+        assert_eq!(pr_key("https://github.com/a/b/pull/7#discussion"), Some(("a/b".into(), 7)));
+        assert_eq!(pr_key("https://github.com/a/b/issues/7"), None);
+        let d = std::env::temp_dir().join(format!("reviews-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let w = |name: &str, mut v: Value, at: &str| {
+            v["updatedAt"] = json!(at);
+            std::fs::write(d.join(name), v.to_string()).unwrap()
+        };
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(iso_secs("2026-11-11T12:00:00Z").unwrap());
+        let fresh = "2026-11-10T12:00:00Z";
+        w("open.json", json!({"github": {"repo": "a/B", "pr": 7, "state": "OPEN"}}), fresh);
+        w("by-url.json", json!({"github": {"url": "https://github.com/a/b/pull/8", "pr": 8}}), fresh);
+        w("merged.json", json!({"github": {"repo": "a/b", "pr": 9, "state": "MERGED"}}), fresh);
+        w("unlinked.json", json!({"source": {"branch": "x"}}), fresh);
+        w("wake-x.json", json!({"github": {"repo": "a/b", "pr": 10}}), fresh);
+        // Its file was just written, but pr_watch reads updatedAt: 15 days idle.
+        w("idle.json", json!({"github": {"repo": "a/b", "pr": 11}}), "2026-10-27T12:00:00Z");
+        let got = reviewed_prs(&d, now);
+        let mut v: Vec<_> = got.into_iter().collect();
+        v.sort();
+        assert_eq!(v, vec![("a/b".to_string(), 7), ("a/b".to_string(), 8)]);
+        let later = now + Duration::from_secs(15 * 24 * 3600);
+        assert!(reviewed_prs(&d, later).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import { execSync, execFileSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
-import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport, followRenamed } from "./lib/adr.mjs";
+import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport, followRenamed, numberTaken } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd, handoffMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
 import { buildMap } from "./lib/map.mjs";
@@ -3569,6 +3569,17 @@ function adrApply(slug) {
       log1(st, `adr ${a.n}: followed a renumber on disk, ${a.applied} -> ${mv.applied}`);
       Object.assign(a, mv);
     }
+    // Applied, but another ADR in the folder now holds the same number (a
+    // rebase onto a branch that added one): move ours to a free number.
+    if (a.applied && numberTaken(st.root, a, config)) {
+      const fresh = nextNumber(dirAbs, config.numberScan);
+      const file = adrFileName(fresh, entry.decision, config.filePattern);
+      say(`adr ${a.n}: number ${a.number} is taken by another ADR in ${a.dir}; moving ${a.file} to ${file}`);
+      log1(st, `adr ${a.n}: reallocated ${a.number} -> ${fresh}, another ADR holds ${a.number}`);
+      const old = path.join(st.root, a.applied);
+      if (fs.existsSync(old)) fs.rmSync(old);
+      Object.assign(a, { number: fresh, file, applied: path.join(a.dir, file) });
+    }
     if (!a.applied) {
       const miss = adrScanReport(dirAbs, config.numberScan);
       if (miss)
@@ -4047,7 +4058,7 @@ ${ask.mermaid ? `<pre class="mermaid">${esc(String(ask.mermaid).trim())}</pre>` 
 ${opts}
 <p id="dp-ask-status" class="dim" role="status" aria-live="polite">${ask.answer
   ? `answered: ${esc(String(ask.answer.n))} — ${esc(ask.options[ask.answer.n - 1]?.label || "")}`
-  : "Answer in the prompt as usual. In cmux, a pick here is typed into the terminal for you."}</p>
+  : "Answer in the prompt as usual. In cmux or the seamux app, a pick here is typed into the terminal for you."}</p>
 ${MERMAID_BOOT}
 ${ASK_WHEN_JS}
 </body></html>`;
@@ -5142,7 +5153,9 @@ function incrementDiff(st, inc, { open = false, base = "" } = {}) {
       `\n  or:   deep-plan diff ${st.slug} ${inc.n}`;
     if (!open) { say(`patch: ${p}\n${how}`); return; }
     const title = `${st.slug} · increment ${inc.n} since ${sha.slice(0, 8)}`;
-    const r = spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" });
+    // cmux's diff viewer only in a cmux session: elsewhere it would open in
+    // whatever cmux workspace is in front, or not at all.
+    const r = detectHost().host === "cmux" ? spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" }) : { error: true };
     if (r.error || r.status !== 0) say(`patch: ${p}\n${how}`);
   } catch { /* the patch is a courtesy, never a failure */ }
   finally { for (const f of [tmp, tmp + ".lock"]) fs.rmSync(f, { force: true }); }
@@ -6457,6 +6470,9 @@ const [, , cmd, ...rest] = process.argv;
 }
 const flags = {};
 const args = [];
+// Only these commands have a dry run. Anywhere else --dry-run is refused, so it
+// never quietly does the real thing (render archived a plan with it).
+const DRY_RUN_OK = new Set(["redraw"]);
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--force") flags.force = true;
   // Resolved here: state outlives this cwd, and the gate reads a relative root
@@ -6464,7 +6480,10 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--root") flags.root = rest[++i] && path.resolve(rest[i]);
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
-  else if (rest[i] === "--dry-run") flags.dry = true;
+  else if (rest[i] === "--dry-run") {
+    if (!DRY_RUN_OK.has(cmd)) die(`${cmd || "deep-plan"} has no --dry-run; it would do the real thing (only ${[...DRY_RUN_OK].join(", ")} takes it)`);
+    flags.dry = true;
+  }
   else if (rest[i] === "--inline") flags.inline = true;
   else if (rest[i] === "--write") flags.write = true;
   else if (rest[i] === "--out") flags.out = rest[++i];
@@ -6828,7 +6847,7 @@ switch (cmd) {
     const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", base,
       "--at", st.root, "--view-only", ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
     if (r.ok) { say(r.out); break; }
-    if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
+    if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); ${detectHost().host === "cmux" ? "falling back to cmux diff" : "here is the patch instead"}`);
     incrementDiff(st, inc, { open: true, base }); break;
   }
   case "deliver": {
@@ -6898,7 +6917,7 @@ switch (cmd) {
   setup [--force]                             fetch the pinned mermaid, write the engine
                                               pointer, install the ~/.local/bin shim
   engine                                      print the engine pointer (which copy runs)
-  doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
+  doctor [--json]                             print the host (cmux, seamux, desktop, terminal, remote) and the engine copy
   serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
   install-repo [--root DIR] [--check]        copy the plugin into a repo's .claude/ for cloud sessions
   export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews

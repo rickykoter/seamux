@@ -119,7 +119,7 @@ names it):
 | Where | Driver | Evidence |
 |---|---|---|
 | cmux | `cmux browser repl` (Playwright's API) in the workspace the plan root lives in | frames, key frames, trace, `run.png` replay, a tab to bring forward |
-| desktop, terminal, remote, CI | Playwright and headless Chromium, when `playwright` resolves from the repo, the global npm root or npx's cache | frames, key frames, trace (console, page errors, navigations); no replay, no tab |
+| seamux, desktop, terminal, remote, CI | Playwright and headless Chromium, when `playwright` resolves from the repo, the global npm root or npx's cache | frames, key frames, trace (console, page errors, navigations); no replay, no tab |
 | neither | none: the check needs a variant, and says to `npm i -D playwright && npx playwright install chromium` or record it as a manual check | |
 
 ```json

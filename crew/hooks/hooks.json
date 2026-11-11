@@ -1,5 +1,5 @@
 {
-  "description": "crew: publish each session's state to cmux (a no-op outside cmux, and when seamux is not installed). Each event runs seamux-hook.sh, which hands the work to `seamux crew-hook <event>`.",
+  "description": "crew: publish each session's state to seamux: its pane files, the app's Dock and the board, and cmux's sidebar in a cmux pane (a no-op when seamux is not installed). Each event runs seamux-hook.sh, which hands the work to `seamux crew-hook <event>`.",
   "hooks": {
     "SessionStart": [
       {
@@ -171,7 +171,7 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" task",
             "timeout": 5,
-            "statusMessage": "Publishing plan to cmux..."
+            "statusMessage": "Publishing plan to seamux..."
           }
         ]
       }

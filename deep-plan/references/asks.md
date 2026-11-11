@@ -7,12 +7,13 @@ Write the question as an ask file (`examples/example.ask.json` in the plugin roo
 question, 2+ options, per-option `mermaid` and `example`) and run
 `deep-plan ask <file.json>` from the worktree — it renders the page,
 prints the id and `served at <url> (host: …)`. In cmux the page opens
-beside the terminal; in Claude desktop, open the URL in the browser
+beside the terminal; in the seamux app the Dock lists it beside the
+terminal; in Claude desktop, open the URL in the browser
 pane with `preview_start`; in a plain terminal, give the person the
 link. Then call `AskUserQuestion` as usual with the same options, each
 preview carrying that URL plus a text sketch. The prompt is the answer
-of record on every host. Only in cmux does a pick on the page type the
-option number into the terminal (verified by reading the screen back;
+of record on every host. Only in cmux and the seamux app (through tmux)
+does a pick on the page type the option number into the terminal (verified by reading the screen back;
 if unverified the page says which key to press). Anywhere else the page
 records the pick and tells the person to answer in the chat prompt. `deep-plan ask show <id>` prints what was picked.
 **One question per `AskUserQuestion` call while an ask is open.** A

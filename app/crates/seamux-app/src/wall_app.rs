@@ -379,7 +379,22 @@ pub async fn move_native(surface_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn wall_jump(surface_id: String) -> Result<(), String> {
+pub async fn wall_jump(app: AppHandle, surface_id: String) -> Result<(), String> {
+    // On the app's tmux there is no cmux to jump to: the Dock shows the pane,
+    // as a banner's click does.
+    if seamux_app::backend::kind() == crew_core::backend::Kind::Tmux {
+        use crew_core::backend::Backend;
+        let pane = tauri::async_runtime::spawn_blocking(move || {
+            crew_core::backend::tmux::TmuxBackend::default().panes(None).ok()?
+                .into_iter().find(|p| p.id.eq_ignore_ascii_case(&surface_id))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("that pane is no longer open")?;
+        crate::shell::summon(&app);
+        let _ = app.emit("notify:jump", serde_json::json!({"ws": pane.workspace, "pane": pane.id}));
+        return Ok(());
+    }
     let w = wall()?.clone();
     // A jump goes to the pane in cmux: it may come forward.
     crate::shell::allow_cmux_focus();

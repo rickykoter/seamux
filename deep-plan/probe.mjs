@@ -5,7 +5,8 @@
 //
 // The probe is a list of sections, each guarded by `if (want(name))`. By default
 // every section runs in its own child process with its own TMP, several at once
-// (`-j N`, default one per CPU). `--only <word>` runs the sections whose name
+// (`-j N`, default half the CPUs: one per CPU loaded a 10-CPU Mac
+// past 150 and failed the timing sections). `--only <word>` runs the sections whose name
 // contains the word, for a quick test-fix-test loop; `--serial` runs them in
 // this one process, one after another. See tools/probe_sections.mjs.
 import fs from "node:fs";
@@ -1644,6 +1645,18 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
     /^# 0*6\. /.test(fs.readFileSync(path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"), "utf8").split("\n")[0]), ap3.stdout + ap3.stderr);
   // Back to 0002, so the cases after this see the ADR they always did.
   fs.renameSync(path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md"));
+  cli("render", tmpSpec(spec));
+  // Another ADR landed on our applied number (a rebase onto a branch that
+  // added one): apply moves ours to a free number, never beside it.
+  fs.writeFileSync(path.join(adrDir, "0002-github-reads.md"), "theirs\n");
+  const ap4 = cli("adr", "apply", spec.slug);
+  ok("apply moves an applied ADR off a number another ADR now holds",
+    ap4.status === 0 && /number 2 is taken/.test(ap4.stdout) &&
+    fs.existsSync(path.join(adrDir, "0003-sweep-on-a-timer-not-on-write.md")) &&
+    !fs.existsSync(path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md")) &&
+    fs.readFileSync(path.join(adrDir, "0002-github-reads.md"), "utf8") === "theirs\n", ap4.stdout + ap4.stderr);
+  fs.rmSync(path.join(adrDir, "0002-github-reads.md"));
+  fs.renameSync(path.join(adrDir, "0003-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md"));
   cli("render", tmpSpec(spec));
 }
 
@@ -4563,16 +4576,24 @@ if (want("`done` writes the patch, never opens it")) {
   ok("…and says where the patch is instead",
     doneOut.stdout.includes(patch) && /deep-plan diff diff-plan 1/.test(doneOut.stdout));
 
-  // The explicit request is the one thing that should open a split.
+  // The explicit request is the one thing that should open a split, and
+  // only in a cmux session: elsewhere cmux diff lands in whatever cmux
+  // workspace is in front.
+  const ccli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", env: { ...spyEnv, SEAMUX_HOST: "cmux" }, cwd: REPO });
   fs.writeFileSync(LOG, "");
-  const diffOut = scli("diff", "diff-plan", "1");
-  ok("deep-plan diff DOES open cmux diff", diffOut.status === 0 && calls().length === 1 &&
+  const diffOut = ccli("diff", "diff-plan", "1");
+  ok("in a cmux session, deep-plan diff DOES open cmux diff", diffOut.status === 0 && calls().length === 1 &&
     /^diff --title .* since /.test(calls()[0]) && calls()[0].includes(patch));
+  fs.writeFileSync(LOG, "");
+  const elsewhere = scli("diff", "diff-plan", "1");
+  ok("outside cmux, deep-plan diff prints the patch and runs no cmux",
+    elsewhere.status === 0 && calls().length === 0 && elsewhere.stdout.includes(patch));
 
   // A broken or absent cmux must degrade to the path, not fail the command.
   fs.writeFileSync(path.join(BIN, "cmux"), "#!/bin/sh\nexit 3\n");
   fs.chmodSync(path.join(BIN, "cmux"), 0o755);
-  const brokeOut = scli("diff", "diff-plan", "1");
+  const brokeOut = ccli("diff", "diff-plan", "1");
   ok("a failing cmux degrades to printing the patch path",
     brokeOut.status === 0 && brokeOut.stdout.includes(patch));
 
@@ -5482,6 +5503,20 @@ if (want("delegated go")) {
 // macOS spells the temp tree /var/… and resolves it to /private/var/…. A file
 // in a directory that does not exist yet has to resolve through its nearest
 // existing ancestor, or the gate reads it as outside every root.
+// --dry-run only where a command has one: elsewhere it is refused before
+// anything is written, never ignored.
+if (want("--dry-run is refused where it would do the real thing")) {
+  const dry = { ...JSON.parse(JSON.stringify(spec)), slug: "dry-run-refused" };
+  const r = cli("render", tmpSpec(dry), "--dry-run");
+  ok("render --dry-run is refused and renders nothing",
+    r.status !== 0 && /render has no --dry-run/.test(r.stderr) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "dry-run-refused.json")), r.stdout + r.stderr);
+  const a = cli("adr", "apply", "dry-run-refused", "--dry-run");
+  ok("adr apply --dry-run is refused", a.status !== 0 && /adr has no --dry-run/.test(a.stderr), a.stderr);
+  const rd = cli("redraw", "--all", "--dry-run");
+  ok("redraw still takes --dry-run", !/has no --dry-run/.test(rd.stderr), rd.stdout + rd.stderr);
+}
+
 if (want("a new directory under a symlinked root")) {
   const SR = fs.mkdtempSync(path.join(os.tmpdir(), "dp-symroot-"));
   execSync("git init -q", { cwd: SR });

@@ -53,7 +53,7 @@ async function runChildren(file, { label, argv, named }) {
     return 1;
   }
   const verbose = argv.includes("-v");
-  const jobs = Math.max(1, Number(argAfter(argv, "-j")) || os.availableParallelism());
+  const jobs = Math.max(1, Number(argAfter(argv, "-j")) || Math.ceil(os.availableParallelism() / 2));
   // Every other flag (-v, a probe's own such as restack's --keep) goes to each child.
   const pass = [];
   for (let i = 2; i < argv.length; i++) {

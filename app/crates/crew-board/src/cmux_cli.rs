@@ -13,16 +13,26 @@ use cmux::Cmux;
 
 static CLIENT: Mutex<Option<Arc<Cmux>>> = Mutex::new(None);
 
-/// The process's cmux client, or None when cmux cannot be reached right now.
+/// The process's cmux client, or None when cmux cannot be reached right now
+/// or this board reads the app's tmux: a board on tmux never acts on cmux's
+/// windows, even with cmux open beside it.
 /// A failed connect is not remembered: a long-lived caller (the intent
 /// server's board feed) reconnects once cmux is back, as the Python's
 /// CLI-per-call did. A connected client reopens a dropped socket itself.
 pub fn client() -> Option<Arc<Cmux>> {
+    if !reaches_cmux(crate::backend::kind()) {
+        return None;
+    }
     let mut slot = CLIENT.lock().unwrap_or_else(|p| p.into_inner());
     if slot.is_none() {
         *slot = Cmux::connect().ok().map(Arc::new);
     }
     slot.clone()
+}
+
+/// Whether a board on `kind` talks to cmux at all: only when cmux is its backend.
+pub fn reaches_cmux(kind: crew_core::backend::Kind) -> bool {
+    kind == crew_core::backend::Kind::Cmux
 }
 
 /// A call through the client failed: drop it, so the next one connects
@@ -55,5 +65,17 @@ pub fn run(program: &str, args: &[&str], timeout: Duration) -> (bool, String) {
     match crew_core::py::run(program, args, timeout) {
         Some((code, out, err)) => (code == 0, text(&out, &err)),
         None => (false, format!("no such executable or timed out: {program}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crew_core::backend::Kind;
+
+    #[test]
+    fn a_board_on_tmux_never_reaches_cmux() {
+        assert!(!reaches_cmux(Kind::Tmux));
+        assert!(reaches_cmux(Kind::Cmux));
     }
 }

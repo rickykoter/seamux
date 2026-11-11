@@ -9,6 +9,7 @@ overrides it):
 | Host | The plan page | The quiz |
 |---|---|---|
 | cmux | opens beside the terminal, served by crew | on the review page |
+| seamux | the Dock shows it beside the terminal, served by crew | on the review page |
 | desktop | `served at <url>`: open it with `preview_start` in the browser pane | the inline widget, or the review page in the pane |
 | terminal | `served at <url>`: give the person the link | `<slug>.quiz.txt` |
 | remote | none: nobody can reach the sandbox's localhost | `<slug>.quiz.txt`; share the plan with `deep-plan export-artifact <slug>` only after the person agrees to publish it |

@@ -14,7 +14,6 @@
 
 use std::time::Duration;
 
-use cmux::{Cmux, Notify};
 use crew_core::py::{civil_from_days, days_from_civil, percent_g, splitlines};
 use serde_json::Value;
 
@@ -414,8 +413,13 @@ fn run(args: &[String]) -> i32 {
     }
 
     // --- sessions still waiting ----------------------------------------------------------
+    // On the app's tmux, cmux's store has none of its sessions: the pane files do.
+    let on_tmux = tmux_waiting();
+    if let Some(stuck) = on_tmux.clone().filter(|s| !s.is_empty()) {
+        print_waiting(stuck);
+    }
     let store = join(&crate::pypath::home(), ".cmuxterm/claude-hook-sessions.json");
-    if let Some(Value::Object(st)) = crate::pyval::read_json(&store) {
+    if let (None, Some(Value::Object(st))) = (&on_tmux, crate::pyval::read_json(&store)) {
         let sessions = match st.get("sessions") {
             Some(Value::Object(o)) => Some(o.clone()),
             Some(v) if truthy(Some(v)) => None,
@@ -447,16 +451,8 @@ fn run(args: &[String]) -> i32 {
             // toward the later record.
             list.push((crew_core::py::now() - updated, name, cwd));
         }
-        if let Some(mut stuck) = stuck.filter(|s| !s.is_empty()) {
-            println!("{BOLD}{AMBER}⏳ {} session(s) waiting on you{RESET}", stuck.len());
-            stuck.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
-            for (aged, name, _) in &stuck {
-                let h = (aged / 3600.0).floor() as i64;
-                let m = (aged.rem_euclid(3600.0) / 60.0).floor() as i64;
-                let ago = if h != 0 { format!("{h}h {m}m") } else { format!("{m}m") };
-                println!("  {} {DIM}{ago}{RESET}", cell(name, 44));
-            }
-            println!();
+        if let Some(stuck) = stuck.filter(|s| !s.is_empty()) {
+            print_waiting(stuck);
         }
     }
 
@@ -533,14 +529,7 @@ fn run(args: &[String]) -> i32 {
             bits.push(format!("{} reclaimable", ripe.len()));
         }
         if !bits.is_empty() {
-            if let Ok(c) = Cmux::connect() {
-                let _ = c.notify(&Notify {
-                    title: "crew digest".into(),
-                    subtitle: Some("crew:digest".into()),
-                    body: Some(bits.join(" · ")),
-                    workspace: None,
-                });
-            }
+            crew_core::notifications::post("digest", "crew digest", &bits.join(" · "), "");
         }
     }
     0
@@ -557,6 +546,37 @@ pub fn main(args: &[String]) -> i32 {
         libc::signal(libc::SIGINT, on_interrupt as *const () as libc::sighandler_t);
     }
     run(args)
+}
+
+/// The "sessions waiting on you" section: (age in seconds, name, cwd), oldest first.
+fn print_waiting(mut stuck: Vec<(f64, String, String)>) {
+    println!("{BOLD}{AMBER}⏳ {} session(s) waiting on you{RESET}", stuck.len());
+    stuck.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
+    for (aged, name, _) in &stuck {
+        let h = (aged / 3600.0).floor() as i64;
+        let m = (aged.rem_euclid(3600.0) / 60.0).floor() as i64;
+        let ago = if h != 0 { format!("{h}h {m}m") } else { format!("{m}m") };
+        println!("  {} {DIM}{ago}{RESET}", cell(name, 44));
+    }
+    println!();
+}
+
+/// On the app's tmux, the panes whose pane file says needs_input, named by
+/// their workspace's folder. None when the tmux backend is not in play.
+fn tmux_waiting() -> Option<Vec<(f64, String, String)>> {
+    use crew_core::backend::Backend;
+    let t = crew_core::backend::tmux::in_play()?;
+    let dirs: std::collections::HashMap<String, String> = t.workspaces().ok()?.into_iter().map(|w| (w.id.to_ascii_uppercase(), w.cwd)).collect();
+    let state = crew_core::home::home_cache();
+    let now = crew_core::py::now();
+    let mut out = Vec::new();
+    for p in t.panes(None).ok()? {
+        let Some(f) = crew_core::status::read(&state, &p.id).filter(|f| f.state == "needs_input") else { continue };
+        let cwd = dirs.get(&p.workspace.to_ascii_uppercase()).cloned().unwrap_or(p.cwd.clone());
+        let name = Some(basename(&cwd).to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| head(&f.session, 8));
+        out.push((now - f.at as f64 / 1000.0, name, cwd));
+    }
+    Some(out)
 }
 
 #[cfg(test)]

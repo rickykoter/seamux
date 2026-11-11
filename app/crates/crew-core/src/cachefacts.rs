@@ -351,19 +351,11 @@ pub fn sleep_mode(session_id: &str, transcript: &Path, label: &str) -> i32 {
         Ok(m) if m == mtime0 => {}
         _ => return 0,
     }
-    let Ok(c) = cmux::Cmux::connect() else { return 0 };
     let ttl = facts.get("ttl").and_then(Value::as_i64).unwrap_or(0);
-    let title = if label.is_empty() { session_id.chars().take(8).collect() } else { label.to_string() };
-    let _ = c.notify(&cmux::Notify {
-        title,
-        subtitle: Some("crew:blocked".into()),
-        body: Some(format!(
-            "cache going stale in {}s ({}m TTL) — prompt now or let it lapse",
-            STALE_LEAD as i64,
-            ttl.div_euclid(60)
-        )),
-        workspace: None,
-    });
+    let title: String = if label.is_empty() { session_id.chars().take(8).collect() } else { label.to_string() };
+    // cmux's notify on cmux; a note file for the app's notifier on tmux (ADR 0087).
+    let body = format!("cache going stale in {}s ({}m TTL) — prompt now or let it lapse", STALE_LEAD as i64, ttl.div_euclid(60));
+    let _ = crate::notifications::post("stale", &title, &body, "");
     0
 }
 

@@ -1,13 +1,14 @@
 // The marks a pane wears beside its name: [plan] on the pane that owns a
 // deep-plan plan (deep-plan's owner pane), [outside] on a pane whose cwd has
 // left its workspace's pinned worktree. Other Claudes in a planned worktree
-// wear nothing. Each mark is a button that focuses its pane in cmux.
+// wear nothing. Each mark is a button that focuses its pane: in cmux, or in
+// the Dock on the app's tmux (wall_app.rs wall_jump).
 import { invoke } from "@tauri-apps/api/core";
 
 /** What a pane's marks are drawn from: a Dock tile. */
 export type Marked = { surface: string; owner?: string | null; outside?: boolean; root?: string };
 
-/** Focus the pane in cmux and put the overlay away, as the wall's Jump does. */
+/** Focus the pane (in cmux, or in the Dock on tmux) and put the overlay away, as the wall's Jump does. */
 export async function jumpTo(surface: string): Promise<void> {
   await invoke("wall_jump", { surfaceId: surface });
   await invoke("hide_overlay").catch(() => {});

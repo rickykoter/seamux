@@ -105,7 +105,10 @@ for d in (HOME, CACHE, FAKE_DIR, PATHBIN):
 
 # Nothing on PATH answers for gh, acli or sbx unless a case puts a stub there:
 # a real one would reach the network.
-ENV = {k: v for k, v in os.environ.items() if not k.startswith(("CMUX_", "CREW_", "CLAUDE_"))}
+# Nor does the seamux app's tmux: run from one of its panes, SEAMUX_* and
+# TMUX would point every case at the live backend instead of fakecmux.
+ENV = {k: v for k, v in os.environ.items()
+       if not k.startswith(("CMUX_", "CREW_", "CLAUDE_", "SEAMUX_")) and k not in ("TMUX", "TMUX_PANE")}
 ENV.update(HOME=HOME, XDG_CACHE_HOME=CACHE, FAKE_CMUX_DIR=FAKE_DIR, CREW_CMUX=FAKE,
            CREW_SBX=os.path.join(T, "no-sbx"), CLAUDE_CONFIG_DIR=os.path.join(HOME, ".claude"),
            PATH=PATHBIN + os.pathsep + "/usr/bin:/bin:/usr/sbin:/sbin",

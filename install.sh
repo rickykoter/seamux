@@ -296,7 +296,7 @@ install_app() {
   run "cp $(q "$build/seamux-app") $(q "$bundle/Contents/MacOS/seamux-app")"
   run "cp $(q "$build/seamux") $(q "$bundle/Contents/Resources/bin/seamux")"
   if [ "$DRY" = 1 ]; then
-    say "would write: Info.plist ($APP_BUNDLE_ID $v) and AppIcon.icns from the crate's icon"
+    say "would write: Info.plist ($APP_BUNDLE_ID $v, URL scheme seamux://) and AppIcon.icns from the crate's icon"
   else
     cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -311,6 +311,10 @@ install_app() {
   <key>CFBundleVersion</key><string>$v</string>
   <key>SeamuxBuiltFrom</key><string>$(printf '%s' "$SRC_LABEL" | sed 's/&/\&amp;/g; s/</\&lt;/g')</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>$APP_BUNDLE_ID.focus</string>
+    <key>CFBundleURLSchemes</key><array><string>seamux</string></array>
+  </dict></array>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -509,11 +513,14 @@ fi
 
 # ---------------------------------------------------------------- platform
 if [ "$CREW" = 1 ]; then
-  [ "$(uname -s)" = "Darwin" ] || { warn "not macOS — skipping crew (cmux is mac-only); --no-crew silences this"; CREW=0; PLUGINS="${PLUGINS/ crew/}"; }
+  [ "$(uname -s)" = "Darwin" ] || { warn "not macOS — skipping crew (the seamux app is mac-only); --no-crew silences this"; CREW=0; PLUGINS="${PLUGINS/ crew/}"; }
 fi
 if [ "$CREW" = 1 ]; then
   CMUX="$(command -v cmux || "$HERE/crew/bin/crew-cmux-bin" 2>/dev/null || true)"
-  if [ -n "$CMUX" ]; then ok "cmux at $CMUX"; else warn "cmux not found — crew installs, but nothing drives it until cmux runs"; fi
+  # cmux is optional: without it the seamux app runs its own tmux.
+  if [ -n "$CMUX" ]; then ok "cmux at $CMUX"
+  elif [ -x "$LOCALBIN/seamux" ] && command -v tmux >/dev/null; then ok "no cmux: the seamux app runs its own tmux"
+  else warn "neither cmux nor the seamux app with tmux — crew installs, but nothing drives it until one runs (./install.sh --app, and tmux)"; fi
   command -v gh      >/dev/null && ok "gh present (PR chips, checks)" || warn "no gh — PR and check chips stay blank"
   command -v ccusage >/dev/null && ok "ccusage present (usage windows)" || warn "no ccusage — the status line says so (npm i -g ccusage)"
 fi

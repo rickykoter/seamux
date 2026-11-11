@@ -144,7 +144,7 @@ tell_block() {
 block() {
   reason="$1"
   tell_block "$reason"
-  printf 'Blocked by cmux guard: %s\nCommand: %s\nIf this is intentional, ask the user to run it manually.\n' \
+  printf 'Blocked by bash-guard: %s\nCommand: %s\nIf this is intentional, ask the user to run it manually.\n' \
     "$reason" "$cmd" >&2
   exit 2
 }

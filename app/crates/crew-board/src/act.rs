@@ -214,6 +214,13 @@ pub fn surface_keep(name: &str) -> std::path::PathBuf {
 /// Show a URL in the Dock in the tab kept under `keep`, navigating it in
 /// place when it is still there rather than stacking another.
 fn dock_tab(keep: &str, url: &str) -> (bool, String) {
+    // On the app's tmux there is no cmux Dock: the browser shows the page.
+    if crate::backend::tmux().is_some() {
+        return match crate::companion::open_in_browser(url) {
+            Ok(_) => (true, url.to_string()),
+            Err(e) => (false, e),
+        };
+    }
     let path = surface_keep(keep);
     let sid = std::fs::read_to_string(&path).map(|s| s.trim().to_string()).unwrap_or_default();
     if !sid.is_empty() && cmux_out(&["browser", "--surface", &sid, "get", "url"]).0 == 0 {
@@ -301,9 +308,10 @@ pub fn lookout_diff(cwd: &str, wsid: &str) -> (bool, String) {
 
 fn lookout_diff_run(node: &str, engine: &str, cwd: &str, wsid: &str) -> (bool, String) {
     let mut cmd = Command::new(node);
-    cmd.args([engine, "open", "--view-only", "--at", cwd]).current_dir(cwd).env_remove("CMUX_WORKSPACE_ID");
+    cmd.args([engine, "open", "--view-only", "--at", cwd]).current_dir(cwd).env_remove("CMUX_WORKSPACE_ID").env_remove("SEAMUX_WORKSPACE_ID");
     if !wsid.is_empty() {
-        cmd.env("CMUX_WORKSPACE_ID", wsid);
+        let var = if crate::backend::kind() == crew_core::backend::Kind::Tmux { "SEAMUX_WORKSPACE_ID" } else { "CMUX_WORKSPACE_ID" };
+        cmd.env(var, wsid);
     }
     match spawn_wait(cmd, Duration::from_secs(90)) {
         None => {
@@ -361,8 +369,89 @@ fn on_tmux(kind: crew_core::backend::Kind, action: &str) -> Option<(bool, String
     }
     match action {
         "sync" => Some((spawn_seamux(&["crew-sync"]), "sync".into())),
-        "jump" | "row" | "pane" | "code" | "reclaim" | "archive" | "sandbox-up" | "sandbox-down" | "feed-allow" | "feed-deny" => {
-            Some((false, format!("{action} needs cmux: this board reads the seamux app's tmux")))
+        // Reclaim asks y/N first: the app's own board does it in its wizard.
+        "reclaim" => Some((false, "reclaim from the seamux app's board: its wizard shows what would go and asks first".into())),
+        // The Feed is cmux's own.
+        "feed-allow" | "feed-deny" => Some((false, format!("{action} needs cmux: the Feed is cmux's"))),
+        _ => None,
+    }
+}
+
+/// A crew script's argv for a row, as triage builds it: `<script> [verb] <cwd>`
+/// when the row has a worktree, else `<script> --workspace <id> [verb]`.
+fn tool_args(script: &str, cwd: &str, wsid: &str, verb: &[&str]) -> Option<Vec<String>> {
+    let bin = crew_file(script).to_string_lossy().into_owned();
+    if !cwd.is_empty() && Path::new(cwd).is_dir() {
+        Some(std::iter::once(bin).chain(verb.iter().map(|v| v.to_string())).chain(std::iter::once(cwd.to_string())).collect())
+    } else if uuid_ok(wsid) {
+        Some([bin, "--workspace".into(), wsid.to_string()].into_iter().chain(verb.iter().map(|v| v.to_string())).collect())
+    } else {
+        None
+    }
+}
+
+/// Run `argv` detached from the server, as triage's fire does, and log it.
+fn spawn_detached(argv: &[String]) -> bool {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // SAFETY: setsid is async-signal-safe and touches only the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let shown = argv.iter().take(3).cloned().collect::<Vec<_>>().join(" ");
+    match cmd.spawn() {
+        Ok(mut child) => {
+            log(&format!("OK   fire {shown}"));
+            // The server lives for days: reap the child so it leaves no zombie.
+            std::thread::spawn(move || child.wait());
+            true
+        }
+        Err(e) => {
+            log(&format!("FAIL fire {shown}: {e}"));
+            false
+        }
+    }
+}
+
+/// The archive chip on tmux: what triage's archive_in_hook does on cmux,
+/// the plan guard first (a chip never passes the override), then the
+/// guarded archive. Its refusal is the reply.
+fn archive_here(wsid: &str) -> (bool, String) {
+    use crew_core::workspaces as w;
+    let Some(live) = w::live_workspaces() else { return (false, "the seamux app's tmux did not list its workspaces".into()) };
+    let Some(found) = w::find_live(wsid, Some(&live)) else {
+        if w::load_archive().values().any(|r| r.get("workspace_id").and_then(Value::as_str) == Some(wsid)) {
+            return (true, "already archived".into());
+        }
+        return (false, "that workspace is no longer open".into());
+    };
+    let name = if found.title.is_empty() { found.r#ref.clone() } else { found.title.clone() };
+    let (ok, why) = w::guard(&found.cwd, &name, false);
+    if !ok {
+        return (false, why);
+    }
+    w::archive_with(wsid, Some(&live), None, w::Guard::Asked)
+}
+
+/// On tmux, what a jump, row or pane click asks the app to show: the row's
+/// workspace, and for a pane chip the pane, which must be one the row
+/// lists. None for every other verb.
+fn focus_target(action: &str, row: &Map<String, Value>, extra: &str) -> Option<Result<(String, Option<String>), String>> {
+    let wsid = s(row, "id");
+    let ws = || if uuid_ok(&wsid) { Ok(wsid.clone()) } else { Err("no workspace id to show".to_string()) };
+    match action {
+        "jump" | "row" => Some(ws().map(|w| (w, None))),
+        "pane" => {
+            let listed = row.get("panes").and_then(Value::as_array).into_iter().flatten()
+                .any(|p| p.get("surface").and_then(Value::as_str) == Some(extra));
+            if extra.is_empty() || !listed {
+                return Some(Err("that pane is not this row's".into()));
+            }
+            Some(ws().map(|w| (w, Some(extra.to_string()))))
         }
         _ => None,
     }
@@ -414,7 +503,19 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
     let pr_url = s(row, "pr_url");
     let mut slug = s(row, "slug");
     let title = s(row, "name");
-    if let Some(done) = on_tmux(crate::backend::kind(), action) {
+    let kind = crate::backend::kind();
+    if kind == crew_core::backend::Kind::Tmux {
+        if let Some(target) = focus_target(action, row, extra) {
+            // The board in a plain browser: the app shows the pane (ADR 0086).
+            return match target {
+                Ok((ws, pane)) if crew_core::focus::url(&ws, pane.as_deref()).is_none() => (false, format!("not a pane the app can show: {ws} {}", pane.unwrap_or_default())),
+                Ok((ws, pane)) if crew_core::focus::open(&ws, pane.as_deref()) => (true, format!("focus {ws}")),
+                Ok(_) => (false, "macOS did not open the seamux:// link: is the seamux app installed (./install.sh --app)?".into()),
+                Err(why) => (false, why),
+            };
+        }
+    }
+    if let Some(done) = on_tmux(kind, action) {
         return done;
     }
 
@@ -457,6 +558,10 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
             }
             let sel = if uuid_ok(&wsid) { wsid.clone() } else { r.clone() };
             let (ok, why) = lookout_diff(&cwd, &sel);
+            if kind == crew_core::backend::Kind::Tmux {
+                // lookout's page is in the app's Dock; cmux's diff is not there.
+                return (ok, why);
+            }
             if ok {
                 if !sel.is_empty() {
                     select(&sel);
@@ -599,6 +704,13 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
         }
         "code" => {
             let what = if cwd.is_empty() { title.clone() } else { cwd.clone() };
+            if kind == crew_core::backend::Kind::Tmux {
+                // What triage runs for crew:code on cmux, run here.
+                return match tool_args("bin/crew-code", &cwd, &wsid, &[]) {
+                    Some(argv) => (spawn_detached(&argv), format!("code {what}")),
+                    None => (false, "no worktree or workspace for this row".into()),
+                };
+            }
             (notify("crew:code", &what, Some(&wsid)), format!("code {what}"))
         }
         "reclaim" => (notify("crew:reclaim", &title, Some(&wsid)), format!("reclaim {title}")),
@@ -606,10 +718,20 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
             if wsid.is_empty() {
                 return (false, "no workspace on this row".into());
             }
+            if kind == crew_core::backend::Kind::Tmux {
+                return archive_here(&wsid);
+            }
             (notify("crew:archive", &title, Some(&wsid)), format!("archive {title}"))
         }
         "sandbox-up" | "sandbox-down" => {
             let what = if cwd.is_empty() { title.clone() } else { cwd.clone() };
+            if kind == crew_core::backend::Kind::Tmux {
+                let verb = if action.ends_with("up") { "up" } else { "down" };
+                return match tool_args("bin/crew-sandbox", &cwd, &wsid, &[verb]) {
+                    Some(argv) => (spawn_detached(&argv), format!("{action} {what}")),
+                    None => (false, "no worktree or workspace for this row".into()),
+                };
+            }
             (notify(&format!("crew:{action}"), &what, Some(&wsid)), format!("{action} {what}"))
         }
         "feed-allow" | "feed-deny" => (notify(&format!("crew:{action}"), &title, Some(&wsid)), format!("{action} {title}")),
@@ -664,12 +786,12 @@ mod tests {
     #[test]
     fn on_tmux_the_cmux_only_verbs_say_so_and_the_rest_are_left_alone() {
         let k = crew_core::backend::Kind::Tmux;
-        for a in ["jump", "row", "pane", "code", "reclaim", "archive", "sandbox-up", "sandbox-down", "feed-allow", "feed-deny"] {
-            let (ok, why) = on_tmux(k, a).expect(a);
-            assert!(!ok && why.contains("needs cmux"), "{a}: {why}");
+        for a in ["reclaim", "feed-allow", "feed-deny"] {
+            let (ok, _) = on_tmux(k, a).expect(a);
+            assert!(!ok, "{a}");
         }
         // go is checked in act's own arm (it needs the row); these never touch cmux.
-        for a in ["go", "plan", "wake", "ask", "diff", "pr", "close plan"] {
+        for a in ["jump", "row", "pane", "code", "archive", "sandbox-up", "sandbox-down", "go", "plan", "wake", "ask", "diff", "pr", "close plan"] {
             assert!(on_tmux(k, a).is_none(), "{a}");
         }
     }
@@ -741,5 +863,31 @@ mod tests {
         assert_eq!(notice_of(row, "teammate").and_then(|n| n["count"].as_u64()), Some(2));
         assert_eq!(notice_from(&notice_of(row, "mine").unwrap()).why, "timed out after 300 ms");
         assert!(notice_of(row, "workflow").is_none() && notice_of(row, "").is_none());
+    }
+
+    #[test]
+    fn on_tmux_a_jump_shows_the_rows_workspace_and_a_pane_chip_only_a_listed_pane() {
+        let w = "F7C77CFC-3416-43EA-BD60-2CEB74953A19";
+        let p = "7B07A98B-825F-427E-9389-23086C5E3F90";
+        let row: Map<String, Value> = serde_json::from_value(serde_json::json!({"id": w, "panes": [{"surface": p}]})).unwrap();
+        assert_eq!(focus_target("jump", &row, ""), Some(Ok((w.to_string(), None))));
+        assert_eq!(focus_target("row", &row, ""), Some(Ok((w.to_string(), None))));
+        assert_eq!(focus_target("pane", &row, p), Some(Ok((w.to_string(), Some(p.to_string())))));
+        assert!(matches!(focus_target("pane", &row, "9D3E0A1B-0000-4000-8000-000000000000"), Some(Err(_))));
+        assert_eq!(focus_target("code", &row, ""), None);
+        let bad: Map<String, Value> = serde_json::from_value(serde_json::json!({"id": "workspace:3"})).unwrap();
+        assert!(matches!(focus_target("jump", &bad, ""), Some(Err(_))));
+    }
+
+    #[test]
+    fn a_chips_script_takes_the_rows_worktree_else_its_workspace() {
+        let here = std::env::temp_dir();
+        let dir = here.to_string_lossy().into_owned();
+        let w = "F7C77CFC-3416-43EA-BD60-2CEB74953A19";
+        let a = tool_args("bin/crew-sandbox", &dir, w, &["up"]).unwrap();
+        assert!(a[0].ends_with("bin/crew-sandbox") && a[1..] == ["up".to_string(), dir.clone()], "{a:?}");
+        let b = tool_args("bin/crew-code", "", w, &[]).unwrap();
+        assert_eq!(b[1..], ["--workspace".to_string(), w.to_string()]);
+        assert_eq!(tool_args("bin/crew-code", "", "workspace:3", &[]), None);
     }
 }

@@ -106,43 +106,19 @@ pub trait Backend: Send + Sync {
 }
 
 /// Which backend this process uses, from its environment: SEAMUX_BACKEND
-/// when it names one, else cmux when `cmux_answers()`, else tmux.
+/// when it names one, else cmux when `cmux_answers()` right now, else tmux.
+/// It never waits for a cmux that is installed but not answering (ADR 0047):
+/// an app started before cmux picks tmux, and the launch migrator (ADR 0051)
+/// offers to move sessions.
 pub fn pick_kind(get: &dyn Fn(&str) -> Option<String>, cmux_answers: &dyn Fn() -> bool) -> Kind {
-    pick_kind_waiting(get, cmux_answers, &|| false, std::time::Duration::ZERO, &|_| {})
-}
-
-/// How long a launch waits for an installed cmux that does not answer yet:
-/// an app started at login can be up before cmux is.
-pub const CMUX_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// `pick_kind`, except that when SEAMUX_BACKEND is unset and cmux is
-/// `installed()` but not answering, it asks again every half second for up
-/// to `wait` before choosing tmux. `sleep` is the pause (tests pass a fake).
-pub fn pick_kind_waiting(
-    get: &dyn Fn(&str) -> Option<String>,
-    cmux_answers: &dyn Fn() -> bool,
-    installed: &dyn Fn() -> bool,
-    wait: std::time::Duration,
-    sleep: &dyn Fn(std::time::Duration),
-) -> Kind {
     if let Some(k) = get("SEAMUX_BACKEND").as_deref().and_then(Kind::parse) {
         return k;
     }
     if cmux_answers() {
-        return Kind::Cmux;
+        Kind::Cmux
+    } else {
+        Kind::Tmux
     }
-    if installed() {
-        let step = std::time::Duration::from_millis(500);
-        let mut waited = std::time::Duration::ZERO;
-        while waited < wait {
-            sleep(step);
-            waited += step;
-            if cmux_answers() {
-                return Kind::Cmux;
-            }
-        }
-    }
-    Kind::Tmux
 }
 
 /// The backend for `kind`.
@@ -155,15 +131,7 @@ pub fn open(kind: Kind) -> Result<Box<dyn Backend>, String> {
 
 /// This process's backend, picked from its environment (see `pick_kind`).
 pub fn pick() -> (Kind, Result<Box<dyn Backend>, String>) {
-    let kind = pick_kind_waiting(
-        &|k| crate::py::env_or(k),
-        &|| ::cmux::Cmux::connect().is_ok(),
-        // Waiting is for a cmux that is coming up: not when the tmux backend
-        // already has live panes, which means someone uses it.
-        &|| ::cmux::resolve_cli_bin().is_ok() && !tmux::TmuxBackend::default().in_use(),
-        CMUX_WAIT,
-        &std::thread::sleep,
-    );
+    let kind = pick_kind(&|k| crate::py::env_or(k), &|| ::cmux::Cmux::connect().is_ok());
     (kind, open(kind))
 }
 
@@ -195,33 +163,22 @@ mod tests {
     }
 
     #[test]
-    fn an_installed_cmux_that_comes_up_late_is_waited_for() {
+    fn a_cmux_that_does_not_answer_yet_is_not_asked_again() {
         use std::cell::Cell;
         let asked = Cell::new(0);
         let answers = || {
             asked.set(asked.get() + 1);
-            asked.get() > 4
+            false
         };
-        let slept = Cell::new(std::time::Duration::ZERO);
-        let k = pick_kind_waiting(&env(None), &answers, &|| true, CMUX_WAIT, &|d| slept.set(slept.get() + d));
-        assert_eq!(k, Kind::Cmux);
-        assert_eq!(slept.get(), std::time::Duration::from_secs(2));
+        assert_eq!(pick_kind(&env(None), &answers), Kind::Tmux);
+        assert_eq!(asked.get(), 1);
     }
 
     #[test]
-    fn an_installed_cmux_that_never_answers_falls_back_to_tmux_after_the_wait() {
-        use std::cell::Cell;
-        let slept = Cell::new(std::time::Duration::ZERO);
-        let k = pick_kind_waiting(&env(None), &|| false, &|| true, CMUX_WAIT, &|d| slept.set(slept.get() + d));
-        assert_eq!(k, Kind::Tmux);
-        assert_eq!(slept.get(), CMUX_WAIT);
-    }
-
-    #[test]
-    fn no_cmux_installed_is_tmux_at_once_and_seamux_backend_never_waits() {
-        let never = |_: std::time::Duration| panic!("no wait expected");
-        assert_eq!(pick_kind_waiting(&env(None), &|| false, &|| false, CMUX_WAIT, &never), Kind::Tmux);
-        assert_eq!(pick_kind_waiting(&env(Some("tmux")), &|| false, &|| true, CMUX_WAIT, &never), Kind::Tmux);
+    fn seamux_backend_never_asks_cmux() {
+        let never = || panic!("cmux was asked");
+        assert_eq!(pick_kind(&env(Some("tmux")), &never), Kind::Tmux);
+        assert_eq!(pick_kind(&env(Some("cmux")), &never), Kind::Cmux);
     }
 
     #[test]

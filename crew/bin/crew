@@ -56,6 +56,9 @@ CMUX="$(command -v cmux || true)"
 # version skew that fails silently, because the old bundle is still on disk.
 [ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
 [ -n "$CMUX" ] || CMUX=cmux
+# cmux is optional: on a machine without it the seamux app runs on its own
+# tmux, and the steps that render, validate or reload cmux's config are skipped.
+have_cmux() { command -v "$CMUX" >/dev/null 2>&1; }
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=1; }
@@ -594,18 +597,22 @@ cmd_apply() {
   chmod +x "$CREW_HOME"/bin/* "$CREW_HOME"/hooks/*.sh 2>/dev/null
   rm -f "$STATE/disabled"
 
-  # 6. validate + reload
-  "$CMUX" config validate >/dev/null 2>&1 && ok "cmux config validates" \
-    || bad "cmux config validate failed — run: cmux config doctor"
-  "$CMUX" reload-config >/dev/null 2>&1 && ok "reloaded cmux + ghostty config" \
-    || warn "reload-config failed (is cmux running?)"
+  # 6. validate + reload (cmux's own config: skipped without cmux)
+  if have_cmux; then
+    "$CMUX" config validate >/dev/null 2>&1 && ok "cmux config validates" \
+      || bad "cmux config validate failed — run: cmux config doctor"
+    "$CMUX" reload-config >/dev/null 2>&1 && ok "reloaded cmux + ghostty config" \
+      || warn "reload-config failed (is cmux running?)"
 
-  # The template carries activePaneBorderColor as null, so an apply resets the
-  # pane frame. Repaint it now rather than leaving it blank until the next
-  # workspace switch.
-  "$SEAMUX" crew-frame >/dev/null 2>&1 \
-    && ok "pane frame follows the selected workspace" \
-    || warn "crew-frame did not run"
+    # The template carries activePaneBorderColor as null, so an apply resets the
+    # pane frame. Repaint it now rather than leaving it blank until the next
+    # workspace switch.
+    "$SEAMUX" crew-frame >/dev/null 2>&1 \
+      && ok "pane frame follows the selected workspace" \
+      || warn "crew-frame did not run"
+  else
+    note "no cmux: its config is rendered but not validated or reloaded (the seamux app runs on its own tmux)"
+  fi
 
   # A running intent server keeps executing whatever code it started with, and
   # nothing else restarts it: crew-listen only spawns one when it is DOWN, so an
@@ -883,7 +890,7 @@ cmd_uninstall() {
     fi
   fi
 
-  "$CMUX" reload-config >/dev/null 2>&1 && ok "reloaded cmux config"
+  have_cmux && "$CMUX" reload-config >/dev/null 2>&1 && ok "reloaded cmux config"
 
   printf '\nguard_bash.sh is still wired — crew never owned it.\n'
   printf 'The v1 cmux bridge hooks crew superseded are NOT re-wired. Their\n'
@@ -1396,12 +1403,14 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
   else
     ok "intent server is running the installed code"
   fi
+  head_ "cmux"
+  if ! have_cmux; then
+    note "cmux is not installed: the seamux app runs on its own tmux, so there is nothing to check here"
+  else
   grep -q "crew-triage" "$CMUX_JSON" 2>/dev/null && ok "notification triage in cmux.json" \
     || bad "cmux.json is not crew-rendered — run: crew apply"
   ls "$CMUX_JSON".*.bak >/dev/null 2>&1 && ok "a cmux.json backup exists (crew uninstall can revert)" \
     || warn "no cmux.json backup — crew uninstall cannot restore"
-
-  head_ "cmux"
   "$CMUX" config validate >/dev/null 2>&1 && ok "config validates" || bad "cmux config doctor reports a problem"
   if "$CMUX" ping >/dev/null 2>&1; then
     ok "socket reachable"
@@ -1417,6 +1426,7 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
     fi
   else
     warn "cmux socket unreachable (app not running?) — skipped live checks"
+  fi
   fi
 
   head_ "source of truth"

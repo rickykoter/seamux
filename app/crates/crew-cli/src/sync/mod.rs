@@ -202,7 +202,10 @@ pub fn main(args: &[String]) -> i32 {
     };
 
     let out = Writer::connect(dry);
-    let by_ws = facts::sessions_by_ws(&p);
+    // On the app's tmux, cmux's session store has none of its sessions: the
+    // pane files do (ADR 0085).
+    let reviewed = if out.tmux.is_some() { facts::reviewed_prs(&reviews_dir(), std::time::SystemTime::now()) } else { Default::default() };
+    let by_ws = if out.tmux.is_some() { facts::sessions_from_tmux() } else { facts::sessions_by_ws(&p) };
     // A workspace's worktree is its root: pin, else its current_directory.
     let dir_of = |w: &Value| crew_core::worktree::root_or(&field(w, "description"), &field(w, "current_directory"));
     let rows = out.workspaces();
@@ -258,7 +261,7 @@ pub fn main(args: &[String]) -> i32 {
         // together (a waiting one first, then a working one).
         let none = Vec::new();
         let recs = by_ws.get(&ws).unwrap_or(&none);
-        let live_recs: Vec<&(String, Value)> = recs.iter().filter(|(_, r)| facts::alive(r.get("pid"))).collect();
+        let live_recs: Vec<&(String, Value)> = recs.iter().filter(|(_, r)| facts::live(r)).collect();
         let live = !live_recs.is_empty();
         let in_state = |st: &str| live_recs.iter().find(|(_, r)| field(r, "agentLifecycle") == st);
         let any_needs = in_state("needsInput").is_some();
@@ -504,7 +507,11 @@ pub fn main(args: &[String]) -> i32 {
             }
         };
         let mut msgs: Vec<String> = Vec::new();
-        if Some(&sig["ci"]) != pg("ci") {
+        // On tmux, a PR a lookout review follows has its red checks from
+        // pr_watch, whose banner opens the review on them: one banner each.
+        let watched = out.tmux.is_some()
+            && raw.get("url").and_then(Value::as_str).and_then(facts::pr_key).is_some_and(|k| reviewed.contains(&k));
+        if Some(&sig["ci"]) != pg("ci") && !watched {
             if ci == "fail" {
                 let fails: Vec<String> = match raw.get("ciFail") {
                     Some(Value::Array(a)) => a.iter().take(3).map(py_str).collect(),
@@ -572,7 +579,7 @@ pub fn main(args: &[String]) -> i32 {
         let mut touched: HashSet<String> = HashSet::new();
         // cmux's list answers for one window: a workspace missing from it is
         // gone only when no Claude of it is alive either.
-        let ws_alive = |ws: &str| by_ws.get(ws).is_some_and(|l| l.iter().any(|(_, r)| facts::alive(r.get("pid"))));
+        let ws_alive = |ws: &str| by_ws.get(ws).is_some_and(|l| l.iter().any(|(_, r)| facts::live(r)));
         for pane in crew_core::status::all(dir) {
             let why = if !live_ws.contains(&pane.ws) && !ws_alive(&pane.ws) {
                 Some("workspace gone")
@@ -630,6 +637,15 @@ pub fn main(args: &[String]) -> i32 {
         println!("  already in sync");
     }
     0
+}
+
+/// lookout's reviews: LOOKOUT_REVIEWS_DIR, else ~/.claude/plans/reviews
+/// (crew-board's review::reviews_dir).
+fn reviews_dir() -> std::path::PathBuf {
+    match std::env::var("LOOKOUT_REVIEWS_DIR").ok().filter(|s| !s.is_empty()) {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::path::PathBuf::from(crate::pypath::home()).join(".claude/plans/reviews"),
+    }
 }
 
 #[cfg(test)]

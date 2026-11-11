@@ -526,6 +526,22 @@ first and do not edit or rewrite it. Then reply with only the URL.");
     let cmd = format!("claude --tools Artifact Read --strict-mcp-config {}", shlex_quote(&prompt));
     let wid = workspace_for(&cwd);
     let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // On the app's tmux: a pane in the row's workspace, else a new workspace,
+    // brought forward in the app.
+    if let Some(b) = crate::backend::tmux() {
+        let started = if cmux::is_uuid(&wid) {
+            b.start_session(&wid, &cwd, &cmd).map(|pane| (wid.clone(), Some(pane)))
+        } else {
+            b.open_workspace(Path::new(&cwd), &cmd).map(|(r, id)| (id.unwrap_or(r), None))
+        };
+        return match started {
+            Ok((ws, pane)) => {
+                crew_core::focus::open(&ws, pane.as_deref());
+                (true, format!("publishing {name} in a terminal; the URL lands here when it finishes"))
+            }
+            Err(e) => (false, format!("could not open a terminal: {}", e.chars().take(160).collect::<String>())),
+        };
+    }
     // A native session in the row's workspace, as every new session starts;
     // cmux's own terminal when there is none or the native start fails.
     if cmux::is_uuid(&wid) {
