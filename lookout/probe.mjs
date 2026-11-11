@@ -2357,6 +2357,10 @@ if (want("github: link, sync, staleness, post")) {
   ok("gh: a hidden tab's poll asks for no sync; a visible one does", c1 === 200 && c2 === 200 && asked.join() === id, asked.join());
 }
 
+// A deliberate failure: this branch only exists to turn a PR's CI red for
+// lookout's banner check (plan lookout-pr-window). It is never merged.
+ok("deliberately red for the lookout banner check (never merge)", false);
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`lookout probe: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
