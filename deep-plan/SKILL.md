@@ -95,7 +95,10 @@ These survive a compaction; everything below them is how.
    in the project? Set them up with the developer before drafting. Then ask
    the human which increments deserve a lookout review and whether the full
    delivery does, and record it as `review.increments` and
-   `review.delivery`. All of it: [checks.md](references/checks.md). Ask
+   `review.delivery`; ask too whether those reviews run one reviewer or
+   lookout's review panel (several times the tokens), and record it as
+   `review.reviewer`: `"agent"` or `"panel"`. All of it:
+   [checks.md](references/checks.md). Ask
    whether increments should follow each other without a person's go once
    their checks pass, and record it as `go`: `"human"`, or `{ "mode":
    "auto", "between": "commit" | "draft-pr" }`. Under auto, ask which

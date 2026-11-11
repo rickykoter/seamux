@@ -5614,6 +5614,25 @@ if (want("review checks (lookout)")) {
   }
   ok("review check: the last line is the board's: spawn a reviewer",
     r.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-1-inc1", r.stdout);
+  {
+    ok("review.reviewer: anything but agent or panel is refused", /review\.reviewer: "agent" or "panel"/.test(bad([{ kind: "review" }], { review: { reviewer: "crowd" } }).stderr));
+    arm("rv-pn", [{ kind: "review" }], { review: { reviewer: "panel" } });
+    const p = lc(LENV, "check", "run", "rv-pn", "1", "review-code-review");
+    const pstore = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-pn-inc1.json"), "utf8"));
+    ok("review.reviewer panel: check run names the workflow, and the review is stored as the panel's",
+      p.stdout.includes('name lookout:review, args {"reviews":["rv-pn-inc1"],"ingest":"agent"}') &&
+      p.stdout.trim().split("\n").pop() === "review: run the review panel — /lookout:review rv-pn-inc1" &&
+      pstore.policy.reviewer === "panel", JSON.stringify([pstore.policy, p.stdout.trim().split("\n").slice(-6)]));
+    ok("review.reviewer: unset, a review is one agent's", JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json"), "utf8")).policy.reviewer === "agent");
+    fs.mkdirSync(path.join(RV, ".seamux"), { recursive: true });
+    fs.writeFileSync(path.join(RV, ".seamux", "lookout.json"), JSON.stringify({ reviewer: "panel" }));
+    const c = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+    ok("review.reviewer: unset, the repo's lookout.json decides, for the hint and the stored review alike",
+      c.stdout.trim().split("\n").pop() === "review: run the review panel — /lookout:review rv-1-inc1" &&
+      JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json"), "utf8")).policy.reviewer === "panel", JSON.stringify([stOf("rv-1").root, RV, c.stdout.trim().split("\n").slice(-3)]));
+    fs.rmSync(path.join(RV, ".seamux", "lookout.json"));
+    lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  }
   const r2 = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("spike settled: running a synthesized review check never warns about recipe drift",
     !/⚠|drift|changed in|no longer in/.test(r.stderr + r2.stderr), r.stderr + r2.stderr);
@@ -5876,6 +5895,15 @@ if (want("review checks (lookout)")) {
     ok("family review: deliver opens one review per member and names a reviewer for each",
       r.status === 1 && ids.every(id => fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, id + ".json")) && r.stdout.includes(`lookout prompt ${id}`)) &&
       r.stdout.trim().split("\n").pop() === `review: spawn a reviewer — lookout prompt ${ids[0]}`, r.stdout + r.stderr);
+    fs.mkdirSync(path.join(FR, ".seamux"), { recursive: true });
+    fs.writeFileSync(path.join(FR, ".seamux", "lookout.json"), JSON.stringify({ reviewer: "panel" }));
+    const fp = lc(LENV, "deliver", "frv-par");
+    ok("family review: a panel plan names one workflow run over every waiting member",
+      fp.status === 1 && fp.stdout.includes(`name lookout:review, args {"reviews":${JSON.stringify(ids)},"ingest":"agent"}`) &&
+      fp.stdout.trim().split("\n").pop() === `review: run the review panel — /lookout:review ${ids.join(" ")}`, fp.stdout + fp.stderr);
+    fs.rmSync(path.join(FR, ".seamux", "lookout.json"));
+    const one = lc(LENV, "deliver", "frv-par");
+    ok("family review: a one-reviewer plan spawns its reviewers side by side", /side by side in one message/.test(one.stdout), one.stdout);
     const ks = store(ids[1]);
     ok("family review: each is the member's own work, at its root, with the plan's close policy",
       ks.source.root && fs.realpathSync(ks.source.root) === fs.realpathSync(KR) && ks.files.some(f => f.path === "frv-kid-1.txt") &&

@@ -211,7 +211,12 @@ Top-level `review.agentMayClose` (default false) is decided with the human
 at interrogation time: true lets the agent resolve and dismiss findings too,
 instead of only replying and marking them addressed. `review.quiz` (default
 false) opens each review with lookout's ownership quiz: a question before
-each high-risk group's note. It never gates.
+each high-risk group's note. It never gates. `review.reviewer` says who
+reviews: `"agent"`, one fresh subagent, or `"panel"`, lookout's
+`/lookout:review` workflow (a lead, three dimension finders and a skeptic on
+each blocker or major, several times the tokens). Left out, it is the
+repo's `.seamux/lookout.json` `reviewer`, else `"agent"`; deep-plan passes
+the resolved value on every open, so a re-open follows a change to it.
 
 `review.increments` and `review.delivery` are required, and are the human's
 answer to a planning question (step 4): which increments get a lookout
@@ -269,7 +274,10 @@ check and what it runs.
   `check run` opens the review itself (with the plan's
   `review.agentMayClose` and `review.quiz`) and ends with `review: spawn a reviewer —
   lookout prompt <slug>-inc<n>`: then spawn one fresh reviewer subagent
-  whose prompt is that command's output, and run the check again
+  whose prompt is that command's output, and run the check again. On a
+  panel plan it ends with `review: run the review panel — /lookout:review
+  <slug>-inc<n>`: run the Workflow tool with the name and args it prints
+  (lookout's skill says how, and what to do without the tool)
   (`deep-plan review <slug> <n>` opens it by hand). Its base is the start
   sha `go` recorded; an increment authorized before go recorded one has
   none, and `review`, `diff` and `deliver` then take `--base <sha>`, which
@@ -279,9 +287,11 @@ check and what it runs.
   only then does the check pass. Never pass it by hand, and never close
   findings yourself unless the plan set `review.agentMayClose`. Like any
   check it goes stale after an edit: re-run it (it reads statuses).
-  Addressed findings wait on a re-review: once the fixes are in, spawn ONE
-  fresh reviewer with `lookout prompt <id> --round`, which looks only at
-  their hunks. A review gets two such rounds; after that, stop and ask the
+  Addressed findings wait on a re-review: once the fixes are in, re-open
+  the review (`deep-plan review <slug> <n>`; a brief of a tree that has
+  moved on is refused), then spawn ONE fresh reviewer with `lookout prompt
+  <id> --round`, which looks only at their hunks. A round is one reviewer
+  on a panel plan too. A review gets two such rounds; after that, stop and ask the
   person.
 - **The delivery review** (`review.delivery: true`): when the last
   increment is done the plan enters a `delivery` phase instead of
@@ -302,8 +312,10 @@ check and what it runs.
   review per member, `<parent>-family-<member>`, over that member's work
   since its first start sha, at its root. Each brief carries the family's
   members and the parent's contracts, so the reviewer looks at the seams.
-  Spawn one fresh reviewer per review it names, fix and `lookout address`
-  what they find, and run `deliver` again. The parent is done once every
+  Spawn one fresh reviewer per review it names, side by side in one
+  message, or on a panel plan run the one `/lookout:review` run it names
+  over all of them; fix and `lookout address` what they find, and run
+  `deliver` again. The parent is done once every
   member's review passes. It costs one reviewer per member, which is why it
   is opt-in.
 - `done --force` overrides the whole gate and writes that to the log; use

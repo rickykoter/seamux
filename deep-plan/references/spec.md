@@ -45,7 +45,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
                       "loop": { "targets": ["paths or call sites"], "batch": "optional: targets per increment (1)" },
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
   "review":        { "increments": [1, 3], "delivery": true,
-                     "agentMayClose": false, "quiz": false,
+                     "agentMayClose": false, "quiz": false, "reviewer": "agent|panel (optional)",
                      "family": false },
   "go":            "optional: \"human\" (the default), \"auto\", or { \"mode\": \"auto\", \"between\": \"commit|draft-pr\" }",
   "share":         "optional: true, or { \"remote\": \"origin\", \"prefix\": \"seamux-state/\", \"sync\": \"transitions|manual\" }",
