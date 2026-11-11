@@ -64,8 +64,15 @@ fn wrapped(t: &str) -> bool {
 /// The person's text on a user line: a plain string, or the first text block
 /// of a list with no tool result in it that Claude Code did not write. A line
 /// Claude Code wrote itself starts with one of OWN_TAGS; a prompt the person
-/// began with `<` still counts.
+/// began with `<` still counts. So does a `!` command, shown as `! <command>`.
+/// A line Claude Code marks as its own (`isMeta`, or `promptSource` "system",
+/// as on a background agent's hand-back) is not the person's.
 fn typed(v: &Value) -> Option<String> {
+    if v.get("isMeta").and_then(Value::as_bool) == Some(true)
+        || v.get("promptSource").and_then(Value::as_str) == Some("system")
+    {
+        return None;
+    }
     let c = v.get("message")?.get("content")?;
     let text = match c {
         Value::String(s) => s.clone(),
@@ -80,6 +87,9 @@ fn typed(v: &Value) -> Option<String> {
         _ => return None,
     };
     let t = text.trim();
+    if let Some(cmd) = t.strip_prefix("<bash-input>").and_then(|r| r.split("</bash-input>").next()) {
+        return Some(first_line(&format!("! {}", cmd.trim())));
+    }
     (!t.is_empty() && !OWN_TAGS.iter().any(|tag| t.starts_with(tag))).then(|| first_line(t))
 }
 
@@ -232,6 +242,32 @@ mod tests {
         assert_eq!(of("w9"), Some(("p1", "review the branch")));
         assert_eq!(l.get("a1").and_then(|p| p.at), Some(1794168000000));
         assert_eq!(l.len(), 3);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_hand_back_is_no_prompt_and_a_bang_command_reads_as_one() {
+        let d = std::env::temp_dir().join(format!("crew-launches-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let t = d.join("s.jsonl");
+        let launch = |pid: &str, aid: &str| json!({"type": "user", "promptId": pid, "message": {"content": [{"type": "tool_result"}]}, "toolUseResult": {"status": "async_launched", "agentId": aid}});
+        let lines = [
+            json!({"type": "user", "promptId": "p1", "promptSource": "typed", "message": {"content": "plan the page"}}),
+            launch("p1", "a1"),
+            json!({"type": "user", "promptId": "p2", "isMeta": true, "promptSource": "system", "turnOrigin": "peer",
+                   "message": {"content": "Another Claude session sent a message:\n<agent-message from=\"a1\">"}}),
+            launch("p2", "a2"),
+            json!({"type": "user", "promptId": "p3", "promptSource": "system", "message": {"content": "a system turn"}}),
+            launch("p3", "a3"),
+            json!({"type": "user", "promptId": "p4", "message": {"content": "<bash-input>deep-plan go demo next</bash-input>"}}),
+            launch("p4", "a4"),
+        ];
+        std::fs::write(&t, lines.iter().map(|l| l.to_string() + "\n").collect::<String>()).unwrap();
+        let l = read(&t);
+        let text = |id: &str| l.get(id).map(|p| p.text.clone());
+        assert_eq!(text("a2").as_deref(), Some("plan the page"), "a hand-back's turn falls under the last prompt");
+        assert_eq!(text("a3").as_deref(), Some("plan the page"));
+        assert_eq!(text("a4").as_deref(), Some("! deep-plan go demo next"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
