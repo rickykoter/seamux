@@ -55,6 +55,9 @@ pub struct Pane {
     /// so the silent and interrupt checks leave it alone. A prompt, an
     /// answer, a new session or the last task's finish clears it.
     pub bg_only: bool,
+    /// The session's task list as "3/5 · what is in progress" (the
+    /// progress hook), shown on the pane's tab; None without a task list.
+    pub progress: Option<String>,
 }
 
 /// The background task types that keep a pane working: agents, which
@@ -234,6 +237,7 @@ impl Pane {
             limited: None,
             background: Vec::new(),
             bg_only: false,
+            progress: None,
         }
     }
 
@@ -305,6 +309,9 @@ impl Pane {
         if self.bg_only {
             v["bg_only"] = Value::Bool(true);
         }
+        if let Some(p) = &self.progress {
+            v["progress"] = Value::String(p.clone());
+        }
 
         v
     }
@@ -325,6 +332,7 @@ impl Pane {
             background: v.get("background").and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Background::from_json).collect()).unwrap_or_default(),
             bg_only: v.get("bg_only").and_then(Value::as_bool).unwrap_or(false),
+            progress: s("progress").filter(|p| !p.is_empty()),
         })
     }
 }
@@ -1162,5 +1170,16 @@ mod tests {
         assert!(Background::shells_owned(&only, &[dir.join("missing.jsonl")]).is_empty());
         let pre = serde_json::json!({"background_tasks": [{"id": "b", "type": "shell", "status": "running"}]});
         assert!(Background::shells_owned(&pre, std::slice::from_ref(&tr)).is_empty(), "b is a prefix of b3, not a match");
+    }
+
+    #[test]
+    fn a_panes_progress_round_trips_and_a_pane_without_one_writes_none() {
+        let p = Pane { progress: Some("3/5 · Wiring the Dock".into()), ..Pane::new("W", "P") };
+        let v = p.to_json();
+        assert_eq!(v["progress"], "3/5 · Wiring the Dock");
+        assert_eq!(Pane::from_json(&v).unwrap().progress.as_deref(), Some("3/5 · Wiring the Dock"));
+        let bare = Pane::new("W", "P").to_json();
+        assert!(bare.get("progress").is_none(), "an old reader sees the file it always did");
+        assert_eq!(Pane::from_json(&bare).unwrap().progress, None);
     }
 }

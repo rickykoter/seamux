@@ -617,6 +617,7 @@ fn session(h: &mut Hook) {
             p.limited = None;
             p.background.clear();
             p.bg_only = false;
+            p.progress = None;
         });
         h.history("idle", "session");
         r
@@ -967,8 +968,13 @@ pub fn main(args: &[String]) -> i32 {
             String::new()
         }
         "task" => {
-            crate::progress::publish(&h);
-            h.settle(true, &[], |p| p.state = "working".into());
+            let progress = crate::progress::publish(&h);
+            h.settle(true, &[], |p| {
+                p.state = "working".into();
+                if progress.is_some() {
+                    p.progress = progress;
+                }
+            });
             String::new()
         }
         "ask" => {

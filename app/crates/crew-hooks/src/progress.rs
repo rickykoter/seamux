@@ -88,24 +88,26 @@ pub fn render(tasks_dir: &Path) -> Option<String> {
     Some(format!("{frac}\n{label}\n{todos}"))
 }
 
-/// crew_publish_progress.
-pub fn publish(h: &Hook) {
+/// crew_publish_progress: cmux's sidebar progress, in a cmux pane. Returns
+/// the label ("3/5 · …") for the pane file, which the Dock's tab shows on
+/// either backend.
+pub fn publish(h: &Hook) -> Option<String> {
     let sid = h.json("session_id");
     if sid.is_empty() {
-        return;
+        return None;
     }
     let tasks = crew_core::py::home().join(".claude/tasks").join(&sid);
     if !tasks.is_dir() {
-        return;
+        return None;
     }
-    let Some(out) = render(&tasks) else { return };
+    let out = render(&tasks)?;
     let out = strip_newlines(&out).to_string();
     let (frac, label, todos) = (line(&out, 1), line(&out, 2), line(&out, 3));
     if frac.is_empty() {
-        return;
+        return None;
     }
     // The sidebar's progress is cmux's alone.
-    let Some(c) = &h.cmux else { return };
+    let Some(c) = &h.cmux else { return Some(label) };
     let _ = c.cli(&["set-progress", &frac, "--label", &label]);
     if !todos.is_empty() {
         let _ = c.cli(&["todo", "set", &todos]);
@@ -117,6 +119,7 @@ pub fn publish(h: &Hook) {
             let _ = c.cli(&["set-status", "claude", active, "--icon", "list.bullet", "--color", "#4C8DFF"]);
         }
     }
+    Some(label)
 }
 
 #[cfg(test)]

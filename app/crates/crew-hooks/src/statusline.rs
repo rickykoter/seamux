@@ -134,7 +134,19 @@ fn workspace_color() -> R<(Option<Value>, Option<Value>)> {
     // is; a cmux that is there but does not answer is a cached miss below.
     // A pane outside cmux (the tmux backend) has no cmux colour to ask for.
     if !crew_core::ident::in_cmux() {
-        return Ok((None, None));
+        // The app's tmux: crew-color's colour for the workspace's worktree and
+        // the registry's title, cached like cmux's answer below.
+        let Some((color, title)) = tmux_color(&wsid) else { return Ok((None, None)) };
+        let e = json!({"at": now() as i64, "color": color, "title": title});
+        if let Value::Object(entries) = &mut cache {
+            entries.insert(wsid.clone(), e.clone());
+            if let Some(dir) = path.parent() {
+                if std::fs::create_dir_all(dir).is_ok() {
+                    let _ = crew_core::py::write_atomic(&path, pyval::dumps(&cache, None).as_bytes());
+                }
+            }
+        }
+        return Ok(pick(&e));
     }
     let Some(cmux) = crate::spawn::connect() else { return Ok((None, None)) };
     // Cache the miss too, or a cmux that is down costs a timeout per render.
@@ -176,6 +188,20 @@ fn workspace_color() -> R<(Option<Value>, Option<Value>)> {
     }
     let e = cache.get(&wsid).cloned().filter(|v| truthy(v)).unwrap_or_else(|| json!({}));
     Ok(pick(&e))
+}
+
+/// (hex, title) for a workspace of the app's tmux: the colour crew-color gave
+/// its pinned worktree (else this process's folder), else the one it would
+/// hash to, as the app's own dot does. None outside the tmux backend.
+fn tmux_color(ws: &str) -> Option<(String, String)> {
+    if !crew_core::backend::tmux::chosen() {
+        return None;
+    }
+    let (title, desc) = crew_core::backend::tmux::TmuxBackend::default().title_and_description(ws)?;
+    let dir = crew_core::worktree::root_of(&desc).or_else(|| std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned()))?;
+    let root = crew_cli::color::resolve_root(Some(&dir)).unwrap_or(dir);
+    let hex = crew_cli::color::peek(&root).unwrap_or_else(|| crew_cli::color::hashed(&root).to_string());
+    Some((hex, title))
 }
 
 fn pick(e: &Value) -> (Option<Value>, Option<Value>) {

@@ -69,6 +69,7 @@ fn tile(surface: &str, ws: &str, cwd: &str, state: &str) -> Tile {
         owner: None,
         exited: None,
         outside: false,
+        progress: None,
     }
 }
 

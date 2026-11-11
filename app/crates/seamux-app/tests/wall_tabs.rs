@@ -25,6 +25,7 @@ fn tile(surface: &str, cwd: &str, root: &str, label: &str, topic: Option<&str>) 
         owner: None,
         exited: None,
         outside: false,
+        progress: None,
     }
 }
 

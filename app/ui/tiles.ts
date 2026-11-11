@@ -22,6 +22,8 @@ export type Tile = {
   exited?: { command: string; code: number | null; at: number } | null;
   /** What a native Claude says the conversation is about, once it has read the first prompt. */
   topic?: string | null;
+  /** Its Claude's task list, "3/5 · what is in progress" (wall.rs). */
+  progress?: string | null;
   /** The workspace's pinned worktree (its root: token), "" without one. */
   root?: string;
   /** The plan this pane owns, by slug (deep-plan's owner pane). */

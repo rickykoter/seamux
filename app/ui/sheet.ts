@@ -55,9 +55,12 @@ function tabView(p: Tile): { cls: string; name: string; state: string; tip: stri
     const who = p.agent === "claude" ? "Claude" : p.agent;
     const waiting = p.state === "needs_input";
     const wait = waiting && p.since > 0 ? ageOf(p.since / 1000) : "";
-    const st = waiting ? (wait ? `needs you · ${wait}` : "needs you") : "";
+    // A working Claude with a task list says how far it is ("3/5").
+    const done = p.state === "working" && p.progress ? p.progress.split(" · ")[0] : "";
+    const st = waiting ? (wait ? `needs you · ${wait}` : "needs you") : done;
     const said = p.state === "needs_input" ? "needs you" : p.state.replace("_", " ");
-    return { cls: `agent ${p.state}`, name: who, state: st, tip: `${who} · ${said}${wait ? " for " + wait : ""}${p.topic ? " · " + p.topic : ""}` };
+    const tasks = p.progress ? " · " + p.progress : "";
+    return { cls: `agent ${p.state}`, name: who, state: st, tip: `${who} · ${said}${wait ? " for " + wait : ""}${tasks}${p.topic ? " · " + p.topic : ""}` };
   }
   // cmux's stock title says nothing; the folder it is in does.
   const dir = p.cwd.replace(/\/+$/, "").split("/").pop() || "";
