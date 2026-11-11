@@ -5,6 +5,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bg_app;
+mod clip_app;
+mod links_app;
 mod newws_app;
 mod notify_app;
 mod migrate_app;
@@ -17,6 +20,7 @@ mod resume_app;
 mod resume_watch;
 mod review_app;
 mod shell;
+mod stop_app;
 mod tuck_app;
 mod views_app;
 mod wake_app;
@@ -239,6 +243,12 @@ fn main() {
             review_app::review_other_post,
             pane_app::open_url,
             pane_app::copy_text,
+            clip_app::clip_read,
+            bg_app::bg_shells,
+            bg_app::bg_stop,
+            stop_app::pane_stop,
+            stop_app::pane_stop_cancel,
+            links_app::link_file,
             pane_app::open_in_vscode,
             pane_app::term_look,
             pty_app::pty_native,
@@ -251,6 +261,7 @@ fn main() {
             pty_app::pty_scroll,
             pty_app::pty_seen,
             pty_app::pty_shell,
+            pty_app::pty_shell_run,
             pty_app::pty_line_key,
             pty_app::pty_workspace,
             pane_app::open_in_editor,

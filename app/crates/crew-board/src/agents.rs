@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use crew_core::bgshells::Shell;
 use crew_core::runs::{host, Context, Report, Run};
 use crew_core::status::{Background, Pane};
 use serde_json::{json, Value};
@@ -213,6 +214,28 @@ pub fn rows_for(p: &Pane, rep: Option<&Report>, since: u64) -> Vec<Value> {
 /// `report` gives a pane's report (the worker's, outside tests).
 pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64>,
                  report: &mut dyn FnMut(&Pane, bool) -> Option<Report>) {
+    mark_with_shells(rows, files, turns, report, &mut |_| Vec::new())
+}
+
+/// A background shell's card row: what it runs, how it went. Its id is
+/// the task's, so the hooks' row for the same shell is not drawn twice.
+pub fn shell_row(s: &Shell, surface: &str, session: &str) -> Value {
+    let label = if s.label.is_empty() { s.command.clone() } else { s.label.clone() };
+    let mut v = json!({"surface": surface, "session": session, "id": s.id, "kind": "shell", "label": label,
+                       "cmd": s.command, "state": crew_core::bgshells::board_state(s), "start": s.at, "end": s.ended});
+    if let Some(e) = s.exit.filter(|e| *e != 0) {
+        v["badge"] = json!(format!("exit {e}"));
+    }
+    v
+}
+
+/// mark_with, and each pane's background shells (`shells`, read from its
+/// session's transcript): running ones always, finished ones for KEEP_MS.
+/// A shell runs on while Claude waits (a dev server), so an idle pane
+/// shows them too.
+pub fn mark_with_shells(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64>,
+                        report: &mut dyn FnMut(&Pane, bool) -> Option<Report>,
+                        shells: &mut dyn FnMut(&Pane) -> Vec<Shell>) {
     let now = crew_core::history::now_ms();
     for r in rows.iter_mut() {
         let surfaces: Vec<String> = r.get("panes").and_then(Value::as_array).into_iter().flatten()
@@ -227,17 +250,25 @@ pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64
             let since = now.saturating_sub(KEEP_MS);
             let had = turns.get(&p.surface.to_uppercase()).is_some_and(|t| *t >= since);
             let busy = p.state == "working" && !p.background.is_empty();
+            let sh: Vec<Value> = if p.state == "ended" { Vec::new() } else {
+                shells(p).iter().filter(|s| s.status == "running" || s.ended.unwrap_or(s.at) >= since)
+                    .map(|s| shell_row(s, &p.surface, &p.session)).collect()
+            };
             // A pane with nothing running asks for its finished runs only
             // when one of its turns left background work in the last KEEP_MS.
             if !busy && !had {
+                all.extend(sh);
                 continue;
             }
             let rep = report(p, !busy);
-            let rows = rows_for(p, rep.as_ref(), since);
+            let mut rows = rows_for(p, rep.as_ref(), since);
             if !rows.is_empty() {
                 sessions.push(json!({"surface": p.surface, "session": p.session}));
             }
+            // A shell the hooks list too is the transcript's row: it knows how it ended.
+            rows.retain(|r| !sh.iter().any(|x| x["id"] == r["id"]));
             all.extend(rows);
+            all.extend(sh);
             for n in rep.iter().flat_map(|r| r.notices.iter()) {
                 notices.push(json!({"surface": p.surface, "session": p.session, "kind": n.kind, "text": n.text(),
                                     "taskType": n.task_type, "adapter": n.adapter, "why": n.why, "count": n.count}));
@@ -264,13 +295,14 @@ pub fn mark_with(rows: &mut [Value], files: &[Pane], turns: &HashMap<String, u64
 /// mark_with on the live board: crew's history and the worker's reports.
 pub fn mark_agents(rows: &mut [Value], files: &[Pane]) {
     let t = turns();
-    mark_with(rows, files, &t, &mut |p, all| {
+    let home = crew_core::py::home();
+    mark_with_shells(rows, files, &t, &mut |p, all| {
         let ctx = crew_core::runs::context_for(&p.session, "").map(|mut c| {
             c.background = p.background.clone();
             c
         })?;
         report_for(ctx, all)
-    });
+    }, &mut |p| crew_core::bgshells::of_session(&home, &p.session));
 }
 
 #[cfg(test)]
@@ -334,6 +366,36 @@ mod tests {
         assert_eq!(r["agentSessions"], json!([{"surface": "S1", "session": "s1"}, {"surface": "S2", "session": "s1"}]),
                    "each pane with rows names its session, for its all agents row");
         assert_eq!(r["agentsMoreSession"], "s1", "+N more opens the session of the first row it hides");
+    }
+
+    #[test]
+    fn an_idle_panes_background_shells_show_on_its_card() {
+        let now = crew_core::history::now_ms();
+        // The hooks list one shell too (a sub-agent's): the transcript's row wins.
+        let files = vec![pane("S1", &[("shell", "b2", "old")])];
+        let mut rows = vec![json!({"id": "W", "panes": [{"surface": "s1"}]})];
+        let sh = |id: &str, status: &str, exit: Option<i32>, ended: Option<u64>| Shell {
+            id: id.into(), command: format!("run {id}"), status: status.into(), exit, at: now - 1000, ended, ..Default::default() };
+        mark_with_shells(&mut rows, &files, &HashMap::new(), &mut |_, _| None, &mut |_| vec![
+            sh("b1", "running", None, None),
+            sh("b2", "completed", Some(3), Some(now)),
+            sh("b3", "completed", Some(0), Some(now - KEEP_MS - 60_000)),
+        ]);
+        let ag = rows[0]["agents"].as_array().cloned().unwrap_or_default();
+        let ids: Vec<&str> = ag.iter().filter_map(|a| a["id"].as_str()).collect();
+        assert_eq!(ids, vec!["b1", "b2"], "running, then recently finished; long finished drops: {ag:?}");
+        assert_eq!(ag[0]["state"], "running");
+        assert_eq!(ag[0]["label"], "run b1");
+        assert_eq!(ag[1]["state"], "failed");
+        assert_eq!(ag[1]["badge"], "exit 3");
+
+        // Idle, with no background work of its own: the running shell still shows.
+        let mut idle = files[0].clone();
+        idle.state = "idle".into();
+        idle.background.clear();
+        let mut rows = vec![json!({"id": "W", "panes": [{"surface": "S1"}]})];
+        mark_with_shells(&mut rows, &[idle], &HashMap::new(), &mut |_, _| None, &mut |_| vec![sh("b1", "running", None, None)]);
+        assert_eq!(rows[0]["agents"][0]["id"], "b1");
     }
 
     #[test]

@@ -120,6 +120,14 @@ pub async fn pty_shell(id: u32) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || toggle_shell(&live.target)).await.map_err(|e| e.to_string())?
 }
 
+/// Run a one-line command in the companion shell, shown (a `!` command the
+/// pane offers to run there).
+#[tauri::command]
+pub async fn pty_shell_run(id: u32, cmd: String) -> Result<(), String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || seamux_app::pty::run_in_shell(&live.target, &cmd)).await.map_err(|e| e.to_string())?
+}
+
 /// The pane was looked at (attached on screen, or focused): its bell is heard.
 #[tauri::command]
 pub async fn pty_seen(id: u32) -> Result<(), String> {

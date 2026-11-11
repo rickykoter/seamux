@@ -6,6 +6,32 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **A native pane does more with what Claude prints and what you paste.**
+  - A `! command` that Claude suggests gets a menu on hover or click: run it
+    in the chat, which types it as bash mode would, run it in the ⌘J shell,
+    or copy it. The chat runs it only when Claude's prompt is empty, so a
+    draft is never touched. A `!` you type in the prompt gets a "Run in ⌘J
+    shell" chip (⇧⌘↩).
+  - A paste of files or an image is read from the Mac pasteboard by the app.
+    Files paste as their paths. An image is saved as a PNG in
+    `$TMPDIR/seamux-paste` and its path is pasted, which Claude attaches.
+    Before, Claude read the clipboard itself, and a Finder copy gave the
+    file's icon or a blank picture.
+  - Links: seamux's pages (plans, reviews, asks, agents, runs, and lookout's
+    own port) and other localhost pages (a dev server) open in the Dock.
+    Images, PDFs and Markdown files preview there too; other files open in
+    VS Code. Shift-click or ⌘-click sends a link to the browser, or a file
+    to VS Code.
+  - Claude's background shells show in a strip under the terminal, with each
+    one's last output and a Stop button. The Dock card lists them, read from
+    the session's transcript, and an idle pane's card includes them.
+- **seamux retries a turn that an API error stopped.** StopFailure now
+  records every error Claude Code names, not only the limits. An overload,
+  a server error or a dropped connection is retried by itself, armed or not,
+  30 seconds, 90 seconds and 5 minutes after the stop, using the resume
+  watcher's checks before typing. The pane shows a banner with the countdown
+  and buttons for Retry now and Don't retry; a lost login gets Log in. The
+  Dock card names the error. Run `crew apply` for the new hook matcher.
 - **crew's probes build the seamux they test.** A crew probe used whatever
   `app/target/debug/seamux` was on disk, so on a fresh worktree it failed
   with "seamux does not register …" when it ran before the build, and on an

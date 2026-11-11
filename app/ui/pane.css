@@ -79,3 +79,105 @@
   .pane-cat-heart.up { animation: none; opacity: 1; }
   .native-term[data-agent="working"] .xterm-cursor { animation: none !important; opacity: 0.45; }
 }
+
+/* A `!` command's menu (bangmenu.ts): what it runs, and where. */
+.pane-bang {
+  position: absolute; z-index: 6; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); box-shadow: 0 6px 24px var(--shade);
+  font: var(--fs-2)/1.4 -apple-system, system-ui, sans-serif;
+}
+.pane-bang[hidden] { display: none; }
+.pb-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.pb-label { color: var(--muted); flex: none; }
+.pb-cmd { font: var(--fs-2) ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pb-cmd::before { content: "! "; color: var(--accent); }
+.pb-row { display: flex; gap: 6px; }
+.pb-btn {
+  font: inherit; padding: 3px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+  background: var(--strip); color: var(--fg); border: 1px solid var(--line);
+}
+.pb-btn:hover, .pb-btn:focus-visible { border-color: var(--accent); outline: none; }
+.pb-btn:first-child { background: color-mix(in srgb, var(--accent) 16%, var(--strip)); }
+
+/* Claude's prompt in bash mode: run its command in the ⌘J shell instead. */
+.pane-bashchip {
+  position: absolute; z-index: 4; right: 14px; height: 18px; padding: 0 8px; border-radius: 9px; cursor: pointer;
+  font: var(--fs-1) -apple-system, system-ui, sans-serif;
+  background: var(--card); color: var(--muted); border: 1px solid var(--line);
+}
+.pane-bashchip:hover { color: var(--fg); border-color: var(--accent); }
+.pane-bashchip[hidden] { display: none; }
+
+/* The terminal and, under it while any runs, the background-shell strip. */
+.native-term { display: flex; flex-direction: column; }
+.pane-screen { flex: 1; min-height: 0; position: relative; }
+.native-term.has-bg .pane-pill, .native-term.has-bg .pane-note { bottom: 36px; }
+
+/* Claude's background shells (bgstrip.ts). */
+.pane-bgstrip { flex: none; display: flex; margin-top: 4px; }
+.pane-bgstrip[hidden] { display: none; }
+.bg-summary {
+  display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 22px; padding: 0 10px; border-radius: 11px; cursor: pointer;
+  font: var(--fs-1) -apple-system, system-ui, sans-serif; color: var(--muted);
+  background: var(--strip); border: 1px solid var(--line);
+}
+.bg-summary:hover, .bg-summary[aria-expanded="true"] { color: var(--fg); border-color: var(--accent); }
+.bg-count { color: var(--fg); font-weight: 600; flex: none; }
+.bg-dot { opacity: 0.6; flex: none; }
+.bg-name { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.bg-bad { color: var(--bad-t); flex: none; }
+.bg-mark { flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.bg-mark.running { color: var(--accent); animation: bg-turn 1.2s linear infinite; }
+.bg-mark.done { color: var(--good-t); }
+.bg-mark.failed { color: var(--bad-t); }
+.bg-mark.cancelled { color: var(--muted); }
+@keyframes bg-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .bg-mark.running { animation: none; } }
+
+.pane-bglist {
+  position: absolute; z-index: 6; left: var(--term-pad, 8px); bottom: 34px; width: min(560px, calc(100% - 24px)); max-height: 60%;
+  overflow: auto; display: flex; flex-direction: column; gap: 2px; padding: 6px; border-radius: 10px;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); box-shadow: 0 6px 24px var(--shade);
+  font: var(--fs-2)/1.4 -apple-system, system-ui, sans-serif;
+}
+.pane-bglist[hidden] { display: none; }
+.bg-row { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 7px; }
+.bg-row + .bg-row { border-top: 1px solid var(--line); }
+.bg-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bg-what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.bg-when { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.bg-exit { color: var(--bad-t); font: var(--fs-1) ui-monospace, Menlo, monospace; flex: none; }
+.bg-cmd { color: var(--muted); font: var(--fs-1) ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bg-btn {
+  flex: none; font: var(--fs-1) -apple-system, system-ui, sans-serif; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  background: var(--strip); color: var(--fg); border: 1px solid var(--line);
+}
+.bg-btn:hover { border-color: var(--accent); }
+.bg-btn:disabled { opacity: 0.5; cursor: default; }
+.bg-stop:hover { border-color: var(--bad-t); color: var(--bad-t); }
+.bg-tail {
+  margin: 0; max-height: 180px; overflow: auto; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-all;
+  background: var(--term, var(--strip)); color: var(--term-fg, var(--fg)); font: var(--fs-1)/1.45 ui-monospace, Menlo, monospace;
+}
+
+/* An API error stopped the turn (stopbanner.ts): why, and the next try. */
+.pane-stop {
+  position: absolute; z-index: 5; top: 8px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 28px);
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 10px; border-radius: 10px;
+  background: var(--card); color: var(--fg); border: 1px solid var(--role-attend); box-shadow: 0 6px 24px var(--shade);
+  font: var(--fs-2)/1.4 -apple-system, system-ui, sans-serif;
+}
+.pane-stop[hidden] { display: none; }
+.pane-stop[data-kind="retry"] { border-color: var(--line); }
+.ps-icon { flex: none; fill: none; stroke: var(--role-attend-t); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+.ps-text { font-weight: 600; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ps-when { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ps-btns { display: flex; gap: 6px; flex: none; }
+.ps-btn {
+  font: var(--fs-1) -apple-system, system-ui, sans-serif; padding: 3px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  background: var(--strip); color: var(--fg); border: 1px solid var(--line);
+}
+.ps-btn.main { background: color-mix(in srgb, var(--accent) 16%, var(--strip)); }
+.ps-btn:hover { border-color: var(--accent); }
+.ps-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.ps-close:hover { color: var(--fg); background: var(--strip); }

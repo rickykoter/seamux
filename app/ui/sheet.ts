@@ -569,6 +569,8 @@ type Tab = {
   el: HTMLElement | null;
   page?: Page;
   shown?: Shown;
+  /** A local web page's URL, framed as it is (openWeb). */
+  web?: string;
   toCmux?: (() => Promise<unknown>) | null;
 };
 
@@ -917,6 +919,23 @@ export class Sheet {
     this.select(key, true);
   }
 
+  /** A local web page (a dev server on localhost) framed as a tab, with a
+   *  way out to the browser for one that will not be framed. */
+  openWeb(url: string, place: { workspace?: string; dir?: string } = {}): void {
+    this.enter(place, false);
+    const key = `web:${url}`;
+    this.drop(key);
+    let label = url;
+    try {
+      const u = new URL(url);
+      label = u.host + (u.pathname === "/" ? "" : u.pathname);
+    } catch {
+      /* shown as written */
+    }
+    this.tabs.push({ key, kind: "web", label, state: "", waiting: false, now: false, el: null, web: url, toCmux: () => invoke("open_url", { url }) });
+    this.select(key, true);
+  }
+
   async open(p: Page): Promise<void> {
     this.enter({ workspace: p.workspace, dir: p.dir }, false);
     const t = this.tabs.find((x) => x.key === p.path);
@@ -1191,6 +1210,36 @@ export class Sheet {
     box.className = "sheet-pane";
     t.el = box;
     this.stack.append(box);
+    if (t.web) {
+      const url = t.web;
+      const bar = document.createElement("div");
+      bar.className = "sheet-webbar";
+      const where = document.createElement("span");
+      where.className = "sheet-weburl";
+      where.textContent = url;
+      where.title = url;
+      const reload = document.createElement("button");
+      reload.type = "button";
+      reload.className = "sheet-btn";
+      reload.textContent = "Reload";
+      const out = document.createElement("button");
+      out.type = "button";
+      out.className = "sheet-btn";
+      out.textContent = "Open in browser";
+      out.addEventListener("click", () => void invoke("open_url", { url }).catch(() => {}));
+      bar.append(where, reload, out);
+      const frame = document.createElement("iframe");
+      frame.title = t.label;
+      // A dev server's page runs its scripts and forms in its own origin, but
+      // never navigates the app's window or reaches past its frame.
+      frame.setAttribute("sandbox", "allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-downloads");
+      frame.setAttribute("referrerpolicy", "no-referrer");
+      frame.src = url;
+      reload.addEventListener("click", () => (frame.src = url));
+      box.classList.add("web");
+      box.append(bar, frame);
+      return;
+    }
     const s = t.shown;
     if (s) {
       if (s.kind === "image") {

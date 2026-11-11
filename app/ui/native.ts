@@ -14,7 +14,11 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import "./pane.css";
-import { follow, HoverCard, pathLinks, type Hovered } from "./panelinks";
+import { findPrompt, type Prompt } from "./bang";
+import { BangMenu } from "./bangmenu";
+import { BgStrip } from "./bgstrip";
+import { StopBanner } from "./stopbanner";
+import { bangLinks, follow, HoverCard, pathLinks, screenRows, type Hovered } from "./panelinks";
 import { PaneCat } from "./panecat";
 
 // A page that starts (or reloads) owns no terminal yet: any its last life
@@ -213,11 +217,25 @@ export class NativeTerm {
   private findCount = document.createElement("span");
   /** The Dock's cat, peeking in while Claude waits for you. */
   private cat = new PaneCat();
+  /** A `!` command's menu: run it in the chat or the ⌘J shell. */
+  private bang: BangMenu;
+  /** Where xterm.js draws: the pane less the background-shell strip. */
+  private screen = document.createElement("div");
+  /** Claude's background shells, under the terminal. */
+  private bg: BgStrip;
+  /** Over the pane while an API error has its turn stopped. */
+  private stopBanner: StopBanner;
+  /** Beside Claude's prompt in bash mode: run it in the ⌘J shell instead. */
+  private bashChip = document.createElement("button");
+  /** Claude's prompt as last read off the screen (buffer row, 1-based, in
+   *  `row`), and when the next read is due. */
+  private promptNow: Prompt & { abs?: number } = { kind: "none" };
+  private promptTimer = 0;
 
   constructor() {
-    const open = (uri: string) => void follow(uri, this.id);
+    const open = (uri: string, e?: MouseEvent) => void follow(uri, this.id, e);
     const hovered = (e: MouseEvent, uri: string, y: number, label: string) => {
-      this.link = { uri, y, label, go: () => open(uri) };
+      this.link = { uri, y, label, go: (ev) => open(uri, ev) };
       this.card.hover(uri, e);
     };
     const left = () => {
@@ -234,19 +252,42 @@ export class NativeTerm {
     this.note.className = "pane-note";
     this.note.setAttribute("role", "status");
     this.note.hidden = true;
-    this.el.append(this.pill, this.note, this.cat.el);
-    // An image on the clipboard has no text to paste: Claude reads the
-    // clipboard's image itself on Ctrl-V. (On the pane, captured, so it
-    // runs before xterm.js's own paste.)
+    this.bashChip.className = "pane-bashchip";
+    this.bashChip.type = "button";
+    this.bashChip.hidden = true;
+    this.bashChip.title = "Run this command in the ⌘J shell instead of the chat (⇧⌘↩)";
+    this.bashChip.textContent = "Run in ⌘J shell ⇧⌘↩";
+    this.bashChip.addEventListener("mousedown", (e) => e.stopPropagation(), true);
+    this.bashChip.addEventListener("click", () => this.bashToShell());
+    this.screen.className = "pane-screen";
+    this.bg = new BgStrip((t) => this.say(t));
+    // The strip takes its own row: the terminal fits the rest.
+    this.bg.onChange = () => {
+      this.el.classList.toggle("has-bg", !this.bg.el.hidden);
+      if (this.visible()) this.fit.fit();
+    };
+    this.stopBanner = new StopBanner({ type: (line) => this.typeLine(line), say: (t) => this.say(t) });
+    this.el.append(this.screen, this.bg.el, this.bg.list, this.stopBanner.el, this.pill, this.note, this.cat.el, this.bashChip);
+    this.bang = new BangMenu(this.el, {
+      chat: (cmd) => this.runInChat(cmd),
+      shell: (cmd) => this.runInShell(cmd),
+      copy: (cmd) => void invoke("copy_text", { text: cmd }).then(() => this.say("Copied"), () => this.say("Couldn't copy")),
+    });
+    // Files or an image on the clipboard: the app reads the pasteboard itself
+    // (clip_app.rs). Files paste as their paths and an image as the path of a
+    // PNG it writes, which Claude takes as an attachment. Leaving the image to
+    // Claude's own Ctrl-V gave a Finder copy's icon, or a blank picture.
+    // (On the pane, captured, so it runs before xterm.js's own paste.)
     this.el.addEventListener(
       "paste",
       (e) => {
         const d = e.clipboardData;
-        if (!d || d.getData("text/plain")) return;
-        if (![...d.items].some((i) => i.type.startsWith("image/"))) return;
+        if (!d) return;
+        const files = d.types.includes("Files") || [...d.items].some((i) => i.kind === "file" || i.type.startsWith("image/"));
+        if (!files) return;
         e.preventDefault();
         e.stopPropagation();
-        this.send({ data: "\x16" }, true);
+        void this.pasteClip();
       },
       true,
     );
@@ -267,7 +308,7 @@ export class NativeTerm {
       // Links a program marks (OSC 8, as Claude prints them): tmux passes
       // them on (the client says it can), and a click opens them as below.
       linkHandler: {
-        activate: (_e, uri) => open(uri),
+        activate: (e, uri) => open(uri, e),
         hover: (e, uri, range) => hovered(e, uri, range.start.y, this.textAt(range)),
         leave: left,
       },
@@ -306,16 +347,42 @@ export class NativeTerm {
     // Command-click; a plain click on the link under the pointer opens it too,
     // before tmux sees the click.
     this.term.loadAddon(
-      new WebLinksAddon((_e, uri) => open(uri), {
+      new WebLinksAddon((e, uri) => open(uri, e), {
         hover: (e, uri, range) => hovered(e, uri, range?.start.y ?? 0, uri),
         leave: left,
       }),
     );
     // File paths: those on disk, from the pane's folder, open in VS Code.
     this.term.registerLinkProvider(pathLinks(this.term, () => this.id, (h) => (this.link = h)));
+    // `!` commands Claude suggests: a menu to run them, on hover or click.
+    this.term.registerLinkProvider(
+      bangLinks(
+        this.term,
+        () => (this.promptNow.kind === "none" ? -1 : (this.promptNow.abs ?? -1)),
+        (h, cmd, e) => {
+          this.link = h;
+          if (h && e) this.bang.hover(cmd, e);
+          else this.bang.leave();
+        },
+        (cmd, e) => this.bang.pin(cmd, e),
+      ),
+    );
+    // Claude's prompt, read again a moment after the screen changes.
+    this.term.onRender(() => {
+      if (this.promptTimer) return;
+      this.promptTimer = window.setTimeout(() => {
+        this.promptTimer = 0;
+        this.readPrompt();
+      }, 150);
+    });
     this.el.addEventListener(
       "mousedown",
       (e) => {
+        // The pane's overlays take their own clicks (this runs first, on the
+        // way down). A click anywhere else closes a `!` command's menu.
+        const on = e.target instanceof Node ? e.target : null;
+        if (on && [this.bang.el, this.bg.el, this.bg.list, this.stopBanner.el, this.bashChip].some((x) => x.contains(on))) return;
+        if (!this.link) this.bang.hide();
         if (!this.link || e.button !== 0 || e.metaKey || e.altKey) return;
         // The screen may have moved under a still pointer: only a link still
         // on its row opens; otherwise the click is tmux's.
@@ -327,7 +394,7 @@ export class NativeTerm {
         e.preventDefault();
         e.stopPropagation();
         this.card.hide();
-        this.link.go();
+        this.link.go(e);
       },
       true,
     );
@@ -373,6 +440,98 @@ export class NativeTerm {
     if (!paths.length || this.id === null) return;
     this.term.paste(paths.map(shellWord).join(" ") + " ");
     this.term.focus();
+  }
+
+  /** A paste of files or an image, as the pasteboard holds it (Clip in
+   *  clip_app.rs). Nothing readable falls back to Claude's own Ctrl-V. */
+  private async pasteClip(): Promise<void> {
+    type Clip = { kind: "files"; paths: string[] } | { kind: "image"; path: string } | { kind: "text"; text: string } | { kind: "empty" };
+    const c = await invoke<Clip>("clip_read").catch((err) => {
+      this.say(`Couldn't read the clipboard: ${err}`);
+      return null;
+    });
+    if (!c || this.id === null) return;
+    if (c.kind === "files") this.term.paste(c.paths.map(shellWord).join(" ") + " ");
+    else if (c.kind === "image") {
+      this.term.paste(shellWord(c.path) + " ");
+      this.say("Pasted image");
+    } else if (c.kind === "text") this.term.paste(c.text);
+    else this.send({ data: "\x16" }, true);
+    this.term.focus();
+  }
+
+  /** Claude's prompt, read off the visible screen; the bash-mode chip
+   *  follows it. */
+  private readPrompt(): Prompt & { abs?: number } {
+    const top = this.term.buffer.active.viewportY;
+    const { rows, dim } = screenRows(this.term, top, top + this.term.rows);
+    const p = findPrompt(rows, dim);
+    this.promptNow = p.kind === "none" ? p : { ...p, abs: top + p.row + 1 };
+    const bash = p.kind === "bash" && !!p.text && this.id !== null;
+    this.bashChip.hidden = !bash;
+    if (bash) {
+      const rowPx = (this.term.element?.querySelector(".xterm-screen")?.clientHeight ?? this.screen.clientHeight) / Math.max(1, this.term.rows);
+      this.bashChip.style.top = `${this.screen.offsetTop + p.row * rowPx + (rowPx - 18) / 2}px`;
+    }
+    return this.promptNow;
+  }
+
+  /** A short wait between keys, in order with them: Claude's prompt takes
+   *  a `!` as bash mode only as a key of its own. */
+  private pause(ms: number): void {
+    this.keys = this.keys.then(() => new Promise((r) => setTimeout(r, ms)));
+  }
+
+  /** Whether Claude's prompt is empty, to type into; says why not. */
+  private promptFree(): boolean {
+    if (this.id === null) return false;
+    const p = this.readPrompt();
+    if (p.kind === "none") this.say("Claude's prompt isn't on screen");
+    else if (p.kind !== "empty") this.say("Your prompt has text in it: send or clear it first");
+    return p.kind === "empty";
+  }
+
+  /** Type `! cmd` into Claude's empty prompt and send it, as bash mode
+   *  runs it: its output joins the conversation. A draft is never touched. */
+  private runInChat(cmd: string): void {
+    if (!this.promptFree()) return;
+    this.send({ data: "!" }, true);
+    this.pause(80);
+    this.send({ data: cmd }, true);
+    this.pause(80);
+    this.send({ data: "\r" }, true);
+    this.term.focus();
+  }
+
+  /** Type a line into Claude's empty prompt and send it ("continue", "/login"). */
+  private typeLine(line: string): void {
+    if (!this.promptFree()) return;
+    this.send({ data: line }, true);
+    this.pause(80);
+    this.send({ data: "\r" }, true);
+    this.term.focus();
+  }
+
+  /** Run `cmd` in the ⌘J shell, shown. */
+  private runInShell(cmd: string): void {
+    const id = this.id;
+    if (id === null) return;
+    this.keys = this.keys.then(() => invoke("pty_shell_run", { id, cmd })).then(
+      () => this.say("Running in the ⌘J shell"),
+      (err) => this.say(`Couldn't run it: ${err}`),
+    );
+  }
+
+  /** Claude's prompt is in bash mode: its command goes to the ⌘J shell
+   *  instead, and the prompt is cleared (out of bash mode too). */
+  private bashToShell(): void {
+    const p = this.readPrompt();
+    if (p.kind !== "bash" || !p.text || this.id === null) return;
+    const cmd = p.text;
+    this.lineKey("C-e");
+    this.lineKey("C-u");
+    this.send({ data: "\x7f" }, true);
+    this.runInShell(cmd);
   }
 
   /** ⌘+ / ⌘- / ⌘0: this pane's font size, kept for it. */
@@ -520,8 +679,8 @@ export class NativeTerm {
     e.preventDefault();
     this.scrolled = true;
     this.watchScroll();
-    const rowPx = this.el.clientHeight / Math.max(1, this.term.rows);
-    const dy = e.deltaMode === 1 ? e.deltaY * rowPx : e.deltaMode === 2 ? e.deltaY * this.el.clientHeight : e.deltaY;
+    const rowPx = this.screen.clientHeight / Math.max(1, this.term.rows);
+    const dy = e.deltaMode === 1 ? e.deltaY * rowPx : e.deltaMode === 2 ? e.deltaY * this.screen.clientHeight : e.deltaY;
     const step = rowPx * ROWS_PER_REPORT;
     const now = performance.now();
     const fresh = now - this.wheelAt > 250 || Math.sign(dy) !== Math.sign(this.wheelLeft || dy);
@@ -548,6 +707,8 @@ export class NativeTerm {
     if (surface === this.surface) return;
     this.detach();
     this.surface = surface;
+    this.bg.watch(surface);
+    this.stopBanner.watch(surface);
     this.cat.reset();
     delete this.el.dataset.agent;
     if (this.opened) this.term.reset();
@@ -557,6 +718,10 @@ export class NativeTerm {
   }
 
   stop(): void {
+    this.bg.watch("");
+    this.stopBanner.watch("");
+    this.bang.hide();
+    this.bashChip.hidden = true;
     this.detach();
     if (this.el.classList.contains("focused")) void invoke("notify_looking", { pane: null }).catch(() => {});
     this.surface = "";
@@ -584,7 +749,7 @@ export class NativeTerm {
     if (this.visible()) {
       this.hiddenSince = 0;
       if (!this.opened) {
-        this.term.open(this.el);
+        this.term.open(this.screen);
         // The textarea exists only once the terminal is open.
         this.term.textarea?.addEventListener("focus", () => {
           this.el.classList.add("focused");
@@ -687,6 +852,12 @@ export class NativeTerm {
     if (e.metaKey) {
       if (e.key === "Escape") this.term.blur();
       const plain = !e.ctrlKey && !e.altKey;
+      if (plain && e.shiftKey && e.key === "Enter") {
+        // ⇧⌘↩: a bash-mode command runs in the ⌘J shell instead.
+        e.preventDefault();
+        if (this.readPrompt().kind === "bash") this.bashToShell();
+        return false;
+      }
       if (plain && !e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         this.openFind();

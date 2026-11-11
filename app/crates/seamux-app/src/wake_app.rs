@@ -110,9 +110,9 @@ pub const SHOW_MAX: u64 = 12 * 1024 * 1024;
 #[derive(Serialize)]
 pub struct Shown {
     /// image, video, html or pdf
-    kind: &'static str,
-    title: String,
-    data: String,
+    pub kind: &'static str,
+    pub title: String,
+    pub data: String,
 }
 
 /// How the sheet shows a file, by its extension, and its media type.

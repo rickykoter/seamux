@@ -66,6 +66,13 @@ function __boardRender(d) {
   function dueOf(l) { return l.usage && l.next_try ? l.next_try : l.resets_at; }
   function stopText(a) {
     var l = a.limited;
+    // An API error (an overload, a lost login): the app retries the passing ones.
+    if (l.api) {
+      var what = "stopped: " + l.label + (l.detail ? " (" + l.detail + ")" : "");
+      if (!l.retry) return what;
+      if (l.gave_up) return what + " \u00b7 didn\u2019t retry: " + l.gave_up;
+      return what + (l.next_try ? " \u00b7 retrying " + clockOf(l.next_try) : " \u00b7 retrying shortly");
+    }
     // The app tried and stopped (the resume watcher's gave_up): it waits for you.
     if (a.armed && l.gave_up) return "stopped: " + l.label + " \u00b7 didn\u2019t resume: " + l.gave_up;
     if (l.error === "billing_error") return "stopped: spend limit reached" + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : "");
@@ -564,7 +571,7 @@ function __boardRender(d) {
       // Only a row that just arrived animates in: a push redraws the list.
       var fresh = !seenAg[key] && host.getAttribute("data-pushed") === "1";
       var shell = e.kind === "shell";
-      var tip = shell ? "A command a sub-agent left running: " + (e.label || e.id)
+      var tip = shell ? (e.cmd ? "Background command, " + st[1] + ": " + e.cmd : "A command a sub-agent left running: " + (e.label || e.id))
         : (run ? "Run " : "Sub-agent ") + (e.label || e.id) + ", " + st[1] + ": open its " + (run ? "run page" : "transcript");
       return '<div class="ag ' + st[0] + (fresh ? " new" : "") + (shell ? " sh" : "") + '"' + (shell ? ' data-a="none"' : ' data-a="' + (run ? "run" : "agent") + '" data-x="' + esc(e.id) +
         '" data-path="/' + (run ? "run" : "agent") + "/" + esc(e.session || "") + "/" + esc(run ? e.id : e.agent || e.id) + '"') + ' title="' + esc(tip) + '">' +

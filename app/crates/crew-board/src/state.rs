@@ -627,6 +627,12 @@ fn worktree_root(cwd: &str) -> String {
     root
 }
 
+/// Whether the app tries a stop again by itself, armed or not: an API
+/// error that passes (an overload, a server fault, a dropped connection).
+pub fn retries(l: &crew_core::status::Limited) -> bool {
+    crew_core::status::RETRY_ERRORS.contains(&l.error.as_str())
+}
+
 /// The newest limit stop in a workspace's pane files: a pane still stopped
 /// (idle, its limit not cleared by a prompt or a tool use).
 fn limit_of<'a>(files: &'a [crew_core::status::Pane], ws: &str) -> Option<&'a crew_core::status::Limited> {
@@ -660,7 +666,11 @@ pub fn mark_limits(rows: Vec<Value>, quiet: Vec<Value>, files: &[crew_core::stat
             }
         }
         let Some(l) = limit_of(files, &py_str(get(r, "id"))) else { return };
+        let api = crew_core::status::API_ERRORS.contains(&l.error.as_str());
+        // An error the app retries by itself waits for nobody until it gives up.
+        let retry = crate::state::retries(l);
         let label = match (l.window.as_deref(), l.error.as_str()) {
+            _ if api => crew_core::status::error_label(&l.error),
             (Some(w), _) => crew_core::limits::window_label(w),
             (None, "billing_error") => "spend limit",
             (None, _) if usage => "rate limited",
@@ -669,9 +679,9 @@ pub fn mark_limits(rows: Vec<Value>, quiet: Vec<Value>, files: &[crew_core::stat
         let Some(o) = r.as_object_mut() else { return };
         o.insert("limited".into(), json!({"error": l.error, "window": l.window, "label": label, "resets_at": l.resets_at,
                                           "next_try": l.next_try, "tries": l.tries, "usage": usage,
-                                          "gave_up": l.gave_up}));
+                                          "gave_up": l.gave_up, "api": api, "retry": retry, "detail": l.detail}));
         o.insert("armed".into(), json!(on));
-        if !on && o.get("kind").and_then(Value::as_str) != Some("attend") {
+        if !on && !(retry && l.gave_up.is_none()) && o.get("kind").and_then(Value::as_str) != Some("attend") {
             o.insert("kind".into(), json!("attend"));
             let mut chips: Vec<Value> = o.get("chips").and_then(Value::as_array).cloned().unwrap_or_default();
             chips.retain(|c| c.as_str() != Some("jump"));
@@ -1124,7 +1134,7 @@ mod tests {
     fn stopped(ws: &str, surface: &str, window: Option<&str>) -> crew_core::status::Pane {
         let mut p = file(ws, surface, "idle", 5);
         p.limited = Some(crew_core::status::Limited { error: "rate_limit".into(), session: "s".into(), at: 5,
-            window: window.map(String::from), resets_at: Some(9_000_000), tries: 0, next_try: None, gave_up: None });
+            window: window.map(String::from), resets_at: Some(9_000_000), tries: 0, next_try: None, gave_up: None, detail: None });
         p
     }
 
@@ -1150,6 +1160,29 @@ mod tests {
         assert_eq!(q.len(), 1);
         assert_eq!((q[0]["id"].as_str(), q[0]["kind"].as_str(), q[0]["armed"].as_bool()), (Some("Q2"), Some("quiet"), Some(true)));
         assert_eq!(q[0]["limited"]["label"], "weekly limit");
+    }
+
+    #[test]
+    fn an_api_error_being_retried_keeps_its_tier_until_the_app_gives_up() {
+        let row = |id: &str| json!({"id": id, "kind": "quiet", "cwd": format!("/w/{id}"), "chips": []});
+        let api = |ws: &str, error: &str, gave_up: Option<&str>| {
+            let mut p = stopped(ws, "s", None);
+            let l = p.limited.as_mut().unwrap();
+            l.error = error.into();
+            l.resets_at = None;
+            l.detail = Some("Overloaded".into());
+            l.gave_up = gave_up.map(String::from);
+            p
+        };
+        let files = [api("O", "overloaded", None), api("G", "server_error", Some("3 tries did not get through")), api("L", "authentication_failed", None)];
+        let (r, q) = mark_limits(vec![], vec![row("O"), row("G"), row("L")], &files, false, &|_| false, false);
+        let ids = |v: &[Value]| v.iter().map(|x| x["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(&q), ["O"], "a retry under way waits for nobody");
+        assert_eq!(ids(&r), ["G", "L"], "given up, or never retried: it needs you");
+        assert_eq!((q[0]["limited"]["label"].as_str(), q[0]["limited"]["retry"].as_bool(), q[0]["limited"]["api"].as_bool()),
+                   (Some("API overloaded"), Some(true), Some(true)));
+        assert_eq!(q[0]["limited"]["detail"], "Overloaded");
+        assert_eq!((r[1]["limited"]["label"].as_str(), r[1]["limited"]["retry"].as_bool()), (Some("logged out"), Some(false)));
     }
 
     #[test]

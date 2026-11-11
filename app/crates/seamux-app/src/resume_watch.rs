@@ -6,7 +6,9 @@
 //! limit stopped (crew-hooks' stopfail wrote `limited`) is resumed only when
 //! all of this holds:
 //!
-//! - its worktree is armed in resume.json, and the pane is live on the wall;
+//! - its worktree is armed in resume.json, and the pane is live on the wall
+//!   (an API error that passes, status::RETRY_ERRORS, needs no arming:
+//!   it is tried 30 seconds, 90 seconds and 5 minutes after each stop);
 //! - its limit is due: the reset plus a minute, or on usage billing the next
 //!   try (2, 5 and 15 minutes after each stop, then it gives up). A spend
 //!   limit (billing_error) is never retried, and a stop with no known reset
@@ -37,6 +39,9 @@ pub const TICK: Duration = Duration::from_secs(15);
 pub const AFTER_RESET_MS: u64 = 60_000;
 /// Usage billing's retries after a rate_limit stop, by try: then it gives up.
 pub const RETRY_MS: [u64; 3] = [2 * 60_000, 5 * 60_000, 15 * 60_000];
+/// The retries after an API error that passes (an overload, a server
+/// fault, a dropped connection), by try: then it gives up.
+pub const API_RETRY_MS: [u64; 3] = [30_000, 90_000, 5 * 60_000];
 /// How long the pane's hook has to write working after Enter.
 pub const CONFIRM_MS: u64 = 30_000;
 /// A stop this soon after the watcher resumed the same session counts as
@@ -60,10 +65,22 @@ pub enum Plan {
 /// usage billing; `before` is how many resumes of this session the watcher
 /// made in its current run of stops (each one stopped again).
 pub fn plan(l: &Limited, usage: bool, before: u32, now: u64) -> Plan {
-    if l.gave_up.is_some() || l.error == "billing_error" {
+    let retry = status::RETRY_ERRORS.contains(&l.error.as_str());
+    // A lost login or a refused request would only fail again.
+    if l.gave_up.is_some() || l.error == "billing_error" || (status::API_ERRORS.contains(&l.error.as_str()) && !retry) {
         return Plan::Wait;
     }
     let tries = l.tries.max(before);
+    if retry {
+        let Some(wait) = API_RETRY_MS.get(tries as usize) else {
+            return Plan::GiveUp(format!("{} tries did not get through", API_RETRY_MS.len()));
+        };
+        let due = match l.next_try {
+            Some(t) if l.tries == tries => t,
+            _ => return Plan::Schedule { tries, next_try: l.at + wait },
+        };
+        return if now >= due { Plan::Resume } else { Plan::Wait };
+    }
     if tries as usize >= RETRY_MS.len() {
         return Plan::GiveUp(format!("{} tries did not get through", RETRY_MS.len()));
     }
@@ -205,7 +222,9 @@ fn tick(app: &AppHandle, dir: &Path, resumed: &mut HashMap<String, (u32, u64)>) 
     let usage = crew_board::usage::billing_mode() == "usage";
     for (p, l) in panes {
         let Some(tile) = frame.tiles.iter().find(|t| t.surface.eq_ignore_ascii_case(&p.surface)) else { continue };
-        if tile.agent.is_none() || tile.state == "ended" || !store.armed(&seamux_app::tuck::root_of(&tile.cwd)) {
+        // A limit resumes only where it is armed; a passing API error is retried anywhere.
+        let needs_arming = !status::RETRY_ERRORS.contains(&l.error.as_str());
+        if tile.agent.is_none() || tile.state == "ended" || (needs_arming && !store.armed(&seamux_app::tuck::root_of(&tile.cwd))) {
             continue;
         }
         let name = if tile.workspace_title.is_empty() { tile.label.clone() } else { tile.workspace_title.clone() };
@@ -270,7 +289,7 @@ mod tests {
 
     fn lim(window: Option<&str>, resets_at: Option<u64>) -> Limited {
         Limited { error: "rate_limit".into(), session: "s".into(), at: 1_000, window: window.map(String::from),
-                  resets_at, tries: 0, next_try: None, gave_up: None }
+                  resets_at, tries: 0, next_try: None, gave_up: None, detail: None }
     }
 
     #[test]
@@ -284,6 +303,24 @@ mod tests {
         let done = Limited { gave_up: Some("x".into()), ..l.clone() };
         assert_eq!(plan(&done, false, 0, u64::MAX), Plan::Wait, "given up: until a new stop");
         assert!(matches!(plan(&l, false, 3, u64::MAX), Plan::GiveUp(_)), "three resumes that each stopped again");
+    }
+
+    #[test]
+    fn a_passing_api_error_retries_at_thirty_seconds_ninety_and_five_minutes() {
+        let l = Limited { error: "overloaded".into(), ..lim(None, None) };
+        assert_eq!(plan(&l, false, 0, 0), Plan::Schedule { tries: 0, next_try: 1_000 + 30_000 });
+        let set = Limited { next_try: Some(31_000), ..l.clone() };
+        assert_eq!(plan(&set, false, 0, 30_999), Plan::Wait);
+        assert_eq!(plan(&set, false, 0, 31_000), Plan::Resume);
+        assert_eq!(plan(&l, true, 1, 0), Plan::Schedule { tries: 1, next_try: 1_000 + 90_000 }, "billing does not matter");
+        assert_eq!(plan(&l, false, 2, 0), Plan::Schedule { tries: 2, next_try: 1_000 + 300_000 });
+        assert_eq!(plan(&l, false, 3, 0), Plan::GiveUp("3 tries did not get through".into()));
+        for e in ["server_error", "unknown"] {
+            assert!(matches!(plan(&Limited { error: e.into(), ..lim(None, None) }, false, 0, 0), Plan::Schedule { .. }), "{e}");
+        }
+        for e in ["authentication_failed", "invalid_request", "max_output_tokens", "model_not_found"] {
+            assert_eq!(plan(&Limited { error: e.into(), ..lim(None, None) }, false, 0, u64::MAX), Plan::Wait, "{e} would only fail again");
+        }
     }
 
     #[test]
