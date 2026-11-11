@@ -105,6 +105,10 @@ transcript reading it shares with other adapters lives in
 `crew/adapters/lib/claude_agent.py`; a folder with no `adapter.json` is not
 an adapter, so seamux skips it.
 
+`crew/adapters/lookout` uses the same fields for lookout reviewers: its
+findings by severity as `metrics`, the review page as a `url` link, and a
+document `summary` with what is still open across the session's reviews.
+
 `crew/adapters/scout` builds on it for deep-plan's scouts: it sets its own
 `group` (the plan the scouts worked for, so they sit together on the
 session page) and a document `summary`, and it loads after explore, so its

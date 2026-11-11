@@ -275,14 +275,19 @@ fn the_lookout_adapter_replaces_a_reviewers_row_with_its_findings() {
     fs::write(store.join("rv-1.json"), json!({"title": "x", "reviewedAt": "2026-11-08T20:00:40.000Z", "findings": [
         {"id": "f1", "severity": "major", "file": "a/b.rs", "line": 9, "short_summary": "it breaks", "createdAt": "2026-11-08T20:00:30.000Z"},
         {"id": "f0", "severity": "blocker", "file": "a/c.rs", "line": 1, "short_summary": "an earlier round's", "createdAt": "2026-11-08T19:00:00.000Z"},
-        {"id": "f2", "severity": "blocker", "file": "a/d.rs", "line": 2, "short_summary": "a person's", "by": "human", "createdAt": "2026-11-08T20:00:31.000Z"}]}).to_string()).unwrap();
+        {"id": "f2", "severity": "blocker", "file": "a/d.rs", "line": 2, "short_summary": "a person's", "by": "human", "createdAt": "2026-11-08T20:00:31.000Z"},
+        {"id": "f3", "severity": "minor", "file": "a/e.rs", "line": 3, "status": "resolved", "createdAt": "2026-11-08T19:00:00.000Z"}]}).to_string()).unwrap();
+    // crew's intent server's port, for the review page's link.
+    fs::create_dir_all(root.join("cache/cmux-crew")).unwrap();
+    fs::write(root.join("cache/cmux-crew/board-intent.port"), "7345\n").unwrap();
     // The bundled adapter, run with its store pointed here through its own
     // command (no process-wide variable).
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crew/adapters/lookout/adapter.py");
     let wrap = root.join("adapters/lookout");
     fs::create_dir_all(&wrap).unwrap();
     fs::write(wrap.join("adapter.json"), json!({"schema": "seamux.adapter/1", "name": "lookout", "recognizes": ["subagent"],
-        "command": ["env", format!("SEAMUX_LOOKOUT_REVIEWS={}", store.display()), "python3", script.display().to_string()]}).to_string()).unwrap();
+        "command": ["env", format!("SEAMUX_LOOKOUT_REVIEWS={}", store.display()), format!("XDG_CACHE_HOME={}", root.join("cache").display()),
+                    "python3", script.display().to_string()]}).to_string()).unwrap();
     let (bundled, bad) = host::load(&root.join("adapters"));
     assert!(bad.is_empty(), "{bad:?}");
     let mut adapters = crew_core::runs::builtins();
@@ -296,6 +301,13 @@ fn the_lookout_adapter_replaces_a_reviewers_row_with_its_findings() {
     assert!(res.detail.as_deref().is_some_and(|d| d.contains("major   f1   b.rs:9  it breaks") && !d.contains("f0") && !d.contains("f2")),
             "not another round's, not a person's: {:?}", res.detail);
     assert_eq!(r.agents[0].model.as_deref(), Some("claude-sonnet-5-5"));
+    assert_eq!(r.kind, "lookout");
+    assert_eq!(r.metrics.iter().map(|m| (m.label.as_str(), m.value.as_str())).collect::<Vec<_>>(), vec![("major", "1")],
+               "this reviewer's findings by severity");
+    assert_eq!(r.links.iter().map(|l| (l.label.as_str(), l.url.as_deref())).collect::<Vec<_>>(),
+               vec![("review page", Some("http://127.0.0.1:7345/review/rv-1"))]);
+    assert_eq!(rep.summaries, vec![("lookout".to_string(), "lookout: 2 blocker, 1 major open across 1 review".to_string())],
+               "what is still open in the review, whoever filed it; a resolved finding is not");
 }
 
 #[test]

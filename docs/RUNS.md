@@ -201,8 +201,10 @@ about a sub-agent than the built-in does takes over its row.
 sub-agent whose brief runs `lookout findings add <review-id>` as a lookout
 reviewer. It reads that review's store (`~/.claude/plans/reviews/<id>.json`)
 and counts the findings created while the reviewer ran. The badge reads
-"2 major" or "clean". The hover text lists each finding with its severity,
-file and line, and ends with a link to the review page.
+"2 major" or "clean", and the metrics count those findings by severity. The
+hover text lists each finding with its severity, file and line, and the
+review page is a link. Its summary line counts what is still open across
+the session's reviews: "lookout: 2 major open across 1 review".
 
 **explore** (bundled, recognizes `subagent`) reports each background
 sub-agent whose `agentType` is `Explore`. The badge is how many distinct
