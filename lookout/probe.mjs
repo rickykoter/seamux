@@ -1769,9 +1769,10 @@ if (want("page script")) {
   ok("page: the gate pill is a button that goes to the first open blocking finding, else on like n",
      tpl.includes('<button type="button" id="gate" class="gate">') && js.includes('$("gate").addEventListener("click", firstBlocking);') &&
      /function firstBlocking\(\) \{[\s\S]{0,400}x\.severity === "blocker" \|\| x\.severity === "major"[\s\S]{0,200}goTo\(list\[0\]\.id\);\s*else stepFinding\(1\);/.test(js));
-  ok("page: a card puts its title first and shows a status pill only when it is not open",
+  ok("page: a card puts the PR's chips by its severity chip, then its title, and shows a status pill only when it is not open",
      /el\("span", \{ class: "title", title: x\.id[^\n]*\n(\s*\/\/[^\n]*\n)*\s*finding \? el\("span", \{ class: "meta" \}, el\("span", \{ class: "cat" \}, metaWords\(x\)\)\) : null,/.test(js) &&
-     js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.gh ? "resolved on GitHub" : x.status)) : null,'));
+     js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.gh ? "resolved on GitHub" : x.status)) : null);') &&
+     js.includes("mark, sev, chips,\n      // Title next;"));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
   const lookoutPageMd = fs.readFileSync(path.join(HERE, "references", "page.md"), "utf8");
@@ -1936,7 +1937,15 @@ if (want("page script")) {
   ok("page: the status change the pill already shows draws only its author's words, not \"marked it …\"",
      js.includes('const pill = last && last.to === (x.status || "open") && x.status !== "open" ? last : null;') &&
      /function message\(m, pill, folded\) \{[\s\S]{0,700}if \(m === pill\) return m\.text \?/.test(js) &&
-     js.includes("thread.map(m => message(m, pill, folded))"));
+     js.includes("messages(thread, pill, folded)") && js.includes("out.push(message(m, pill, folded));"));
+  ok("page: status changes in a row by one author, minutes apart and without words, are one line with the net result (none when it ends where it began) and a \"changed N times\" that opens to each; authors are capitalized as on reply rows",
+     js.includes("const RUN_GAP = 5 * 60000;") &&
+     js.includes("const quiet = m => m.kind === \"status\" && !m.text && !(folded && m === folded.m);") &&
+     js.includes("Date.parse(thread[j + 1].at) - Date.parse(thread[j].at) <= RUN_GAP) j++;") &&
+     js.includes("const net = to === state ? null") && js.includes('el("details", { class: "msg change run",') &&
+     js.includes("`changed ${run.length} times`") && js.includes('const DID = { open: "reopened it",') &&
+     js.includes('return el("div", { class: "msg change" }, `${byName(m.by)} marked it ${m.to}`') &&
+     !js.includes("`${m.by} marked it ${m.to}`"));
   ok("page: a status change its author made with a reply, within two minutes, rides on that reply's line instead of a second message",
      js.includes("const prev = pill && pill.text ? thread[thread.indexOf(pill) - 1] : null;") &&
      js.includes('prev.kind !== "status" && prev.by === pill.by &&') &&
@@ -1976,7 +1985,7 @@ if (want("page script")) {
   ok("page: blocker and major cards stay open; a minor, nit or comment folds to one row (chip and short title) unless current or holding a draft, and opens on click, Enter or n/p",
      js.includes('const holdsOpen = x => x.severity === "blocker" || x.severity === "major";') &&
      js.includes('const foldedCard = x => isOpen(x) && !holdsOpen(x) && x.id !== curFinding && !draftText("r:" + x.id).trim();') &&
-     /if \(foldedCard\(x\)\) \{[\s\S]{0,300}class: "card folded"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false"[\s\S]{0,300}onclick: e => pickCard\(x\.id, e\),[\s\S]{0,200}e\.key === "Enter" \|\| e\.key === " "[\s\S]{0,100}openCard\(x\.id, true\);[\s\S]{0,100}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\), chips\)\);/.test(js) &&
+     /if \(foldedCard\(x\)\) \{[\s\S]{0,300}class: "card folded"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false"[\s\S]{0,300}onclick: e => pickCard\(x\.id, e\),[\s\S]{0,200}e\.key === "Enter" \|\| e\.key === " "[\s\S]{0,100}openCard\(x\.id, true\);[\s\S]{0,100}el\("div", \{ class: "card-head" \}, mark, sev, chips, el\("span", \{ class: "title" \}, title\), ghMeta\(x\)\)\);/.test(js) &&
      /function goTo\(id\) \{[\s\S]{0,500}redrawCards\(\[prev, id\]\);/.test(js) &&
      /function stepFinding\(d\) \{\s*let list = \(R\.findings \|\| \[\]\)\.filter\(isOpen\);/.test(js) &&
      css.includes(".card.folded .card-head { padding: 3px 10px; flex-wrap: nowrap; }"));
@@ -2018,7 +2027,7 @@ if (want("page script")) {
      js.includes('reasons.length ? el("span", { class: "reasons" }, " · " + reasons.join(", ")) : null) : null,'));
   ok("page: a closed finding has its own look: one row by default (opened by a click or Enter, folded again by its head), its severity chip and title muted, a muted resolved or dismissed chip, Reopen and no Resolve",
      js.includes("const foldedClosed = x => !isOpen(x) && !expandedClosed.has(x.id);") &&
-     /if \(foldedClosed\(x\)\) \{[\s\S]{0,400}class: "card folded closed"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false",[\s\S]{0,700}el\("div", \{ class: "card-head" \}, mark, sev, el\("span", \{ class: "title" \}, title\), closedChip, chips\)\);/.test(js) &&
+     /if \(foldedClosed\(x\)\) \{[\s\S]{0,400}class: "card folded closed"[\s\S]{0,300}tabindex: "0", role: "button", "aria-expanded": "false",[\s\S]{0,700}el\("div", \{ class: "card-head" \}, mark, sev, chips, el\("span", \{ class: "title" \}, title\), ghMeta\(x\), closedChip\)\);/.test(js) &&
      js.includes("e.stopPropagation(); expandedClosed.delete(x.id); redrawCards([x.id]);") &&
      js.includes('open ? el("button", { type: "button", onclick: go("resolve") }, "Resolve") : null,') &&
      js.includes('!open ? el("button", { type: "button", onclick: go("reopen") }, "Reopen") : null,') &&
@@ -2095,17 +2104,82 @@ if (want("page script")) {
   ok("page: the PR strip has its own grid row under the banner, hidden until the review is linked",
      tpl.includes('<div id="banner" hidden></div>\n  <div id="pr" hidden></div>') &&
      css.includes('grid-template-areas: "top top" "banner banner" "pr pr" "side main";') && css.includes("#pr[hidden] { display: none; }") &&
-     /function drawPR\(\) \{\s*const g = GH\(\), box = \$\("pr"\);\s*if \(!g\) \{ box\.hidden = true;/.test(js) && js.includes("    drawPR();\n    postState();"));
+     /function drawPR\(\) \{\s*const g = GH\(\), box = \$\("pr"\);[\s\S]{0,200}?if \(!g\) \{ box\.hidden = true;/.test(js) && js.includes("    drawPR();\n    postState();"));
   ok("page: the strip says how far the PR's head is past the review, offers Re-review only to its host, and lists checks failed first",
-     js.includes('`${plural(g.behind, "commit")} past the review`') &&
+     js.includes('`${plural(g.behind, "commit")} past the review (${sha(g.reviewed)} → ${sha(g.head)})`') &&
      js.includes('postMessage({ lookout: "rereview", id: R.id }, hostOrigin)') && /const rereview = g\.behind > 0 && hosted/.test(js) &&
      js.includes("[...fails, ...pend, ...pass].map(c =>") && js.includes('"aria-controls": "pr-checks"'));
+  ok("page: the narrow grid names the pr area, so the strip keeps its row at 760px and under",
+     css.includes('grid-template-areas: "top" "banner" "pr" "side" "main"; }') && css.includes("grid-template-rows: auto auto auto auto 1fr;") &&
+     /@media \(max-width: 760px\) \{ \.pr-checks \{ max-height: 20vh;/.test(css));
+  ok("page: the checks button sits after the state and drift, says the worst news in words, and draws its marks as SVG",
+     js.includes("drift, rereview, checks,") && js.includes('"aria-label": "Checks: " + said.join(", ")') &&
+     js.includes('`${lead.length} ${kind === "fail" ? "failed" : kind === "pend" ? "running" : "passed"}`') &&
+     js.includes('svg.setAttribute("class", "mk mk-" + kind); svg.setAttribute("aria-hidden", "true");') &&
+     !/"[✓✗●▾]"/.test(js.slice(js.indexOf("function drawPR()"), js.indexOf("const openFindings = p =>"))) &&
+     css.includes(".pr-checks-btn.ck-fail {"));
+  ok("page: a check's workflow is dropped when the job's name already says it",
+     js.includes('const checkName = c => c.workflow && !String(c.name).toLowerCase().startsWith(String(c.workflow).toLowerCase()) ? c.workflow + " / " + c.name : c.name;'));
+  ok("page: stale reason, sync error and drift shas are said inline, not only in tooltips",
+     js.includes('body && staleWhy(x) ? el("div", { class: "stale-why" + (prDone() ? " muted" : "") }, "Stale: " + staleWhy(x) + ".") : null,') &&
+     js.includes('el("details", { class: "pr-err" },') && js.includes('el("div", { class: "pr-err-full" }, g.error)') &&
+     css.includes(".pr-err summary {") && css.includes(".stale-why {"));
+  ok("page: the strip's clock says GitHub, and its count of unposted items says not on GitHub",
+     js.includes('"GitHub as of " + when(g.changedAt)') && js.includes('`${pending} not on GitHub`') && !js.includes('`${pending} pending`'));
+  ok("page: the stale and not-on-GitHub counts are buttons that go to the next matching open item, round as n does",
+     js.includes('el("button", { type: "button", class: "chip stale" + (done ? " muted" : ""), "data-pr": "stale", onclick: () => stepWhere(isStale),') &&
+     js.includes('el("button", { type: "button", class: "chip pending", "data-pr": "pending", onclick: () => stepWhere(unposted),') &&
+     /function stepWhere\(match\) \{[\s\S]*?goTo\(list\[\(i \+ 1\) % list\.length\]\.id\);/.test(js));
+  ok("page: a strip redraw gives the focus back to the control that had it, by its data-pr key",
+     js.includes('const key = had && had.getAttribute("data-pr");') &&
+     /const back = key && \[\.\.\.box\.querySelectorAll\("\[data-pr\]"\)\]\.find\(e => e\.getAttribute\("data-pr"\) === key\);\s*if \(back\) back\.focus\(/.test(js) &&
+     ['"data-pr": "checks"', '"data-pr": "rereview"', '"data-pr": "link"', '"data-pr": "err"'].every(k => js.includes(k)));
+  ok("page: a hidden status line beside the strip says its counts when they change, not on the first draw",
+     js.includes('el("div", { id: "pr-status", class: "sr", role: "status" })') && js.includes("box.after(status);") &&
+     js.includes('if (prSaid != null && now !== prSaid) status.textContent = "PR #" + g.pr + ": " + now;'));
+  ok("page: strip controls and a card's posted link stand 24px tall",
+     css.includes(".pr-btn, .pr-checks-btn, .pr-row button.chip, a.chip { min-height: 24px; }"));
+  ok("page: a merged or closed PR says nothing more goes to GitHub, counts nothing pending and mutes stale; unknown drift says why",
+     js.includes('const done = st === "merged" || st === "closed";') && js.includes("const pending = done ? 0 :") &&
+     js.includes('"nothing more goes to GitHub"') && css.includes(".chip.stale.muted {") &&
+     js.includes('`drift unknown (${g.error ? "sync trouble" : "the PR\'s head is not fetched here"})`'));
+  ok("page: on a merged or closed PR a card asks for nothing either: no pending chip, and its stale chip and why line are muted as in the strip",
+     js.includes('const prDone = () => ["merged", "closed"].includes(String((GH() || {}).state || "").toLowerCase());') &&
+     js.includes("const done = prDone();") && js.includes('class: "stale-why" + (prDone() ? " muted" : "")') && css.includes(".stale-why.muted {") &&
+     js.includes('class: "chip stale" + (done ? " muted" : ""), title: why[0].toUpperCase()') &&
+     js.includes('else if (isOpen(x) && !done) out.push(el("span", { class: "chip pending",'));
+  ok("app: a merged or closed PR offers no Findings menu or Post, and the detail line says nothing more goes to GitHub",
+     app.includes('const ended = !!g && ["merged", "closed"].includes(g.state.toLowerCase());') &&
+     app.includes("if (g && rows.length && !ended) {") &&
+     app.includes('else if (ended) say = `${parts.join(" · ")}. PR #${g.pr} is ${g.state.toLowerCase()}: nothing more goes to GitHub.'));
+  ok("page: GitHub threads listed off their lines say why above the list",
+     js.includes("ghOffLines(anch.outside),") && js.includes("if (!g || g.behind === 0 || !list.some(x => x.gh)) return null;") &&
+     js.includes("off their lines: they sit on the PR's head,"));
   ok("page: GitHub threads are cards on their lines only while the review is at the PR's head; one a posted item began is that item's card",
      js.includes("line: g.behind === 0 ? t.line || t.originalLine : null,") &&
      js.includes("!mine.has(t.comments[0].id)") && js.includes("...ghItems()];") &&
-     js.includes("body ? (x.gh ? ghOpen(x) : actions(x)) : null);") && js.includes("body && !x.gh ? ghReplies(x) : null,"));
+     js.includes("body ? (x.gh ? ghOpen(x) : actions(x)) : null);") && js.includes("body && posted ? ghReplies(x) : null,"));
+  ok("page: a posted card has two labelled parts: On GitHub (who posted it, GitHub's replies, resolved on GitHub) right under its body, then the replies only lookout holds; Reply says here and a link replies on GitHub",
+     /body && posted \? ghReplies\(x\) : null,\s*body \? el\("div", \{ class: "msgs" \+ \(posted \? " local" : ""\) \}, local\.length && posted \? el\("div", \{ class: "local-head" \}, "In lookout only"\) : null, local\) : null,/.test(js) &&
+     js.includes("const posted = !x.gh && !unposted(x);") &&
+     js.includes('el("div", { class: "msg by-gh posted" }') && js.includes('"resolved on GitHub") : null') && !js.includes('"resolved there"') &&
+     js.includes('const reply = posted ? "Reply here" : "Reply";') && js.includes('"Reply on GitHub ↗") : null;') &&
+     (js.match(/\.\.\.closers, onGh\(\), status\)\);/g) || []).length === 2 &&
+     /\.gh-head, \.local-head \{[^}]*padding: 0 10px;/.test(css) && /\.gh-replies \{[^}]*background: color-mix/.test(css) &&
+     css.includes(".msg.by-gh .who { text-transform: none; }"));
+  ok("page: a folded GitHub card says who began it, its replies and its latest time; GitHub's own threads draw comments as GitHub's",
+     js.includes('return el("span", { class: "gh-meta" }, [c[0].author, n ? plural(n, "reply", "replies") : null, when(c[c.length - 1].at)].filter(Boolean).join(" · "));') &&
+     js.includes("const local = x.gh ? x.gh.comments.slice(1).map(c => ghMessage(c)) : messages(thread, pill, folded).filter(Boolean);"));
+  ok("page: pending is a filled to-do chip; posted, outdated and stale are outlined facts",
+     /\.chip\.pending \{[^}]*background: color-mix/.test(css) && !/\.chip\.(outdated|posted|stale) \{[^}]*background/.test(css) &&
+     !/\.chip\.outdated \{[^}]*dashed/.test(css));
   ok("page: a card says stale (with why), posted (linked) or pending, and GitHub's own outdated",
-     js.includes('el("span", { class: "chip stale", title: why[0].toUpperCase()') && js.includes('"posted ↗"') &&
+     js.includes('el("span", { class: "chip stale" + (done ? " muted" : ""), title: why[0].toUpperCase()') && js.includes('"posted ↗"') &&
+     // A folded row is a button: its posted chip is words, not a link inside it.
+     js.includes('if (!unposted(x)) out.push(link && !folded ? el("a",') && js.includes("const chips = prChips(x, foldedClosed(x) || foldedCard(x));") &&
+     // A GitHub reply's author and time are its link, named for a screen reader; no bare arrow link.
+     js.includes('el("a", { class: "gh-who", href: url, target: "_blank", rel: "noopener", "aria-label": `${author}${at}, open it on GitHub` }') &&
+     js.includes('ghWho(c.author, " · " + when(c.at), ghUrl(c.url))') && !js.includes('" ↗") : null),') &&
      js.includes('el("span", { class: "chip pending",') && js.includes('el("span", { class: "chip outdated",') &&
      css.includes(".chip.stale {") && css.includes(".chip.pending {") && css.includes(".chip.posted {"));
   ok("page: only github.com links are drawn as links; the record is data",

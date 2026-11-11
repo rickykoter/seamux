@@ -306,8 +306,8 @@ td.del mark { background: var(--del-mark); color: inherit; border-radius: 2px; }
 .hljs-emphasis { font-style: italic; } .hljs-strong { font-weight: 600; }
 
 @media (max-width: 760px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: auto auto auto 1fr;
-    grid-template-areas: "top" "banner" "side" "main"; }
+  #app { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto 1fr;
+    grid-template-areas: "top" "banner" "pr" "side" "main"; }
   #side { max-height: 32vh; border-right: 0; border-bottom: 1px solid var(--border); }
   #top { flex-wrap: wrap; padding: 8px 16px; }
   #layout { display: none; }
@@ -392,6 +392,7 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .msg.by-human .who { color: var(--accent-t); }
 .outside { margin: 12px 16px; }
 .outside-head { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+.outside-why { font-size: var(--fs-1); color: var(--muted); margin-bottom: 6px; }
 @media (max-width: 760px) { tr.thread-row > td { padding-left: 12px; } }
 
 /* A folded card (a minor, nit or comment that is not current): one row, its
@@ -566,29 +567,70 @@ tr.line.flash td { background: var(--flash); transition: background .6s; }
 .pr-state.st-merged { color: var(--accent-t); border-color: var(--accent); }
 .pr-drift { color: var(--sev-major); }
 .pr-quiet { color: var(--muted); font-size: var(--fs-1); }
-.pr-err { color: var(--sev-blocker); font-size: var(--fs-1); cursor: help; }
+/* Merged or closed: said plainly, and what would ask for work is quiet. */
+.pr-done { font-weight: 600; color: var(--fg); }
+.chip.stale.muted { color: var(--muted); border-color: var(--border); }
+button.chip { font: inherit; font-size: var(--fs-1); background: none; cursor: pointer; }
+button.chip:hover { color: var(--fg); border-color: var(--fg); }
+/* Sync trouble: its words clipped on the row, all of them on a click. */
+.pr-err { color: var(--sev-blocker); font-size: var(--fs-1); min-width: 0; max-width: 46ch; }
+.pr-err summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pr-err[open] { max-width: none; flex-basis: 100%; order: 99; }
+.pr-err[open] .pr-err-gist { display: none; }
+.pr-err-full { color: var(--fg); padding: 2px 0 2px 14px; white-space: pre-wrap; word-break: break-word; }
 .pr-btn, .pr-checks-btn { font: inherit; font-size: var(--fs-1); padding: 1px 8px; border-radius: 5px;
   border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer; }
-.pr-checks-btn { display: inline-flex; gap: 8px; align-items: center; }
-.pr-checks-btn.bad { border-color: var(--sev-blocker); }
-.ck { font: var(--fs-1) var(--mono); }
+/* Controls on the strip and a card's posted link stand at least 24px tall,
+   the smallest target a pointer or a finger should have to hit. */
+.pr-btn, .pr-checks-btn, .pr-row button.chip, a.chip { min-height: 24px; }
+.pr-row button.chip, a.chip { display: inline-flex; align-items: center; }
+.pr-checks-btn { display: inline-flex; gap: 4px; align-items: center; }
+.pr-checks-btn.ck-fail { border-color: var(--sev-blocker); color: var(--sev-blocker); font-weight: 600; }
+.pr-checks-btn.ck-pass .mk-pass { color: var(--pass); }
+.pr-checks-btn.ck-pend .mk-pend { color: var(--addressed); }
+.mk { width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
+.mk-pend { fill: currentColor; stroke: none; }
+.mk-more { color: var(--muted); }
+.ck { display: inline-flex; }
 .ck.pass { color: var(--pass); } .ck.fail { color: var(--sev-blocker); } .ck.pend { color: var(--addressed); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .pr-checks { padding: 2px 16px 8px 40px; display: grid; gap: 2px; max-height: 40vh; overflow: auto; }
 .pr-check { display: flex; gap: 8px; align-items: baseline; }
+.pr-check .ck { align-self: center; }
 .pr-check a { color: var(--fg); }
+@media (max-width: 760px) { .pr-checks { max-height: 20vh; padding-left: 16px; } .pr-err { max-width: 100%; } }
+/* An open card's line on why it is stale. */
+.stale-why { font-size: var(--fs-1); color: var(--sev-major); padding: 0 10px 4px; }
+.stale-why.muted { color: var(--muted); }
 .ghmark { width: 13px; height: 13px; fill: currentColor; color: var(--muted); flex: none; vertical-align: -2px; }
 
 /* Chips a card carries about the PR, and GitHub's own threads. */
 .chip { font-size: var(--fs-1); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; color: var(--muted);
   white-space: nowrap; text-decoration: none; }
 .chip.stale { color: var(--sev-major); border-color: var(--sev-major); border-style: dashed; cursor: help; }
-.chip.pending { color: var(--muted); border-style: dashed; }
+/* Pending is a to-do, so it is filled; posted, outdated and stale are facts, outlined. */
+.chip.pending { color: var(--accent-t); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .chip.posted { color: var(--accent-t); border-color: var(--accent); }
-.chip.outdated { color: var(--muted); border-style: dashed; }
+.chip.outdated { color: var(--muted); }
+.card-head .chip { align-self: center; }
 .sev.sev-github { --sev: var(--fg); display: inline-flex; gap: 4px; align-items: center; }
 .sev.sev-github .ghmark { color: inherit; }
-.gh-replies { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 4px; }
-.gh-head { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: var(--fs-1); }
+/* A posted card's two parts: what is on GitHub (tinted), then what only
+   lookout holds, each under its own head. */
+.gh-replies { border-top: 1px solid var(--border); padding: 4px 0 0; background: color-mix(in srgb, var(--muted) 7%, transparent); }
+.gh-head, .local-head { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: var(--fs-1); padding: 0 10px; }
+.gh-head + .msg { border-top: 0; }
+.msg.by-gh .who { text-transform: none; }
+.msg.by-gh.posted { padding-top: 2px; }
+.msgs.local > .local-head { padding-top: 4px; }
+.msgs.local > .local-head + .msg { border-top: 0; }
+.gh-meta { color: var(--muted); font-size: var(--fs-1); white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A run of status changes: one line, opening to each change. */
+.msg.change.run summary { cursor: pointer; list-style: none; }
+.msg.change.run summary::-webkit-details-marker { display: none; }
+.msg.change.run .times { text-decoration: underline dotted; }
+.msg.change.run .run-step { padding: 2px 0 0 12px; }
 .gh-open { color: var(--accent-t); font-size: var(--fs-2); }
-.msg.by-gh a.at { color: var(--muted); text-decoration: none; }
-.msg.by-gh a.at:hover { color: var(--accent-t); }
+/* A GitHub reply's author and time are its link to GitHub. */
+.msg.by-gh a.gh-who { color: inherit; text-decoration: none; }
+.msg.by-gh a.gh-who:hover, .msg.by-gh a.gh-who:focus-visible { color: var(--accent-t); text-decoration: underline; }
