@@ -301,7 +301,9 @@ check and what it runs.
   default branch, since the merge-base with it, so the default branch's
   commits are not taken for the plan's; its brief carries every
   increment's description) and ends with `review: spawn a reviewer — lookout prompt
-  <slug>-delivery`. Spawn one fresh reviewer, fix and `lookout address`
+  <slug>-delivery` (on a panel plan, `review: run the review panel —
+  /lookout:review <slug>-delivery`). Spawn one fresh reviewer, or run the
+  panel, then fix and `lookout address`
   what it finds, and run `deliver` again; it completes the plan once the
   human has closed every blocker and major. The gate stays open in this
   phase, so fixes need no `go`.
