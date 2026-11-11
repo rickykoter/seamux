@@ -215,7 +215,8 @@ def files(root):
     for d, dirs, fs in os.walk(root):
         dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
         for f in fs:
-            if f in SKIP or f.endswith(".pyc") or f.endswith(".py"):
+            rel = os.path.relpath(os.path.join(d, f), root)
+            if f in SKIP or f.endswith(".pyc") or (f.endswith(".py") and not rel.startswith("adapters" + os.sep)):
                 continue
             out.add(os.path.relpath(os.path.join(d, f), root))
     return out
@@ -287,7 +288,9 @@ apply_from_source() {
   mkdir -p "$LIVE" && cp -R "$src/." "$LIVE/" || { bad "could not copy $src -> $LIVE"; return 1; }
   ok "copied ${src/#$HOME/~} -> ${LIVE/#$HOME/~}"
   # The probes are Python and stay out of the live tree: seamux runs every tool.
-  find "$LIVE" -name '*.py' -delete 2>/dev/null
+  # The adapters' programs (adapters/<name>/adapter.py) are not probes: seamux
+  # runs them from here (docs/RUNS.md), so they stay.
+  find "$LIVE" -name '*.py' -not -path "$LIVE/adapters/*" -delete 2>/dev/null
   find "$LIVE" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
   ok "left the probes' Python out of the live tree"
   # Provenance: `crew doctor` compares the live tree against this root.
