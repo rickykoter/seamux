@@ -204,6 +204,13 @@ and counts the findings created while the reviewer ran. The badge reads
 "2 major" or "clean". The hover text lists each finding with its severity,
 file and line, and ends with a link to the review page.
 
+**explore** (bundled, recognizes `subagent`) reports each background
+sub-agent whose `agentType` is `Explore`. The badge is how many distinct
+files its answer cites ("14 files"), the metrics are files read, searches and
+citations, and the links are the cited files at their first cited line. Its
+transcript reader, shared with other bundled adapters, is
+`crew/adapters/lib/claude_agent.py`.
+
 ### When an adapter is missing or fails
 
 A background task type that no adapter recognizes is reported as a notice:

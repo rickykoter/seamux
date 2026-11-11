@@ -379,3 +379,36 @@ fn an_adapters_own_group_is_kept_and_a_replacing_run_keeps_the_prompt() {
     assert_eq!(rep.summaries, vec![("a-plain".to_string(), "plain: 1 agent".to_string())]);
     assert_eq!(rep.to_json()["summaries"][0]["source"].as_str(), Some("a-plain"));
 }
+
+/// crew's bundled command adapters (crew/adapters), the named ones only,
+/// after the built-ins.
+fn with_bundled(names: &[&str]) -> Vec<Adapter> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crew/adapters");
+    let (all, bad) = host::load(&dir);
+    assert!(bad.is_empty(), "{bad:?}");
+    let mut adapters = crew_core::runs::builtins();
+    adapters.extend(all.into_iter().filter(|a| names.contains(&a.name())));
+    assert_eq!(adapters.len(), 2 + names.len(), "the lib folder has no manifest and is no adapter");
+    adapters
+}
+
+#[test]
+fn the_explore_adapter_counts_what_an_explore_agent_read_and_cited() {
+    let rep = host::report(&ctx("s-explore", vec![]), &with_bundled(&["explore"]), true);
+    assert!(rep.notices.is_empty(), "{:?}", rep.notices);
+    let ex = rep.runs.iter().find(|r| r.id == "a7e0c1d2b3a4f5e6d").unwrap();
+    assert_eq!((ex.source.as_str(), ex.kind.as_str(), ex.status.as_str()), ("explore", "explore", "done"), "it takes the built-in's run");
+    let a = &ex.agents[0];
+    assert_eq!(a.result.as_ref().and_then(|r| r.badge.as_deref()), Some("3 files"),
+               "rank.rs, act.rs and routes.rs: a bare rank.rs:470 is the rank.rs it read, /etc/hosts has no extension to cite");
+    assert!(a.result.as_ref().and_then(|r| r.detail.as_deref()).is_some_and(|d| d.starts_with("All claims are path:line")));
+    assert_eq!(ex.metrics.iter().map(|m| (m.label.as_str(), m.value.as_str())).collect::<Vec<_>>(),
+               vec![("read", "2"), ("searches", "3"), ("cites", "6")], "two files read (one twice); a Grep, a Glob and a grep in Bash");
+    assert_eq!(ex.links.iter().map(|l| (l.label.as_str(), l.file.as_deref(), l.line)).collect::<Vec<_>>(), vec![
+        ("src/rank.rs", Some("/w/repo/app/crates/crew-board/src/rank.rs"), Some(1)),
+        ("src/act.rs", Some("/w/repo/app/crates/crew-board/src/act.rs"), Some(515)),
+        ("src/routes.rs", Some("/w/repo/app/crates/crew-board/src/routes.rs"), Some(118)),
+    ], "most cited first, each at its first cited line");
+    let other = rep.runs.iter().find(|r| r.id == "a0b1c2d3e4f5a6b7c").unwrap();
+    assert_eq!(other.source, "claude-subagents", "an agent of another type is left to the built-in");
+}

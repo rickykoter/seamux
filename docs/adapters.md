@@ -24,9 +24,10 @@ below.
 
 ## Start from the template
 
-`crew/adapters/template` is a working adapter in Python, and
-`crew/adapters/lookout` is a fuller one: it gives lookout reviewers their
-findings as a result. Copy it into your
+`crew/adapters/template` is a working adapter in Python.
+`crew/adapters/lookout` and `crew/adapters/explore` are fuller ones: the
+first gives lookout reviewers their findings as a result, the second gives
+Explore agents what they read and cited. Copy it into your
 adapters folder under the name you want:
 
 ```bash
@@ -74,6 +75,39 @@ and a longer `detail`. Set `task` to the background task's id when you know
 it, so the card ties the run to its pane. Give each agent's `transcript` as
 an absolute path under `~/.claude/projects` when there is one: the
 transcript page serves nothing else.
+
+## Taking over a Claude Code sub-agent's run
+
+An adapter can add to a run another adapter reports. When two adapters
+report a run with the same id, the later one's run takes its place: the
+built-ins load first, then crew's bundled adapters in folder-name order,
+then yours. So an adapter that recognizes `subagent` and reports a run with
+a sub-agent's id (its agent id, which is also its background task's id)
+replaces that sub-agent's plain row with a richer one. A run you do not
+report stays the built-in's.
+
+`crew/adapters/explore` does this for Claude Code's Explore agents, and is
+the example to read. For each background sub-agent whose meta file says
+`"agentType": "Explore"`, it reads the agent's transcript and reports:
+
+- `result.badge`: how many distinct files the agent's answer cites
+  ("14 files");
+- `metrics`: files read, searches run (Grep, Glob, or a `grep`, `rg` or
+  `find` in Bash) and citations;
+- `links`: the cited files, most cited first, each at its first cited line,
+  which the session page opens in VS Code when they are in the session's
+  worktree;
+- `result.detail`: the answer's opening lines.
+
+It finds the answer in the agent's `SubagentHandback` call, and a short
+citation such as `rank.rs:470` is matched to a file the agent read. The
+transcript reading it shares with other adapters lives in
+`crew/adapters/lib/claude_agent.py`; a folder with no `adapter.json` is not
+an adapter, so seamux skips it.
+
+The session page shows a run's `group`, `metrics`, `links` and the
+document's `summary` ([RUNS.md](RUNS.md#fields-for-the-session-page)). You
+need not set `group`: seamux puts a run under the prompt that launched it.
 
 ## Check it
 
