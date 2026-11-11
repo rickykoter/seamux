@@ -2170,6 +2170,11 @@ if (want("page script")) {
   ok("page: a folded GitHub card says who began it, its replies and its latest time; GitHub's own threads draw comments as GitHub's",
      js.includes('return el("span", { class: "gh-meta" }, [c[0].author, n ? plural(n, "reply", "replies") : null, when(c[c.length - 1].at)].filter(Boolean).join(" · "));') &&
      js.includes("const local = x.gh ? x.gh.comments.slice(1).map(c => ghMessage(c)) : messages(thread, pill, folded).filter(Boolean);"));
+  ok("page: a card not yet posted says \"not on GitHub\", as the strip's count does",
+     js.includes('"Only in lookout: post it from the Lookout tab, or `lookout gh post`" }, "not on GitHub"));') && !js.includes('}, "pending"));'));
+  ok("page: the open checks list starts under its button, or at the strip's edge when the room is short",
+     /function alignChecks\(\) \{[\s\S]{0,400}list\.style\.marginLeft = at > 0 && row\.width - at >= CHECKS_MIN \? at \+ "px" : "";/.test(js) &&
+     js.includes("    alignChecks();\n") && js.includes('window.addEventListener("resize", alignChecks);'));
   ok("page: pending is a filled to-do chip; posted, outdated and stale are outlined facts",
      /\.chip\.pending \{[^}]*background: color-mix/.test(css) && !/\.chip\.(outdated|posted|stale) \{[^}]*background/.test(css) &&
      !/\.chip\.outdated \{[^}]*dashed/.test(css));

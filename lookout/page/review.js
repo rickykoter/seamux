@@ -315,7 +315,7 @@
     const link = x.github && ghUrl(x.github.url || x.github.reviewUrl);
     if (!unposted(x)) out.push(link && !folded ? el("a", { class: "chip posted", href: link, target: "_blank", rel: "noopener", title: "Open it on GitHub" }, "posted ↗")
                                     : el("span", { class: "chip posted" }, "posted"));
-    else if (isOpen(x) && !done) out.push(el("span", { class: "chip pending", title: "Only in lookout: post it from the Lookout tab, or `lookout gh post`" }, "pending"));
+    else if (isOpen(x) && !done) out.push(el("span", { class: "chip pending", title: "Only in lookout: post it from the Lookout tab, or `lookout gh post`" }, "not on GitHub"));
     return out;
   }
   // Whether the PR is merged or closed: it takes nothing more.
@@ -464,6 +464,7 @@
             ghUrl(c.link) ? el("a", { href: ghUrl(c.link), "data-pr": "check:" + name, target: "_blank", rel: "noopener" }, name) : el("span", null, name),
             el("span", { class: "pr-quiet" }, at));
         })) : null].filter(Boolean));
+    alignChecks();
     const back = key && [...box.querySelectorAll("[data-pr]")].find(e => e.getAttribute("data-pr") === key);
     if (back) back.focus({ preventScroll: true });
     // The first draw says nothing: the strip is there to read.
@@ -471,6 +472,16 @@
     if (prSaid != null && now !== prSaid) status.textContent = "PR #" + g.pr + ": " + now;
     prSaid = now;
   }
+  // The open checks list starts under its button, as a menu would; with
+  // too little room to the right of the button it keeps the strip's edge.
+  const CHECKS_MIN = 320;
+  function alignChecks() {
+    const list = $("pr-checks"), btn = $("pr").querySelector('[data-pr="checks"]');
+    if (!list || !btn) return;
+    const row = btn.parentElement.getBoundingClientRect(), at = btn.getBoundingClientRect().left - row.left;
+    list.style.marginLeft = at > 0 && row.width - at >= CHECKS_MIN ? at + "px" : "";
+  }
+  window.addEventListener("resize", alignChecks);
   const openFindings = p => (R.findings || []).filter(x => x.file === p && isOpen(x));
 
   // A file's open findings as one badge, colored by the worst of them.

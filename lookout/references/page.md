@@ -98,7 +98,7 @@ tree (single-child folders folded together), one file's diff on the right.
   goes to the next one. A sync error shows in words, clipped, and opens to
   the full text. "GitHub as of" says when GitHub last had news. On a
   merged or closed PR the strip says nothing more goes to GitHub, drops the
-  not-on-GitHub count and mutes stale; cards drop their pending chip and
+  not-on-GitHub count and mutes stale; cards drop their not-on-GitHub chip and
   mute stale too, and the Lookout tab offers no Post. When the strip redraws, the control
   that had the keyboard focus keeps it, and a hidden status line reads out
   the new counts to a screen reader. GitHub's own review threads are
@@ -111,7 +111,7 @@ tree (single-child folders folded together), one file's diff on the right.
   GitHub's replies (each one's author and time link to it on GitHub) and
   "resolved on GitHub" when it is; then "In lookout only", with the replies lookout keeps. Those are
   never posted, so its button says Reply here, and a link beside it replies
-  on GitHub. One not posted says pending, in a filled chip since it is
+  on GitHub. One not posted says not on GitHub, in a filled chip since it is
   still to do. One whose code changed on the PR's head says stale, and when
   open, says why under its title. These chips sit just after the severity.
   Status changes one person makes in a row, minutes apart, show as one
