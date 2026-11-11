@@ -11,6 +11,15 @@ again (or `lookout serve --url /review/<id>`) gives a fresh link.
 VS Code's Source Control layout: changed files on the left as a directory
 tree (single-child folders folded together), one file's diff on the right.
 
+## Contents
+
+- [Views](#views)
+- [Findings and the pull request](#findings-and-the-pull-request)
+- [In the seamux app](#in-the-seamux-app)
+- [Drawing](#drawing)
+
+## Views
+
 - **Overview** (`o`, or the header button): a review with notes opens on
   it. Each group is one folded row, riskiest first: its band, a headline
   (the first sentence of its note's direction), and its counts of files,
@@ -59,6 +68,9 @@ tree (single-child folders folded together), one file's diff on the right.
   signals alone. The file header says "high risk" (or medium, or low) and
   any plain reason ("auth or secrets"); its tooltip gives the score and
   what Jev read.
+
+## Findings and the pull request
+
 - **Findings** sit under the line they name, with severity, category,
   verdict, status and their thread; the header shows the gate. Findings on
   lines the diff does not show are listed at the top of the file. Blocker
@@ -74,6 +86,22 @@ tree (single-child folders folded together), one file's diff on the right.
   accent edge on its left, and its head adds the category and verdict in
   plain words ("correctness · confirmed"); the title's tooltip names them
   with the finding's id.
+- **The pull request**: once `lookout gh sync` has linked the review to a
+  PR (the page's server asks for a sync while the page is in view, at most
+  once a minute), a strip under the header shows the PR and its state. It
+  says how many commits the PR's head is past the reviewed one; in the
+  seamux app it also offers Re-review. It counts open items that are stale
+  or still pending, and the checks as passed, failed and running. A click
+  on the checks lists them, failed first, each linked to its run. GitHub's
+  own review threads are cards on their lines, marked GitHub, while the
+  review is at the PR's head, and are otherwise listed above the diff. You
+  reply to them on GitHub. A card the review posted links to its comment
+  (posted ↗) and carries GitHub's replies under its own thread. One not
+  posted says pending. One whose code changed on the PR's head says stale,
+  and its tooltip says why.
+
+## In the seamux app
+
 - **In the seamux app** the header row has one findings button, "N open ▾"
   or "N open · M picked ▾", filled only while something is picked. N is
   the number the gate pill counts ("blocked · N open"): every finding not
@@ -85,6 +113,9 @@ tree (single-child folders folded together), one file's diff on the right.
   Overview, Map, Split or Unified and the keys sit in one **View** menu,
   each with its key; when only one of them applies (a narrow window
   without a map), it sits in ⋯ instead.
+
+## Drawing
+
 - A file's status letter (M, A, D, R) names itself in its tooltip.
 - **Highlighting** is highlight.js over each side's whole file, so a change
   inside a block comment or a template string reads right. Changed words in
