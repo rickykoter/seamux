@@ -2115,6 +2115,8 @@ if (want("page script")) {
      js.includes('else if (d.op === "focus" && typeof d.item === "string") focusItem(d.item);') &&
      /function focusItem\(item\) \{\s*if \(item === "checks"\) \{ checksOpen = true; drawPR\(\);/.test(js) &&
      js.includes("const m = /^c(\\d+)$/.exec(item);"));
+  ok("page: a GitHub sync redraws the page though updatedAt does not move",
+     js.includes("if (j && (j.updatedAt !== R.updatedAt || ghAt(j) !== ghAt(R))) take(j);"));
   ok("page: GitHub's mark is drawn as SVG, no emoji", js.includes("function ghMark()") && js.includes('createElementNS("http://www.w3.org/2000/svg", "svg")'));
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
@@ -2187,7 +2189,7 @@ if (want("github: link, sync, staleness, post")) {
   // Posting: one review pinned to the commit read, and each comment's id kept.
   const body = GHL.commentText(f1);
   setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { stdout: { id: 55, html_url: "https://github.com/o/r/pull/7#pullrequestreview-55" } },
-    "api repos/o/r/pulls/7/reviews/55/comments": { stdout: JSON.stringify([{ id: 901, path: "a.txt", line: 3, body, html_url: "https://github.com/o/r/pull/7#discussion_r901" }]) } });
+    "api repos/o/r/pulls/7/reviews/55/comments?per_page=100&page=1": { stdout: JSON.stringify([{ id: 901, path: "a.txt", line: 3, body, html_url: "https://github.com/o/r/pull/7#discussion_r901" }]) } });
   fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
   const po = cli(d, "gh", "post", id, f1.id, "--intro", "Lookout review (high depth): 1 finding(s).");
   ok("gh: post succeeds", po.status === 0, po.stderr);
@@ -2227,6 +2229,69 @@ if (want("github: link, sync, staleness, post")) {
   ok("gh: comments past a thread's first hundred are counted", pg[0].more === 100);
   ok("gh: the names went as strings (-f), the number as a number (-F)", /"-f","owner=o","-f","name=r","-F","n=7"/.test(fs.readFileSync(ENV.FAKE_GH_LOG, "utf8")));
 
+  // The delivery review's fixes.
+  const readSt = () => JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"));
+  const writeSt = st => fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st));
+  const typo = cli(d, "gh", "post", id, "f1", "f3x");
+  ok("gh: a word that names no item is refused, so nothing posts short", typo.status !== 0 && /f3x/.test(typo.stderr), typo.stderr);
+  // A sync is not activity: updatedAt stays, changedAt moves.
+  setMap({ ...map, "pr checks 9 -R o/r": { stdout: "[]" }, "pr view 9": { stdout: { ...view, number: 9, url: "https://github.com/o/r/pull/9" } },
+    "pr checks 7 -R o/r": { stdout: JSON.stringify([...checks, { name: "new", bucket: "pending", state: "PENDING", link: "", workflow: "ci", startedAt: "", completedAt: "" }]), status: 8 } });
+  const upd0 = S.read(id).updatedAt, ch0 = (S.read(id).github || {}).changedAt;
+  cli(d, "gh", "sync", id, "--force");
+  ok("gh: what GitHub says moves github.changedAt, not the review's updatedAt", S.read(id).updatedAt === upd0 && S.read(id).github.changedAt !== ch0,
+     `${upd0} ${S.read(id).updatedAt}`);
+  // Two items read on different heads go as two reviews, each pinned to its own.
+  const posts = () => fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).filter(x => x.argv.includes("POST")).map(x => JSON.parse(x.input));
+  S.update(id, cur => { const [a1, a2] = cur.findings; delete a1.github; delete a2.github; a2.at = two; return cur; });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  const big = Array.from({ length: 100 }, (_, i) => ({ id: 1000 + i, path: "z.txt", line: 1, body: "other", html_url: "" }));
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { stdout: { id: 55, html_url: "https://github.com/o/r/pull/7#pullrequestreview-55" } },
+    "api repos/o/r/pulls/7/reviews/55/comments?per_page=100&page=1": { stdout: JSON.stringify(big) },
+    "api repos/o/r/pulls/7/reviews/55/comments?per_page=100&page=2": { stdout: JSON.stringify([
+      { id: 901, path: "a.txt", line: 3, body: GHL.commentText(S.read(id).findings[0]), html_url: "u1" },
+      { id: 902, path: "a.txt", line: 20, body: GHL.commentText(S.read(id).findings[1]), html_url: "u2" }]) } });
+  const two_ = cli(d, "gh", "post", id, "f1", "f2");
+  const sent2 = posts();
+  ok("gh: items read on different heads go as one review per head", two_.status === 0 && sent2.length === 2 &&
+     sent2.map(p => p.commit_id).sort().join() === [one, two].sort().join(), two_.stderr + JSON.stringify(sent2.map(p => p.commit_id)));
+  ok("gh: a review's comments past the first hundred are read for their ids", S.read(id).findings[0].github.commentId === 901 &&
+     S.read(id).findings[1].github.commentId === 902, JSON.stringify(S.read(id).findings.map(f => f.github)));
+  // A folded retry pins the PR's head (the item's own commit may be gone),
+  // and a post that fails outright marks nothing posted.
+  S.update(id, cur => { for (const f of cur.findings) delete f.github; cur.findings[1].at = two; return cur; });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { status: 1, stderr: "HTTP 422 Unprocessable Entity" } });
+  const fold = cli(d, "gh", "post", id, "f2");
+  const fsent = posts();
+  ok("gh: a folded retry is pinned to the PR's head", fsent.length === 2 && fsent[1].commit_id === two && !fsent[1].comments, JSON.stringify(fsent.map(p => p.commit_id)));
+  ok("gh: a post that fails outright marks nothing posted", fold.status !== 0 && !S.read(id).findings[1].github);
+
+  // An item read on a commit the checkout no longer has is stale.
+  S.update(id, cur => { cur.findings[1].at = "0".repeat(40); return cur; });
+  setMap(map);
+  cli(d, "gh", "sync", id, "--force");
+  ok("gh: an item read on a commit that is gone is stale, saying why", /gone/.test((S.read(id).github.stale || {}).f2 || ""), JSON.stringify(S.read(id).github.stale));
+  // A closed PR is looked at again when its page is in view, or a day on.
+  setMap({ ...map, "pr view 7 -R o/r --json": { stdout: { ...view, state: "CLOSED" } } });
+  cli(d, "gh", "sync", id, "--force");
+  let st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; delete st4[id].backoffUntil; writeSt(st4);
+  ok("gh: unseen, a closed PR is left alone for a day", /closed/.test(cli(d, "gh", "sync", id, "--json").stdout));
+  setMap({ ...map, "pr view 7 -R o/r --json": { stdout: { ...view, state: "OPEN" } } });
+  st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; writeSt(st4);
+  cli(d, "gh", "sync", id, "--visible");
+  ok("gh: with its page in view, a reopened PR is seen open again", S.read(id).github.state === "OPEN");
+  // An idle review in view is synced too.
+  S.withLock(id, () => { const cur = S.read(id); cur.updatedAt = "2020-01-01T00:00:00Z"; S.writeAtomic(S.paths(id).json, JSON.stringify(cur)); });
+  st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; writeSt(st4);
+  ok("gh: unseen, an idle review is left alone", /idle/.test(cli(d, "gh", "sync", id, "--json").stdout));
+  st4 = readSt(); st4[id].at = Date.now() - 60 * 60 * 1000; writeSt(st4);
+  ok("gh: in view, an idle review syncs", !/skipped/.test(cli(d, "gh", "sync", id, "--visible").stdout));
+  ok("gh: the page server's sync says the page is in view", fs.readFileSync(path.join(HERE, "lib", "serve.mjs"), "utf8").includes('[cli, "gh", "sync", id, "--visible"]'));
+  ok("gh: a review whose checkout is gone says so, not that gh is missing",
+     /checkout is gone/.test(GHL.gh(["pr", "view"], { cwd: path.join(TMP, "no-such-dir") }).error || ""));
+  S.update(id, cur => { cur.updatedAt = new Date().toISOString(); return cur; });
+
   // A --pr given on a re-open wins over the PR a sync saved.
   setMap({ ...map, "pr view 9": { stdout: { ...view, number: 9, url: "https://github.com/o/r/pull/9" } },
     "pr checks 9 -R o/r": { stdout: "[]" } });
@@ -2238,7 +2303,7 @@ if (want("github: link, sync, staleness, post")) {
   setMap({ ...map, "pr view 9": { stdout: { ...view, number: 9, state: "MERGED", url: "https://github.com/o/r/pull/9" } },
     "pr checks 9 -R o/r": { stdout: "[]" } });
   cli(d, "gh", "sync", id, "--force");
-  const st2 = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st2[id].at = 0; delete st2[id].backoffUntil; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st2));
+  const st2 = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st2[id].at = Date.now() - 60 * 60 * 1000; delete st2[id].backoffUntil; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st2));
   const msync = cli(d, "gh", "sync", id, "--json").stdout;
   ok("gh: a merged PR is not synced again unless forced", S.read(id).github.state === "MERGED" && /merged/.test(msync),
      S.read(id).github.state + " " + msync + " " + JSON.stringify(st2[id]));

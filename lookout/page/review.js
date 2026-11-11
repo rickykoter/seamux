@@ -1454,7 +1454,10 @@
         .then(j => {
           // Nothing answered: no take(), which could reload onto a dead server.
           if (j === UNREACHED) return;
-          if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending);
+          // A GitHub sync writes github.changedAt without moving updatedAt
+          // (it is not activity on the review): either is news.
+          const ghAt = r => (r && r.github && r.github.changedAt) || "";
+          if (j && (j.updatedAt !== R.updatedAt || ghAt(j) !== ghAt(R))) take(j); else if (live.pending && !busy()) take(live.pending);
         })
         .catch(() => { /* a bad body: the next poll asks again */ });
     };

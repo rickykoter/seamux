@@ -100,7 +100,8 @@ export function ghKicker(run = ghSync, every = GH_KICK_MS) {
 export function ghSync(id) {
   try {
     const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "lookout.mjs");
-    spawn(process.execPath, [cli, "gh", "sync", id], { detached: true, stdio: "ignore", env: process.env }).unref();
+    // --visible: the page is in view, so a closed or idle review is synced too.
+    spawn(process.execPath, [cli, "gh", "sync", id, "--visible"], { detached: true, stdio: "ignore", env: process.env }).unref();
   } catch { /* the page shows what the record has */ }
 }
 

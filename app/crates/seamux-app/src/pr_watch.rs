@@ -34,7 +34,7 @@ const SYNC_LIMIT: Duration = Duration::from_secs(90);
 pub struct Seen {
     pub pr: u64,
     pub comments: BTreeSet<u64>,
-    /// The checks failing on the head, as "<name>@<head>".
+    /// The checks failing on the head, as "<workflow>/<name>@<head>".
     pub failing: BTreeSet<String>,
 }
 
@@ -80,7 +80,9 @@ pub fn news(title: &str, seen: Option<&Seen>, g: &Value) -> (Vec<News>, Seen) {
             continue;
         }
         let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-        let key = format!("{name}@{head}");
+        // Two workflows may each have a "test": the workflow is part of the key.
+        let wf = c.get("workflow").and_then(Value::as_str).unwrap_or("");
+        let key = format!("{wf}/{name}@{head}");
         if seen.is_some_and(|s| s.pr == pr && !s.failing.contains(&key)) {
             red.push(name.to_string());
         }
@@ -149,15 +151,32 @@ fn tick(app: &AppHandle) {
     let dir = crew_board::review::reviews_dir();
     let Ok(rd) = std::fs::read_dir(&dir) else { return };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // A record is parsed again only when it changed, or an hour on (wanted
+    // depends on its age): records hold whole patches and can be large.
+    static WANTED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, u64, bool)>>> = std::sync::OnceLock::new();
+    let mut cache = WANTED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
     let ids: Vec<String> = rd
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let id = name.strip_suffix(".json")?.to_string();
             let skip = !seamux_app::review::id_ok(&id) || id.ends_with(".rows") || id.ends_with(".seen") || id.ends_with(".incoming") || id.starts_with("wake-");
-            (!skip && read(&e.path()).is_some_and(|d| wanted(&d, now))).then_some(id)
+            if skip {
+                return None;
+            }
+            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+            let path = e.path();
+            let hit = cache.get(&path).filter(|(t, at, _)| *t == mtime && now.saturating_sub(*at) < 3600).map(|c| c.2);
+            let want = hit.unwrap_or_else(|| {
+                let w = read(&path).is_some_and(|d| wanted(&d, now));
+                cache.insert(path.clone(), (mtime, now, w));
+                w
+            });
+            want.then_some(id)
         })
         .collect();
+    cache.retain(|p, _| p.exists());
+    drop(cache);
     for batch in ids.chunks(AT_ONCE) {
         std::thread::scope(|sc| {
             for id in batch {
@@ -219,7 +238,7 @@ mod tests {
     fn a_first_look_only_learns() {
         let (n, s) = news("r", None, &g(&[(1, "alice")], &["test"], "h1"));
         assert!(n.is_empty());
-        assert!(s.comments.contains(&1) && s.failing.contains("test@h1"));
+        assert!(s.comments.contains(&1) && s.failing.contains("/test@h1"));
     }
 
     #[test]
@@ -258,6 +277,18 @@ mod tests {
         let (_, s) = news("r", Some(&s), &g(&[], &[], "h2"));
         let (n, _) = news("r", Some(&s), &g(&[], &["test"], "h2"));
         assert_eq!(n.len(), 1, "red again after a rerun passed");
+    }
+
+    #[test]
+    fn two_workflows_failing_a_check_of_one_name_are_two_failures() {
+        let (_, s) = news("r", None, &g(&[], &[], "h1"));
+        let mut v = g(&[], &[], "h1");
+        v["checks"] = json!([{"name": "test", "workflow": "a", "bucket": "fail"}]);
+        let (n, s) = news("r", Some(&s), &v);
+        assert_eq!(n.len(), 1);
+        v["checks"] = json!([{"name": "test", "workflow": "a", "bucket": "fail"}, {"name": "test", "workflow": "b", "bucket": "fail"}]);
+        let (n, _) = news("r", Some(&s), &v);
+        assert_eq!(n.len(), 1, "b's failure is news too");
     }
 
     #[test]

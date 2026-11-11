@@ -1442,8 +1442,22 @@ pub fn review_post(id: String, ids: Vec<String>) -> Result<(), String> {
     if ids.is_empty() {
         return Err("pick at least one finding".into());
     }
+    // lookout refuses an item already posted, and a refusal would sink the
+    // whole post: leave those out, and say so.
+    let posted: Vec<String> = findings_of(&j)?
+        .iter()
+        .filter(|f| f.get("github").and_then(|g| g.get("postedAt")).is_some())
+        .filter_map(|f| f.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let (ids, skip): (Vec<String>, Vec<String>) = ids.into_iter().partition(|i| !posted.contains(i));
+    if ids.is_empty() {
+        return Err(format!("{} already posted: nothing new to post", skip.join(", ")));
+    }
     let j = claim(&id, "commenting")?;
     std::thread::spawn(move || {
+        if !skip.is_empty() {
+            note(&j.id, &format!("left out, already posted: {}", skip.join(", ")));
+        }
         let intro = format!("Lookout review ({} depth): {} finding(s).", j.depth, ids.len());
         match post_via_lookout(Path::new(&j.wt), &j.review_id, &ids, &intro) {
             Ok(url) => {

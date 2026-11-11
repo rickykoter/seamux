@@ -726,7 +726,7 @@ function cmdGh() {
       if (!GH.parsePrRef(opt("pr"))) die(`--pr: cannot read "${opt("pr")}"`);
       S.update(id, cur => { cur.prRef = opt("pr"); if (cur.github) cur.github = { ...cur.github, pr: null }; return cur; });
     }
-    const r = GH.sync(id, { force: sub === "link" || flag("force") });
+    const r = GH.sync(id, { force: sub === "link" || flag("force"), visible: flag("visible") });
     if (r.changed) renderPage(id);
     out(r);
     if (json) { if (r.error) process.exitCode = 1; return; }
@@ -741,7 +741,11 @@ function cmdGh() {
     if (!json) say(g && g.pr ? ghSummary(id, null) : `lookout gh ${id}: not linked (lookout gh link ${id} [--pr N])`);
     return;
   }
-  const ids = more.filter(x => /^[ft]\d+$/.test(x));
+  // Every word must name an item: a typo must not post less than was named.
+  // (positional() has already set aside --intro's text.)
+  const bad = more.filter(x => !/^[ft]\d+$/.test(x));
+  if (bad.length) die(`gh post: not a finding or comment id: ${bad.join(", ")} (f1, t2, …)`);
+  const ids = more;
   if (!ids.length) die("gh post <review-id> <f#|t#> … (the findings or comments to post)");
   try {
     const r = GH.post(id, ids, { intro: opt("intro") || "", again: flag("again") });

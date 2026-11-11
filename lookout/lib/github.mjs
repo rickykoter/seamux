@@ -42,6 +42,8 @@ const clip = (s, n = MAX_BODY) => String(s ?? "").slice(0, n);
 const parse = s => { try { return JSON.parse(s); } catch { return null; } };
 
 export function gh(args, { cwd, input } = {}) {
+  // A missing cwd fails as ENOENT too: say which is gone.
+  if (cwd && !fs.existsSync(cwd)) return { error: `the review's checkout is gone: ${cwd}` };
   const r = spawnSync(GH(), args, { encoding: "utf8", cwd, input, timeout: TIMEOUT,
                                     stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
   if (r.error && r.error.code === "ENOENT") return { error: `${GH()} is not installed (or not on PATH)` };
@@ -220,7 +222,8 @@ function haveHead(root, id, repo, pr, head) {
 }
 
 // { <id>: why } for the review's findings and comment threads on the new
-// side. Items whose head cannot be read are left alone.
+// side. An item whose head is no longer in the checkout (the branch was
+// rewritten) is stale too: nothing can say its code is unchanged.
 export function staleness(review, head, root) {
   const stale = {};
   const base = (review.source || {}).head || "";
@@ -238,7 +241,11 @@ export function staleness(review, head, root) {
     const at = x.at || base;
     if (!at || at === head) continue;
     const r = rangesFor(at, x.file);
-    if (!r) continue;
+    if (!r) {
+      if (git(root, ["cat-file", "-e", at + "^{commit}"]) === null)
+        stale[x.id] = `the commit it was read on (${at.slice(0, 8)}) is gone, so the branch was rewritten`;
+      continue;
+    }
     if (r.gone) stale[x.id] = "its file was deleted on the PR's head";
     else if (touches(r.ranges, x.line)) stale[x.id] = `the code around line ${x.line} changed after it was reviewed`;
   }
@@ -254,7 +261,12 @@ const sameBlock = (a, b) => {
 
 // One look at GitHub for review `id`. Returns { skipped } | { linked: false,
 // why } | { changed, github } | { error }.
-export function sync(id, { force = false, now = Date.now() } = {}) {
+// `visible`: the page is in view (lookout serve asks so). A closed PR or an
+// idle review is then synced anyway, so what is on screen is current; the
+// rate floor and a back-off still hold. Unseen, a closed PR is looked at
+// again once a day, so one that is reopened is noticed.
+export const CLOSED_RECHECK_MS = 24 * 3600 * 1000;
+export function sync(id, { force = false, visible = false, now = Date.now() } = {}) {
   if (!S.exists(id)) return { error: "no review " + id };
   const st0 = readState();
   const me = st0[id] || {};
@@ -265,8 +277,10 @@ export function sync(id, { force = false, now = Date.now() } = {}) {
   // A merged or closed PR had its last sync when it was seen so; a review
   // nobody has touched in IDLE_MS is left alone too. Both still sync forced.
   const was = (review.github || {}).state;
-  if (!force && was && was !== "OPEN" && !switching(review)) return { skipped: `the pull request is ${was.toLowerCase()}` };
-  if (!force && Date.parse(review.updatedAt || "") < now - IDLE_MS) return { skipped: "the review has been idle for two weeks" };
+  const quiet = !force && !visible;
+  if (quiet && was && was !== "OPEN" && !switching(review) && me.at && now - me.at < CLOSED_RECHECK_MS)
+    return { skipped: `the pull request is ${was.toLowerCase()}` };
+  if (quiet && Date.parse(review.updatedAt || "") < now - IDLE_MS) return { skipped: "the review has been idle for two weeks" };
   setState(id, { at: now });
 
   const root = (review.source || {}).root;
@@ -328,7 +342,15 @@ function record(id, review, block) {
   const next = block.repo ? block : { ...(review.github || {}), error: block.error };
   if (sameBlock(review.github, next)) return { changed: false, github: review.github };
   next.changedAt = new Date().toISOString();
-  const out = S.update(id, cur => { cur.github = next; return cur; });
+  // Not S.update: what GitHub says is not activity on the review, so
+  // updatedAt (the lists' order, the idle rule) stays; the page watches
+  // github.changedAt as well.
+  const out = S.withLock(id, () => {
+    const cur = S.read(id);
+    cur.github = next;
+    S.writeAtomic(S.paths(id).json, JSON.stringify(cur, null, 2) + "\n");
+    return cur;
+  });
   return { changed: true, github: out.github, ...(block.repo ? {} : { error: block.error }) };
 }
 
@@ -375,36 +397,62 @@ export function post(id, ids, { intro = "", again = false } = {}) {
     items.push(x);
   }
   if (!items.length) throw new Error("name at least one finding or comment to post");
-  // The commit the items were read on: the earliest-made item's, else the review's.
-  const made = items.filter(x => x.at).sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
-  const sha = (made[0] && made[0].at) || (review.source || {}).head || review.github.head;
-  const words = intro || `Lookout review: ${items.length} item${items.length === 1 ? "" : "s"}.`;
-  const path_ = `repos/${repo}/pulls/${pr}/reviews`;
-  const send = folded => gh(["api", "-X", "POST", path_, "--input", "-"], { cwd: (review.source || {}).root, input: JSON.stringify(reviewPayload(items, sha, words, folded)) });
-  let folded = false;
-  let r = send(false);
-  if (r.status !== 0 && /422|Unprocessable/i.test((r.err || "") + (r.out || ""))) { folded = true; r = send(true); }
-  if (r.error || r.status !== 0) throw new Error(fail(r, "gh api " + path_));
-  const v = parse(r.out) || {};
-  const reviewUrl = v.html_url || "";
-  // Which comment is which item: GitHub lists the review's comments; match
-  // each on path, line and text.
-  const byItem = {};
-  if (!folded && v.id) {
-    const c = gh(["api", `${path_}/${v.id}/comments`], { cwd: (review.source || {}).root });
-    const listed = c.status === 0 ? parse(c.out) : null;
-    for (const m of Array.isArray(listed) ? listed : []) {
-      const x = items.find(y => !byItem[y.id] && y.file === m.path && (m.line == null || m.line === y.line) && commentText(y) === m.body);
-      if (x) byItem[x.id] = { commentId: m.id, url: m.html_url || "" };
-    }
+  // Each item's line is on the head it was read on, so the items go as one
+  // GitHub review per head, pinned there.
+  const root = (review.source || {}).root;
+  const fallback = (review.source || {}).head || review.github.head;
+  const heads = new Map();
+  for (const x of items) {
+    const at = x.at || fallback;
+    if (!heads.has(at)) heads.set(at, []);
+    heads.get(at).push(x);
   }
+  const path_ = `repos/${repo}/pulls/${pr}/reviews`;
+  const byItem = {}, urls = [], foldedIds = new Set();
   const postedAt = new Date().toISOString();
-  S.update(id, cur => {
+  const save = done => S.update(id, cur => {
     for (const x of [...(cur.findings || []), ...(cur.threads || [])]) {
-      if (!ids.includes(x.id)) continue;
-      x.github = { ...(byItem[x.id] || {}), reviewUrl, postedAt, ...(folded ? { folded: true } : {}) };
+      if (!done.includes(x.id)) continue;
+      x.github = { ...(byItem[x.id] || {}), postedAt, ...(foldedIds.has(x.id) ? { folded: true } : {}) };
     }
     return cur;
   });
-  return { url: reviewUrl, posted: items.map(x => x.id), folded };
+  for (const [sha, group] of heads) {
+    const words = intro || `Lookout review: ${group.length} item${group.length === 1 ? "" : "s"}.`;
+    // The folded retry has no line comments, so it pins the PR's head: the
+    // item's own commit may be gone from the PR after a force-push.
+    const send = folded => gh(["api", "-X", "POST", path_, "--input", "-"], { cwd: root,
+      input: JSON.stringify(reviewPayload(group, folded ? review.github.head || sha : sha, words, folded)) });
+    let folded = false;
+    let r = send(false);
+    if (r.status !== 0 && /422|Unprocessable/i.test((r.err || "") + (r.out || ""))) { folded = true; r = send(true); }
+    if (r.error || r.status !== 0) {
+      // What already went out is saved first, so a retry cannot post it twice.
+      if (urls.length) {
+        save(Object.keys(byItem));
+        throw new Error(`${fail(r, "gh api " + path_)} (after posting ${urls.join(", ")}; those items are marked posted)`);
+      }
+      throw new Error(fail(r, "gh api " + path_));
+    }
+    const v = parse(r.out) || {};
+    const reviewUrl = v.html_url || "";
+    urls.push(reviewUrl);
+    for (const x of group) { byItem[x.id] = { reviewUrl }; if (folded) foldedIds.add(x.id); }
+    // Which comment is which item: GitHub lists the review's comments, 100
+    // a page; match each on path, line and text.
+    if (!folded && v.id) {
+      for (let page = 1; page <= 10; page++) {
+        const c = gh(["api", `${path_}/${v.id}/comments?per_page=100&page=${page}`], { cwd: root });
+        const listed = c.status === 0 ? parse(c.out) : null;
+        if (!Array.isArray(listed)) break;
+        for (const m of listed) {
+          const x = group.find(y => !byItem[y.id].commentId && y.file === m.path && (m.line == null || m.line === y.line) && commentText(y) === m.body);
+          if (x) byItem[x.id] = { ...byItem[x.id], commentId: m.id, url: m.html_url || "" };
+        }
+        if (listed.length < 100) break;
+      }
+    }
+  }
+  save(Object.keys(byItem));
+  return { url: urls[0] || "", urls, posted: items.map(x => x.id), folded: foldedIds.size > 0 };
 }
