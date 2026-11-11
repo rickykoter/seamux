@@ -296,7 +296,7 @@ install_app() {
   run "cp $(q "$build/seamux-app") $(q "$bundle/Contents/MacOS/seamux-app")"
   run "cp $(q "$build/seamux") $(q "$bundle/Contents/Resources/bin/seamux")"
   if [ "$DRY" = 1 ]; then
-    say "would write: Info.plist ($APP_BUNDLE_ID $v) and AppIcon.icns from the crate's icon"
+    say "would write: Info.plist ($APP_BUNDLE_ID $v, URL scheme seamux://) and AppIcon.icns from the crate's icon"
   else
     cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -311,6 +311,10 @@ install_app() {
   <key>CFBundleVersion</key><string>$v</string>
   <key>SeamuxBuiltFrom</key><string>$(printf '%s' "$SRC_LABEL" | sed 's/&/\&amp;/g; s/</\&lt;/g')</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>$APP_BUNDLE_ID.focus</string>
+    <key>CFBundleURLSchemes</key><array><string>seamux</string></array>
+  </dict></array>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>

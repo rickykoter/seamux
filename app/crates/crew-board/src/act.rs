@@ -361,8 +361,28 @@ fn on_tmux(kind: crew_core::backend::Kind, action: &str) -> Option<(bool, String
     }
     match action {
         "sync" => Some((spawn_seamux(&["crew-sync"]), "sync".into())),
-        "jump" | "row" | "pane" | "code" | "reclaim" | "archive" | "sandbox-up" | "sandbox-down" | "feed-allow" | "feed-deny" => {
+        "code" | "reclaim" | "archive" | "sandbox-up" | "sandbox-down" | "feed-allow" | "feed-deny" => {
             Some((false, format!("{action} needs cmux: this board reads the seamux app's tmux")))
+        }
+        _ => None,
+    }
+}
+
+/// On tmux, what a jump, row or pane click asks the app to show: the row's
+/// workspace, and for a pane chip the pane, which must be one the row
+/// lists. None for every other verb.
+fn focus_target(action: &str, row: &Map<String, Value>, extra: &str) -> Option<Result<(String, Option<String>), String>> {
+    let wsid = s(row, "id");
+    let ws = || if uuid_ok(&wsid) { Ok(wsid.clone()) } else { Err("no workspace id to show".to_string()) };
+    match action {
+        "jump" | "row" => Some(ws().map(|w| (w, None))),
+        "pane" => {
+            let listed = row.get("panes").and_then(Value::as_array).into_iter().flatten()
+                .any(|p| p.get("surface").and_then(Value::as_str) == Some(extra));
+            if extra.is_empty() || !listed {
+                return Some(Err("that pane is not this row's".into()));
+            }
+            Some(ws().map(|w| (w, Some(extra.to_string()))))
         }
         _ => None,
     }
@@ -414,7 +434,19 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
     let pr_url = s(row, "pr_url");
     let mut slug = s(row, "slug");
     let title = s(row, "name");
-    if let Some(done) = on_tmux(crate::backend::kind(), action) {
+    let kind = crate::backend::kind();
+    if kind == crew_core::backend::Kind::Tmux {
+        if let Some(target) = focus_target(action, row, extra) {
+            // The board in a plain browser: the app shows the pane (ADR 0086).
+            return match target {
+                Ok((ws, pane)) if crew_core::focus::url(&ws, pane.as_deref()).is_none() => (false, format!("not a pane the app can show: {ws} {}", pane.unwrap_or_default())),
+                Ok((ws, pane)) if crew_core::focus::open(&ws, pane.as_deref()) => (true, format!("focus {ws}")),
+                Ok(_) => (false, "macOS did not open the seamux:// link: is the seamux app installed (./install.sh --app)?".into()),
+                Err(why) => (false, why),
+            };
+        }
+    }
+    if let Some(done) = on_tmux(kind, action) {
         return done;
     }
 
@@ -664,12 +696,12 @@ mod tests {
     #[test]
     fn on_tmux_the_cmux_only_verbs_say_so_and_the_rest_are_left_alone() {
         let k = crew_core::backend::Kind::Tmux;
-        for a in ["jump", "row", "pane", "code", "reclaim", "archive", "sandbox-up", "sandbox-down", "feed-allow", "feed-deny"] {
+        for a in ["code", "reclaim", "archive", "sandbox-up", "sandbox-down", "feed-allow", "feed-deny"] {
             let (ok, why) = on_tmux(k, a).expect(a);
             assert!(!ok && why.contains("needs cmux"), "{a}: {why}");
         }
         // go is checked in act's own arm (it needs the row); these never touch cmux.
-        for a in ["go", "plan", "wake", "ask", "diff", "pr", "close plan"] {
+        for a in ["jump", "row", "pane", "go", "plan", "wake", "ask", "diff", "pr", "close plan"] {
             assert!(on_tmux(k, a).is_none(), "{a}");
         }
     }
@@ -741,5 +773,19 @@ mod tests {
         assert_eq!(notice_of(row, "teammate").and_then(|n| n["count"].as_u64()), Some(2));
         assert_eq!(notice_from(&notice_of(row, "mine").unwrap()).why, "timed out after 300 ms");
         assert!(notice_of(row, "workflow").is_none() && notice_of(row, "").is_none());
+    }
+
+    #[test]
+    fn on_tmux_a_jump_shows_the_rows_workspace_and_a_pane_chip_only_a_listed_pane() {
+        let w = "F7C77CFC-3416-43EA-BD60-2CEB74953A19";
+        let p = "7B07A98B-825F-427E-9389-23086C5E3F90";
+        let row: Map<String, Value> = serde_json::from_value(serde_json::json!({"id": w, "panes": [{"surface": p}]})).unwrap();
+        assert_eq!(focus_target("jump", &row, ""), Some(Ok((w.to_string(), None))));
+        assert_eq!(focus_target("row", &row, ""), Some(Ok((w.to_string(), None))));
+        assert_eq!(focus_target("pane", &row, p), Some(Ok((w.to_string(), Some(p.to_string())))));
+        assert!(matches!(focus_target("pane", &row, "9D3E0A1B-0000-4000-8000-000000000000"), Some(Err(_))));
+        assert_eq!(focus_target("code", &row, ""), None);
+        let bad: Map<String, Value> = serde_json::from_value(serde_json::json!({"id": "workspace:3"})).unwrap();
+        assert!(matches!(focus_target("jump", &bad, ""), Some(Err(_))));
     }
 }

@@ -482,6 +482,43 @@ fn jump(app: &AppHandle, n: &Note) {
     let _ = app.emit("notify:jump", serde_json::json!({"ws": n.ws, "pane": n.pane}));
 }
 
+/// A seamux://focus link (ADR 0086), from macOS: bring the app forward on
+/// the pane it names, as a banner click does. Anything that is not a
+/// well-formed focus link is ignored, and the link never does more.
+pub fn open_link(app: &AppHandle, link: &str) {
+    let Some((ws, pane)) = crew_core::focus::parse(link) else {
+        eprintln!("seamux: ignored a link that is not seamux://focus: {}", link.chars().take(120).collect::<String>());
+        return;
+    };
+    let pane = pane.unwrap_or_default();
+    // A link that launched the app arrives before its page listens: the
+    // page takes it once it does (notify_take_link).
+    *pending_link().lock().unwrap_or_else(|p| p.into_inner()) = Some((crew_core::history::now_ms(), ws.clone(), pane.clone()));
+    crate::shell::summon(app);
+    let _ = app.emit("notify:jump", serde_json::json!({"ws": ws, "pane": pane}));
+}
+
+/// How long a focus link waits for the page to take it.
+const LINK_KEEP_MS: u64 = 60_000;
+
+fn pending_link() -> &'static Mutex<Option<(u64, String, String)>> {
+    static L: OnceLock<Mutex<Option<(u64, String, String)>>> = OnceLock::new();
+    L.get_or_init(Default::default)
+}
+
+/// The focus link the app was opened with, once, when it is still fresh:
+/// the page asks as soon as it listens for notify:jump.
+#[tauri::command]
+pub fn notify_take_link() -> Option<serde_json::Value> {
+    let taken = pending_link().lock().unwrap_or_else(|p| p.into_inner()).take()?;
+    fresh_link(taken, crew_core::history::now_ms()).map(|(ws, pane)| serde_json::json!({"ws": ws, "pane": pane}))
+}
+
+/// A pending link's ids, unless it is older than LINK_KEEP_MS.
+pub fn fresh_link((at, ws, pane): (u64, String, String), now: u64) -> Option<(String, String)> {
+    (now.saturating_sub(at) <= LINK_KEEP_MS).then_some((ws, pane))
+}
+
 /// The review the Lookout tab shows while it is the tab in view, as the page last said.
 fn review_looking() -> &'static Mutex<Option<String>> {
     static L: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -894,5 +931,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let unknown = blocked_note(&json!({"pane": "PX", "reason": "rm -rf"}), &|_| None).unwrap();
         assert_eq!(unknown.title, "Claude · blocked: rm -rf");
+    }
+
+    #[test]
+    fn a_focus_link_waits_a_minute_for_the_page_and_no_longer() {
+        let l = |at| (at, "W".to_string(), "P".to_string());
+        assert_eq!(fresh_link(l(1_000), 1_000 + LINK_KEEP_MS), Some(("W".into(), "P".into())));
+        assert_eq!(fresh_link(l(1_000), 1_001 + LINK_KEEP_MS), None);
     }
 }

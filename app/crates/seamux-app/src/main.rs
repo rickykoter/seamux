@@ -212,6 +212,7 @@ fn main() {
             backend_status,
             notify_app::notify_looking,
             notify_app::notify_review_looking,
+            notify_app::notify_take_link,
             shell::intent_server,
             shell::intent_page,
             shell::hide_overlay,
@@ -280,12 +281,18 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("seamux app failed to start")
-        .run(|_, e| {
+        .run(|app, e| match e {
             // A clean quit stops a review's agents. A crash or SIGKILL skips
             // this; the saved pgid and its start time catch that next launch.
-            if let tauri::RunEvent::Exit = e {
-                review_app::stop_all();
+            tauri::RunEvent::Exit => review_app::stop_all(),
+            // seamux://focus links (crew-resume, the sweep, a board in a browser).
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                for u in urls {
+                    notify_app::open_link(app, u.as_str());
+                }
             }
+            _ => {}
         });
 }
 

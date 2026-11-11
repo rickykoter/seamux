@@ -90,9 +90,17 @@ void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 
 // A click on a notification (crates/seamux-app/src/notify_app.rs) lands on
 // its pane in the Dock.
+// A seamux://focus link (ADR 0086) arrives the same way; one that launched
+// the app came before this listened, so it is taken once listening starts.
 void listen<{ ws: string; pane: string }>("notify:jump", (e) => {
   tabs.select("dock");
   dockView.jump(e.payload.ws, e.payload.pane);
+}).then(async () => {
+  const link = await invoke<{ ws: string; pane: string } | null>("notify_take_link").catch(() => null);
+  if (link?.ws) {
+    tabs.select("dock");
+    dockView.jump(link.ws, link.pane);
+  }
 });
 
 // A click on a PR banner (crates/seamux-app/src/pr_watch.rs) lands on its
