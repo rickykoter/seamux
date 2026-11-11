@@ -161,10 +161,60 @@ pub fn live_workspaces() -> Option<Vec<Ws>> {
 }
 
 /// The saved agent session records, or None when sessions list did not answer.
+/// Without cmux, the tmux backend's panes stand in (tmux_sessions).
 pub fn agent_sessions() -> Option<Vec<Value>> {
-    let d = cmux()?.sessions_list().ok()?;
+    let Some(c) = cmux() else { return tmux_sessions() };
+    let d = c.sessions_list().ok()?;
     let rows = if d.is_object() { d.get("sessions").cloned().unwrap_or(Value::Null) } else { d };
     rows.as_array().map(|a| a.iter().filter(|r| r.is_object()).cloned().collect())
+}
+
+/// The tmux backend's panes as session records (ADR 0085): each pane's
+/// session from its pane file, mid-turn while that file says working or
+/// needs_input, and live only while a claude process runs on the pane's
+/// terminal. None when the registry cannot be read.
+fn tmux_sessions() -> Option<Vec<Value>> {
+    use crate::backend::Backend;
+    let t = crate::backend::tmux::in_play()?;
+    let dir = crate::home::home_cache();
+    let mut out = Vec::new();
+    let mut asked = false;
+    for p in t.panes(None).ok()? {
+        let file = crate::status::read(&dir, &p.id);
+        let runs = match t.target(&p.id).ok()? {
+            // tmux or ps not answering is "could not tell", not "no Claude".
+            Some(target) => crate::backend::tmux::claude_on(&target)?,
+            // No session: gone, unless tmux itself is not answering (asked once).
+            None => {
+                if !asked && !t.answers() {
+                    return None;
+                }
+                asked = true;
+                false
+            }
+        };
+        if let Some(r) = tmux_record(&p.workspace, file.as_ref().map(|f| (f.session.as_str(), f.state.as_str())), runs) {
+            out.push(r);
+        }
+    }
+    Some(out)
+}
+
+/// One tmux pane's session record, from its pane file's (session, state)
+/// and whether Claude runs on it. None for a pane with neither.
+pub fn tmux_record(ws: &str, file: Option<(&str, &str)>, runs: bool) -> Option<Value> {
+    if file.is_none() && !runs {
+        return None;
+    }
+    let (session, state) = file.unwrap_or(("", ""));
+    let life = match (runs, state) {
+        (false, _) => "ended",
+        (true, "working") => "running",
+        (true, "needs_input") => "needsInput",
+        (true, _) => "idle",
+    };
+    Some(json!({"workspace_id": ws, "session_id": session, "agent": "claude", "agent_lifecycle": life,
+                "stored_pid_exists": runs, "source": "tmux"}))
 }
 
 fn field<'a>(r: &'a Value, names: &[&str]) -> Option<&'a Value> {
@@ -249,7 +299,10 @@ pub fn lifecycle_of(id: &str, r#ref: &str, records: Option<&[Value]>) -> &'stati
         }
     };
     if let Some(records) = records {
-        let mine = sessions_for(id, r#ref, records);
+        let mut mine = sessions_for(id, r#ref, records);
+        // A tmux pane whose Claude has gone keeps its record for the
+        // archive's session ids, but runs nothing (ADR 0085).
+        mine.retain(|r| !(r.get("source").and_then(Value::as_str) == Some("tmux") && r.get("stored_pid_exists") == Some(&Value::Bool(false))));
         if mine.is_empty() {
             return "none";
         }
@@ -273,7 +326,8 @@ fn ps_bin() -> String {
 /// What a force-close would kill besides an idle agent: each terminal's
 /// foreground job that is not a shell or the agent. None when cmux would not say.
 pub fn busy(ws: &str) -> Option<Vec<String>> {
-    let tree = cmux()?.tree().ok()?;
+    let Some(c) = cmux() else { return jobs_on(tmux_ttys(ws)?) };
+    let tree = c.tree().ok()?;
     if !tree.is_object() {
         return None;
     }
@@ -294,6 +348,25 @@ pub fn busy(ws: &str) -> Option<Vec<String>> {
             }
         }
     }
+    jobs_on(ttys)
+}
+
+/// The terminals of `ws`'s live tmux panes, or None when tmux would not say.
+fn tmux_ttys(ws: &str) -> Option<Vec<String>> {
+    use crate::backend::Backend;
+    let t = crate::backend::tmux::in_play()?;
+    let mut ttys = Vec::new();
+    for p in t.panes(Some(ws)).ok()? {
+        match t.target(&p.id).ok()? {
+            Some(target) => ttys.push(crate::backend::tmux::pane_tty(&target)?),
+            None => continue,
+        }
+    }
+    Some(ttys)
+}
+
+/// Each terminal's foreground job that is not a shell or an agent.
+fn jobs_on(ttys: Vec<String>) -> Option<Vec<String>> {
     let mut names: Vec<String> = Vec::new();
     for tty in ttys {
         let (_, out, _) = py::run(&ps_bin(), &["-o", "pid=,pgid=,tpgid=,comm=", "-t", &tty], Duration::from_secs(5))?;
@@ -417,8 +490,12 @@ fn close_unguarded(handle: &str) -> (bool, String) {
 }
 
 /// Bring a live workspace forward.
+/// Without cmux, the app shows it (a seamux://focus link, ADR 0086).
 pub fn select(ws: &str) -> bool {
-    cmux().map(|c| c.workspace_select(ws).is_ok()).unwrap_or(false)
+    match cmux() {
+        Some(c) => c.workspace_select(ws).is_ok(),
+        None => crate::focus::open(ws, None),
+    }
 }
 
 // --- git -------------------------------------------------------------------------
@@ -987,7 +1064,7 @@ pub fn restore(cwd: &str) -> (bool, String) {
     let sid = sval(rec.get("session_id"));
     let cmd = if sid.is_empty() { "claude".to_string() } else { format!("claude --resume {sid}") };
     let title = sval(rec.get("title"));
-    let Some(c) = cmux() else { return (false, format!("cmux did not open {cwd} (?)")) };
+    let Some(c) = cmux() else { return restore_on_tmux(cwd, &rec, &title, &cmd) };
     let out = match c.workspace_create(if title.is_empty() { None } else { Some(&title) }, cwd, &cmd, true) {
         Ok(o) => o,
         Err(e) => return (false, format!("cmux did not open {cwd} ({e})")),
@@ -1005,6 +1082,27 @@ pub fn restore(cwd: &str) -> (bool, String) {
     let _ = update(|recs| recs.remove(cwd));
     let shown = if title.is_empty() { cwd.to_string() } else { title };
     (true, format!("restored {shown}{}", if r.is_empty() { String::new() } else { format!(" in {r}") }))
+}
+
+/// `restore` on the tmux backend: the archived workspace again under its
+/// old id when it is free (what is keyed by it carries on), else a new one.
+fn restore_on_tmux(cwd: &str, rec: &Value, title: &str, cmd: &str) -> (bool, String) {
+    use crate::backend::Backend;
+    let t = crate::backend::tmux::TmuxBackend::default();
+    let old = sval(rec.get("workspace_id"));
+    let opened = if cmux::is_uuid(&old) {
+        t.revive(&old, title, cwd, cmd).map(|_| old.clone()).or_else(|_| t.open_workspace(Path::new(cwd), cmd).map(|(r, _)| r))
+    } else {
+        t.open_workspace(Path::new(cwd), cmd).map(|(r, _)| r)
+    };
+    match opened {
+        Ok(ws) => {
+            let _ = update(|recs| recs.remove(cwd));
+            crate::focus::open(&ws, None);
+            (true, format!("restored {}", if title.is_empty() { cwd } else { title }))
+        }
+        Err(e) => (false, format!("the seamux app's tmux did not open {cwd} ({e})")),
+    }
 }
 
 /// Drop an archive record. -> true when there was one.
@@ -1184,5 +1282,25 @@ mod tests {
     fn labels_fold_whitespace() {
         assert_eq!(label(&json!({"title": "", "prompt": "build\n  the thing"})), "build the thing");
         assert_eq!(label(&json!({})), "(no prompt)");
+    }
+
+    #[test]
+    fn tmux_panes_read_as_records_and_lifecycles() {
+        let rec = |file, runs| tmux_record("W", file, runs);
+        assert_eq!(rec(None, false), None);
+        let life = |recs: &[Value]| lifecycle_of("W", "W", Some(recs));
+        // Working with Claude on the terminal: mid-turn.
+        assert_eq!(life(&[rec(Some(("s1", "working")), true).unwrap()]), "running");
+        assert_eq!(life(&[rec(Some(("s1", "needs_input")), true).unwrap()]), "running");
+        assert_eq!(life(&[rec(Some(("s1", "idle")), true).unwrap()]), "idle");
+        assert_eq!(life(&[rec(None, true).unwrap()]), "idle");
+        // A pane file left saying working after Claude went: none, but the
+        // record still carries the session for the archive.
+        let stale = rec(Some(("s1", "working")), false).unwrap();
+        assert_eq!(life(std::slice::from_ref(&stale)), "none");
+        assert_eq!(stale["session_id"], "s1");
+        // One live working pane beside a stale one: still mid-turn.
+        assert_eq!(life(&[stale, rec(Some(("s2", "working")), true).unwrap()]), "running");
+        assert_eq!(life(&[]), "none");
     }
 }

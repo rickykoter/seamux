@@ -53,13 +53,32 @@ pub fn in_play() -> Option<TmuxBackend> {
 /// pane's terminal. tmux's own pane_current_command can name the shell that
 /// started Claude, so the terminal's processes are asked instead.
 pub fn runs_claude(t: &Target) -> bool {
-    let Ok(o) = tmux(&t.socket, &["display-message", "-p", "-t", &pane_of(t), "#{pane_tty}"]) else { return false };
+    claude_on(t).unwrap_or(false)
+}
+
+/// `runs_claude`, except that None means tmux or ps did not answer: a
+/// guard reads that as "could not tell", never as "no Claude".
+pub fn claude_on(t: &Target) -> Option<bool> {
+    let tty = pane_tty(t)?;
+    let ps = crate::py::env_or("CREW_PS").unwrap_or_else(|| "/bin/ps".into());
+    let out = Command::new(ps).args(["-t", &tty, "-o", "comm="]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).lines().any(is_claude))
+}
+
+/// The terminal of `t`'s pane, as `ps -t` takes it ("ttys012"), or None
+/// when tmux does not say.
+pub fn pane_tty(t: &Target) -> Option<String> {
+    let o = tmux(&t.socket, &["display-message", "-p", "-t", &pane_of(t), "#{pane_tty}"]).ok()?;
     let tty = String::from_utf8_lossy(&o.stdout).trim().trim_start_matches("/dev/").to_string();
-    if !o.status.success() || tty.is_empty() || !tty.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return false;
-    }
-    let Ok(ps) = Command::new("/bin/ps").args(["-t", &tty, "-o", "comm="]).output() else { return false };
-    String::from_utf8_lossy(&ps.stdout).lines().any(is_claude)
+    (o.status.success() && !tty.is_empty() && tty.chars().all(|c| c.is_ascii_alphanumeric())).then_some(tty)
+}
+
+/// Whether tmux's error says its server is gone: none runs, the socket is
+/// missing, or nothing listens on it. A refused permission or any other
+/// error is not that: the server may be there and unreadable.
+pub fn server_gone(err: &str) -> bool {
+    err.contains("no server running")
+        || (err.contains("error connecting") && (err.contains("(No such file or directory)") || err.contains("(Connection refused)")))
 }
 
 /// The target for a command on `t`'s pane: `=name:`, the session by its exact
@@ -236,6 +255,16 @@ impl TmuxBackend {
     fn pane_target(&self, p: &Value) -> Target {
         let socket = Some(s(p, "socket")).filter(|x| !x.is_empty()).unwrap_or_else(|| self.socket());
         Target { socket, session: s(p, "session") }
+    }
+
+    /// Whether this backend's tmux server can be asked: it answers, or it
+    /// says plainly that no server runs (its sessions are gone). False when
+    /// tmux itself could not be run or failed some other way.
+    pub fn answers(&self) -> bool {
+        match tmux(&self.socket(), &["list-sessions"]) {
+            Ok(o) => o.status.success() || server_gone(&String::from_utf8_lossy(&o.stderr)),
+            Err(_) => false,
+        }
     }
 
     fn alive(&self, t: &Target) -> bool {
@@ -850,5 +879,15 @@ mod tests {
         let cwd = f.1.to_string_lossy().into_owned();
         let e = f.0.start_session("NOPE", &cwd, "true").unwrap_err();
         assert!(e.contains("no workspace"), "{e}");
+    }
+
+    #[test]
+    fn only_a_missing_or_dead_server_reads_as_gone() {
+        assert!(server_gone("no server running on /tmp/x"));
+        assert!(server_gone("error connecting to /tmp/x (No such file or directory)"));
+        assert!(server_gone("error connecting to /tmp/x (Connection refused)"));
+        assert!(!server_gone("error connecting to /tmp/x (Permission denied)"));
+        assert!(!server_gone("error connecting to /tmp/x (Socket operation on non-socket)"));
+        assert!(!server_gone("protocol version mismatch"));
     }
 }
