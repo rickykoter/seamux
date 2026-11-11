@@ -733,6 +733,85 @@ if (want("panel briefs")) {
   ok("reviewer: the repo's .seamux/lookout.json sets a new review's default", S.read("rp-cfg").policy.reviewer === "panel");
 }
 
+// lookout/workflows/review.js, run here against stub agents: the merge, the
+// skeptic cap, the drop, the prompts it sends and the two ingest modes.
+if (want("review workflow")) {
+  const src = fs.readFileSync(path.join(HERE, "workflows", "review.js"), "utf8");
+  ok("workflow: the script starts with a meta literal and avoids what breaks resume",
+    /^export const meta = \{/.test(src) && !/Date\.now\(|Math\.random\(|new Date\(\)/.test(src));
+  const body = src.replace(/^export const meta =/m, "const meta =");
+  const run = (args, answer) => {
+    const calls = [];
+    const agent = async (prompt, opts = {}) => { calls.push({ prompt, ...opts }); return answer(prompt, opts); };
+    const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)));
+    const pipeline = (items, ...stages) => Promise.all(items.map(async (it, i) => {
+      let v = it;
+      try { for (const s of stages) v = await s(v, it, i); } catch { return null; }
+      return v;
+    }));
+    const logs = [];
+    const fn = new Function("agent", "parallel", "pipeline", "phase", "log", "args", `return (async () => {\n${body}\n})()`);
+    return fn(agent, parallel, pipeline, () => {}, m => logs.push(m), args).then(out => ({ out, calls, logs }));
+  };
+  const F = (file, line, severity, summary) => ({ file, line, side: "new", severity, summary, failure_scenario: "f", verdict: "PLAUSIBLE" });
+  const answer = (prompt, opts) => {
+    const l = opts.label || "";
+    if (l.startsWith("lead")) return { findings: [F("a.js", 1, "major", "lead's"), F("a.js", 5, "nit", "nit")], edges: [{ a: "a.js", b: "b.js", why: "w" }], notes: [{ files: ["a.js"] }] };
+    if (l.startsWith("security")) return { findings: [F("a.js", 1, "major", "finder's copy"), F("b.js", 2, "major", "refute me")] };
+    if (l.startsWith("correctness")) return { findings: [F("c.js", 3, "blocker", "real")] };
+    if (l.startsWith("performance")) return null;
+    if (l.startsWith("skeptic")) return /"refute me"/.test(prompt) ? { refuted: true, why: "escaped upstream at b.js:1" } : { refuted: false, why: "traced" };
+    if (l.startsWith("ingest")) return { ok: true, printed: "lookout rv: 3 finding(s) added" };
+    return null;
+  };
+  const { out, calls, logs } = await run({ reviews: ["rv"] }, answer);
+  const r = out.reviews[0];
+  const byLabel = s => calls.filter(c => (c.label || "").startsWith(s));
+  ok("workflow: the lead and each finder fetch their own brief from lookout prompt",
+    byLabel("lead")[0].prompt.includes("`lookout prompt rv --reply`") &&
+    ["correctness", "security", "performance"].every(d => byLabel(d)[0].prompt.includes(`\`lookout prompt rv --dimension ${d}\``)));
+  ok("workflow: the script holds no brief text of its own", !calls.some(c => /## How to review|Severity:/.test(c.prompt)));
+  ok("workflow: a finding on the same file, side and line keeps the lead's copy",
+    r.findings.filter(f => f.file === "a.js" && f.line === 1).length === 1 && r.findings.find(f => f.line === 1).summary === "lead's");
+  ok("workflow: a skeptic per blocker or major, given the finding, and none for a nit",
+    byLabel("skeptic").length === 3 && byLabel("skeptic").every(c => c.prompt.includes("`lookout prompt rv --skeptic`")) &&
+    !byLabel("skeptic").some(c => /"nit"/.test(c.prompt)));
+  ok("workflow: a refuted finding is dropped and listed with why",
+    !r.findings.some(f => f.file === "b.js") && r.dropped.length === 1 && r.dropped[0].why === "escaped upstream at b.js:1");
+  ok("workflow: a finding that holds is CONFIRMED; the nit is left as written",
+    r.findings.find(f => f.file === "c.js").verdict === "CONFIRMED" && r.findings.find(f => f.line === 1).verdict === "CONFIRMED" &&
+    r.findings.find(f => f.line === 5).verdict === "PLAUSIBLE");
+  ok("workflow: the lead's edges and notes are kept", r.edges.length === 1 && r.notes.length === 1);
+  ok("workflow: a finder that reported nothing is said, not fatal", logs.some(m => /1 finder\(s\) reported nothing/.test(m)));
+  ok("workflow: ingest agent saves the merged object with findings add",
+    byLabel("ingest").length === 1 && byLabel("ingest")[0].prompt.includes("`lookout findings add rv <that file>`") &&
+    byLabel("ingest")[0].prompt.includes('"refute me"') === false && r.ingest.ok === true);
+  ok("workflow: every agent runs on sonnet at medium effort, ten or fewer for one review",
+    calls.every(c => c.model === "sonnet" && c.effort === "medium") && calls.length <= 10, calls.length);
+
+  const reply = await run({ reviews: ["rv"], ingest: "reply" }, answer);
+  ok("workflow: ingest reply saves nothing and returns the merged review",
+    !reply.calls.some(c => (c.label || "").startsWith("ingest")) && reply.out.reviews[0].ingest === null && reply.out.reviews[0].findings.length === 3);
+
+  const many = await run({ reviews: ["rv"], ingest: "reply" }, (p, o) => (o.label || "").startsWith("lead")
+    ? { findings: Array.from({ length: 7 }, (_, i) => F("a.js", i + 1, "major", `m${i}`)), edges: [], notes: [] }
+    : (o.label || "").startsWith("skeptic") ? { refuted: false, why: "traced" } : { findings: [] });
+  const mr = many.out.reviews[0];
+  ok("workflow: at most five skeptics; the rest stay PLAUSIBLE and are counted",
+    many.calls.filter(c => (c.label || "").startsWith("skeptic")).length === 5 && mr.unchecked === 2 &&
+    mr.findings.filter(f => f.verdict === "PLAUSIBLE").length === 2 && many.logs.some(m => /2 serious finding\(s\) past the first 5/.test(m)));
+
+  const two = await run({ reviews: ["fam-a", "fam-b"], ingest: "reply" }, answer);
+  ok("workflow: several reviews each get their own panel", two.out.reviews.map(x => x.id).join() === "fam-a,fam-b" &&
+    two.calls.filter(c => (c.label || "").startsWith("lead")).length === 2);
+  const dead = await run({ reviews: ["rv"] }, (p, o) => (o.label || "").startsWith("lead") ? null : { findings: [] });
+  ok("workflow: a review whose lead reported nothing comes back as an error, not as no findings",
+    /did not finish/.test(dead.out.reviews[0].error || "") && !dead.calls.some(c => (c.label || "").startsWith("ingest")));
+  let threw = "";
+  try { await run({ reviews: ["../x"] }, answer); } catch (e) { threw = e.message; }
+  ok("workflow: no usable review id is refused", /wants one or more lookout review ids/.test(threw), threw);
+}
+
 if (want("notes, edges, quiz")) {
   const FD = await import("./lib/findings.mjs");
   const N = await import("./lib/notes.mjs");

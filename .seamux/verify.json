@@ -21,7 +21,7 @@
     "match": ["restack/*.mjs", "restack/lib/**", "restack/hooks/**", "restack/bin/**", "tools/probe_sections.mjs"], "default": true },
   { "id": "lookout-probe", "kind": "test",
     "run": "node lookout/probe.mjs",
-    "match": ["lookout/*.mjs", "lookout/lib/**", "lookout/hooks/**", "lookout/bin/**", "lookout/page/**", "tools/probe_sections.mjs"], "default": true },
+    "match": ["lookout/*.mjs", "lookout/lib/**", "lookout/hooks/**", "lookout/bin/**", "lookout/page/**", "lookout/workflows/**", "tools/probe_sections.mjs"], "default": true },
   { "id": "board-probe", "kind": "test",
     "run": "node crew/board/board_probe.mjs",
     "match": ["crew/board/**", "crew/config/**", "app/crates/crew-board/**", "app/crates/crew-core/src/costs.rs",
