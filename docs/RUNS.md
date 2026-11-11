@@ -211,6 +211,17 @@ citations, and the links are the cited files at their first cited line. Its
 transcript reader, shared with other bundled adapters, is
 `crew/adapters/lib/claude_agent.py`.
 
+**scout** (bundled, recognizes `subagent`) reports each background
+sub-agent whose description starts with "Scout", the sub-agents deep-plan
+sends to check a claim before a plan is written. It loads after explore, so
+an Explore scout is its. It groups scouts under the plan the session owns
+("Scouts for <slug>", from deep-plan's state folder). Once that plan's spec
+is rendered, the badge counts the spec's verifiedFacts the scout's
+citations back (the same file, within three lines) or, when none, the risks
+that name a file it cited ("3 facts", "1 risk"); before that, its
+citations. Its summary line counts each fact and risk once across scouts:
+"scouts: 4 facts, 1 risk in <slug>".
+
 ### When an adapter is missing or fails
 
 A background task type that no adapter recognizes is reported as a notice:

@@ -105,6 +105,12 @@ transcript reading it shares with other adapters lives in
 `crew/adapters/lib/claude_agent.py`; a folder with no `adapter.json` is not
 an adapter, so seamux skips it.
 
+`crew/adapters/scout` builds on it for deep-plan's scouts: it sets its own
+`group` (the plan the scouts worked for, so they sit together on the
+session page) and a document `summary`, and it loads after explore, so its
+run replaces the Explore adapter's for a scout of type Explore. Order by
+folder name is how one bundled adapter wins over another.
+
 The session page shows a run's `group`, `metrics`, `links` and the
 document's `summary` ([RUNS.md](RUNS.md#fields-for-the-session-page)). You
 need not set `group`: seamux puts a run under the prompt that launched it.
