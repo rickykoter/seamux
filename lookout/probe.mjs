@@ -29,6 +29,12 @@ const ENV = {
   // Authoritative and empty: no TypeSafe client, so no open in the probe can
   // reach the network. The scoring block below points it at a mock.
   LOOKOUT_TYPESAFE_CLIENT: "",
+  // gh is lookout's fake, answering from a map no section has written until
+  // it wants one: nothing in the probe can reach GitHub.
+  LOOKOUT_GH: path.join(HERE, "tools", "fake-gh"),
+  FAKE_GH_MAP: path.join(TMP, "gh-map.json"),
+  FAKE_GH_LOG: path.join(TMP, "gh-log.jsonl"),
+  LOOKOUT_GH_STATE: path.join(TMP, "gh-sync.json"),
 };
 delete ENV.TYPESAFE_BASE_URL;
 delete ENV.LOOKOUT_ENGINE;
@@ -2086,6 +2092,179 @@ if (want("page script")) {
        js.includes("if (!next) { sec.remove(); return; }"));
   }
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
+}
+
+// ---------------------------------------------------------------- github
+if (want("github: link, sync, staleness, post")) {
+  const GHL = await import("./lib/github.mjs");
+  const SV = await import("./lib/serve.mjs");
+  const d = repo("gh-repo");
+  sh(d, "git remote add origin https://github.com/o/r.git");
+  sh(d, "git checkout -q -b feature");
+  const lines = n => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+  write(d, "a.txt", lines(30));
+  sh(d, `${G} add -A && ${G} commit -q -m one`);
+  const one = sh(d, "git rev-parse HEAD").trim();
+  const o = cli(d, "open", "--base", "main", "--no-open", "--json");
+  ok("gh: a review opens on the branch", o.status === 0, o.stderr);
+  const id = JSON.parse(o.stdout).id;
+  const fpath = path.join(TMP, "gh-findings.json");
+  fs.writeFileSync(fpath, JSON.stringify([
+    { file: "a.txt", line: 3, severity: "major", summary: "near the change", failure_scenario: "x" },
+    { file: "a.txt", line: 20, severity: "minor", summary: "far from it", failure_scenario: "y" }]));
+  const fa = cli(d, "findings", "add", id, fpath);
+  ok("gh: findings ingest", fa.status === 0, fa.stderr);
+  ok("gh: a finding records the head it was read on", S.read(id).findings.every(f => f.at === one));
+
+  write(d, "a.txt", lines(30).replace("line 4\n", "line four\n"));
+  sh(d, `${G} commit -q -am two`);
+  const two = sh(d, "git rev-parse HEAD").trim();
+  const view = { number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, title: "t", headRefName: "feature", headRefOid: two };
+  const threads = { data: { repository: { pullRequest: { reviewThreads: { nodes: [
+    { id: "PRRT_1", path: "a.txt", line: 9, originalLine: 9, diffSide: "RIGHT", isOutdated: false, isResolved: false,
+      comments: { nodes: [{ databaseId: 501, author: { login: "alice" }, body: "why?", createdAt: "2026-11-01T00:00:00Z", url: "https://github.com/o/r/pull/7#discussion_r501" }] } },
+    { id: "PRRT_2", path: "a.txt", line: null, originalLine: 2, diffSide: "LEFT", isOutdated: true, isResolved: true, comments: { nodes: [] } }] } } } } };
+  const checks = [{ name: "test", state: "FAILURE", bucket: "fail", link: "https://github.com/o/r/actions/runs/1/job/2", workflow: "ci", startedAt: "2026-11-01T00:00:00Z", completedAt: "2026-11-01T00:05:00Z" },
+                  { name: "lint", state: "SUCCESS", bucket: "pass", link: "", workflow: "ci", startedAt: "", completedAt: "" }];
+  const map = {
+    "pr view feature --json": { stdout: view }, "pr view 7 -R o/r --json": { stdout: view },
+    "api graphql": { stdout: threads }, "pr checks 7 -R o/r": { stdout: JSON.stringify(checks), status: 1 },
+    "api user": { stdout: "probe-user\n" },
+  };
+  const setMap = m => fs.writeFileSync(ENV.FAKE_GH_MAP, JSON.stringify(m));
+  setMap(map);
+  const sy = cli(d, "gh", "sync", id, "--json");
+  const g = S.read(id).github || {};
+  ok("gh: sync links the review to the branch's PR", g.repo === "o/r" && g.pr === 7 && g.head === two, sy.stdout + sy.stderr);
+  ok("gh: threads keep side, outdated and resolved", g.threads.length === 2 && g.threads[0].side === "new" && g.threads[1].side === "old" &&
+     g.threads[1].outdated && g.threads[1].resolved && g.threads[0].comments[0].author === "alice", JSON.stringify(g.threads));
+  ok("gh: checks parse even when gh exits non-zero for a failed one", g.checks.length === 2 && g.checks[0].bucket === "fail" && g.checks[0].link, JSON.stringify(g.checks));
+  ok("gh: the viewer is known, so others' comments can be told apart", g.viewer === "probe-user");
+  ok("gh: one commit past the review", g.behind === 1 && g.reviewed === one, String(g.behind));
+  const [f1, f2] = S.read(id).findings;
+  ok("gh: a finding beside the changed line is stale", !!g.stale[f1.id], JSON.stringify(g.stale));
+  ok("gh: a finding far from it is not", !g.stale[f2.id]);
+
+  const again = cli(d, "gh", "sync", id, "--json");
+  ok("gh: a second sync moments later is skipped", /moments ago/.test(again.stdout), again.stdout);
+  const before = S.read(id).updatedAt;
+  const quiet = JSON.parse(cli(d, "gh", "sync", id, "--force", "--json").stdout);
+  ok("gh: nothing new on GitHub leaves the record unwritten", quiet.changed === false && S.read(id).updatedAt === before, JSON.stringify(quiet));
+
+  setMap({ ...map, "api graphql": { status: 1, stderr: "GraphQL: API rate limit exceeded for user" } });
+  cli(d, "gh", "sync", id, "--force", "--json");
+  ok("gh: a rate limit is recorded and backed off", /rate limit/i.test(S.read(id).github.error || "") &&
+     JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"))[id].backoffUntil > Date.now(), S.read(id).github.error);
+  const st = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st[id].at = 0; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st));
+  ok("gh: while backing off, a sync asks nothing", /backing off/.test(cli(d, "gh", "sync", id, "--json").stdout));
+  ok("gh: the threads seen before the limit are kept", S.read(id).github.threads.length === 2);
+
+  // Posting: one review pinned to the commit read, and each comment's id kept.
+  const body = GHL.commentText(f1);
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { stdout: { id: 55, html_url: "https://github.com/o/r/pull/7#pullrequestreview-55" } },
+    "api repos/o/r/pulls/7/reviews/55/comments": { stdout: JSON.stringify([{ id: 901, path: "a.txt", line: 3, body, html_url: "https://github.com/o/r/pull/7#discussion_r901" }]) } });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  const po = cli(d, "gh", "post", id, f1.id, "--intro", "Lookout review (high depth): 1 finding(s).");
+  ok("gh: post succeeds", po.status === 0, po.stderr);
+  const sent = fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).find(x => x.argv.includes("POST"));
+  const payload = sent ? JSON.parse(sent.input) : {};
+  ok("gh: the review is pinned to the commit the finding was read on", payload.commit_id === one && payload.comments[0].path === "a.txt" &&
+     payload.comments[0].line === 3 && payload.comments[0].side === "RIGHT" && payload.body.startsWith("Lookout review (high"), JSON.stringify(payload));
+  const pf = S.read(id).findings[0].github || {};
+  ok("gh: the posted finding keeps its comment id and links", pf.commentId === 901 && /discussion_r901/.test(pf.url) && /review-55/.test(pf.reviewUrl), JSON.stringify(pf));
+  const twice = cli(d, "gh", "post", id, f1.id);
+  ok("gh: posting it again is refused without --again", twice.status !== 0 && /already posted/.test(twice.stderr), twice.stderr);
+  setMap({ ...map, "api -X POST repos/o/r/pulls/7/reviews": { status: 1, stderr: "gh: Unprocessable Entity (HTTP 422)" } });
+  const p422 = cli(d, "gh", "post", id, f2.id, f2.id);
+  ok("gh: a refused line ends in an error, not a silent success", p422.status !== 0, p422.stdout);
+  const sends = fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).filter(x => x.argv.includes("POST"));
+  const last = JSON.parse(sends[sends.length - 1].input);
+  ok("gh: a 422 is retried with every item folded into the body", !last.comments && last.body.includes("`a.txt:20`"), JSON.stringify(last));
+  ok("gh: an id named twice is posted once", last.body.split("`a.txt:20`").length === 2, last.body);
+  ok("gh: the threads query sends the owner and name as strings", fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").includes('"-f","owner=o","-f","name=r"') ||
+     JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"))._viewer.login === "probe-user");
+  ok("gh: the login is cached under a key no review id can take", JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"))._viewer.login === "probe-user");
+  ok("gh: a --pr naming the saved PR in another case is not a switch",
+     !GHL.switching({ prRef: "O/R#7", github: { repo: "o/r", pr: 7 } }) && GHL.switching({ prRef: "o/r#8", github: { repo: "o/r", pr: 7 } }));
+  ok("gh: a 403 alone is a permission error, not a rate limit",
+     !GHL.limited({ status: 1, err: "HTTP 403: Resource not accessible by integration" }) && GHL.limited({ status: 1, err: "API rate limit exceeded" }));
+
+  // Threads past the first page are followed.
+  const page = (nodes, next) => ({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: !!next, endCursor: next || null }, nodes } } } } });
+  const th = (i, more) => ({ id: "PRRT_p" + i, path: "a.txt", line: 9, originalLine: 9, diffSide: "RIGHT", isOutdated: false, isResolved: false,
+    comments: { totalCount: more ? 101 : 1, nodes: [{ databaseId: 600 + i, author: { login: "bob" }, body: "b", createdAt: "", url: "" }] } });
+  setMap({ ...map, "api graphql -f owner=o -f name=r -F n=7 -f": { stdout: JSON.stringify(page([th(1, true)], "C1")) },
+    "api graphql -f owner=o -f name=r -F n=7 -f after=C1": { stdout: JSON.stringify(page([th(2)], null)) } });
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  cli(d, "gh", "sync", id, "--force");
+  const pg = S.read(id).github.threads;
+  ok("gh: a second page of threads is read", pg.length === 2 && pg[1].id === "PRRT_p2", JSON.stringify(pg.map(t => t.id)));
+  ok("gh: comments past a thread's first hundred are counted", pg[0].more === 100);
+  ok("gh: the names went as strings (-f), the number as a number (-F)", /"-f","owner=o","-f","name=r","-F","n=7"/.test(fs.readFileSync(ENV.FAKE_GH_LOG, "utf8")));
+
+  // A --pr given on a re-open wins over the PR a sync saved.
+  setMap({ ...map, "pr view 9": { stdout: { ...view, number: 9, url: "https://github.com/o/r/pull/9" } },
+    "pr checks 9 -R o/r": { stdout: "[]" } });
+  S.update(id, cur => { cur.prRef = "9"; return cur; });
+  cli(d, "gh", "sync", id, "--force");
+  ok("gh: a newer --pr is followed, not the saved PR", S.read(id).github.pr === 9, String(S.read(id).github.pr));
+
+  // A merged PR had its last sync: later ones ask nothing unless forced.
+  setMap({ ...map, "pr view 9": { stdout: { ...view, number: 9, state: "MERGED", url: "https://github.com/o/r/pull/9" } },
+    "pr checks 9 -R o/r": { stdout: "[]" } });
+  cli(d, "gh", "sync", id, "--force");
+  const st2 = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st2[id].at = 0; delete st2[id].backoffUntil; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st2));
+  const msync = cli(d, "gh", "sync", id, "--json").stdout;
+  ok("gh: a merged PR is not synced again unless forced", S.read(id).github.state === "MERGED" && /merged/.test(msync),
+     S.read(id).github.state + " " + msync + " " + JSON.stringify(st2[id]));
+
+  // A re-open with another --pr switches even from a merged PR, and a failed
+  // read on the new PR does not carry the old one's threads over.
+  S.update(id, cur => { cur.prRef = "11"; return cur; });
+  setMap({ ...map, "pr view 11": { stdout: { ...view, number: 11, url: "https://github.com/o/r/pull/11" } },
+    "api graphql": { status: 1, stderr: "GraphQL: Something went wrong" }, "pr checks 11 -R o/r": { stdout: "[]" } });
+  const st3 = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st3[id].at = 0; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st3));
+  cli(d, "gh", "sync", id);
+  const g11 = S.read(id).github;
+  ok("gh: a --pr switch is followed by an unforced sync, even from a merged PR", g11.pr === 11, String(g11.pr));
+  ok("gh: a failed read on the new PR keeps none of the old PR's threads", g11.threads.length === 0 && /threads/.test(g11.error || ""), JSON.stringify(g11.threads.map(t => t.id)));
+
+  // Items from before `at` existed keep the head they were read on when a
+  // re-open moves the review to a newer one.
+  S.update(id, cur => { for (const f of cur.findings) delete f.at; return cur; });
+  const reo = cli(d, "open", "--base", "main", "--no-open", "--id", id);
+  ok("gh: a re-open stamps old findings with the head they were read on", reo.status === 0 &&
+     S.read(id).findings.every(f => f.at === one) && S.read(id).source.head === two, reo.stderr);
+
+  // A patch review has no branch to ask about: nothing goes to gh.
+  const pd = path.join(TMP, "gh-p.patch");
+  fs.writeFileSync(pd, sh(d, "git diff main feature"));
+  const op = JSON.parse(cli(TMP, "open", "--patch", pd, "--no-open", "--json").stdout);
+  fs.rmSync(ENV.FAKE_GH_LOG, { force: true });
+  const ps = JSON.parse(cli(TMP, "gh", "sync", op.id, "--json").stdout);
+  ok("gh: a patch review is not linked, and asks gh nothing", ps.linked === false && !fs.existsSync(ENV.FAKE_GH_LOG), JSON.stringify(ps));
+  const bad = cli(d, "open", "--base", "main", "--no-open", "--pr", "not-a-pr");
+  ok("gh: an unreadable --pr is refused", bad.status !== 0 && /--pr/.test(bad.stderr));
+
+  ok("gh: PR refs read in every pasted form", JSON.stringify(["12", "#12", "o/r#12", "https://github.com/o/r/pull/12/files"].map(GHL.parsePrRef)) ===
+     JSON.stringify([{ repo: "", pr: 12 }, { repo: "", pr: 12 }, { repo: "o/r", pr: 12 }, { repo: "o/r", pr: 12 }]));
+  const rg = GHL.changedRanges("@@ -4 +4 @@\n-a\n+b\n@@ -10,0 +11,2 @@\n+c\n");
+  ok("gh: hunks read as old-side ranges, an insertion after its line", JSON.stringify(rg) === "[[4,4],[10,11]]", JSON.stringify(rg));
+  ok("gh: within three lines counts as touched", GHL.touches(rg, 1) && !GHL.touches(rg, 0) && GHL.touches(rg, 14) && !GHL.touches(rg, 15));
+
+  // The page server asks for a sync on a visible poll, at most once a minute.
+  const kicked = [];
+  const k = SV.ghKicker(i => kicked.push(i), 60000);
+  ok("gh: the kicker runs once per review per minute", k("a", 1000) && !k("a", 30000) && k("b", 30000) && k("a", 62000) && kicked.join() === "a,b,a");
+  const asked = [];
+  const srv = SV.makeServer({ version: "t", root: TMP, token: "tok", kick: i => asked.push(i) });
+  await new Promise(r => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const get = q => new Promise(r => http.get({ host: "127.0.0.1", port, path: `/review/${id}.json?t=tok${q}`, headers: { host: `127.0.0.1:${port}` } },
+    res => { res.resume(); res.on("end", () => r(res.statusCode)); }));
+  const c1 = await get("&bg=1"), c2 = await get("");
+  srv.close();
+  ok("gh: a hidden tab's poll asks for no sync; a visible one does", c1 === 200 && c2 === 200 && asked.join() === id, asked.join());
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });
