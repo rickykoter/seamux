@@ -327,6 +327,17 @@
   const ghMessage = c => el("div", { class: "msg by-gh" }, el("div", { class: "who" }, c.author,
       el("span", { class: "at" }, " · " + when(c.at)), ghUrl(c.url) ? el("a", { class: "at", href: ghUrl(c.url), target: "_blank", rel: "noopener" }, " ↗") : null),
     el("div", { class: "text" }, c.body));
+  // Framed by the app, a new-tab link goes nowhere (the app's webview opens
+  // no windows): the page asks its host to open it in the browser, and the
+  // host opens only a github.com link.
+  document.addEventListener("click", e => {
+    if (!hosted) return;
+    const a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
+    const url = a && ghUrl(a.getAttribute("href"));
+    if (!url) return;
+    e.preventDefault();
+    window.parent.postMessage({ lookout: "open", url }, hostOrigin);
+  });
   // GitHub's mark, drawn (no emoji, no font).
   function ghMark() {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");

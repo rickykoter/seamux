@@ -391,11 +391,26 @@ export class ReviewView {
         f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);
       }
       else if (d.lookout === "rereview") this.rereview();
+      // The page's GitHub links: the webview opens no windows, so the app's
+      // open_url hands them to the browser. Only github.com, as the page sends.
+      else if (d.lookout === "open") {
+        const url = (d as { url?: unknown }).url;
+        if (typeof url === "string" && /^https:\/\/github\.com\//.test(url)) void invoke("open_url", { url }).catch((err) => (this.err.textContent = String(err)));
+      }
       else if (d.lookout === "state" && d.gate && typeof d.gate === "object" && d.mode && typeof d.mode === "object") {
         this.pageState = d as unknown as PageState;
         this.flushFocus();
         this.render();
       }
+    });
+
+    // The tab's own new-tab links (GitHub, a posted review) open in the
+    // browser through open_url, which takes web links only.
+    this.root.addEventListener("click", (e) => {
+      const a = (e.target as HTMLElement | null)?.closest?.('a[target="_blank"]') as HTMLAnchorElement | null;
+      if (!a || !/^https?:\/\//.test(a.href)) return;
+      e.preventDefault();
+      void invoke("open_url", { url: a.href }).catch((err) => (this.err.textContent = String(err)));
     });
 
     window.setInterval(() => {
