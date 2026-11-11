@@ -2499,6 +2499,22 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["agents: +N more opens the session of the first row it hides",
     /class="ag more ln" data-a="runs" data-x="sess-1" data-path="\/runs\/sess-1"[^>]*><span class="aw">\+3 more</.test(hs), hs.slice(hs.indexOf('ag more'), hs.indexOf('ag more') + 200)]);
 }
+// ---- the way back to the session page from a transcript or a run page ------
+{
+  const agentHtml = readFileSync(join(HERE, "agent.html"), "utf8"), runJs = readFileSync(join(HERE, "run.js"), "utf8");
+  const runHtml = readFileSync(join(HERE, "run.html"), "utf8");
+  const toRun = new RegExp(agentHtml.match(/backToRun = \/(.+)\/\.test\(back\)/)[1]);
+  const toRunsA = new RegExp(agentHtml.match(/\|\| \/(\^\\\/runs\\\/.+?)\/\.test\(back\)/)[1]);
+  const toRunsR = new RegExp(runJs.match(/if \(!\/(\^\\\/runs\\\/.+?)\/\.test\(back\)\)/)[1]);
+  // What a run page opened from the session page hands its transcript link.
+  const chained = "/run/s-1/wf_1?back=" + encodeURIComponent("/runs/s-1");
+  checks.push(["back links: a transcript goes back to the session page, a run page, or a run page that goes back to the session page",
+    toRunsA.test("/runs/s-1") && toRun.test("/run/s-1/wf_1") && toRun.test(chained) &&
+    !toRun.test("/run/s-1/wf_1?back=https%3A%2F%2Fx") && !toRunsA.test("https://x/runs/s") && !toRunsA.test("/runs/../x/y")]);
+  checks.push(["back links: a run page goes back to the session page and passes it on to a transcript",
+    toRunsR.test("/runs/s-1") && !toRunsR.test("//x/runs/s") && /<a class="back" id="back" hidden><\/a>/.test(runHtml) &&
+    /location\.pathname \+ \(back \? "\?back=" \+ encodeURIComponent\(back\) : ""\)/.test(runJs)]);
+}
 // ---- the session page's model (runs.js, with no page) -----------------------
 {
   const box = createContext({});
