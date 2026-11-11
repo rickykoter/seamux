@@ -4047,7 +4047,7 @@ ${ask.mermaid ? `<pre class="mermaid">${esc(String(ask.mermaid).trim())}</pre>` 
 ${opts}
 <p id="dp-ask-status" class="dim" role="status" aria-live="polite">${ask.answer
   ? `answered: ${esc(String(ask.answer.n))} — ${esc(ask.options[ask.answer.n - 1]?.label || "")}`
-  : "Answer in the prompt as usual. In cmux, a pick here is typed into the terminal for you."}</p>
+  : "Answer in the prompt as usual. In cmux or the seamux app, a pick here is typed into the terminal for you."}</p>
 ${MERMAID_BOOT}
 ${ASK_WHEN_JS}
 </body></html>`;
@@ -5142,7 +5142,9 @@ function incrementDiff(st, inc, { open = false, base = "" } = {}) {
       `\n  or:   deep-plan diff ${st.slug} ${inc.n}`;
     if (!open) { say(`patch: ${p}\n${how}`); return; }
     const title = `${st.slug} · increment ${inc.n} since ${sha.slice(0, 8)}`;
-    const r = spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" });
+    // cmux's diff viewer only in a cmux session: elsewhere it would open in
+    // whatever cmux workspace is in front, or not at all.
+    const r = detectHost().host === "cmux" ? spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" }) : { error: true };
     if (r.error || r.status !== 0) say(`patch: ${p}\n${how}`);
   } catch { /* the patch is a courtesy, never a failure */ }
   finally { for (const f of [tmp, tmp + ".lock"]) fs.rmSync(f, { force: true }); }
@@ -6828,7 +6830,7 @@ switch (cmd) {
     const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", base,
       "--at", st.root, "--view-only", ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
     if (r.ok) { say(r.out); break; }
-    if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
+    if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); ${detectHost().host === "cmux" ? "falling back to cmux diff" : "here is the patch instead"}`);
     incrementDiff(st, inc, { open: true, base }); break;
   }
   case "deliver": {
@@ -6898,7 +6900,7 @@ switch (cmd) {
   setup [--force]                             fetch the pinned mermaid, write the engine
                                               pointer, install the ~/.local/bin shim
   engine                                      print the engine pointer (which copy runs)
-  doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
+  doctor [--json]                             print the host (cmux, seamux, desktop, terminal, remote) and the engine copy
   serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
   install-repo [--root DIR] [--check]        copy the plugin into a repo's .claude/ for cloud sessions
   export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews

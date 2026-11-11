@@ -390,6 +390,12 @@ async function openPage($: EngineInterface, url: string): Promise<void> {
     await update($, note, () => `the Dock shows ${url}`)
     return
   }
+  // Only in a cmux pane: elsewhere `cmux open` would land in whatever cmux
+  // workspace is in front.
+  if (!(await $.env.get('CMUX_WORKSPACE_ID'))) {
+    $.ui.toast(`Plan page: ${url}`, { timeoutMs: 15000 })
+    return
+  }
   try {
     const r = await $.process.run(['cmux', 'open', url], { timeoutMs: 10000 })
     if (r.exitCode === 0) {

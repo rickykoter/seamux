@@ -513,11 +513,14 @@ fi
 
 # ---------------------------------------------------------------- platform
 if [ "$CREW" = 1 ]; then
-  [ "$(uname -s)" = "Darwin" ] || { warn "not macOS — skipping crew (cmux is mac-only); --no-crew silences this"; CREW=0; PLUGINS="${PLUGINS/ crew/}"; }
+  [ "$(uname -s)" = "Darwin" ] || { warn "not macOS — skipping crew (the seamux app is mac-only); --no-crew silences this"; CREW=0; PLUGINS="${PLUGINS/ crew/}"; }
 fi
 if [ "$CREW" = 1 ]; then
   CMUX="$(command -v cmux || "$HERE/crew/bin/crew-cmux-bin" 2>/dev/null || true)"
-  if [ -n "$CMUX" ]; then ok "cmux at $CMUX"; else warn "cmux not found — crew installs, but nothing drives it until cmux runs"; fi
+  # cmux is optional: without it the seamux app runs its own tmux.
+  if [ -n "$CMUX" ]; then ok "cmux at $CMUX"
+  elif [ -x "$LOCALBIN/seamux" ] && command -v tmux >/dev/null; then ok "no cmux: the seamux app runs its own tmux"
+  else warn "neither cmux nor the seamux app with tmux — crew installs, but nothing drives it until one runs (./install.sh --app, and tmux)"; fi
   command -v gh      >/dev/null && ok "gh present (PR chips, checks)" || warn "no gh — PR and check chips stay blank"
   command -v ccusage >/dev/null && ok "ccusage present (usage windows)" || warn "no ccusage — the status line says so (npm i -g ccusage)"
 fi

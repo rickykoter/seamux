@@ -4563,16 +4563,24 @@ if (want("`done` writes the patch, never opens it")) {
   ok("…and says where the patch is instead",
     doneOut.stdout.includes(patch) && /deep-plan diff diff-plan 1/.test(doneOut.stdout));
 
-  // The explicit request is the one thing that should open a split.
+  // The explicit request is the one thing that should open a split, and
+  // only in a cmux session: elsewhere cmux diff lands in whatever cmux
+  // workspace is in front.
+  const ccli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", env: { ...spyEnv, SEAMUX_HOST: "cmux" }, cwd: REPO });
   fs.writeFileSync(LOG, "");
-  const diffOut = scli("diff", "diff-plan", "1");
-  ok("deep-plan diff DOES open cmux diff", diffOut.status === 0 && calls().length === 1 &&
+  const diffOut = ccli("diff", "diff-plan", "1");
+  ok("in a cmux session, deep-plan diff DOES open cmux diff", diffOut.status === 0 && calls().length === 1 &&
     /^diff --title .* since /.test(calls()[0]) && calls()[0].includes(patch));
+  fs.writeFileSync(LOG, "");
+  const elsewhere = scli("diff", "diff-plan", "1");
+  ok("outside cmux, deep-plan diff prints the patch and runs no cmux",
+    elsewhere.status === 0 && calls().length === 0 && elsewhere.stdout.includes(patch));
 
   // A broken or absent cmux must degrade to the path, not fail the command.
   fs.writeFileSync(path.join(BIN, "cmux"), "#!/bin/sh\nexit 3\n");
   fs.chmodSync(path.join(BIN, "cmux"), 0o755);
-  const brokeOut = scli("diff", "diff-plan", "1");
+  const brokeOut = ccli("diff", "diff-plan", "1");
   ok("a failing cmux degrades to printing the patch path",
     brokeOut.status === 0 && brokeOut.stdout.includes(patch));
 
