@@ -404,8 +404,10 @@ fn spawn_detached(argv: &[String]) -> bool {
     }
     let shown = argv.iter().take(3).cloned().collect::<Vec<_>>().join(" ");
     match cmd.spawn() {
-        Ok(_) => {
+        Ok(mut child) => {
             log(&format!("OK   fire {shown}"));
+            // The server lives for days: reap the child so it leaves no zombie.
+            std::thread::spawn(move || child.wait());
             true
         }
         Err(e) => {

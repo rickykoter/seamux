@@ -208,9 +208,24 @@ pub fn tmux_sessions_of(records: &[Value]) -> HashMap<String, Vec<(String, Value
     out
 }
 
+/// Unix seconds of a UTC ISO time's first 19 characters ("2026-10-26T12:21:17Z").
+fn iso_secs(t: &str) -> Option<u64> {
+    let b = t.as_bytes();
+    if b.len() < 19 || !t.is_char_boundary(19) || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let n = |a: usize, z: usize| t[a..z].bytes().all(|c| c.is_ascii_digit()).then(|| t[a..z].parse::<i64>().ok()).flatten();
+    let (y, mo, d, h, mi, s) = (n(0, 4)?, n(5, 7)?, n(8, 10)?, n(11, 13)?, n(14, 16)?, n(17, 19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
+        return None;
+    }
+    u64::try_from(py::days_from_civil(y, mo as u32, d as u32) * 86400 + h * 3600 + mi * 60 + s).ok()
+}
+
 /// The PRs a lookout review follows, as pr_watch picks them (ADR 0084 and
 /// #212's pr_watch.rs): a review record whose github block names an OPEN PR,
-/// touched in the last 14 days (by its file's time). On tmux, pr_watch posts
+/// updated in the last 14 days (its updatedAt, as pr_watch::wanted reads
+/// it). On tmux, pr_watch posts
 /// those PRs' red checks, so crew-sync leaves their CI lines out.
 pub fn reviewed_prs(reviews: &Path, now: std::time::SystemTime) -> HashSet<(String, u64)> {
     const IDLE: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
@@ -221,11 +236,13 @@ pub fn reviewed_prs(reviews: &Path, now: std::time::SystemTime) -> HashSet<(Stri
         if id.ends_with(".rows") || id.ends_with(".seen") || id.ends_with(".incoming") || id.starts_with("wake-") {
             continue;
         }
-        let fresh = e.metadata().and_then(|m| m.modified()).ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age < IDLE);
+        let Some(d) = read_json(&e.path().to_string_lossy()) else { continue };
+        let updated = d.get("updatedAt").and_then(Value::as_str).and_then(iso_secs);
+        let fresh = updated.and_then(|u| now.duration_since(std::time::UNIX_EPOCH + Duration::from_secs(u)).ok()).is_some_and(|age| age < IDLE);
         if !fresh {
             continue;
         }
-        let Some(g) = read_json(&e.path().to_string_lossy()).and_then(|d| d.get("github").cloned()) else { continue };
+        let Some(g) = d.get("github").cloned() else { continue };
         if g.get("state").and_then(Value::as_str).unwrap_or("OPEN") != "OPEN" {
             continue;
         }
@@ -1314,17 +1331,24 @@ mod tests {
         let d = std::env::temp_dir().join(format!("reviews-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let w = |name: &str, v: Value| std::fs::write(d.join(name), v.to_string()).unwrap();
-        w("open.json", json!({"github": {"repo": "a/B", "pr": 7, "state": "OPEN"}}));
-        w("by-url.json", json!({"github": {"url": "https://github.com/a/b/pull/8", "pr": 8}}));
-        w("merged.json", json!({"github": {"repo": "a/b", "pr": 9, "state": "MERGED"}}));
-        w("unlinked.json", json!({"source": {"branch": "x"}}));
-        w("wake-x.json", json!({"github": {"repo": "a/b", "pr": 10}}));
-        let got = reviewed_prs(&d, std::time::SystemTime::now());
+        let w = |name: &str, mut v: Value, at: &str| {
+            v["updatedAt"] = json!(at);
+            std::fs::write(d.join(name), v.to_string()).unwrap()
+        };
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(iso_secs("2026-11-11T12:00:00Z").unwrap());
+        let fresh = "2026-11-10T12:00:00Z";
+        w("open.json", json!({"github": {"repo": "a/B", "pr": 7, "state": "OPEN"}}), fresh);
+        w("by-url.json", json!({"github": {"url": "https://github.com/a/b/pull/8", "pr": 8}}), fresh);
+        w("merged.json", json!({"github": {"repo": "a/b", "pr": 9, "state": "MERGED"}}), fresh);
+        w("unlinked.json", json!({"source": {"branch": "x"}}), fresh);
+        w("wake-x.json", json!({"github": {"repo": "a/b", "pr": 10}}), fresh);
+        // Its file was just written, but pr_watch reads updatedAt: 15 days idle.
+        w("idle.json", json!({"github": {"repo": "a/b", "pr": 11}}), "2026-10-27T12:00:00Z");
+        let got = reviewed_prs(&d, now);
         let mut v: Vec<_> = got.into_iter().collect();
         v.sort();
         assert_eq!(v, vec![("a/b".to_string(), 7), ("a/b".to_string(), 8)]);
-        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(15 * 24 * 3600);
+        let later = now + Duration::from_secs(15 * 24 * 3600);
         assert!(reviewed_prs(&d, later).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }

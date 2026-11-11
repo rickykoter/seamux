@@ -971,9 +971,8 @@ pub fn main(args: &[String]) -> i32 {
             let progress = crate::progress::publish(&h);
             h.settle(true, &[], |p| {
                 p.state = "working".into();
-                if progress.is_some() {
-                    p.progress = progress;
-                }
+                // No task list any more clears the tab's count.
+                p.progress = progress;
             });
             String::new()
         }

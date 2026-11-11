@@ -209,7 +209,26 @@ pub fn write_note(dir: &Path, kind: &str, title: &str, body: &str, ws: &str, pan
     let id = format!("{}-{}-{}", now_ms(), std::process::id(), N.fetch_add(1, Ordering::Relaxed));
     let note = json!({"kind": kind, "title": title, "body": body, "ws": ws, "pane": pane, "at": now_ms()});
     let _ = fs::create_dir_all(dir);
+    prune_notes(dir, now_ms());
     crate::py::write_atomic(&dir.join(format!("note-{id}.json")), note.to_string().as_bytes()).is_ok()
+}
+
+/// Delete note files older than NOTE_MAX_AGE_MS, by their file time. With
+/// the app on cmux nothing takes notes, so a writer keeps the pile bounded.
+fn prune_notes(dir: &Path, now: u64) {
+    let max = std::time::Duration::from_millis(NOTE_MAX_AGE_MS);
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(now);
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("note-") && name.ends_with(".json")) {
+            continue;
+        }
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|a| a > max);
+        if old {
+            let _ = fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Every note file in `dir`, oldest first, each read and deleted once. A
@@ -345,6 +364,22 @@ mod tests {
         assert_eq!((got[0]["kind"].as_str(), got[0]["title"].as_str(), got[0]["ws"].as_str()), (Some("pr"), Some("api"), Some("W")));
         assert!(take_notes(&d, now_ms()).is_empty());
         assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_write_prunes_notes_nobody_took() {
+        let d = std::env::temp_dir().join(format!("notes-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let old = d.join("note-1-old.json");
+        fs::write(&old, "{}").unwrap();
+        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options().write(true).open(&old).unwrap().set_modified(an_hour_ago).unwrap();
+        fs::write(d.join("other.json"), "{}").unwrap();
+        assert!(write_note(&d, "digest", "t", "b", "W", ""));
+        assert!(!old.exists());
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 2);
         let _ = fs::remove_dir_all(&d);
     }
 }
