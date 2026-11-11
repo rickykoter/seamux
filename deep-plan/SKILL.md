@@ -87,7 +87,14 @@ These survive a compaction; everything below them is how.
    there: one scout per question, results read as conclusions. What a
    scout confirms lands in `verifiedFacts` with its evidence; what stays
    unconfirmed stays in `risks` — uncertainty is never silently promoted to
-   fact. A contract's `reach` is written from scouting, not memory.
+   fact. A contract's `reach` is written from scouting, not memory. With
+   the Workflow tool, run them as one `deep-plan:scout` workflow (args
+   `{"questions": [{id, claim, kind: fact|contract|hypothesis, falsify}],
+   "root": "<worktree>"}`; if the name is not found, `scriptPath` is
+   `workflows/scout.js` under the root `deep-plan engine` prints). It
+   returns verifiedFacts, risks, contract reach and hypothesis verdicts in
+   spec shape: place each one, and give each risk its disposition with the
+   human. Render still checks every citation.
 4. **Decide how each increment is proven.** Every increment needs checks;
    render refuses one with none unless it carries a written `waiver` (for
    work nothing executable or observable can prove, such as docs). Run

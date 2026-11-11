@@ -8484,6 +8484,65 @@ if (want("hot-path cost")) {
   console.log(`\n  hot path (state files present, path untracked): ${ms.toFixed(1)} ms/call over 20`);
 }
 
+// deep-plan/workflows/scout.js, run here against stub agents: the prompts by
+// kind, read-only agents, and how each answer lands in spec shape.
+if (want("scout workflow")) {
+  const src = fs.readFileSync(path.join(HERE, "workflows", "scout.js"), "utf8");
+  ok("scout: the script starts with a meta literal and avoids what breaks resume",
+    /^export const meta = \{/.test(src) && !/Date\.now\(|Math\.random\(|new Date\(\)/.test(src));
+  const body = src.replace(/^export const meta =/m, "const meta =");
+  const run = async (args, answer) => {
+    const calls = [], logs = [];
+    const agent = async (prompt, opts = {}) => { calls.push({ prompt, ...opts }); return answer(prompt, opts); };
+    const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)));
+    const fn = new Function("agent", "parallel", "phase", "log", "args", `return (async () => {\n${body}\n})()`);
+    const out = await fn(agent, parallel, () => {}, m => logs.push(m), args);
+    return { out, calls, logs };
+  };
+  const qs = [
+    { id: "f1", kind: "fact", claim: "the sweep reads status" },
+    { id: "f2", kind: "fact", claim: "the worker retries inline" },
+    { id: "f3", kind: "fact", claim: "nobody knows" },
+    { id: "c1", kind: "contract", claim: "outbox table" },
+    { id: "h1", kind: "hypothesis", claim: "the clock is the cause", falsify: "run the test with a frozen clock" },
+    { id: "h2", kind: "hypothesis", claim: "a stale cache", falsify: "clear the cache and rerun" },
+  ];
+  const ans = {
+    "fact f1": { verdict: "confirmed", summary: "it does", evidence: [{ path: "./app/sweep.rb", line: 4, says: "where status" }] },
+    "fact f2": { verdict: "refuted", summary: "it enqueues instead", evidence: [{ path: "app/worker.rb", line: 9, says: "enqueue" }] },
+    "fact f3": null,
+    "contract c1": { verdict: "confirmed", summary: "the worker and the sweep", evidence: [
+      { path: "app/worker.rb", line: 3, says: "reads outbox" }, { path: "app/sweep.rb", line: 2, says: "updates outbox" }] },
+    "hypothesis h1": { verdict: "refuted", summary: "passes ten times with a frozen clock", evidence: [{ path: "spec/a_spec.rb", line: 5, says: "freeze" }] },
+    "hypothesis h2": { verdict: "confirmed", summary: "it seemed so", evidence: [] },
+  };
+  const { out, calls, logs } = await run({ questions: [...qs, { id: "bad", kind: "guess", claim: "x" }], root: "/r" }, (p, o) => ans[o.label]);
+  ok("scout: one read-only Explore agent per question, a malformed one skipped and said",
+    calls.length === 6 && calls.every(c => c.agentType === "Explore") && logs.some(m => /skipped 1 malformed/.test(m)));
+  ok("scout: a fact or a reach is a cheap search; a hypothesis keeps the session's model",
+    calls.filter(c => /^(fact|contract)/.test(c.label)).every(c => c.model === "haiku") && calls.filter(c => /^hypothesis/.test(c.label)).every(c => !c.model));
+  ok("scout: each prompt names the repo, the claim, and for a hypothesis its falsify check",
+    calls.every(c => c.prompt.includes("/r") && c.prompt.includes("do not edit any file")) &&
+    calls.find(c => c.label === "hypothesis h1").prompt.includes("run the test with a frozen clock"));
+  ok("scout: a confirmed fact with a cited line becomes a verifiedFact, its path normalized",
+    out.verifiedFacts.some(f => f.id === "f1" && f.claim === "the sweep reads status" && f.evidence === "app/sweep.rb:4"));
+  ok("scout: a refuted fact and a fact with no answer are risks, never facts",
+    out.risks.some(r => r.id === "f2" && /refuted: it enqueues instead/.test(r.risk) && r.note === "app/worker.rb:9") &&
+    out.risks.some(r => r.id === "f3" && /unconfirmed/.test(r.risk)) && !out.verifiedFacts.some(f => f.id === "f2" || f.id === "f3"));
+  ok("scout: a risk carries no disposition: that is the person's",
+    out.risks.every(r => !("disposition" in r)));
+  ok("scout: a contract's reach comes back with each consumer as a cited fact",
+    out.contracts.length === 1 && out.contracts[0].reach === "the worker and the sweep" &&
+    out.verifiedFacts.filter(f => f.id === "c1").map(f => f.evidence).join() === "app/worker.rb:3,app/sweep.rb:2");
+  ok("scout: a hypothesis its check refuted is refuted, with what the check showed",
+    out.hypotheses.some(h => h.id === "h1" && h.verdict === "refuted" && /frozen clock \(spec\/a_spec\.rb:5\)/.test(h.evidence)));
+  ok("scout: a hypothesis 'confirmed' with nothing cited stays open",
+    out.hypotheses.some(h => h.id === "h2" && h.verdict === "open"));
+  let threw = "";
+  try { await run({ questions: [{ id: "h", kind: "hypothesis", claim: "c" }] }, () => null); } catch (e) { threw = e.message; }
+  ok("scout: a hypothesis without a falsify check is refused", /wants \[\{id, claim, kind/.test(threw), threw);
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\ndeep-plan probe: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

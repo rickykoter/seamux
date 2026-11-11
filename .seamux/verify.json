@@ -14,7 +14,7 @@
     "match": [".claude-plugin/**", "*/.claude-plugin/**", "*/hooks/hooks.json", "*/hooks/*.tsx"], "default": true },
   { "id": "deep-plan-probe", "kind": "test",
     "run": "node deep-plan/probe.mjs", "timeout": 3600,
-    "match": ["deep-plan/*.mjs", "deep-plan/lib/**", "deep-plan/hooks/**", "deep-plan/bin/**",
+    "match": ["deep-plan/*.mjs", "deep-plan/lib/**", "deep-plan/workflows/**", "deep-plan/hooks/**", "deep-plan/bin/**",
               "deep-plan/examples/**", "deep-plan/verify/**", "tools/probe_sections.mjs"], "default": true },
   { "id": "restack-probe", "kind": "test",
     "run": "node restack/probe.mjs",
