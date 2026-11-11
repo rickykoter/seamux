@@ -136,7 +136,10 @@ not validate. The card shows the same notice.
 - **Be quick.** The default timeout is 3 seconds, and the most a manifest
   can ask for is 10. seamux runs an adapter again only when a file under the
   session's folder or the adapter's own folder changes, and at most every 2
-  seconds.
+  seconds. If your adapter reads files outside the session's folder (a
+  tool's own state), list their folders in the manifest's `watch`, or a
+  change there will not reach the page until something in the session
+  changes.
 - **Report what you know.** A missing field is filled with a default; a
   wrong one fails the whole document. When you can only read part of a run,
   say so in the run's `notice`.

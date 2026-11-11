@@ -3,5 +3,5 @@
   "name": "explore",
   "recognizes": ["subagent"],
   "command": ["python3", "adapter.py"],
-  "timeoutMs": 3000
+  "timeoutMs": 10000
 }

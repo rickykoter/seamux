@@ -24,10 +24,18 @@
   // group's runs in launch order, each child right under its parent. Runs no
   // group names go last, under OTHER.
   var OTHER = "Other background work";
+  // A run listed under a parent goes in its top ancestor's group, so it can
+  // sit right under that parent.
+  function home(r, ids) {
+    var seen = {}, at = r;
+    while (at.parent && ids[at.parent] && !seen[at.parent]) { seen[at.id] = 1; at = ids[at.parent]; }
+    return at;
+  }
   function groups(runs) {
-    var by = {}, order = [];
+    var by = {}, order = [], ids = {};
+    (runs || []).forEach(function (r) { ids[r.id] = r; });
     (runs || []).forEach(function (r) {
-      var g = r.group || null, key = g ? String(g.kind || "") + ":" + g.id : "";
+      var g = home(r, ids).group || null, key = g ? String(g.kind || "") + ":" + g.id : "";
       if (!by[key]) {
         by[key] = { id: key, label: g ? g.label || g.id : OTHER, kind: g ? g.kind || "" : "", at: g && g.at > 0 ? g.at : 0, runs: [] };
         order.push(key);

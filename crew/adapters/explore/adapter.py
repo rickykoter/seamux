@@ -25,9 +25,9 @@ LINKS_MAX = 8
 RUNS_MAX = 50
 
 
-def explore_run(aid, meta, transcript, listed):
+def explore_run(aid, meta, transcript, listed, cache):
     """The run for one Explore agent, or None when its transcript is gone."""
-    facts = ca.read(transcript)
+    facts = cache.read(transcript)
     if facts is None:
         return None
     st = ca.status(aid, meta, transcript, listed)
@@ -48,12 +48,14 @@ def main():
     sdir = ctx.get("sessionDir") or ""
     listed = {b.get("id") for b in ctx.get("background", [])}
     runs = []
+    cache = ca.Cache()
     for aid, meta, transcript in ca.background_agents(sdir):
         if meta.get("agentType") != "Explore":
             continue
-        r = explore_run(aid, meta, transcript, listed)
+        r = explore_run(aid, meta, transcript, listed, cache)
         if r:
             runs.append(r)
+    cache.save()
     runs.sort(key=lambda r: r.get("start") or 0, reverse=True)
     json.dump({"schema": ca.SCHEMA, "runs": runs[:RUNS_MAX]}, sys.stdout)
 

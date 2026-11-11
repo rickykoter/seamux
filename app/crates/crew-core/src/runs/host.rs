@@ -69,6 +69,24 @@ pub struct Manifest {
     /// The program and its arguments, run in `dir`.
     pub command: Vec<String>,
     pub timeout_ms: u64,
+    /// Folders outside the session's whose changes it reads (its `watch`:
+    /// `~/…` paths, or `$NAME` for an environment variable's folder, skipped
+    /// when unset). The cache's key covers them too.
+    pub watch: Vec<PathBuf>,
+}
+
+/// A manifest's `watch` entries as folders: `~/x` under the home folder,
+/// `$NAME` the variable's value when set, an absolute path as itself.
+pub fn watch_dirs(entries: &[String]) -> Vec<PathBuf> {
+    entries.iter().filter_map(|e| {
+        if let Some(name) = e.strip_prefix('$') {
+            crate::py::env_or(name).filter(|v| v.starts_with('/')).map(PathBuf::from)
+        } else if let Some(rest) = e.strip_prefix("~/") {
+            Some(crate::py::home().join(rest))
+        } else {
+            e.starts_with('/').then(|| PathBuf::from(e))
+        }
+    }).take(8).collect()
 }
 
 /// Something the person should hear about: background work no adapter reads,
@@ -174,7 +192,8 @@ pub fn manifest_of(dir: &Path) -> Result<Manifest, String> {
         return Err(format!("{MANIFEST}: recognizes must name at least one task type"));
     }
     let timeout_ms = v.get("timeoutMs").and_then(Value::as_u64).unwrap_or(TIMEOUT_DEFAULT_MS).clamp(100, TIMEOUT_MAX_MS);
-    Ok(Manifest { name, dir: dir.to_path_buf(), recognizes, command, timeout_ms })
+    let watch = watch_dirs(&strs("watch"));
+    Ok(Manifest { name, dir: dir.to_path_buf(), recognizes, command, timeout_ms, watch })
 }
 
 /// The command adapters in `dir`, and a notice for each folder whose
@@ -375,7 +394,7 @@ pub fn runs_of(a: &Adapter, ctx: &Context) -> Result<Vec<Run>, String> {
 /// changed.
 pub fn doc_of(a: &Adapter, ctx: &Context) -> Result<Doc, String> {
     let dirs: Vec<PathBuf> = match a {
-        Adapter::Command(m) => vec![ctx.session_dir.clone(), m.dir.clone()],
+        Adapter::Command(m) => [ctx.session_dir.clone(), m.dir.clone()].into_iter().chain(m.watch.iter().cloned()).collect(),
         Adapter::Builtin { watch, .. } => watch.iter().map(|w| ctx.session_dir.join(w)).collect(),
     };
     let key = (a.name().to_string(), ctx.to_json().to_string());

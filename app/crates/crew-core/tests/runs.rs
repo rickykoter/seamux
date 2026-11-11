@@ -393,20 +393,28 @@ fn an_adapters_own_group_is_kept_and_a_replacing_run_keeps_the_prompt() {
 }
 
 /// crew's bundled command adapters (crew/adapters), the named ones only,
-/// after the built-ins.
-fn with_bundled(names: &[&str]) -> Vec<Adapter> {
+/// after the built-ins, each run with its cache folder under `cache` (the
+/// adapters keep what they read of a transcript there).
+fn with_bundled(names: &[&str], cache: &Path) -> Vec<Adapter> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crew/adapters");
     let (all, bad) = host::load(&dir);
     assert!(bad.is_empty(), "{bad:?}");
     let mut adapters = crew_core::runs::builtins();
-    adapters.extend(all.into_iter().filter(|a| names.contains(&a.name())));
+    adapters.extend(all.into_iter().filter(|a| names.contains(&a.name())).map(|a| match a {
+        Adapter::Command(mut m) => {
+            m.command.splice(0..0, ["env".to_string(), format!("XDG_CACHE_HOME={}", cache.display())]);
+            Adapter::Command(m)
+        }
+        other => other,
+    }));
     assert_eq!(adapters.len(), 2 + names.len(), "the lib folder has no manifest and is no adapter");
     adapters
 }
 
 #[test]
 fn the_explore_adapter_counts_what_an_explore_agent_read_and_cited() {
-    let rep = host::report(&ctx("s-explore", vec![]), &with_bundled(&["explore"]), true);
+    let cache = tmp("explore-cache");
+    let rep = host::report(&ctx("s-explore", vec![]), &with_bundled(&["explore"], &cache), true);
     assert!(rep.notices.is_empty(), "{:?}", rep.notices);
     let ex = rep.runs.iter().find(|r| r.id == "a7e0c1d2b3a4f5e6d").unwrap();
     assert_eq!((ex.source.as_str(), ex.kind.as_str(), ex.status.as_str()), ("explore", "explore", "done"), "it takes the built-in's run");
@@ -423,4 +431,5 @@ fn the_explore_adapter_counts_what_an_explore_agent_read_and_cited() {
     ], "most cited first, each at its first cited line");
     let other = rep.runs.iter().find(|r| r.id == "a0b1c2d3e4f5a6b7c").unwrap();
     assert_eq!(other.source, "claude-subagents", "an agent of another type is left to the built-in");
+    assert!(cache.join("seamux/adapters/claude_agent.json").is_file(), "what it read is kept for the next run");
 }

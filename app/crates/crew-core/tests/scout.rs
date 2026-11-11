@@ -32,6 +32,7 @@ fn scouts_go_under_their_plan_with_the_facts_and_risks_they_backed() {
                   {"risk": "Nothing about the card.", "disposition": "accept"}]}).to_string()).unwrap();
     std::env::set_var("DEEP_PLAN_STATE_DIR", &state);
     std::env::set_var("DEEP_PLAN_KEYS_DIR", &keys);
+    std::env::set_var("XDG_CACHE_HOME", root.join("cache"));
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crew/adapters");
     let (all, bad) = host::load(&dir);
@@ -63,10 +64,25 @@ fn scouts_go_under_their_plan_with_the_facts_and_risks_they_backed() {
 
     // Before the spec is rendered, a scout's badge is its citations.
     fs::remove_file(keys.join("demo.spec.json")).unwrap();
-    // (Another cwd is another cache key: the adapter runs again.)
-    let scout = host::doc_of(&adapters[3], &Context { cwd: "/w/again".into(), ..c.clone() }).unwrap();
+    // The same context: the manifest watches the keys folder, so the cached
+    // document goes once the 2 s freshness window has passed.
+    std::thread::sleep(std::time::Duration::from_millis(host::FRESH_MS as u64 + 50));
+    let scout = host::doc_of(&adapters[3], &c).unwrap();
     let a = scout.runs.iter().find(|r| r.id == "a5c0000000000000a").unwrap();
     assert_eq!(a.agents[0].result.as_ref().and_then(|r| r.badge.as_deref()), Some("3 cites"));
     assert!(scout.summary.is_none());
+
+    // A plan this session finished before the scouts started is not theirs:
+    // their own plan is not rendered yet. One still open is (a scout sent
+    // while amending it).
+    fs::remove_file(state.join("demo.json")).unwrap();
+    fs::write(state.join("old.json"), json!({"slug": "old", "root": "/w/repo", "session": "s-scout", "phase": "done",
+        "log": [{"at": 1794211200000u64}]}).to_string()).unwrap();
+    let ungrouped = host::doc_of(&adapters[3], &Context { cwd: "/w/done".into(), ..c.clone() }).unwrap();
+    assert!(ungrouped.runs.iter().all(|r| r.group.is_none()), "{:?}", ungrouped.runs.iter().map(|r| &r.group).collect::<Vec<_>>());
+    fs::write(state.join("old.json"), json!({"slug": "old", "root": "/w/repo", "session": "s-scout", "phase": "implementing",
+        "log": [{"at": 1794211200000u64}]}).to_string()).unwrap();
+    let amending = host::doc_of(&adapters[3], &Context { cwd: "/w/open".into(), ..c.clone() }).unwrap();
+    assert!(amending.runs.iter().all(|r| r.group.as_ref().is_some_and(|g| g.id == "plan:old")));
     let _ = fs::remove_dir_all(&root);
 }

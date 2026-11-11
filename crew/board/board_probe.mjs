@@ -2520,7 +2520,13 @@ if (live && Array.isArray(live.rows)) {
     gs.map((x) => x.label).join("|") === "plan the page|Scouts for x|review the branch|" + M.OTHER, gs.map((x) => x.label).join("|")]);
   checks.push(["session page: a group's runs go in launch order, a child right under its parent",
     gs[0].rows.map((x) => x.run.id + ":" + x.depth).join() === "a2:0,a3:0,c1:1", JSON.stringify(gs[0].rows.map((x) => [x.run.id, x.depth]))]);
+  const cross = M.groups([r("p", 10, { group: g("plan-x", "Scouts for x", 5, "plan") }), r("k", 20, { parent: "p", group: g("p9", "a prompt", 15) })]);
+  checks.push(["session page: a child the host filed under its own prompt sits under its parent, in the parent's group",
+    cross.length === 1 && cross[0].label === "Scouts for x" && cross[0].rows.map((x) => x.run.id + ":" + x.depth).join() === "p:0,k:1",
+    JSON.stringify(cross.map((x) => [x.label, x.rows.map((y) => y.run.id)]))]);
   const loop = M.nest([r("x", 1, { parent: "y" }), r("y", 2, { parent: "x" })]);
+  const loopG = M.groups([r("x", 1, { parent: "y" }), r("y", 2, { parent: "x" })]);
+  checks.push(["session page: a loop of parents still groups every run", loopG.reduce((n, x) => n + x.rows.length, 0) === 2, JSON.stringify(loopG)]);
   checks.push(["session page: a loop of parents still shows every run", loop.length === 2, JSON.stringify(loop)]);
   const need = { id: "w", kind: "workflow", status: "running", agents: [{ id: "q", state: "running", needsYou: true }, { id: "z", state: "done" }] };
   checks.push(["session page: a run is needs you while one of its agents waits, else its status",

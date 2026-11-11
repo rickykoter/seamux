@@ -66,25 +66,31 @@ fn cwd_of(line: &str) -> Option<PathBuf> {
 /// How far from its end a transcript is read for the session's folder now.
 const TAIL: u64 = 256 * 1024;
 
-/// The folder the session works in: the last `cwd` its transcript records
-/// near its end (each line carries the folder at that moment), else the
-/// first one near its start.
-pub fn session_cwd(transcript: &Path) -> Option<PathBuf> {
+/// The folders the session worked in, each once: the first `cwd` its
+/// transcript records near its start, then those near its end (each line
+/// carries the folder at that moment). A session that changed folder can
+/// still open files where it began and where it is now.
+pub fn session_cwds(transcript: &Path) -> Vec<PathBuf> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(transcript).ok()?;
-    let len = f.metadata().ok()?.len();
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut add = |c: PathBuf| if !out.contains(&c) { out.push(c) };
+    if let Ok(f) = std::fs::File::open(transcript) {
+        if let Some(c) = BufReader::new(f).lines().map_while(Result::ok).take(200).find_map(|l| cwd_of(&l)) {
+            add(c);
+        }
+    }
+    let Ok(mut f) = std::fs::File::open(transcript) else { return out };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let from = len.saturating_sub(TAIL);
     let mut tail = Vec::new();
-    f.seek(SeekFrom::Start(from)).ok()?;
-    f.take(TAIL).read_to_end(&mut tail).ok()?;
-    let text = String::from_utf8_lossy(&tail);
-    // The first line of a cut tail is partial: skip it.
-    let lines = text.lines().skip(usize::from(from > 0));
-    if let Some(c) = lines.filter_map(cwd_of).last() {
-        return Some(c);
+    if f.seek(SeekFrom::Start(from)).is_ok() && f.take(TAIL).read_to_end(&mut tail).is_ok() {
+        let text = String::from_utf8_lossy(&tail);
+        // The first line of a cut tail is partial: skip it.
+        for c in text.lines().skip(usize::from(from > 0)).filter_map(cwd_of) {
+            add(c);
+        }
     }
-    let f = std::fs::File::open(transcript).ok()?;
-    BufReader::new(f).lines().map_while(Result::ok).take(200).find_map(|l| cwd_of(&l))
+    out
 }
 
 /// The worktree a folder is in: the nearest folder up holding `.git` (a
@@ -101,42 +107,52 @@ pub fn worktree_of(dir: &Path, home: &Path) -> Option<PathBuf> {
 /// What a link opens, once checked.
 #[derive(Debug, PartialEq)]
 pub enum Target {
-    File(PathBuf, Option<u64>),
+    /// The file, its line, and the worktree it is in.
+    File(PathBuf, Option<u64>, PathBuf),
     Url(String),
 }
 
-/// A link checked against the session's worktree: a file must exist and
-/// resolve, symlinks and `..` followed, inside `root`; a URL must be http(s).
-pub fn resolve(link: &Link, root: Option<&Path>) -> Result<Target, String> {
+/// A link checked against the session's worktrees: a file must exist and
+/// resolve, symlinks and `..` followed, inside one of `roots` (the one it is
+/// in comes back with it); a URL must be http(s).
+pub fn resolve(link: &Link, roots: &[PathBuf]) -> Result<Target, String> {
     if let Some(u) = &link.url {
         return if u.starts_with("https://") || u.starts_with("http://") { Ok(Target::Url(u.clone())) }
             else { Err("only http and https links open".into()) };
     }
     let f = link.file.as_deref().ok_or("the link names nothing to open")?;
-    let root = root.ok_or("this session's worktree is not known")?;
-    let real = std::fs::canonicalize(f).map_err(|_| format!("{f} is not there"))?;
-    if !real.starts_with(root) || !real.is_file() {
-        return Err(format!("{f} is outside this session's worktree"));
+    if roots.is_empty() {
+        return Err("this session's worktree is not known".into());
     }
-    Ok(Target::File(real, link.line))
+    let real = std::fs::canonicalize(f).map_err(|_| format!("{f} is not there"))?;
+    match roots.iter().find(|r| real.starts_with(r)) {
+        Some(root) if real.is_file() => Ok(Target::File(real.clone(), link.line, root.clone())),
+        _ => Err(format!("{f} is outside this session's worktree")),
+    }
 }
 
-/// The session's worktree, from its transcript; read again only when the
+/// The session's worktrees, from its transcript; read again only when the
 /// transcript changed, since the page's feed asks every second.
-fn root_of(session: &str) -> Option<PathBuf> {
+fn roots_of(session: &str) -> Vec<PathBuf> {
     use std::collections::HashMap;
     use std::sync::Mutex;
-    type Seen = (u128, u64, Option<PathBuf>);
+    type Seen = (u128, u64, Vec<PathBuf>);
     static CACHE: Mutex<Option<HashMap<String, Seen>>> = Mutex::new(None);
-    let t = crew_core::runs::session_dir(session)?.with_extension("jsonl");
-    let md = std::fs::metadata(&t).ok()?;
+    let Some(t) = crew_core::runs::session_dir(session).map(|d| d.with_extension("jsonl")) else { return Vec::new() };
+    let Ok(md) = std::fs::metadata(&t) else { return Vec::new() };
     let mtime = md.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0);
     if let Some((m, l, root)) = CACHE.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|c| c.get(session)) {
         if *m == mtime && *l == md.len() {
             return root.clone();
         }
     }
-    let root = session_cwd(&t).and_then(|c| worktree_of(&c, &crew_core::py::home()));
+    let home = crew_core::py::home();
+    let mut root: Vec<PathBuf> = Vec::new();
+    for w in session_cwds(&t).iter().filter_map(|c| worktree_of(c, &home)) {
+        if !root.contains(&w) {
+            root.push(w);
+        }
+    }
     let mut c = CACHE.lock().unwrap_or_else(|p| p.into_inner());
     let map = c.get_or_insert_with(HashMap::new);
     if map.len() > 64 {
@@ -157,12 +173,12 @@ pub fn shown(link: &Link) -> String {
 }
 
 /// The report as the page reads it, each link marked with whether it opens.
-pub fn public_report(rep: &Report, session: &str, root: Option<&Path>) -> Value {
+pub fn public_report(rep: &Report, session: &str, roots: &[PathBuf]) -> Value {
     let runs: Vec<Value> = rep.runs.iter().map(|r| {
         let mut v = public(r, session);
         if let Some(ls) = v.get_mut("links").and_then(Value::as_array_mut) {
             for (l, out) in r.links.iter().zip(ls.iter_mut()) {
-                out["opens"] = json!(resolve(l, root).is_ok());
+                out["opens"] = json!(resolve(l, roots).is_ok());
                 out["shown"] = json!(shown(l));
             }
         }
@@ -187,7 +203,7 @@ fn report_of(session: &str) -> Result<Report, String> {
 
 fn now(session: &str) -> String {
     match report_of(session) {
-        Ok(rep) => public_report(&rep, session, root_of(session).as_deref()).to_string(),
+        Ok(rep) => public_report(&rep, session, &roots_of(session)).to_string(),
         Err(e) => json!({"error": e}).to_string(),
     }
 }
@@ -214,13 +230,11 @@ pub fn open(session: &str, body: &Map<String, Value>) -> (u16, Value) {
     if body.get("shown").and_then(Value::as_str) != Some(shown(link).as_str()) {
         return (409, json!({"ok": false, "detail": "that link changed since the page showed it; try again"}));
     }
-    let root = root_of(session);
-    let (ok, detail) = match resolve(link, root.as_deref()) {
+    let (ok, detail) = match resolve(link, &roots_of(session)) {
         Err(e) => (false, e),
         Ok(Target::Url(u)) => (crate::act::run_ok("open", &[&u], None), format!("opened {u}")),
-        Ok(Target::File(f, line)) => {
+        Ok(Target::File(f, line, root)) => {
             let at = match line { Some(n) => format!("{}:{n}", f.display()), None => f.display().to_string() };
-            let root = root.unwrap_or_default();
             let mut cmd = std::process::Command::new("bash");
             cmd.arg(crew_file("bin/crew-code")).arg(&root).arg("--goto").arg(&at);
             match crate::act::spawn_wait(cmd, Duration::from_secs(20)) {
@@ -245,7 +259,7 @@ pub fn get(req: &mut Request) -> bool {
     match part {
         Part::Events => stream(req, "runs", &|| now(&session)),
         Part::Data => match report_of(&session) {
-            Ok(rep) => req.json(200, &public_report(&rep, &session, root_of(&session).as_deref())),
+            Ok(rep) => req.json(200, &public_report(&rep, &session, &roots_of(&session))),
             Err(e) => req.json(404, &json!({"error": e})),
         },
         Part::Page => {
@@ -297,18 +311,27 @@ mod tests {
         assert_eq!(worktree_of(&wt.join("src/deep"), &wt), None, "the root is the home folder");
         assert_eq!(root, std::fs::canonicalize(&wt).unwrap(), "the nearest folder holding .git, a worktree's file included");
         let s = |p: &Path| p.display().to_string();
-        assert_eq!(resolve(&link(Some(&s(&wt.join("src/a.rs"))), None), Some(&root)),
-                   Ok(Target::File(root.join("src/a.rs"), Some(3))));
+        let roots = vec![root.clone()];
+        assert_eq!(resolve(&link(Some(&s(&wt.join("src/a.rs"))), None), &roots),
+                   Ok(Target::File(root.join("src/a.rs"), Some(3), root.clone())));
         for bad in [s(&base.join("secret")), s(&wt.join("src/../../secret")), s(&wt.join("src/out")), s(&wt.join("src")), s(&wt.join("nope.rs"))] {
-            assert!(resolve(&link(Some(&bad), None), Some(&root)).is_err(), "{bad}");
+            assert!(resolve(&link(Some(&bad), None), &roots).is_err(), "{bad}");
         }
-        assert!(resolve(&link(Some(&s(&wt.join("src/a.rs"))), None), None).is_err(), "no worktree known, no file opens");
-        assert_eq!(resolve(&link(None, Some("https://example.test/r")), None), Ok(Target::Url("https://example.test/r".into())));
-        assert!(resolve(&link(None, Some("file:///etc/hosts")), None).is_err());
+        assert!(resolve(&link(Some(&s(&wt.join("src/a.rs"))), None), &[]).is_err(), "no worktree known, no file opens");
+        assert_eq!(resolve(&link(None, Some("https://example.test/r")), &[]), Ok(Target::Url("https://example.test/r".into())));
+        assert!(resolve(&link(None, Some("file:///etc/hosts")), &[]).is_err());
+        // A session that moved on to a second worktree opens files in both.
+        let wt2 = base.join("wt2");
+        std::fs::create_dir_all(&wt2).unwrap();
+        std::fs::write(wt2.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        std::fs::write(wt2.join("b.rs"), "x").unwrap();
+        let both = vec![root.clone(), std::fs::canonicalize(&wt2).unwrap()];
+        assert!(matches!(resolve(&link(Some(&s(&wt2.join("b.rs"))), None), &both), Ok(Target::File(_, _, r)) if r == both[1]));
+        assert!(resolve(&link(Some(&s(&wt2.join("b.rs"))), None), &roots).is_err());
         // The transcript's first cwd is the session's folder.
         let t = base.join("s.jsonl");
         std::fs::write(&t, format!("{{\"type\":\"x\"}}\n{{\"cwd\":\"{}\"}}\n{{\"cwd\":\"{}\"}}\n", s(&base), s(&wt))).unwrap();
-        assert_eq!(session_cwd(&t), Some(wt.clone()), "the folder it is in now, the last one recorded");
+        assert_eq!(session_cwds(&t), vec![base.clone(), wt.clone()], "where it began and where it is now, each once");
         assert_eq!(shown(&link(Some("/w/a.rs"), None)), "/w/a.rs:3");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -332,7 +355,7 @@ mod tests {
             notices: vec![crew_core::runs::Notice { kind: "missing".into(), adapter: None, task_type: Some("teammate".into()), count: 1, why: "no adapter".into() }],
             summaries: vec![("lookout".into(), doc.summary.unwrap())],
         };
-        let v = public_report(&rep, "s-1", None);
+        let v = public_report(&rep, "s-1", &[]);
         assert_eq!((v["runs"][0]["group"]["label"].as_str(), v["runs"][0]["metrics"][0]["value"].as_str()), (Some("review the branch"), Some("3")));
         assert_eq!(v["runs"][0]["agents"][0]["transcript"].as_bool(), Some(true));
         assert_eq!(v["summaries"][0]["text"].as_str(), Some("lookout: clean"));

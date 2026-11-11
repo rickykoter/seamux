@@ -47,7 +47,7 @@ def load(path):
 
 
 def owned_plans(session):
-    """[(slug, root, rendered at)] for the plans this session owns."""
+    """[(slug, root, rendered at, phase)] for the plans this session owns."""
     sdir = data_dir("DEEP_PLAN_STATE_DIR", "state")
     out = []
     try:
@@ -64,17 +64,20 @@ def owned_plans(session):
         if session not in (st.get("session"), owner.get("session")):
             continue
         log = [e.get("at") for e in st.get("log") or [] if isinstance(e, dict) and isinstance(e.get("at"), (int, float)) and e.get("at") > 0]
-        out.append((st.get("slug") or n[:-5], st.get("root") or "", int(min(log)) if log else 0))
+        out.append((st.get("slug") or n[:-5], st.get("root") or "", int(min(log)) if log else 0, st.get("phase") or ""))
     return out
 
 
 def plan_for(plans, start):
     """The plan a scout that started at `start` worked for: the first one
-    rendered after it (scouts run before the spec), else the last before."""
+    rendered after it (scouts run before the spec), else the last one before
+    it that is still open (a scout sent while amending it). A finished plan
+    is not the one a later scout is for: that scout's plan is not rendered
+    yet, so it has no group."""
     after = [p for p in plans if p[2] >= (start or 0) and p[2] - (start or 0) <= AFTER_MS]
     if after:
         return min(after, key=lambda p: p[2])
-    before = [p for p in plans if p[2] < (start or 0)]
+    before = [p for p in plans if p[2] < (start or 0) and p[3] not in ("done", "closed")]
     return max(before, key=lambda p: p[2]) if before else None
 
 
@@ -119,10 +122,11 @@ def main():
     specs = {}
     totals = {}
     runs = []
+    cache = ca.Cache()
     for aid, meta, transcript in ca.background_agents(sdir):
         if not SCOUT.search(str(meta.get("description") or "")):
             continue
-        facts = ca.read(transcript)
+        facts = cache.read(transcript)
         if facts is None:
             continue
         st = ca.status(aid, meta, transcript, listed)
@@ -133,7 +137,7 @@ def main():
         metrics = []
         badge = None
         if plan:
-            slug, root, at = plan
+            slug, root, at = plan[:3]
             r["group"] = {"id": "plan:" + slug, "label": "Scouts for " + slug, "kind": "plan", "at": at or None}
             if slug not in specs:
                 specs[slug] = spec_of(slug)
@@ -157,6 +161,7 @@ def main():
             r["agents"][0]["result"]["badge"] = badge
         r["links"] = [{"label": ca.short(p), "file": p, "line": line} for p, line, _ in files[:LINKS_MAX]]
         runs.append(r)
+    cache.save()
     runs.sort(key=lambda r: r.get("start") or 0, reverse=True)
     doc = {"schema": ca.SCHEMA, "runs": runs[:50]}
     if totals:

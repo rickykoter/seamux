@@ -15,30 +15,24 @@ It reads Claude Code's files (<session>/subagents/agent-<id>.{jsonl,meta.json})
 and lookout's review store (~/.claude/plans/reviews/<id>.json, or
 $SEAMUX_LOOKOUT_REVIEWS). It writes nothing.
 """
-import datetime
-import glob
 import json
 import os
 import re
 import sys
 import time
 
-SCHEMA = "seamux.run/1"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+import claude_agent as ca  # noqa: E402
+
+SCHEMA = ca.SCHEMA
 SEVERITIES = ["blocker", "major", "minor", "nit"]
 REVIEW_ID = re.compile(r"lookout findings add ([A-Za-z0-9][A-Za-z0-9._-]*)")
-STALE_MS = 10 * 60 * 1000
 # A transcript untouched this long is left to the built-in adapter.
 OLD_S = 24 * 3600
 
 
-def ms(ts):
-    """An ISO time (a transcript line's or the store's) in ms, or None."""
-    if not ts:
-        return None
-    try:
-        return int(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
-    except ValueError:
-        return None
+# An ISO time (a transcript line's or the store's) in ms, or None.
+ms = ca.ms
 
 
 def review_named(v):
@@ -180,18 +174,9 @@ def main():
     ctx = json.load(sys.stdin)
     sdir = ctx.get("sessionDir") or ""
     listed = {b.get("id") for b in ctx.get("background", [])}
-    now = int(time.time() * 1000)
     runs = []
     reviews = []
-    for meta_path in glob.glob(os.path.join(glob.escape(sdir), "subagents", "agent-*.meta.json")):
-        aid = os.path.basename(meta_path)[len("agent-"):-len(".meta.json")]
-        try:
-            meta = json.load(open(meta_path))
-        except (OSError, ValueError):
-            continue
-        if meta.get("requestShape") != "background":
-            continue
-        tr = os.path.join(sdir, "subagents", "agent-%s.jsonl" % aid)
+    for aid, meta, tr in ca.background_agents(sdir):
         try:
             if time.time() - os.path.getmtime(tr) > OLD_S:
                 continue
@@ -202,11 +187,7 @@ def main():
             continue  # not a lookout reviewer: the built-in adapter reports it
         review, start, end, model, tokens = got
         done = bool(meta.get("finished"))
-        try:
-            touched = int(os.path.getmtime(tr) * 1000)
-        except OSError:
-            touched = 0
-        status = "done" if done else ("running" if aid in listed or now - touched < STALE_MS else "unknown")
+        status = ca.status(aid, meta, tr, listed)
         badge, detail, counts = result_of(review, start, end, done)
         if review not in reviews:
             reviews.append(review)

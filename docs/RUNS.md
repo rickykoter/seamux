@@ -117,7 +117,7 @@ as before.
 |---|---|
 | `summary` | One line about the whole session, from this adapter, shown under the page's header. Cut to 200 characters. |
 | `group` | The heading a run sits under: `id` (required), `label` (cut to 120 characters), `kind` (`prompt`, `plan` or the adapter's own word) and `at`. A run without one goes under the prompt that launched it (see below). |
-| `parent` | The id of the run that started this one. The page nests it under that run. |
+| `parent` | The id of the run that started this one. The page puts it right under that run, in that run's group, whatever group it has itself. |
 | `metrics` | Up to four named counts, shown as chips: `label` (cut to 24 characters) and `value`, a number or a short string (cut to 12). |
 | `links` | Up to eight things to open, each a `file` (an absolute path, with an optional `line`) or a `url` (http or https only), and an optional `label` (the file's name or the URL by default). The page opens a file in the editor only when it lies inside the session's worktree. |
 
@@ -166,6 +166,10 @@ An adapter is a folder under `~/.config/seamux/adapters/` (or
   it prints one `seamux.run/1` document on stdout.
 - `timeoutMs` defaults to 3,000 and is capped at 10,000. A command still
   running at its timeout is killed.
+- `watch` (optional) lists folders outside the session's whose changes the
+  adapter reads, such as another tool's state: `~/…` for a path under the
+  home folder, or `$NAME` for the folder an environment variable names
+  (skipped when it is unset). At most eight count.
 
 The context on stdin:
 
@@ -186,9 +190,9 @@ A background entry's `waiting` lists the agents of that task stopped on a
 permission prompt (only while one is). An adapter sets `needsYou` on those
 agents.
 
-seamux caches each result until a file under the session's folder or the
-adapter's own folder changes, so an adapter runs only when there is
-something new to read.
+seamux caches each result until a file under the session's folder, the
+adapter's own folder or a folder it watches changes, so an adapter runs only
+when there is something new to read.
 
 crew also ships command adapters of its own, in `crew/adapters` (crew's
 live tree, `~/.config/cmux/crew/adapters`). They load after the built-ins
