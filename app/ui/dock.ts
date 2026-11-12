@@ -117,6 +117,12 @@ export class DockView {
       if (d?.crew === "select" && typeof d.ws === "string" && d.ws) {
         this.select(d.ws, true, typeof d.show === "string" ? d.show : "any", typeof d.pane === "string" ? d.pane : "");
       }
+      // A PR pill: that workspace's Wake, on the pill's group of its PRs.
+      const pg = d as { group?: unknown } | null;
+      if (d?.crew === "prs" && typeof d.ws === "string" && d.ws) {
+        this.select(d.ws, true, "wake");
+        this.sheet.showPrs(typeof pg?.group === "string" ? pg.group : "");
+      }
       // The board's ⋯ menu: mute, snooze, tuck away or bring back, as the
       // views do. A snooze carries its end (ms since the epoch).
       const t = d as { level?: unknown; name?: unknown; until?: unknown } | null;
@@ -272,7 +278,7 @@ export class DockView {
   private tell(): void {
     const peek = !!this.peek && this.peek === this.ws;
     if (this.frame?.contentWindow && this.origin)
-      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents"], peek, sprite: sprite.get() }, this.origin);
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs"], peek, sprite: sprite.get() }, this.origin);
   }
 
   private draw(): void {

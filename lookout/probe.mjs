@@ -2481,6 +2481,14 @@ if (want("github: link, sync, staleness, post")) {
   const st = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8")); st[id].at = 0; fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st));
   ok("gh: while backing off, a sync asks nothing", /backing off/.test(cli(d, "gh", "sync", id, "--json").stdout));
   ok("gh: the threads seen before the limit are kept", S.read(id).github.threads.length === 2);
+  {
+    // The limit is the account's: every other review holds back too, and the
+    // sections below start with it lifted.
+    const sl = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"));
+    ok("gh: a review's rate limit holds every GitHub read back (the shared key)", sl._limit && sl._limit.backoffUntil > Date.now());
+    delete sl._limit;
+    fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(sl));
+  }
 
   // Posting: one review pinned to the commit read, and each comment's id kept.
   const body = GHL.commentText(f1);
@@ -2651,6 +2659,81 @@ if (want("github: link, sync, staleness, post")) {
   const c1 = await get("&bg=1"), c2 = await get("");
   srv.close();
   ok("gh: a hidden tab's poll asks for no sync; a visible one does", c1 === 200 && c2 === 200 && asked.join() === id, asked.join());
+}
+
+if (want("github: many PRs in one read")) {
+  const d = repo("gh-prs");
+  const run = (name, conclusion, status = "COMPLETED") => ({ __typename: "CheckRun", name, status, conclusion, detailsUrl: `https://ci/${name}` });
+  const ctx = (nodes, total) => ({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { totalCount: total ?? nodes.length, nodes } } } }] } });
+  const node = (n, extra) => ({ number: n, url: `https://github.com/o/r/pull/${n}`, title: `pr ${n}`, state: "OPEN", isDraft: false,
+    reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", updatedAt: "2026-11-01T00:00:00Z", headRefName: `b${n}`, author: { login: "me" }, ...extra });
+  const status = (context, state) => ({ __typename: "StatusContext", context, state, targetUrl: `https://ci/${context}` });
+  const data = { data: { repository: {
+    p1: node(1, ctx([run("test", "FAILURE"), run("lint", "SUCCESS"), run("Require approval", "FAILURE"), run("required-tests", "FAILURE"),
+                     run("lint-review-bot", "FAILURE"), status("deploy/preview", "FAILURE")], 108)),
+    p2: node(2, { isDraft: true, ...ctx([run("test", null, "IN_PROGRESS"), run("lint", "SKIPPED")]) }),
+    p3: node(3, { state: "MERGED", ...ctx([run("test", "FAILURE")]) }),
+    p4: null,
+    p5: node(5, { reviewDecision: "APPROVED", ...ctx([run("Require approval", "FAILURE")]) }) } } };
+  const setMap = m => fs.writeFileSync(ENV.FAKE_GH_MAP, JSON.stringify(m));
+  const log = () => { try { return fs.readFileSync(ENV.FAKE_GH_LOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)).filter(l => l.argv[0] === "api"); } catch { return []; } };
+  const prsJson = (...a) => { const r = cli(d, "gh", "prs", "o/r", ...a, "--cwd", d, "--json"); let j = {}; try { j = JSON.parse(r.stdout); } catch { /* shown below */ } return { r, j }; };
+  setMap({ "api graphql -f owner=o -f name=r": { stdout: data, status: 1, stderr: "Could not resolve to a PullRequest with the number of 4." } });
+  const { r: r1, j } = prsJson("1", "2", "3", "4", "5");
+  const by = n => (j.prs || []).find(p => p.n === n) || {};
+  ok("prs: one read answers every PR, a missing one named", r1.status === 0 && (j.prs || []).length === 4 && JSON.stringify(j.missing) === "[4]" && log().length === 1, r1.stdout + r1.stderr);
+  ok("prs: an approval gate is gate; required-tests and lint-review-bot stay red",
+     JSON.stringify(by(1).checks) === JSON.stringify({ fail: 4, run: 0, pass: 1, gate: 1, unseen: 102 }) &&
+     by(1).failing.map(f => f.name).sort().join(",") === "deploy/preview,lint-review-bot,required-tests,test" &&
+     by(1).failing.find(f => f.name === "test").url === "https://ci/test" && by(1).gating.map(g => g.name).join() === "Require approval", JSON.stringify(by(1)));
+  ok("prs: checks past the first 100 are counted as unseen, never as green", by(1).checks.unseen === 102);
+  ok("prs: once approved, a gate that still fails is red", JSON.stringify(by(5).checks) === JSON.stringify({ fail: 1, run: 0, pass: 0, gate: 0, unseen: 0 }), JSON.stringify(by(5)));
+  ok("prs: a draft keeps its CI, running and skipped counted", by(2).state === "draft" &&
+     JSON.stringify(by(2).checks) === JSON.stringify({ fail: 0, run: 1, pass: 1, gate: 0, unseen: 0 }), JSON.stringify(by(2)));
+  ok("prs: a merged PR carries no counts", by(3).state === "merged" && by(3).checks === null && by(3).failing.length === 0, JSON.stringify(by(3)));
+  ok("prs: the numbers go in the query, the repo as variables", (() => {
+    const q = log().at(-1).argv.find(a => a.startsWith("query="));
+    return /p1: pullRequest\(number: 1\)/.test(q) && /p4: pullRequest\(number: 4\)/.test(q) && log().at(-1).argv.includes("owner=o");
+  })());
+  ok("prs: the same PRs asked moments ago are not asked again", /moments ago/.test(prsJson("1", "2", "3", "4", "5").j.skipped || ""));
+  const other = prsJson("2");
+  ok("prs: another worktree's PRs on the same repo are still read", (other.j.prs || []).length === 1 && log().length === 2, other.r.stdout);
+  write(d, ".seamux/prs.json", JSON.stringify({ gates: ["deploy/preview"] }));
+  const named = prsJson("1", "--force").j;
+  const p1 = (named.prs || [])[0] || {};
+  ok("prs: a repo's prs.json gates replace the default pattern", p1.gating && p1.gating.map(g => g.name).join() === "deploy/preview" &&
+     p1.failing.some(f => f.name === "Require approval"), JSON.stringify(p1));
+  fs.rmSync(path.join(d, ".seamux"), { recursive: true });
+  setMap({ "api graphql": { stdout: "", status: 1, stderr: "HTTP 502: Bad Gateway" } });
+  const bad = prsJson("7");
+  setMap({ "api graphql -f owner=o -f name=r": { stdout: data } });
+  const after = prsJson("7");
+  ok("prs: a failed read is an error and starts no floor", /502/.test(bad.j.error || "") && !after.j.skipped && Array.isArray(after.j.prs), bad.r.stdout + after.r.stdout);
+  const many = Array.from({ length: 30 }, (_, i) => String(i + 1));
+  fs.writeFileSync(ENV.FAKE_GH_LOG, "");
+  const big = cli(d, "gh", "prs", "o/r", ...many, "--cwd", d, "--force", "--json");
+  ok("prs: thirty PRs are two reads of at most 25", big.status === 0 && log().length === 2, `${log().length} calls; ${big.stderr}`);
+  // Chunk one answers; chunk two is rate limited: what was read still counts.
+  setMap({ "api graphql -f owner=o -f name=r -f query=query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n  p26:": { stdout: "", status: 1, stderr: "API rate limit exceeded" },
+           "api graphql -f owner=o -f name=r": { stdout: data } });
+  const part = cli(d, "gh", "prs", "o/r", ...many, "--cwd", d, "--force", "--json");
+  const pj = JSON.parse(part.stdout || "{}");
+  ok("prs: a rate limit after the first chunk keeps what was read and names the rest unread",
+     Array.isArray(pj.prs) && pj.prs.length > 0 && JSON.stringify(pj.unread) === JSON.stringify(many.slice(25).map(Number)), part.stdout);
+  const held = prsJson("1", "--force");
+  const st = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"));
+  ok("prs: the back-off holds even forced, in the key review syncs read too", held.j.skipped === "backoff" && st._limit && st._limit.backoffUntil > Date.now(), held.r.stdout);
+  delete st._limit;
+  fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st));
+  setMap({ "api graphql": { stdout: "", status: 1, stderr: "GraphQL: API rate limit exceeded for user" } });
+  ok("prs: a rate limit on the first read backs off", prsJson("9", "--force").j.skipped === "backoff");
+  const st2 = JSON.parse(fs.readFileSync(ENV.LOOKOUT_GH_STATE, "utf8"));
+  delete st2._limit;
+  fs.writeFileSync(ENV.LOOKOUT_GH_STATE, JSON.stringify(st2));
+  const nan = cli(d, "gh", "prs", "o/r", "1x");
+  ok("prs: a word that is not a number is refused", nan.status === 1 && /not a PR number/.test(nan.stderr), nan.stderr);
+  const huge = prsJson("100000000000000000000");
+  ok("prs: a number past the safe range is no PR", JSON.stringify(huge.j.prs) === "[]" && log().every(l => !/1e\+20/.test(l.argv.join(" "))), huge.r.stdout);
 }
 
 // ---------------------------------------------------------------- engine pointer

@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { sheet, type Sheet, type Shown } from "./sheet";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, Viewer } from "./wakeview";
+import { age, badgeOf, bar, byUrl, countsSaid, doneSaid, GROUP_SAID, grouped, type Group, type Pr } from "./prs";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -165,6 +166,24 @@ export class Wake {
   private lastTop = -1;
   /** Muted and tucked worktrees, from the views feed: tucked ones sink in the picker. */
   private tucked: TuckRow[] = [];
+  /** The worktree's pull requests (crew-sync's list, wake_prs), for the
+   *  Pull requests block and the pr rows' badges; when they were read. */
+  private prs: Pr[] = [];
+  /** `prs` by canonical URL, for the pr rows' badges: built once per read. */
+  private prsByUrl = new Map<string, Pr>();
+  private prsAt = 0;
+  private prsWs = "";
+  /** The done group is folded until opened; the rest are open. */
+  private prsOpen = new Set<Group>(["you", "people", "draft", "open"]);
+  /** PRs whose failing checks are listed; a red one that needs you starts open. */
+  private prsShown = new Map<number, boolean>();
+  /** A group the Dock's pill asked for, and for which worktree ("" for the
+   *  next one shown): scrolled to and marked once that worktree's block is drawn. */
+  private prsFocus: Group | null = null;
+  private prsFocusDir = "";
+  /** The directory the sheet last asked for, as it spelled it: `ws` takes
+   *  the store's realpath'd spelling once read, so a focus matches either. */
+  private askedDir = "";
 
   /** Embedded: the copy in the chat sheet, which has the keys while the sheet is open. */
   private embedded: boolean;
@@ -272,6 +291,7 @@ export class Wake {
         this.tucked = tucked;
         if (this.data.workspaces.length) this.draw();
       }
+      if (this.visible() && Date.now() - this.prsAt > 30_000) void this.loadPrs();
       const top = e.payload.wake?.[0]?.id ?? -1;
       if (top !== this.lastTop) {
         this.lastTop = top;
@@ -295,6 +315,7 @@ export class Wake {
    *  and asks that workspace has open, which may sit outside `dir`. */
   showDir(dir: string, also: string[] = []): void {
     this.picked = false;
+    this.askedDir = dir;
     this.also = [...new Set(also.filter((d) => d && d !== dir))];
     if (dir && dir !== this.ws) {
       this.ws = dir;
@@ -313,6 +334,44 @@ export class Wake {
     if (this.picked) return;
     this.also = [...new Set(also.filter((d) => d && d !== dir))];
     void this.load(true);
+  }
+
+  /** The Dock's PR pill: this Wake, on `group` (open, draft, people, done),
+   *  its group opened and scrolled to. "open" is every open group. */
+  showPrs(group: string, dir = ""): void {
+    const g: Group = group === "people" ? "people" : group === "draft" ? "draft" : group === "done" ? "done" : "open";
+    this.prsOpen.add(g);
+    // The open pill scrolls to the first open group: needs you, if any.
+    this.prsFocus = g === "open" ? "you" : g;
+    this.prsOpen.add(this.prsFocus);
+    this.prsFocusDir = dir;
+    if (!dir || this.focusHere(dir)) void this.loadPrs();
+  }
+
+  /** Whether `dir` (as the sheet spells it) is the worktree shown. */
+  private focusHere(dir: string): boolean {
+    const t = (d: string) => d.replace(/\/+$/, "");
+    return !dir || t(dir) === t(this.ws) || (t(dir) === t(this.askedDir) && this.ws === this.prsWs);
+  }
+
+  /** Read the worktree's PR list and redraw when it changed. */
+  private async loadPrs(): Promise<void> {
+    const ws = this.ws;
+    this.prsAt = Date.now();
+    try {
+      const prs = ws ? await invoke<Pr[]>("wake_prs", { dir: ws }) : [];
+      if (ws !== this.ws) return;
+      const same = ws === this.prsWs && JSON.stringify(prs) === JSON.stringify(this.prs);
+      this.prs = Array.isArray(prs) ? prs : [];
+      this.prsByUrl = byUrl(this.prs);
+      this.prsWs = ws;
+      const mine = this.prsFocus && this.focusHere(this.prsFocusDir);
+      // A focus asked for a worktree with no PRs has nothing to scroll to.
+      if (mine && !this.prs.length) this.prsFocus = null;
+      if ((!same || mine) && this.data.workspaces.length) this.draw();
+    } catch {
+      /* no list: the block stays away */
+    }
   }
 
   private toast(text: string, bad = false): void {
@@ -334,6 +393,7 @@ export class Wake {
         return this.load(quiet);
       }
       this.draw();
+      if (this.ws !== this.prsWs || Date.now() - this.prsAt > 30_000) void this.loadPrs();
     } catch (e) {
       if (!quiet) this.toast(`the Wake log could not be read: ${String(e)}`, true);
     }
@@ -558,12 +618,106 @@ export class Wake {
       });
       sec.append(more);
     }
+    // The worktree's pull requests, pinned above the days: not while a
+    // search or a kind other than pr is picked, which ask about rows.
+    const prsBlock = this.ws === this.prsWs && !this.query && (!this.kinds.size || this.kinds.has("pr")) ? this.prsBlock() : null;
+    if (prsBlock) out.unshift(prsBlock);
     this.list.classList.toggle("searching", !!this.query);
     this.list.replaceChildren(...out);
+    if (prsBlock && this.prsFocus && this.focusHere(this.prsFocusDir)) {
+      const at = prsBlock.querySelector<HTMLElement>(`[data-g="${this.prsFocus}"]`) ?? prsBlock;
+      at.scrollIntoView({ block: "start" });
+      at.classList.add("asked");
+      this.prsFocus = null;
+    }
     this.sel = keepId === undefined ? -1 : this.vis.findIndex((r) => r.id === keepId);
     // A pick whose day was just folded is out of sight: Enter must not open it.
     if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded, .w-grp.later")) this.sel = -1;
     if (this.viewer.open) this.viewer.setRows(this.vis.filter(previewable));
+  }
+
+  /** The Pull requests block: groups needs you, needs people, draft, open,
+   *  then done folded to its counts. Null with no PRs. */
+  private prsBlock(): HTMLElement | null {
+    if (!this.prs.length) return null;
+    const sec = el("section", "w-prs");
+    sec.setAttribute("aria-label", "pull requests");
+    const h = el("h2", "w-prs-h");
+    h.append(document.createTextNode("Pull requests "), el("span", "", String(this.prs.length)));
+    sec.append(h);
+    for (const [g, list] of grouped(this.prs)) {
+      if (!list.length) continue;
+      const box = el("div", `w-prs-g ${g}`);
+      box.dataset.g = g;
+      const open = this.prsOpen.has(g);
+      const head = button("", "w-prs-gh");
+      head.setAttribute("aria-expanded", String(open));
+      head.append(el("span", "w-prs-tw", open ? "▾" : "▸"), document.createTextNode(` ${GROUP_SAID[g]} `),
+        el("span", "w-prs-gn", g === "done" ? doneSaid(list) : String(list.length)));
+      head.addEventListener("click", () => {
+        if (this.prsOpen.has(g)) this.prsOpen.delete(g);
+        else this.prsOpen.add(g);
+        this.draw();
+      });
+      box.append(head);
+      if (open) {
+        const ul = el("ul", "w-prs-l");
+        for (const p of list) ul.append(this.prLine(p, g));
+        box.append(ul);
+      }
+      sec.append(box);
+    }
+    return sec;
+  }
+
+  private prLine(p: Pr, g: Group): HTMLElement {
+    const li = el("li", `w-pr ${p.state}`);
+    const link = (text: string, url: string, cls: string): HTMLElement => {
+      const a = el("a", cls, text);
+      a.href = url;
+      a.title = url;
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void invoke("open_url", { url }).catch((err) => this.toast(String(err), true));
+      });
+      return a;
+    };
+    li.append(link(`#${p.n}`, p.url, "w-pr-n"));
+    const b = el("span", "w-pr-bar");
+    const segs = bar(p.checks);
+    b.title = countsSaid(p.checks);
+    for (const s of segs) {
+      const seg = el("span", `seg ${s.kind}`);
+      seg.style.flexGrow = String(s.cells);
+      b.append(seg);
+    }
+    if (!segs.length) b.classList.add("none");
+    li.append(b);
+    const t = el("span", "w-pr-t", p.title || p.url);
+    if (p.state === "draft" && g !== "draft") t.prepend(el("span", "w-pr-tag", "draft "));
+    li.append(t, el("time", "w-pr-age", age(p.updatedAt)));
+    const failing = p.failing ?? [];
+    if (failing.length) {
+      const shown = this.prsShown.get(p.n) ?? g === "you";
+      li.classList.add("has-fails");
+      li.setAttribute("aria-expanded", String(shown));
+      li.title = shown ? "hide the failing checks" : `show the ${failing.length} failing check${failing.length === 1 ? "" : "s"}`;
+      li.addEventListener("click", () => {
+        this.prsShown.set(p.n, !shown);
+        this.draw();
+      });
+      if (shown) {
+        const fl = el("ul", "w-pr-fails");
+        for (const c of failing) {
+          const fi = el("li", "");
+          fi.append(c.url ? link(`✗ ${c.name}`, c.url, "w-pr-f") : el("span", "w-pr-f", `✗ ${c.name}`));
+          fl.append(fi);
+        }
+        li.append(fl);
+      }
+    }
+    return li;
   }
 
   /** Pick `r` in the list, opening its day if it was folded: the pane
@@ -606,6 +760,12 @@ export class Wake {
       badges.append(sha);
     }
     if (gh && r.title) badges.append(el("span", "w-st", `#${gh.n}`));
+    // A PR this worktree made: its state, red when a check failed.
+    const mine = r.kind === "pr" && gh ? this.prsByUrl.get(`https://github.com/${gh.repo}/pull/${gh.n}`) : undefined;
+    if (mine) {
+      const s = badgeOf(mine);
+      badges.append(el("span", `w-st pr-${s.cls}`, s.text));
+    }
     li.append(badges);
     const w = where(r, this.home);
     // The path shows on the picked row (wake.css); the title's tooltip has it always.

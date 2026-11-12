@@ -98,6 +98,15 @@ function setState(key, patch) {
   });
 }
 
+// A rate limit is the account's, not one review's: it holds every read back
+// (review syncs and `gh prs`) under one key no review id can take.
+export const LIMIT = "_limit";
+const limitedNow = (st, now) => { const u = (st[LIMIT] || {}).backoffUntil; return !!u && now < u; };
+function backOff(id, now) {
+  if (id) setState(id, { backoffUntil: now + BACKOFF_MS });
+  setState(LIMIT, { backoffUntil: now + BACKOFF_MS });
+}
+
 // ---------------------------------------------------------------- linking
 
 // A PR as pasted: 123, #123, owner/repo#123, or a github.com /pull/ URL.
@@ -297,7 +306,7 @@ export function sync(id, { force = false, visible = false, now = Date.now() } = 
   if (!S.exists(id)) return { error: "no review " + id };
   const st0 = readState();
   const me = st0[id] || {};
-  if (!force && me.backoffUntil && now < me.backoffUntil) return { skipped: "backing off after a GitHub rate limit" };
+  if (!force && ((me.backoffUntil && now < me.backoffUntil) || limitedNow(st0, now))) return { skipped: "backing off after a GitHub rate limit" };
   if (!force && me.at && now - me.at < MIN_GAP_MS) return { skipped: "synced moments ago" };
   if (!force && me.noPrAt && now - me.noPrAt < NO_PR_GAP_MS) return { skipped: "no pull request, asked recently" };
   const review = S.read(id);
@@ -312,7 +321,7 @@ export function sync(id, { force = false, visible = false, now = Date.now() } = 
 
   const root = (review.source || {}).root;
   const found = findLink(review);
-  if (found.limited) { setState(id, { backoffUntil: now + BACKOFF_MS }); return record(id, review, { error: found.error }); }
+  if (found.limited) { backOff(id, now); return record(id, review, { error: found.error }); }
   if (found.error) return record(id, review, { error: found.error });
   if (found.none) { setState(id, { noPrAt: now }); return { linked: false, why: found.none }; }
   const { repo, pr, view } = found.link;
@@ -333,7 +342,7 @@ export function sync(id, { force = false, visible = false, now = Date.now() } = 
   }
   const cq = gh(["pr", "checks", String(pr), "-R", repo, "--json", "name,state,bucket,link,workflow,startedAt,completedAt"], { cwd: root });
   if (limited(tq) || limited(cq)) {
-    setState(id, { backoffUntil: now + BACKOFF_MS });
+    backOff(id, now);
     return record(id, review, { error: "GitHub is rate limiting; lookout waits ten minutes before asking again" });
   }
   // What the last sync saw stands in for a failed read, but only for the same PR.
@@ -482,4 +491,139 @@ export function post(id, ids, { intro = "", again = false } = {}) {
   }
   save(Object.keys(byItem));
   return { url: urls[0] || "", urls, posted: items.map(x => x.id), folded: foldedIds.size > 0 };
+}
+
+// ---------------------------------------------------------------- many PRs
+
+// `lookout gh prs`: a worktree's pull requests in one GraphQL read per
+// PRS_CHUNK of them (crew-sync asks, for the Dock and the Wake). No review
+// id: the throttle is per repo, and a rate limit here or in a review's sync
+// holds both back (the shared LIMIT key).
+export const PRS_CHUNK = 25;
+// A check whose name says it waits on a person: amber, never red. Bare
+// "review" or "required" is not enough ("required-tests", "lint-review-bot"
+// are CI): approval, code owners, or a review that is required.
+export const GATE_RE = /approv|code[-_ ]?owners?|reviews?[-_ ]?required|required[-_ ]?reviews?|^reviews?$/i;
+// A per-request floor older than this is dropped from the state file.
+const FLOOR_KEEP_MS = 24 * 3600 * 1000;
+const RUN_STATES = new Set(["", "PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"]);
+const PASS_STATES = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+
+// The repo's own gate check names, from <worktree root>/.seamux/prs.json
+// { "gates": ["name", …] }, matched whole and case-blind. A list replaces
+// the default pattern; null means there is none. (The file is the
+// worktree's own: a branch can name its gates, and only colours a check.)
+export function gateNames(cwd) {
+  if (!cwd) return null;
+  const top = (git(cwd, ["rev-parse", "--show-toplevel"]) || "").trim() || cwd;
+  try {
+    const g = JSON.parse(fs.readFileSync(path.join(top, ".seamux", "prs.json"), "utf8")).gates;
+    return Array.isArray(g) ? g.filter(x => typeof x === "string" && x).map(x => x.toLowerCase()) : null;
+  } catch { return null; }
+}
+const isGate = (name, names) => names ? names.includes(String(name).toLowerCase()) : GATE_RE.test(name);
+
+const PRS_GQL_FIELDS = `number url title state isDraft reviewDecision mergeable updatedAt headRefName author { login }
+  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes {
+    __typename
+    ... on CheckRun { name status conclusion detailsUrl }
+    ... on StatusContext { context state targetUrl } } } } } } }`;
+
+// The query for one chunk: each PR under its own alias. Numbers are checked
+// integers, so they are written into the query; the repo goes as variables.
+export function prsQuery(ns) {
+  return `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n` +
+    ns.map(n => `  p${n}: pullRequest(number: ${n}) { ${PRS_GQL_FIELDS} }`).join("\n") + "\n} }";
+}
+
+// One check as { name, url, bucket }: fail, run, pass or gate. `gates`
+// null: the default pattern. `approved`: no check waits on a person once
+// the PR is approved, so a gate that still fails is red.
+export function checkBucket(c, gates, approved = false) {
+  const run = c.__typename === "CheckRun" || "conclusion" in c;
+  const name = (run ? c.name : c.context) || "check";
+  const url = (run ? c.detailsUrl : c.targetUrl) || "";
+  const v = String((run ? (c.status === "COMPLETED" ? c.conclusion : "") : c.state) || "").toUpperCase();
+  const bucket = PASS_STATES.has(v) ? "pass" : !approved && isGate(name, gates) ? "gate" : RUN_STATES.has(v) ? "run" : "fail";
+  return { name, url, bucket };
+}
+
+// One PR node as the Dock and the Wake read it. Merged and closed PRs carry
+// no counts: nothing on them needs doing.
+export function prOf(node, gates) {
+  const state = node.state === "MERGED" ? "merged" : node.state === "CLOSED" ? "closed" : node.isDraft ? "draft" : "open";
+  const out = { n: node.number, url: node.url || "", title: node.title || "", state,
+    review: node.reviewDecision || "", conflict: node.mergeable === "CONFLICTING",
+    author: (node.author || {}).login || "", branch: node.headRefName || "", updatedAt: node.updatedAt || "",
+    checks: null, failing: [], gating: [] };
+  if (state === "merged" || state === "closed") return out;
+  const all = (((((node.commits || {}).nodes || [])[0] || {}).commit || {}).statusCheckRollup || {}).contexts || {};
+  const ctx = all.nodes || [];
+  // Past the first 100 the checks are not read: say how many, so a reader
+  // never takes a partial count for all green.
+  const checks = { fail: 0, run: 0, pass: 0, gate: 0, unseen: Math.max(0, (all.totalCount || 0) - ctx.length) };
+  const approved = node.reviewDecision === "APPROVED";
+  for (const c of ctx) {
+    if (!c) continue;
+    const b = checkBucket(c, gates, approved);
+    checks[b.bucket]++;
+    if (b.bucket === "fail") out.failing.push({ name: b.name, url: b.url });
+    if (b.bucket === "gate") out.gating.push({ name: b.name, url: b.url });
+  }
+  out.checks = checks;
+  return out;
+}
+
+// { repo, at, prs, missing, unread } | { skipped } | { error }. `unread`:
+// numbers a rate limit stopped before reading (earlier chunks still count).
+// `force` skips the floor, never a back-off. The floor is per repo and set
+// of numbers, so another worktree's PRs on the same repo are still read,
+// and it starts only on a read that answered.
+export function prs(repo, numbers, { cwd, force = false, now = Date.now() } = {}) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || "")) return { error: `not a repo: ${repo}` };
+  const ns = [...new Set(numbers.map(Number))].filter(n => Number.isSafeInteger(n) && n > 0).sort((a, b) => a - b);
+  if (!ns.length) return { repo, at: now, prs: [], missing: [], unread: [] };
+  const st = readState();
+  if (limitedNow(st, now)) return { skipped: "backoff" };
+  const key = `prs:${repo}:${ns.join(",")}`;
+  if (!force && st[key] && st[key].at && now - st[key].at < MIN_GAP_MS) return { skipped: "asked moments ago" };
+  const gates = gateNames(cwd);
+  const [owner, name] = repo.split("/");
+  const got = [], missing = [];
+  for (let i = 0; i < ns.length; i += PRS_CHUNK) {
+    const chunk = ns.slice(i, i + PRS_CHUNK);
+    const r = gh(["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `query=${prsQuery(chunk)}`],
+                 { cwd: cwd && fs.existsSync(cwd) ? cwd : undefined });
+    if (limited(r)) {
+      backOff(null, now);
+      if (!i) return { skipped: "backoff" };
+      floor(key, now);
+      return { repo, at: now, prs: got, missing, unread: ns.slice(i) };
+    }
+    // A PR that is not there (deleted, or another repo's number) is an
+    // error beside the data: gh exits non-zero, the rest still stands.
+    const v = r.out ? parse(r.out) : null;
+    const repoNode = v && v.data && v.data.repository;
+    if (!repoNode) {
+      if (!i) return { error: fail(r, "gh api graphql") };
+      floor(key, now);
+      return { repo, at: now, prs: got, missing, unread: ns.slice(i), error: fail(r, "gh api graphql") };
+    }
+    for (const n of chunk) {
+      const node = repoNode["p" + n];
+      if (node) got.push(prOf(node, gates)); else missing.push(n);
+    }
+  }
+  floor(key, now);
+  return { repo, at: now, prs: got, missing, unread: [] };
+}
+
+// Stamp one request's floor, dropping stale ones so the file stays small.
+function floor(key, now) {
+  withStateLock(() => {
+    const st = readState();
+    for (const k of Object.keys(st)) if (k.startsWith("prs:") && !(now - ((st[k] || {}).at || 0) < FLOOR_KEEP_MS)) delete st[k];
+    st[key] = { at: now };
+    writeState(st);
+  });
 }

@@ -1,4 +1,4 @@
-//! MD5 (RFC 1321), for crew-color's registry file names: Python's
+//! MD5 (RFC 1321), for crew-color's registry file names and the PR list files (prs.rs): Python's
 //! `hashlib.md5(root.encode()).hexdigest()`, the same key the code-roots cache
 //! uses. A name, not a security boundary.
 

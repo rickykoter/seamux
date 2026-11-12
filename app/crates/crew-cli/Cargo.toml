@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 cmux.workspace = true
 crew-core.workspace = true
+# made_prs: the PRs a worktree's sessions created, for its PR list.
+crew-store = { path = "../crew-store" }
 serde_json.workspace = true
 libc = "0.2"
 # The two terminal UIs (crew-sweep's raw key, crew-resume's finder), drawn by hand (ADR: no widget framework).

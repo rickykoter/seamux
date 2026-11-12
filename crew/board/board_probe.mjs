@@ -236,6 +236,29 @@ checks.push(["the whole branch survives in the tooltip",
   /title="Open this worktree in VS Code — dev\/PROJ-1039-prelim/.test(f)]);
 checks.push(["the PR number is its own target", /class="pr open" data-a="pr"/.test(f)]);
 checks.push(["uncommitted work is marked", f.includes('class="dirty"')]);
+
+// A worktree with many PRs (rank.rs `prs`): pills in place of the one PR
+// chip, each opening the Wake on its group; red only where a check failed.
+render({ rows: [{
+  id: "m", name: "many", kind: "wilt", badge: "ci failed", said: "Checks are red on #233.", chips: ["prs"], frac: null, meta: "",
+  branch: "dev/x", dirty: false, pr: "#231", pr_state: "open", color: "", ref: "workspace:7", cwd: "/tmp/m", slug: "",
+  prs: { open: { n: 3, nums: [231, 228, 225], fail: 0, worst: "pass" }, draft: { n: 2, nums: [233, 230], fail: 1, worst: "fail" },
+         people: { n: 1, nums: [228], fail: 0, worst: "pass" }, merged: { n: 9, nums: [1, 2, 3, 4, 5, 6, 7, 8, 9], fail: 0, worst: "" },
+         closed: { n: 2, nums: [10, 11], fail: 0, worst: "" }, failing: [233], pills: true },
+  signals: [], feedby: 0, feedgate: "",
+}], quiet: "" });
+const mp = els.rows.innerHTML;
+const mFoot = (mp.match(/<div class="foot( one)?">.*?<\/div>/) || [""])[0];
+checks.push(["many PRs: pills replace the one PR chip", !/class="pr( open)?" data-a="pr"/.test(mFoot) && /class="prp open"/.test(mFoot)]);
+checks.push(["many PRs: open pill counts and shows green when none fail",
+  /<span class="prp open" data-a="prs" data-x="open"[^>]*>open 3 <span class="ok">\u2713<\/span><\/span>/.test(mFoot), mFoot]);
+checks.push(["many PRs: a draft pill is red with its failing count",
+  /<span class="prp draft" data-a="prs" data-x="draft"[^>]*>draft 2 <span class="x">\u27171<\/span><\/span>/.test(mFoot)]);
+checks.push(["many PRs: waiting on people is its own amber pill, never red",
+  /<span class="prp people" data-a="prs" data-x="people" title="1 waiting on a review or an approval: #228">\u29d7 1<\/span>/.test(mFoot)]);
+checks.push(["many PRs: merged is a plain count whose hover names the closed ones",
+  /<span class="prp done" data-a="prs" data-x="done" title="9 merged, 2 closed: #1 [^"]*#11">\u00b7 9 merged<\/span>/.test(mFoot)]);
+checks.push(["many PRs: the pill's styles are in the page", /\.foot>\.prp\.draft\{border-style:dashed\}/.test(readFileSync(join(HERE, "board.html"), "utf8"))]);
 // The mark is a hollow ring drawn by CSS, not a "●" glyph: beside a signal's
 // dot it read as two states, and its amber was "needs you"'s. Round 12: the
 // ring alone was cryptic, so the footer says the word beside it.

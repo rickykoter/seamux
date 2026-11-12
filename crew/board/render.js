@@ -32,6 +32,7 @@ function __boardRender(d) {
     "close plan": "Retire this plan's gate",
     "go": "Authorize this increment",
     "wake": "Open the Wake: what this workspace's sessions left behind",
+    "prs": "Open the Wake on this workspace's pull requests",
     "adapter": "Open a new session in this worktree that writes a seamux adapter for this work",
     "runs": "Open every background agent and run this session started"
   };
@@ -666,12 +667,40 @@ function __boardRender(d) {
   // increments count are words in the UI's sans. Branch, PR and
   // issue are targets; status signals, progress and spend are read, not
   // clicked, so they do not react.
+  // A worktree's many PRs (rank.rs `prs`, crew-core's Summary): a pill per
+  // live state, amber for those waiting on people, then the merged count.
+  // Each opens the Wake on its group; its hover names the PRs.
+  var CI_MARK = { fail: ["x", "\u2717"], run: ["r", "\u25d0"], pass: ["ok", "\u2713"] };
+  function nums(t) { return (t.nums || []).map(function (n) { return "#" + n; }).join(" "); }
+  function prPill(cls, group, label, mark, tip) {
+    return '<span class="prp ' + cls + '" data-a="prs" data-x="' + group + '" title="' + esc(tip) + '">' +
+      esc(label) + (mark ? '<span class="' + mark[0] + '">' + mark[1] + (mark[2] || "") + "</span>" : "") + "</span>";
+  }
+  function prPills(p) {
+    var out = "";
+    [["open", "open"], ["draft", "draft"]].forEach(function (k) {
+      var t = p[k[0]] || {};
+      if (!t.n) return;
+      var m = t.fail ? ["x", "\u2717", String(t.fail)] : CI_MARK[t.worst] || null;
+      out += prPill(k[0], k[0], k[0] + " " + t.n + (m ? " " : ""), m,
+        t.n + " " + k[0] + ": " + nums(t) + (t.fail ? " · " + t.fail + " with failing checks" : "") + " — open them in the Wake");
+    });
+    var pe = p.people || {};
+    if (pe.n) out += prPill("people", "people", "\u29d7 " + pe.n, null, pe.n + " waiting on a review or an approval: " + nums(pe));
+    var mg = p.merged || {}, cl = p.closed || {};
+    if (mg.n || cl.n) {
+      out += prPill("done", "done", "\u00b7 " + (mg.n || 0) + " merged", null,
+        (mg.n || 0) + " merged" + (cl.n ? ", " + cl.n + " closed" : "") + ": " + nums({ nums: (mg.nums || []).concat(cl.nums || []) }));
+    }
+    return out;
+  }
+
   function foot(a, ringed) {
     var out = "";
     // A footer of only the plain facts (no PR, issue or signal) keeps to one
     // line. Uncommitted work is a word now, and at rail width it would clip
     // the branch, so a footer carrying it wraps instead.
-    var one = !a.pr && !a.issue && !a.dirty && !(a.signals || []).some(function (e) { return !e.a; });
+    var one = !a.pr && !a.prs && !a.issue && !a.dirty && !(a.signals || []).some(function (e) { return !e.a; });
     // No colour dot before the branch: beside the facts it read as one more
     // state. The worktree's colour stays on the "you are here" ring.
     if (a.branch) {
@@ -679,7 +708,8 @@ function __boardRender(d) {
         esc(a.branch) + '">' + esc(headClip(a.branch, 30)) + "</span>";
     }
     if (a.dirty) out += DIRTY;
-    if (a.pr) {
+    if (a.prs) out += prPills(a.prs);
+    else if (a.pr) {
       out += '<span class="pr' + (a.pr_state === "open" ? " open" : "") +
         '" data-a="pr" title="Open the pull request in your default browser">' +
         esc(a.pr) + "</span>";

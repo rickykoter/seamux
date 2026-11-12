@@ -185,6 +185,22 @@ pub fn count(ws: &str) -> Result<i64> {
     Ok(db.query_row("SELECT COUNT(*) FROM artifacts WHERE ws = ?", [wskey(ws)], |r| r.get(0))?)
 }
 
+/// The pull requests a session in worktree `ws` made (its `gh pr create`
+/// printed them, schema v3's `made`), as canonical URLs, newest first.
+pub fn made_prs(ws: &str) -> Result<Vec<String>> {
+    let db = connect()?;
+    made_prs_in(&db, ws)
+}
+
+pub(crate) fn made_prs_in(db: &rusqlite::Connection, ws: &str) -> Result<Vec<String>> {
+    let mut st = db.prepare(
+        "SELECT locator FROM artifacts WHERE ws = ? AND kind = 'pr' AND made <> '' \
+         ORDER BY created_at DESC, id DESC",
+    )?;
+    let v = st.query_map([wskey(ws)], |r| text(r, 0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(v)
+}
+
 /// Every workspace in the store, with counts, the most recent first.
 pub fn workspaces() -> Result<Vec<WsCount>> {
     let db = connect()?;

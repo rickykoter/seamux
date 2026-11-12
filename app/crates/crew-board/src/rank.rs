@@ -24,6 +24,7 @@ fn chip_action(c: &str) -> Option<&'static str> {
         "diff" => "diff",
         "pr" => "pr",
         "checks" => "checks",
+        "prs" => "prs",
         "plan" | "take the check" => "plan",
         "reclaim" => "reclaim",
         "close plan" => "close plan",
@@ -521,6 +522,13 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
         let running = truthy(get(w, "running"));
         let branch = get(w, "branch");
         let pr = get(w, "pr");
+        // Every PR this worktree made (crew-sync's list): pills replace the
+        // one PR chip once there are two live or any done.
+        let prs = crew_core::prs::Summary::of(&get(w, "cwd").as_str().map(crew_core::prs::list).unwrap_or_default());
+        // A branch PR the list does not know yet (opened since the last
+        // read) keeps today's chip and CI signal until the list catches up.
+        let branch_pr = py_str(pr).trim_start_matches('#').parse::<u64>().ok();
+        let pills = prs.pills() && branch_pr.is_none_or(|n| prs.has(n));
         let mut kind: Option<&str> = None;
         let mut badge = "";
         let mut said = String::new();
@@ -576,6 +584,12 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             said = if is_none_str(branch) { "Checks are red.".into() }
                    else { format!("Checks are red on `{}`.", py_str(branch)) };
             chips = vec!["checks".into(), "diff".into(), "jump".into()];
+        } else if !prs.failing.is_empty() {
+            // A red draft or open PR that is not the branch's: name it.
+            (kind, badge) = (Some("wilt"), "ci failed");
+            let nums: Vec<String> = prs.failing.iter().map(|n| format!("#{n}")).collect();
+            said = format!("Checks are red on {}.", nums.join(", "));
+            chips = vec!["prs".into(), "jump".into()];
         } else if let Some(f) = failed.filter(|_| bg.is_empty()) {
             // While background agents run, a failed check waits on them: a
             // review with no reviewer yet, or a test an agent is fixing.
@@ -667,6 +681,9 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             r.insert("ref".into(), w.get("ref").cloned().unwrap_or(json!("")));
             r.insert("cwd".into(), get(w, "cwd").clone());
             r.insert("pr_url".into(), w.get("pr_url").cloned().unwrap_or(json!("")));
+            if pills {
+                r.insert("prs".into(), prs.to_json());
+            }
             r.insert("slug".into(), plan.and_then(|p| p.get("slug")).cloned().unwrap_or(json!("")));
             // A failed browser check's last frame, for the card.
             if !thumb.is_empty() {
@@ -725,7 +742,8 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             }
         }
         let jl = ctx.jira_link(w);
-        let sigs = dedupe(&chips, signals(d, !is_none_str(pr), jl.as_deref(), ctx.now), plan.is_some());
+        // With pills the CI signal is theirs: the branch's alone would mislead.
+        let sigs = dedupe(&chips, signals(d, !is_none_str(pr) && !pills, jl.as_deref(), ctx.now), plan.is_some());
         let feedby = token_value(d, "feedby");
         let feedby = if feedby.is_empty() { 0 } else { crate::pyval::parse_int(&feedby).unwrap_or(0) };
         let mut r = Map::new();
@@ -870,6 +888,31 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn many_prs_become_pills_and_a_red_draft_wilts_the_row() {
+        let dir = std::env::temp_dir().join(format!("crew-board-prs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("CREW_PRS_DIR", &dir);
+        let pr = |n: u64, state: &str, f: u64| json!({"n": n, "state": state, "review": "",
+            "checks": if state == "merged" { Value::Null } else { json!({"fail": f, "run": 0, "pass": 2, "gate": 0, "unseen": 0}) }});
+        std::fs::write(crew_core::prs::path("/w/many"), json!({"at": 1, "prs": [pr(5, "open", 0), pr(6, "draft", 1), pr(4, "merged", 0)]}).to_string()).unwrap();
+        std::fs::write(crew_core::prs::path("/w/one"), json!({"at": 1, "prs": [pr(9, "open", 0)]}).to_string()).unwrap();
+        let wss = vec![
+            json!({"id": "many", "title": "many", "cwd": "/w/many", "desc": "ci:pass", "running": false, "branch": "b", "pr": "#5"}),
+            json!({"id": "one", "title": "one", "cwd": "/w/one", "desc": "ci:pass", "running": false, "branch": "c", "pr": "#9"}),
+        ];
+        let (rows, quiet) = rank_with(&wss, &Map::new(), false, Default::default(), Default::default());
+        std::env::remove_var("CREW_PRS_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        let many = rows.iter().find(|r| r["id"] == "many").expect("a red draft makes the row a card");
+        assert_eq!((many["kind"].as_str(), many["badge"].as_str()), (Some("wilt"), Some("ci failed")));
+        assert_eq!(many["said"], json!("Checks are red on #6."));
+        assert_eq!(many["prs"]["draft"]["fail"], json!(1));
+        assert!(many["signals"].as_array().unwrap().iter().all(|s| s["a"] != "checks"), "pills take the CI signal's place");
+        let one = quiet.iter().chain(rows.iter()).find(|r| r["id"] == "one").unwrap();
+        assert!(one.get("prs").is_none(), "one live PR keeps today's chip");
+    }
 
     #[test]
     fn a_working_workspace_whose_hooks_went_quiet_ranks_silent_below_a_question() {

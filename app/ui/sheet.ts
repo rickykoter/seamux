@@ -1187,6 +1187,14 @@ export class Sheet {
     return [...new Set(this.pages.filter((p) => p.ws === ws && p.root).map((p) => p.root))].sort();
   }
 
+  /** The Dock's PR pill: the Wake (already shown for the workspace) on
+   *  that group of its pull requests. */
+  showPrs(group: string): void {
+    // For this workspace's directory: a Wake still on the last workspace
+    // keeps the focus until it moves here.
+    this.wakeView().showPrs(group, this.dir());
+  }
+
   private wakeView(): Wake {
     if (!this.wake) {
       const root = document.createElement("div");

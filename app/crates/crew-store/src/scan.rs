@@ -6,7 +6,7 @@
 //! shape costs that one row, never the run.
 
 use crate::classify::{
-    classify, commit_re, changed_re, gh_create_title_re, gh_link_re, git_commit_re, github_re, gs, oneline_re,
+    classify, commit_re, changed_re, gh_create_title_re, gh_link_re, gh_pr_create_re, gh_pr_reader_re, git_commit_re, github_re, gs, oneline_re,
     prompt_of, splitext_ext, tmp_redirect_re, truthy, IMAGE_EXT,
 };
 use crate::paths::{basename, norm, wskey, Paths};
@@ -407,7 +407,7 @@ impl Scan {
             // The pull requests and issues Claude names in what it says.
             if c.is_object() && c.get("type").and_then(Value::as_str) == Some("text") {
                 if let Some(t) = c.get("text").and_then(Value::as_str) {
-                    self.gh_links(ctx, d, t, "");
+                    self.gh_links(ctx, d, t, "", false);
                 }
                 continue;
             }
@@ -446,16 +446,25 @@ impl Scan {
     /// A row for each GitHub pull request or issue linked in `text`, by its
     /// canonical URL (one row a link, however often it is named). `title` is
     /// given only where the link was made (`gh pr create --title`): a mention
-    /// leaves the title alone, so it never replaces the real one.
-    fn gh_links(&mut self, ctx: &mut Ctx, d: &Value, text: &str, title: &str) {
+    /// leaves the title alone, so it never replaces the real one. `made`:
+    /// the text is a `gh pr create`'s output, so its first pull request is
+    /// the one it made (a chained command may print others after it).
+    fn gh_links(&mut self, ctx: &mut Ctx, d: &Value, text: &str, title: &str, made: bool) {
         let found: Vec<(String, &str)> = gh_link_re()
             .captures_iter(text)
             .map(|m| (format!("https://github.com/{}/{}/{}/{}", &m[1], &m[2], &m[3], &m[4]), if &m[3] == "pull" { "pr" } else { "issue" }))
             .collect();
         let mut seen = std::collections::HashSet::new();
+        let mut first_pr = made;
         for (url, kind) in found {
             if seen.insert(url.clone()) {
                 self.add(ctx, d, kind, &url, title, "", &url, "");
+                if first_pr && kind == "pr" {
+                    first_pr = false;
+                    if let Some(r) = self.rows.last_mut() {
+                        r.row.insert("made".into(), Value::String("1".into()));
+                    }
+                }
             }
         }
     }
@@ -508,7 +517,9 @@ impl Scan {
             .captures(&cmd)
             .and_then(|m| m.get(1).or(m.get(2)).or(m.get(3)).map(|t| t.as_str().to_string()))
             .unwrap_or_default();
-        self.gh_links(ctx, d, out, &made);
+        // Made here only when the command reads no other PRs: a create that
+        // failed beside a `gh pr list` would otherwise mark someone's PR.
+        self.gh_links(ctx, d, out, &made, gh_pr_create_re().is_match(&cmd) && !gh_pr_reader_re().is_match(&cmd));
         let committed = git_commit_re().is_match(&cmd);
         if !(committed || (out.contains("] ") && changed_re().is_match(out))) {
             return;

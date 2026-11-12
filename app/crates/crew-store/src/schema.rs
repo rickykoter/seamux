@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::time::Duration;
 
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS artifacts(
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS artifacts(
   session_id TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '',
   prompt TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
   kept_at TEXT,
+  made TEXT NOT NULL DEFAULT '',
   UNIQUE(ws, kind, locator));
 CREATE INDEX IF NOT EXISTS artifacts_ws ON artifacts(ws, created_at);
 CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts USING fts5(
@@ -45,10 +46,11 @@ CREATE TABLE IF NOT EXISTS cursors(
 CREATE TABLE IF NOT EXISTS meta(version INTEGER NOT NULL);
 ";
 
-/// The row columns an upsert writes, in the Python's FIELDS order.
-pub const FIELDS: [&str; 14] = [
+/// The row columns an upsert writes, in the Python's FIELDS order, then
+/// `made` (v3): "1" on a pull request a session's `gh pr create` printed.
+pub const FIELDS: [&str; 15] = [
     "ws", "repo", "kind", "title", "locator", "path", "url", "sha",
-    "created_at", "updated_at", "session_id", "branch", "prompt", "source",
+    "created_at", "updated_at", "session_id", "branch", "prompt", "source", "made",
 ];
 
 /// The upsert: it never blanks what an earlier pass learned, a kept row
@@ -56,9 +58,9 @@ pub const FIELDS: [&str; 14] = [
 /// at risk (and keepable) again.
 pub const UPSERT: &str = "
 INSERT INTO artifacts(ws, repo, kind, title, locator, path, url, sha,
-                      created_at, updated_at, session_id, branch, prompt, source)
+                      created_at, updated_at, session_id, branch, prompt, source, made)
 VALUES (:ws, :repo, :kind, :title, :locator, :path, :url, :sha,
-        :created_at, :updated_at, :session_id, :branch, :prompt, :source)
+        :created_at, :updated_at, :session_id, :branch, :prompt, :source, :made)
 ON CONFLICT(ws, kind, locator) DO UPDATE SET
   repo = CASE WHEN excluded.repo <> '' THEN excluded.repo ELSE repo END,
   title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END,
@@ -76,6 +78,7 @@ ON CONFLICT(ws, kind, locator) DO UPDATE SET
   branch = CASE WHEN branch = '' THEN excluded.branch ELSE branch END,
   prompt = CASE WHEN prompt = '' THEN excluded.prompt ELSE prompt END,
   source = CASE WHEN source = '' THEN excluded.source ELSE source END,
+  made = CASE WHEN excluded.made <> '' THEN excluded.made ELSE made END,
   was_path = CASE WHEN kept_at IS NOT NULL AND excluded.path = was_path
                   AND excluded.updated_at > kept_at THEN '' ELSE was_path END,
   kept_at = CASE WHEN kept_at IS NOT NULL AND excluded.path = was_path
@@ -115,6 +118,14 @@ pub(crate) fn connect_at(p: &Paths) -> Result<Connection> {
     Ok(db)
 }
 
+fn has_column(db: &Connection, table: &str, col: &str) -> Result<bool> {
+    let names: Vec<String> = db
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(names.iter().any(|n| n == col))
+}
+
 fn version(db: &Connection) -> i64 {
     db.query_row("SELECT version FROM meta", [], |r| r.get::<_, i64>(0))
         .optional()
@@ -130,6 +141,11 @@ fn version(db: &Connection) -> i64 {
 /// 2  ws became the session's starting directory, resolved. Derived rows are
 ///    dropped with every cursor, so the next index rebuilds them; kept rows
 ///    stay and are re-keyed.
+/// 3  `made` marks the pull requests a session's `gh pr create` printed.
+///    The column is added at the end (Row reads columns by position), and
+///    only the cursors are dropped: the next index re-reads every transcript
+///    still there and the upsert sets `made` on the rows it finds. No row is
+///    deleted, so history whose transcript is gone stays.
 pub fn migrate(db: &Connection) -> Result<()> {
     if version(db) >= VERSION {
         return Ok(());
@@ -141,6 +157,12 @@ pub fn migrate(db: &Connection) -> Result<()> {
             return Ok(());
         }
         db.execute_batch(SCHEMA)?;
+        if (1..3).contains(&have) && !has_column(db, "artifacts", "made")? {
+            db.execute_batch("ALTER TABLE artifacts ADD COLUMN made TEXT NOT NULL DEFAULT ''")?;
+        }
+        if (2..3).contains(&have) {
+            db.execute("DELETE FROM cursors", [])?;
+        }
         if (1..2).contains(&have) {
             db.execute("DELETE FROM artifacts WHERE kept_at IS NULL", [])?;
             db.execute("DELETE FROM cursors", [])?;

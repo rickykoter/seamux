@@ -54,7 +54,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro", "--dimension", "--reviewer"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro", "--dimension", "--reviewer", "--cwd"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -680,6 +680,9 @@ function usage() {
                             post those items as one GitHub review and keep each comment's id.
                             This sends text to GitHub: only when the person asks.
   lookout gh status <id> [--json]   what the last sync saw
+  lookout gh prs <owner/repo> <n>… [--cwd DIR] [--force] [--json]
+                            those PRs' state and checks (fail, running, pass, gate) in one read;
+                            a gate is a check waiting on people (.seamux/prs.json gates)
   lookout render <id>       redraw the page from the store
   lookout sync <id>         re-rank and redraw (crew's intent server runs it after a page edit)
   lookout show <id> [--json]
@@ -777,7 +780,8 @@ function cmdTurns() {
 // A review's pull request on GitHub (lib/github.mjs): link, sync, post, status.
 function cmdGh() {
   const [sub, id, ...more] = positional();
-  if (!["link", "sync", "post", "status"].includes(sub || "")) die("gh link|sync|post|status <review-id> …");
+  if (sub === "prs") return cmdGhPrs(id, more);
+  if (!["link", "sync", "post", "status"].includes(sub || "")) die("gh link|sync|post|status <review-id> …, or gh prs <owner/repo> <n>…");
   if (!id || !S.ID_OK.test(id) || !S.exists(id)) die(`gh ${sub} wants a review id (lookout list)`);
   const json = flag("json");
   const out = v => { if (json) process.stdout.write(JSON.stringify(v, null, 2) + "\n"); };
@@ -813,6 +817,29 @@ function cmdGh() {
     out(r);
     if (!json) say(`posted ${r.posted.join(", ")}${r.folded ? " (in one body: GitHub refused a line)" : ""}: ${r.url || "(no URL returned)"}`);
   } catch (e) { die(e.message); }
+}
+
+// `lookout gh prs <owner/repo> <n>…`: those PRs' state and checks in one
+// read (crew-sync's, for the Dock). --cwd names the worktree whose
+// .seamux/prs.json lists the repo's gate checks.
+function cmdGhPrs(repo, ns) {
+  if (!repo || !ns.length) die("gh prs <owner/repo> <n>… [--cwd DIR] [--force] [--json]");
+  const bad = ns.filter(n => !/^\d+$/.test(n));
+  if (bad.length) die(`gh prs: not a PR number: ${bad.join(", ")}`);
+  const r = GH.prs(repo, ns.map(Number), { cwd: opt("cwd") || process.cwd(), force: flag("force") });
+  if (flag("json")) {
+    process.stdout.write(JSON.stringify(r, null, 2) + "\n");
+    if (r.error) process.exitCode = 1;
+    return;
+  }
+  if (r.error) die(r.error);
+  if (r.skipped) return say(`lookout gh prs ${repo}: skipped (${r.skipped})`);
+  for (const p of r.prs) {
+    const c = p.checks;
+    say(`#${p.n} ${p.state.padEnd(6)} ${c ? `✗${c.fail} ◐${c.run} ✓${c.pass} ⧗${c.gate}${c.unseen ? ` +${c.unseen} unread` : ""}` : "".padEnd(12)}  ${p.title}`);
+  }
+  if (r.missing.length) say(`not found: ${r.missing.map(n => "#" + n).join(" ")}`);
+  if (r.unread.length) say(`not read (${r.error || "rate limited"}): ${r.unread.map(n => "#" + n).join(" ")}`);
 }
 
 function ghSummary(id, changed) {
