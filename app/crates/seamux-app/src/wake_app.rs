@@ -25,6 +25,14 @@ pub async fn wake_data(ws: String, q: String, dirs: Option<Vec<String>>) -> Resu
     blocking(move || wake::wake_data_in(&ws, &dirs.unwrap_or_default(), &q, "")).await
 }
 
+/// The pull requests worktree `dir`'s sessions made, with their state and
+/// checks, as crew-sync last read them (crew_core::prs): the Wake's
+/// Pull requests block. Empty when there is no list yet.
+#[tauri::command]
+pub async fn wake_prs(dir: String) -> Result<Value, String> {
+    blocking(move || Ok(Value::Array(if dir.is_empty() { Vec::new() } else { crew_core::prs::list(&dir) }))).await
+}
+
 /// What opening a row did: a page for the app's sheet, or what cmux did.
 #[derive(Serialize)]
 pub struct Opened {
