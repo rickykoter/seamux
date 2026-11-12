@@ -17,6 +17,7 @@
 
 pub mod apply;
 pub mod facts;
+pub mod prs;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;

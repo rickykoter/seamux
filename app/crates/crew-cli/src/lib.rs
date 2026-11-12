@@ -10,7 +10,7 @@ pub mod digest;
 pub mod feed;
 pub mod frame;
 pub mod listen;
-mod md5;
+pub(crate) use crew_core::md5;
 pub mod overlay;
 pub mod plugin_root;
 pub mod resume;
