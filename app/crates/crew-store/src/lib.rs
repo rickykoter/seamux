@@ -26,7 +26,7 @@ pub mod stores;
 pub use index::{backfill, index};
 pub use keep::{keep, keep_all, kept_dir, KeepResult};
 pub use paths::{is_temp, norm, realpath, wskey, Paths};
-pub use read::{count, fts_query, row, search, search_in, workspaces, Row, WsCount};
+pub use read::{count, fts_query, made_prs, row, search, search_in, workspaces, Row, WsCount};
 pub use schema::{connect, write_rows, FIELDS, VERSION};
 
 /// What `seamux` runs: `seamux crew-artifacts ...`.

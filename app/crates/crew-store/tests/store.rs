@@ -99,7 +99,7 @@ fn written_rows_read_back() {
 }
 
 #[test]
-fn a_write_skips_a_row_without_ws_and_the_store_is_version_2() {
+fn a_write_skips_a_row_without_ws_and_the_store_is_version_3() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let f = Fixture::new("write");
     let db = crew_store::connect().unwrap();
@@ -119,7 +119,7 @@ fn a_write_skips_a_row_without_ws_and_the_store_is_version_2() {
     assert_eq!(hits, vec![("x.md".to_string(), "/w/a".to_string())]);
     assert_eq!(crew_store::search("", None, None, 500).unwrap().len(), 1, "the row with no ws is not written");
     let v: i64 = db.query_row("SELECT version FROM meta", [], |r| r.get(0)).unwrap();
-    assert_eq!(v, 2);
+    assert_eq!(v, 3);
 }
 
 #[test]
@@ -238,5 +238,5 @@ fn migrates_version_1() {
     let db = crew_store::connect().unwrap();
     let n: i64 = db.query_row("SELECT COUNT(*) FROM cursors", [], |r| r.get(0)).unwrap();
     let v: i64 = db.query_row("SELECT version FROM meta", [], |r| r.get(0)).unwrap();
-    assert_eq!((n, v), (0, 2));
+    assert_eq!((n, v), (0, crew_store::VERSION));
 }

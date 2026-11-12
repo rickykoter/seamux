@@ -317,3 +317,81 @@ fn github_links_become_rows() {
     assert_eq!(made["url"], "https://github.com/acme/shop/pull/8");
     assert_eq!(made["path"], "");
 }
+
+#[test]
+fn gh_pr_create_marks_the_pr_it_made() {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let f = fixture("made");
+    let db = s(&f.root.join("rs"));
+    rs_index(&db);
+    let base = json!({"cwd": f.ws, "sessionId": "11111111-2222-3333-4444-555555555555", "gitBranch": "main"});
+    let at = |extra: Value| {
+        let mut b = base.clone();
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    };
+    let bash = |ts: &str, id: &str, cmd: &str| at(json!({"type": "assistant", "timestamp": ts, "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": cmd}}]}}));
+    let out = |ts: &str, id: &str, stdout: &str| at(json!({"type": "user", "timestamp": ts, "toolUseResult": {"stdout": stdout, "stderr": ""},
+        "message": {"content": [{"type": "tool_result", "tool_use_id": id}]}}));
+    let said = |ts: &str, text: &str| at(json!({"type": "assistant", "timestamp": ts, "message": {"content": [{"type": "text", "text": text}]}}));
+    jl(&f.tr, &[
+        // No --title: still made here.
+        bash("2030-02-01T10:00:00.000Z", "m1", "gh pr create --fill"),
+        out("2030-02-01T10:00:01.000Z", "m1", "https://github.com/acme/shop/pull/21\n"),
+        // A chained command: only the first PR it printed is the one it made.
+        bash("2030-02-01T10:01:00.000Z", "m2", "gh pr create -f && gh pr list"),
+        out("2030-02-01T10:01:01.000Z", "m2", "https://github.com/acme/shop/pull/22\nhttps://github.com/acme/shop/pull/5\n"),
+        // A PR only viewed is not made here.
+        bash("2030-02-01T10:02:00.000Z", "m3", "gh pr view 6"),
+        out("2030-02-01T10:02:01.000Z", "m3", "https://github.com/acme/shop/pull/6\n"),
+        // An issue a gh issue create printed is not a PR.
+        bash("2030-02-01T10:03:00.000Z", "m4", "gh issue create --title x"),
+        out("2030-02-01T10:03:01.000Z", "m4", "https://github.com/acme/shop/issues/30\n"),
+    ]);
+    rs_index(&db);
+    // A later mention of a made PR keeps it made.
+    jl(&f.tr, &[said("2030-02-01T11:00:00.000Z", "Back to https://github.com/acme/shop/pull/21 now.")]);
+    rs_index(&db);
+    std::env::set_var("CREW_DURABLE_DIR", &db);
+    let made = crew_store::made_prs(&f.ws).unwrap();
+    std::env::remove_var("CREW_DURABLE_DIR");
+    assert_eq!(made, vec!["https://github.com/acme/shop/pull/22", "https://github.com/acme/shop/pull/21"]);
+}
+
+#[test]
+fn v2_to_v3_adds_made_and_rebuilds_derived_rows() {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let f = fixture("v3");
+    let dir = s(&f.root.join("v2"));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A v2 store: a current one made, then its made column dropped and its
+    // version set back, with a derived row, a kept row and a cursor.
+    std::env::set_var("CREW_DURABLE_DIR", &dir);
+    drop(crew_store::connect().unwrap());
+    std::env::remove_var("CREW_DURABLE_DIR");
+    {
+        let c = rusqlite::Connection::open(format!("{dir}/artifacts.db")).unwrap();
+        c.execute_batch(
+            "ALTER TABLE artifacts DROP COLUMN made;
+             UPDATE meta SET version = 2;
+             INSERT INTO artifacts(ws, kind, locator) VALUES ('/w', 'pr', 'https://github.com/a/b/pull/1');
+             INSERT INTO artifacts(ws, kind, locator, kept_at) VALUES ('/w', 'temp', '/tmp/x', '2020-01-01');
+             INSERT INTO cursors(transcript, offset) VALUES ('/t.jsonl', 10);",
+        )
+        .unwrap();
+    }
+    std::env::set_var("CREW_DURABLE_DIR", &dir);
+    let c = crew_store::connect().unwrap();
+    std::env::remove_var("CREW_DURABLE_DIR");
+    let v: i64 = c.query_row("SELECT version FROM meta", [], |r| r.get(0)).unwrap();
+    assert_eq!(v, crew_store::VERSION);
+    let kinds: Vec<(String, String)> = c
+        .prepare("SELECT kind, made FROM artifacts ORDER BY kind").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        .collect::<Result<_, _>>().unwrap();
+    assert_eq!(kinds, vec![("temp".to_string(), String::new())], "the derived row goes, the kept one stays with made ''");
+    let curs: i64 = c.query_row("SELECT COUNT(*) FROM cursors", [], |r| r.get(0)).unwrap();
+    assert_eq!(curs, 0, "cursors are dropped so the next index backfills made");
+}
