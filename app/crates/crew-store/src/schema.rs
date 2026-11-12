@@ -143,8 +143,9 @@ fn version(db: &Connection) -> i64 {
 ///    stay and are re-keyed.
 /// 3  `made` marks the pull requests a session's `gh pr create` printed.
 ///    The column is added at the end (Row reads columns by position), and
-///    derived rows and cursors are dropped again so the next index backfills
-///    it from every transcript. Kept rows stay.
+///    only the cursors are dropped: the next index re-reads every transcript
+///    still there and the upsert sets `made` on the rows it finds. No row is
+///    deleted, so history whose transcript is gone stays.
 pub fn migrate(db: &Connection) -> Result<()> {
     if version(db) >= VERSION {
         return Ok(());
@@ -160,7 +161,6 @@ pub fn migrate(db: &Connection) -> Result<()> {
             db.execute_batch("ALTER TABLE artifacts ADD COLUMN made TEXT NOT NULL DEFAULT ''")?;
         }
         if (2..3).contains(&have) {
-            db.execute("DELETE FROM artifacts WHERE kept_at IS NULL", [])?;
             db.execute("DELETE FROM cursors", [])?;
         }
         if (1..2).contains(&have) {

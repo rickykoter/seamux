@@ -525,7 +525,10 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
         // Every PR this worktree made (crew-sync's list): pills replace the
         // one PR chip once there are two live or any done.
         let prs = crew_core::prs::Summary::of(&get(w, "cwd").as_str().map(crew_core::prs::list).unwrap_or_default());
-        let pills = prs.pills();
+        // A branch PR the list does not know yet (opened since the last
+        // read) keeps today's chip and CI signal until the list catches up.
+        let branch_pr = py_str(pr).trim_start_matches('#').parse::<u64>().ok();
+        let pills = prs.pills() && branch_pr.is_none_or(|n| prs.has(n));
         let mut kind: Option<&str> = None;
         let mut badge = "";
         let mut said = String::new();

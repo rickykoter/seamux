@@ -860,10 +860,6 @@ pub fn sandbox_phase(p: &Paths, name: &str) -> String {
 pub fn signals(p: &Paths, cwd: &str, is_repo: bool, ttl: i64) -> (Vec<String>, Map<String, Value>) {
     let mut tok: Vec<String> = Vec::new();
     let gh = if is_repo { gh_state(p, cwd, ttl) } else { Map::new() };
-    // Every PR this worktree made, beside its branch's (the Dock's tally).
-    if is_repo {
-        super::prs::refresh(cwd, ttl, &gh);
-    }
     let g = |k: &str| gh.get(k);
     if truthy(g("ciFail")) {
         tok.push("ci:fail".into());

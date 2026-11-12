@@ -117,6 +117,9 @@ fn take_run_lock(p: &Paths) -> Lock {
     }
 }
 
+/// How long a run keeps starting PR list refreshes (each has its own timeout).
+const PRS_BUDGET: Duration = Duration::from_secs(60);
+
 /// One worktree's probe result: tokens, gh facts, and whether it finished.
 type Probe = (Vec<String>, Map<String, Value>, bool);
 
@@ -628,6 +631,35 @@ pub fn main(args: &[String]) -> i32 {
                 }
             }
         }
+    }
+
+    // Every PR each worktree made, beside its branch's (the Dock's tally and
+    // the Wake's list): after the probes and the writes, so a slow GitHub
+    // never costs a workspace its signals. Each list keeps its own TTL.
+    // Outside the run lock (the next sync need not wait on GitHub), and no
+    // new worktree starts past PRS_BUDGET: a hung GitHub costs one run a
+    // minute at most. lookout's own floor keeps two runs from asking twice.
+    drop(_lock);
+    if !dry {
+        let started = Instant::now();
+        let jobs: Vec<(String, Map<String, Value>)> = targets
+            .iter()
+            .filter(|(_, _, repo)| *repo)
+            .map(|(ws, cwd, _)| (cwd.clone(), probes.get(ws).map(|(_, raw, _)| raw.clone()).unwrap_or_default()))
+            .collect();
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..4.min(jobs.len()) {
+                s.spawn(|| loop {
+                    if started.elapsed() > PRS_BUDGET {
+                        break;
+                    }
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    let Some((cwd, gh)) = jobs.get(i) else { break };
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prs::refresh(cwd, gh_ttl, gh)));
+                });
+            }
+        });
     }
 
     if !changes.is_empty() {

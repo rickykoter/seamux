@@ -45,6 +45,8 @@ re!(gh_link_re, r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]
 // `gh pr create ... --title "x"` (or `gh issue create`): the title it was given.
 // `gh pr create`, however it is called: the pull request it prints is made here.
 re!(gh_pr_create_re, r"\bgh\s+pr\s+create\b");
+// gh commands that print other PRs: beside one, a create's output is not its own.
+re!(gh_pr_reader_re, r"\bgh\s+(?:pr\s+(?:list|view|status|checks)|search\s+prs|api)\b");
 re!(gh_create_title_re, r#"\bgh\s+(?:pr|issue)\s+create\b[^\n]*?(?:--title|-t)(?:\s+|=)(?:"([^"]*)"|'([^']*)'|(\S+))"#);
 
 /// Python truthiness for a JSON value.

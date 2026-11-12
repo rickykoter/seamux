@@ -169,14 +169,21 @@ export class Wake {
   /** The worktree's pull requests (crew-sync's list, wake_prs), for the
    *  Pull requests block and the pr rows' badges; when they were read. */
   private prs: Pr[] = [];
+  /** `prs` by canonical URL, for the pr rows' badges: built once per read. */
+  private prsByUrl = new Map<string, Pr>();
   private prsAt = 0;
   private prsWs = "";
   /** The done group is folded until opened; the rest are open. */
   private prsOpen = new Set<Group>(["you", "people", "draft", "open"]);
   /** PRs whose failing checks are listed; a red one that needs you starts open. */
   private prsShown = new Map<number, boolean>();
-  /** A group the Dock's pill asked for: scrolled to and marked once drawn. */
+  /** A group the Dock's pill asked for, and for which worktree ("" for the
+   *  next one shown): scrolled to and marked once that worktree's block is drawn. */
   private prsFocus: Group | null = null;
+  private prsFocusDir = "";
+  /** The directory the sheet last asked for, as it spelled it: `ws` takes
+   *  the store's realpath'd spelling once read, so a focus matches either. */
+  private askedDir = "";
 
   /** Embedded: the copy in the chat sheet, which has the keys while the sheet is open. */
   private embedded: boolean;
@@ -308,6 +315,7 @@ export class Wake {
    *  and asks that workspace has open, which may sit outside `dir`. */
   showDir(dir: string, also: string[] = []): void {
     this.picked = false;
+    this.askedDir = dir;
     this.also = [...new Set(also.filter((d) => d && d !== dir))];
     if (dir && dir !== this.ws) {
       this.ws = dir;
@@ -330,11 +338,20 @@ export class Wake {
 
   /** The Dock's PR pill: this Wake, on `group` (open, draft, people, done),
    *  its group opened and scrolled to. "open" is every open group. */
-  showPrs(group: string): void {
+  showPrs(group: string, dir = ""): void {
     const g: Group = group === "people" ? "people" : group === "draft" ? "draft" : group === "done" ? "done" : "open";
     this.prsOpen.add(g);
-    this.prsFocus = g === "open" ? (this.prs.some((p) => p.state === "open" && grouped([p]).get("you")!.length) ? "you" : "open") : g;
-    void this.loadPrs();
+    // The open pill scrolls to the first open group: needs you, if any.
+    this.prsFocus = g === "open" ? "you" : g;
+    this.prsOpen.add(this.prsFocus);
+    this.prsFocusDir = dir;
+    if (!dir || this.focusHere(dir)) void this.loadPrs();
+  }
+
+  /** Whether `dir` (as the sheet spells it) is the worktree shown. */
+  private focusHere(dir: string): boolean {
+    const t = (d: string) => d.replace(/\/+$/, "");
+    return !dir || t(dir) === t(this.ws) || (t(dir) === t(this.askedDir) && this.ws === this.prsWs);
   }
 
   /** Read the worktree's PR list and redraw when it changed. */
@@ -346,8 +363,12 @@ export class Wake {
       if (ws !== this.ws) return;
       const same = ws === this.prsWs && JSON.stringify(prs) === JSON.stringify(this.prs);
       this.prs = Array.isArray(prs) ? prs : [];
+      this.prsByUrl = byUrl(this.prs);
       this.prsWs = ws;
-      if ((!same || this.prsFocus) && this.data.workspaces.length) this.draw();
+      const mine = this.prsFocus && this.focusHere(this.prsFocusDir);
+      // A focus asked for a worktree with no PRs has nothing to scroll to.
+      if (mine && !this.prs.length) this.prsFocus = null;
+      if ((!same || mine) && this.data.workspaces.length) this.draw();
     } catch {
       /* no list: the block stays away */
     }
@@ -603,7 +624,7 @@ export class Wake {
     if (prsBlock) out.unshift(prsBlock);
     this.list.classList.toggle("searching", !!this.query);
     this.list.replaceChildren(...out);
-    if (prsBlock && this.prsFocus) {
+    if (prsBlock && this.prsFocus && this.focusHere(this.prsFocusDir)) {
       const at = prsBlock.querySelector<HTMLElement>(`[data-g="${this.prsFocus}"]`) ?? prsBlock;
       at.scrollIntoView({ block: "start" });
       at.classList.add("asked");
@@ -740,7 +761,7 @@ export class Wake {
     }
     if (gh && r.title) badges.append(el("span", "w-st", `#${gh.n}`));
     // A PR this worktree made: its state, red when a check failed.
-    const mine = r.kind === "pr" && gh ? byUrl(this.prs).get(`https://github.com/${gh.repo}/pull/${gh.n}`) : undefined;
+    const mine = r.kind === "pr" && gh ? this.prsByUrl.get(`https://github.com/${gh.repo}/pull/${gh.n}`) : undefined;
     if (mine) {
       const s = badgeOf(mine);
       badges.append(el("span", `w-st pr-${s.cls}`, s.text));

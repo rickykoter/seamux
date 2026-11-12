@@ -19,10 +19,20 @@ use crate::home::xdg_cache;
 use crate::md5;
 
 /// The list file for worktree `cwd` ($CREW_PRS_DIR, for a test, else the
-/// crew cache).
+/// crew cache). Named by the resolved path, trailing slash trimmed, so
+/// crew-sync, the board and the Wake (which holds the store's realpath'd
+/// key) name one file however each spells the worktree.
 pub fn path(cwd: &str) -> PathBuf {
     let dir = crate::py::env_or("CREW_PRS_DIR").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(xdg_cache);
-    dir.join(format!("prs-{}.json", md5::hex(cwd.as_bytes())))
+    dir.join(format!("prs-{}.json", md5::hex(key(cwd).as_bytes())))
+}
+
+/// `cwd` resolved (symlinks, /var vs /private/var), trailing slash trimmed;
+/// as given when it does not exist.
+pub fn key(cwd: &str) -> String {
+    let real = std::fs::canonicalize(cwd).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| cwd.to_string());
+    let t = real.trim_end_matches('/');
+    if t.is_empty() { "/".into() } else { t.to_string() }
 }
 
 /// The file as written, or None when there is none (or it does not parse).
@@ -149,6 +159,11 @@ impl Summary {
             }
         }
         out
+    }
+
+    /// Whether PR `n` is in the list, in any state.
+    pub fn has(&self, n: u64) -> bool {
+        [&self.open, &self.draft, &self.merged, &self.closed].iter().any(|t| t.nums.contains(&n))
     }
 
     /// Open and draft PRs.

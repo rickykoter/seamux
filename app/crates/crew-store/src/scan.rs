@@ -6,7 +6,7 @@
 //! shape costs that one row, never the run.
 
 use crate::classify::{
-    classify, commit_re, changed_re, gh_create_title_re, gh_link_re, gh_pr_create_re, git_commit_re, github_re, gs, oneline_re,
+    classify, commit_re, changed_re, gh_create_title_re, gh_link_re, gh_pr_create_re, gh_pr_reader_re, git_commit_re, github_re, gs, oneline_re,
     prompt_of, splitext_ext, tmp_redirect_re, truthy, IMAGE_EXT,
 };
 use crate::paths::{basename, norm, wskey, Paths};
@@ -517,7 +517,9 @@ impl Scan {
             .captures(&cmd)
             .and_then(|m| m.get(1).or(m.get(2)).or(m.get(3)).map(|t| t.as_str().to_string()))
             .unwrap_or_default();
-        self.gh_links(ctx, d, out, &made, gh_pr_create_re().is_match(&cmd));
+        // Made here only when the command reads no other PRs: a create that
+        // failed beside a `gh pr list` would otherwise mark someone's PR.
+        self.gh_links(ctx, d, out, &made, gh_pr_create_re().is_match(&cmd) && !gh_pr_reader_re().is_match(&cmd));
         let committed = git_commit_re().is_match(&cmd);
         if !(committed || (out.contains("] ") && changed_re().is_match(out))) {
             return;

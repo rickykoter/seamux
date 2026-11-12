@@ -16,6 +16,9 @@ export type Pr = {
   checks: Counts | null;
   failing?: Check[];
   gating?: Check[];
+  /** The group crew-sync filed it in (crew-core prs.rs `group`): the one
+   *  rule the Dock's pills count by. groupOf falls back to its copy. */
+  group?: string;
 };
 
 /** The Wake's groups, in the order they show. */
@@ -31,8 +34,10 @@ export const GROUP_SAID: Record<Group, string> = {
 
 const n = (c: Counts | null, k: keyof Counts): number => (c && typeof c[k] === "number" ? (c[k] as number) : 0);
 
-/** Where a PR is filed; the same rule as crew-core's `group`. */
+/** Where a PR is filed: crew-sync's own word when the file has it, else
+ *  the same rule as crew-core's `group`, for a list written before it. */
 export function groupOf(pr: Pr): Group {
+  if ((GROUPS as readonly string[]).includes(pr.group ?? "")) return pr.group as Group;
   if (pr.state === "merged" || pr.state === "closed") return "done";
   const draft = pr.state === "draft";
   const red = n(pr.checks, "fail") > 0;

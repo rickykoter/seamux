@@ -25,6 +25,8 @@ ok("a required review needs people", groupOf(pr(5, "open", [0, 0, 3, 0], { revie
 ok("a red draft stays a draft", groupOf(pr(6, "draft", [2, 0, 0, 0])) === "draft");
 ok("a draft waits on review without being people", groupOf(pr(7, "draft", [0, 1, 1, 0], { review: "REVIEW_REQUIRED" })) === "draft");
 ok("a draft's gate check is people", groupOf(pr(8, "draft", [0, 0, 1, 1])) === "people");
+ok("crew-sync's group wins over the local copy of the rule", groupOf(pr(13, "open", [1, 0, 0, 0], { group: "people" })) === "people" &&
+  groupOf(pr(14, "open", [1, 0, 0, 0], { group: "nonsense" })) === "you");
 ok("merged and closed are done", groupOf(pr(9, "merged", null)) === "done" && groupOf(pr(10, "closed", null)) === "done");
 
 const all = [pr(1, "open", [1, 0, 3, 0]), pr(4, "open", [0, 0, 3, 1]), pr(6, "draft", [2, 0, 0, 0]), pr(11, "open", [0, 0, 2, 0], { review: "APPROVED" }),

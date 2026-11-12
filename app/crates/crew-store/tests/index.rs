@@ -341,8 +341,11 @@ fn gh_pr_create_marks_the_pr_it_made() {
         bash("2030-02-01T10:00:00.000Z", "m1", "gh pr create --fill"),
         out("2030-02-01T10:00:01.000Z", "m1", "https://github.com/acme/shop/pull/21\n"),
         // A chained command: only the first PR it printed is the one it made.
-        bash("2030-02-01T10:01:00.000Z", "m2", "gh pr create -f && gh pr list"),
-        out("2030-02-01T10:01:01.000Z", "m2", "https://github.com/acme/shop/pull/22\nhttps://github.com/acme/shop/pull/5\n"),
+        bash("2030-02-01T10:01:00.000Z", "m2", "gh pr create -f && echo done && open https://github.com/acme/shop/pull/4"),
+        out("2030-02-01T10:01:01.000Z", "m2", "https://github.com/acme/shop/pull/22\nhttps://github.com/acme/shop/pull/4\n"),
+        // A create beside a gh pr list: its output is not only its own, so nothing is made.
+        bash("2030-02-01T10:01:30.000Z", "m5", "gh pr create -f; gh pr list"),
+        out("2030-02-01T10:01:31.000Z", "m5", "https://github.com/acme/shop/pull/40\n"),
         // A PR only viewed is not made here.
         bash("2030-02-01T10:02:00.000Z", "m3", "gh pr view 6"),
         out("2030-02-01T10:02:01.000Z", "m3", "https://github.com/acme/shop/pull/6\n"),
@@ -361,7 +364,7 @@ fn gh_pr_create_marks_the_pr_it_made() {
 }
 
 #[test]
-fn v2_to_v3_adds_made_and_rebuilds_derived_rows() {
+fn v2_to_v3_adds_made_and_keeps_every_row() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let f = fixture("v3");
     let dir = s(&f.root.join("v2"));
@@ -391,7 +394,8 @@ fn v2_to_v3_adds_made_and_rebuilds_derived_rows() {
         .prepare("SELECT kind, made FROM artifacts ORDER BY kind").unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
         .collect::<Result<_, _>>().unwrap();
-    assert_eq!(kinds, vec![("temp".to_string(), String::new())], "the derived row goes, the kept one stays with made ''");
+    assert_eq!(kinds, vec![("pr".to_string(), String::new()), ("temp".to_string(), String::new())],
+               "every row stays (its transcript may be gone), with made ''");
     let curs: i64 = c.query_row("SELECT COUNT(*) FROM cursors", [], |r| r.get(0)).unwrap();
     assert_eq!(curs, 0, "cursors are dropped so the next index backfills made");
 }
