@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use seamux_app::reclaim::{steps, ws_ok, Step};
+use seamux_app::reclaim::{claude_prompt, fix_ok, fix_steps, steps, ws_ok, Blocker, Step};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -72,6 +72,44 @@ pub async fn reclaim_run(ws: String) -> Result<Reclaimed, String> {
         let o = run(&["--yes"], &ws)?;
         let s = steps(&String::from_utf8_lossy(&o.stdout), &String::from_utf8_lossy(&o.stderr));
         Ok(Reclaimed { ok: o.status.success(), steps: s })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One fix from crew-reclaim's report (`--fix <action>`): stash or discard
+/// the uncommitted changes, move aside or delete the ignored files, stop the
+/// sandbox, close the other workspaces. It changes only that; the wizard
+/// checks every guard again after it.
+#[tauri::command]
+pub async fn reclaim_fix(ws: String, action: String) -> Result<Reclaimed, String> {
+    if !fix_ok(&action) {
+        return Err(format!("not a reclaim fix: {action:?}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let o = run(&["--fix", &action], &ws)?;
+        let s = fix_steps(&String::from_utf8_lossy(&o.stdout), &String::from_utf8_lossy(&o.stderr));
+        Ok(Reclaimed { ok: o.status.success(), steps: s })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A Claude in `ws`, at its worktree, told what blocks reclaiming it: the
+/// new pane's id. It looks into each guard and asks before it loses work;
+/// the reclaim itself stays the wizard's.
+#[tauri::command]
+pub async fn reclaim_claude(ws: String, worktree: String, branch: Option<String>, blockers: Vec<Blocker>) -> Result<String, String> {
+    if !ws_ok(&ws) {
+        return Err(format!("not a workspace: {ws:?}"));
+    }
+    if !std::path::Path::new(&worktree).is_dir() {
+        return Err(format!("no worktree at {worktree}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let prompt = claude_prompt(branch.as_deref(), &worktree, &blockers);
+        let cmd = crew_core::worktree::claude_command(None, Some(&prompt));
+        seamux_app::backend::get()?.start_session(&ws, &worktree, &cmd)
     })
     .await
     .map_err(|e| e.to_string())?

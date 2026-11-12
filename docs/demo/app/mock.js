@@ -491,7 +491,8 @@ const others = [
   { id: "rv-coupons-inc1", title: "demo-coupons · increment 1", root: treeOf(W.api), branch: "sam/coupons-api", updated: secs(ago(66)), open: { minor: 1 } },
 ];
 
-// Reclaim.
+// Reclaim. The fixes the wizard ran, by workspace: each clears its blocker.
+const reclaimFixed = new Map();
 function reclaimReport(id) {
   const w = ws.find((x) => x.id === id);
   if (!w) throw "that workspace is gone";
@@ -507,11 +508,22 @@ function reclaimReport(id) {
         { kind: "info", text: "1 Wake row points into the worktree", hint: "The Wake keeps its entry; the file goes with the worktree." },
         { kind: "skip", text: "No sandbox to stop", hint: null },
       ]
-    : [
-        { kind: "fail", text: `${w.branch} is not merged: 3 commits ahead of origin/main`, hint: "Merge or close its pull request first." },
-        { kind: "fail", text: "Uncommitted changes in 2 files", hint: "Commit or stash them, or keep the worktree." },
-        w.agent ? { kind: "fail", text: "Claude is still running in the workspace", hint: "Let it finish, or end the session." } : pass("No agent is running"),
-      ];
+    : (() => {
+        const fixed = reclaimFixed.get(id) ?? new Set();
+        const gone = (...f) => f.some((x) => fixed.has(x));
+        return [
+          { kind: "fail", id: "merged", text: "3 commit(s) not in origin/main — not merged", hint: null,
+            items: ["a41c9e2 Tighten the coupon expiry check", "7be0d13 Coupon codes are case-blind", "19f3a7c Wire coupons into checkout"] },
+          gone("stash", "discard")
+            ? pass("clean tree, nothing uncommitted", null)
+            : { kind: "fail", id: "dirty", text: "2 uncommitted change(s)", hint: null, items: [" M src/coupons/expiry.ts", "?? notes/coupon-edge-cases.md"], fixes: ["stash", "discard"] },
+          gone("aside", "delete-ignored")
+            ? pass("no ignored files that would be lost (build output and caches aside)")
+            : { kind: "fail", id: "ignored", text: "1 ignored file(s) would be deleted with it: .env.local",
+                hint: "git status does not show these and git worktree remove does not ask — move them out first", items: [".env.local"], fixes: ["aside", "delete-ignored"] },
+          w.agent ? { kind: "fail", id: "agent", text: "an agent is mid-turn in the workspace — let the turn end first", hint: null } : pass("No agent is running"),
+        ];
+      })();
   return {
     worktree: treeOf(w),
     branch: w.branch,
@@ -900,6 +912,23 @@ const handlers = {
   reclaim_check: async ({ ws: id }) => {
     await wait(900);
     return reclaimReport(id);
+  },
+  reclaim_fix: async ({ ws: id, action }) => {
+    await wait(700);
+    const w = ws.find((x) => x.id === id);
+    if (!reclaimFixed.has(id)) reclaimFixed.set(id, new Set());
+    reclaimFixed.get(id).add(action);
+    const said = {
+      stash: `stashed 2 change(s) as "crew-reclaim: ${w?.branch} 2026-11-11 10:42"`,
+      discard: "discarded 2 uncommitted change(s)",
+      aside: `moved 1 ignored file(s) to ${HOME}/.cache/cmux-crew/reclaimed/${(w?.branch ?? "").replace(/\//g, "-")}-20261111-104212`,
+      "delete-ignored": "deleted 1 ignored file(s)",
+    }[action] ?? `did ${action}`;
+    return { ok: true, steps: [{ kind: "done", text: said }] };
+  },
+  reclaim_claude: async ({ ws: id }) => {
+    await wait(500);
+    return `${id}-reclaim-claude`;
   },
   reclaim_run: async ({ ws: id }) => {
     await wait(1400);

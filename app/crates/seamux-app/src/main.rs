@@ -271,6 +271,8 @@ fn main() {
             pane_app::gh_card,
             reclaim_app::reclaim_check,
             reclaim_app::reclaim_run,
+            reclaim_app::reclaim_fix,
+            reclaim_app::reclaim_claude,
             pty_app::pty_reset,
             pty_app::native_session,
             views_app::views_frame,

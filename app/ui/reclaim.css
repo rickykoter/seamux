@@ -85,3 +85,21 @@
 .rc-passed > summary .rc-mark { margin-top: 0; }
 .rc-passed > .rc-checks { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) { .rc-passed > summary::after { transition: none; } }
+
+/* Under a blocker: what is behind it, and its fixes (reclaim.ts mend). */
+.rc-items { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; color: var(--muted); }
+.rc-items li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-more { align-self: flex-start; background: none; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
+.rc-more:hover { text-decoration: underline; }
+.rc-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rc-fixes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.reclaim .rc-fixes .sheet-btn { padding: 2px 8px; font-size: var(--fs-2); }
+.reclaim .sheet-btn:disabled { opacity: 0.55; cursor: default; }
+.rc-fixes .rc-busy { padding: 0; font-size: var(--fs-2); }
+.rc-confirm { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--bad); border-radius: 6px; }
+.rc-confirm p { margin: 0; font-size: var(--fs-2); color: var(--bad-t); }
+.rc-said { display: flex; gap: 6px; align-items: start; margin: 4px 0 0; font-size: var(--fs-2); color: var(--muted); overflow-wrap: anywhere; }
+.rc-said.error { color: var(--bad-t); }
+/* What the fixes did, above the checks: quieter than a blocker. */
+.rc-log { background: none; border-style: dashed; }
+.rc-foot .rc-error { flex: 1; align-self: center; font-size: var(--fs-2); }

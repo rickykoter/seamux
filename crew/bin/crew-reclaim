@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crew-reclaim [-n|--dry-run] [-y|--yes] [--family-ok] [--json] [<workspace-id>|<path>]
+# crew-reclaim [-n|--dry-run] [-y|--yes] [--family-ok] [--json] [--fix <action>] [<workspace-id>|<path>]
 #
 # The board's Merged bucket knows a worktree can go; this is the tap that
 # actually removes it. Invoked from the sidebar through the notification-hook
@@ -38,6 +38,17 @@
 # blocker count, and what it would remove. Nothing is changed; the exit code
 # is the dry run's (1 with blockers).
 #
+# Each check in --json carries an id (dirty, ignored, sandbox, …), the items
+# behind its text (the changed files, the ignored files, the commits not in
+# the base, the other workspaces) and the fixes that clear it. A fix is
+# --fix <action>: stash or discard the uncommitted changes, move aside or
+# delete the ignored files, stop the sandbox, close the other workspaces. It
+# does that one thing, says what it did, and checks nothing else; the wizard
+# re-checks after it. discard and delete-ignored destroy data: the wizard asks
+# first, naming the files. The rest keep it (a stash outlives the worktree,
+# it lives in the shared repo; files moved aside go to
+# ~/.cache/cmux-crew/reclaimed/).
+#
 # --family-ok turns the deep-plan guard from a blocker into a question: a y/N
 # that names the family, asked at a terminal only (refused without one, and
 # --yes does not answer it), and logged to ~/.cache/cmux-crew/family-ok.log.
@@ -74,9 +85,18 @@ ws_tool() {
 # Under --json the report is kept, not printed: each check as kind, text and
 # its note (the hint under it), each "would remove" line as what, target, note.
 json=""
-chk_kind=(); chk_text=(); chk_hint=()
+chk_kind=(); chk_text=(); chk_hint=(); chk_id=(); chk_items=(); chk_fixes=()
 rm_what=(); rm_target=(); rm_note=()
-record() { chk_kind+=("$1"); chk_text+=("$2"); chk_hint+=(""); }
+# cid names the checks that follow (until the next cid); items and fixes go on
+# the last check recorded, as note does.
+cur_id=""
+cid() { cur_id="$1"; }
+record() { chk_kind+=("$1"); chk_text+=("$2"); chk_hint+=(""); chk_id+=("$cur_id"); chk_items+=(""); chk_fixes+=(""); }
+last_set() { [ -n "$json" ] && [ "${#chk_kind[@]}" -gt 0 ] && eval "$1[\${#chk_kind[@]}-1]=\"\$2\""; return 0; }
+# One item a line; at most 200, so a huge ignored folder stays a short report.
+items() { last_set chk_items "$(printf '%s\n' "$1" | sed '/^$/d' | head -200)"; }
+fixes() { if [ -n "$json" ]; then last_set chk_fixes "$*"
+          else printf '    \033[2mfix: crew-reclaim --fix %s\033[0m\n' "$(printf '%s' "$*" | sed 's/ / | --fix /g')"; fi; }
 
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
@@ -96,18 +116,22 @@ emit_json() {
   python3 - "$top" "$branch" "${size:-}" "${ws_title:-$ws}" "$ws" "$plan_names" \
     "${sandboxed:+registered${sb_state:+ ($sb_state)}}" "$blockers" "$base" \
     "${#chk_kind[@]}" ${chk_kind[@]+"${chk_kind[@]}"} ${chk_text[@]+"${chk_text[@]}"} ${chk_hint[@]+"${chk_hint[@]}"} \
+    ${chk_id[@]+"${chk_id[@]}"} ${chk_items[@]+"${chk_items[@]}"} ${chk_fixes[@]+"${chk_fixes[@]}"} \
     "${#rm_what[@]}" ${rm_what[@]+"${rm_what[@]}"} ${rm_target[@]+"${rm_target[@]}"} ${rm_note[@]+"${rm_note[@]}"} <<'EMIT'
 import json, sys
 a = sys.argv[1:]
 top, branch, size, ws_name, ws_id, plan, sandbox, blockers, base = a[:9]
 n = int(a[9]); kinds, texts, hints = a[10:10 + n], a[10 + n:10 + 2 * n], a[10 + 2 * n:10 + 3 * n]
-rest = a[10 + 3 * n:]
+ids, its, fxs = a[10 + 3 * n:10 + 4 * n], a[10 + 4 * n:10 + 5 * n], a[10 + 5 * n:10 + 6 * n]
+rest = a[10 + 6 * n:]
 m = int(rest[0]); what, target, note = rest[1:1 + m], rest[1 + m:1 + 2 * m], rest[1 + 2 * m:1 + 3 * m]
 print(json.dumps({
     "worktree": top, "branch": branch or None, "size": size or None, "base": base or None,
     "workspace": {"id": ws_id, "name": ws_name} if ws_id else None,
     "plan": plan or None, "sandbox": sandbox or None,
-    "checks": [{"kind": k, "text": t, "hint": h or None} for k, t, h in zip(kinds, texts, hints)],
+    "checks": [{"kind": k, "text": t, "hint": h or None, "id": i or None,
+                "items": [x for x in it.split("\n") if x], "fixes": f.split()}
+               for k, t, h, i, it, f in zip(kinds, texts, hints, ids, its, fxs)],
     "blockers": int(blockers),
     "remove": [{"what": w, "target": t, "note": o} for w, t, o in zip(what, target, note)],
 }))
@@ -117,6 +141,7 @@ EMIT
 dry=""
 assume_yes=""
 family_ok=""
+fix=""
 arg=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -124,7 +149,8 @@ while [ "$#" -gt 0 ]; do
     -y|--yes)     assume_yes=1 ;;
     --family-ok)  family_ok=1 ;;
     --json)       json=1; dry=1 ;;
-    -h|--help)    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --fix)        shift; fix="${1:-}"; [ -n "$fix" ] || die "--fix needs an action" ;;
+    -h|--help)    sed -n '2,56p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --)           shift; arg="${1:-}"; break ;;
     -*)           die "unknown option: $1" ;;
     *)            arg="$1" ;;
@@ -173,7 +199,7 @@ default_base() {
 }
 
 say "checking $top"
-if [ -n "$branch" ]; then
+if [ -n "$branch" ] && [ -z "$fix" ]; then
   say "fetching origin"
   git -C "$top" fetch --quiet origin 2>/dev/null
 fi
@@ -284,7 +310,64 @@ ignored_n="$(printf '%s' "$ignored_list" | grep -c . || true)"
 # tell" as one that does not answer, and both block below. Never a default of 0.
 # The backend is cmux, or the seamux app's tmux when it is in use without cmux
 # (`seamux workspaces list-json` answers from whichever is).
+# The fixes --fix runs (see the header). Each exits: 0 when it did its one
+# thing (or there was nothing to do), 1 with a ✗ saying why not. The files
+# are the ones this run found, never a list handed in.
+fix_run() {
+  [ "$gitdir" != "$common" ] || die "$top is the primary checkout — crew-reclaim only fixes worktrees"
+  case "$fix" in
+    stash)
+      [ "${dirty_n:-0}" != 0 ] || { ok "nothing uncommitted to stash"; exit 0; }
+      local msg; msg="crew-reclaim: ${branch:-detached HEAD} $(date '+%Y-%m-%d %H:%M')"
+      git -C "$top" stash push --include-untracked --quiet -m "$msg" \
+        || die "git stash failed — nothing was changed"
+      ok "stashed $dirty_n change(s) as \"$msg\""
+      say "the stash is in the shared repo and outlives the worktree: git stash list, in $(dirname "$common")" ;;
+    discard)
+      [ "${dirty_n:-0}" != 0 ] || { ok "nothing uncommitted to discard"; exit 0; }
+      git -C "$top" reset --hard --quiet && git -C "$top" clean -fd --quiet \
+        || die "git could not discard every change — see git status in $top"
+      ok "discarded $dirty_n uncommitted change(s)" ;;
+    aside|delete-ignored)
+      [ "$ignored_rc" -eq 0 ] || die "git could not list the ignored files — nothing was changed"
+      [ "$ignored_n" -gt 0 ] || { ok "no ignored files would be lost"; exit 0; }
+      local dest="" rel done_n=0
+      if [ "$fix" = aside ]; then
+        dest="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/reclaimed/$(printf '%s' "${branch:-$(basename "$top")}" | tr -c 'A-Za-z0-9._-' '-')-$(date '+%Y%m%d-%H%M%S')"
+      fi
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        if [ -n "$dest" ]; then
+          { mkdir -p "$dest/$(dirname "$rel")" && mv -- "$top/$rel" "$dest/$rel"; } \
+            || die "could not move $rel — moved $done_n of $ignored_n to $dest"
+        else
+          rm -f -- "$top/$rel" || die "could not delete $rel — deleted $done_n of $ignored_n"
+        fi
+        done_n=$((done_n + 1))
+      done <<< "$ignored_list"
+      if [ -n "$dest" ]; then ok "moved $done_n ignored file(s) to $dest"
+      else ok "deleted $done_n ignored file(s)"; fi ;;
+    sandbox-down)
+      local sbx; sbx="$(dirname "$0")/crew-sandbox"
+      [ -x "$sbx" ] || die "crew-sandbox is not installed beside crew-reclaim"
+      "$sbx" down "$top" >/dev/null 2>&1 || die "crew-sandbox down $top failed — try: crew-sandbox status $top"
+      ok "stopped the sandbox for $top" ;;
+    close-others)
+      [ -n "$others_refs" ] || { ok "no other workspace is open here"; exit 0; }
+      local ref why bad=0
+      while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        if why="$(ws_tool close "$ref" 2>&1 >/dev/null)"; then ok "closed workspace $ref"
+        else printf '\033[31m✗\033[0m %s did not close (%s)\n' "$ref" "$(printf '%s' "${why:-no answer}" | tail -1)"; bad=1; fi
+      done <<< "$others_refs"
+      exit "$bad" ;;
+    *) die "unknown fix: $fix (stash, discard, aside, delete-ignored, sandbox-down, close-others)" ;;
+  esac
+  exit 0
+}
+
 others=""
+others_refs=""
 ws_id=""
 others_desc=""
 ws_title=""
@@ -335,6 +418,7 @@ print("KEEP %s" % next((label(w) for w in ws if is_keep(w)), ""))
 print("KEEPID %s" % next((w.get("id") or "" for w in ws if is_keep(w)), ""))
 for w in hits:
     print("HIT %s" % label(w))
+    print("HITREF %s" % (w.get("ref") or w.get("id") or ""))
 for w in here:
     if "plan:mode" in (w.get("description") or "").split():
         print("MODE %s" % label(w))' "$top" "${ws:-none}" 2>/dev/null)"
@@ -345,7 +429,13 @@ for w in here:
   ws_id="$(printf '%s\n' "$probe" | sed -n 's/^KEEPID //p')"
   others_desc="$(printf '%s\n' "$probe" | sed -n 's/^HIT //p' | paste -sd, -)"
   planmode_desc="$(printf '%s\n' "$probe" | sed -n 's/^MODE //p' | paste -sd, -)"
+  others_refs="$(printf '%s\n' "$probe" | sed -n 's/^HITREF //p' | sed '/^$/d')"
 fi
+
+# --- fixes -------------------------------------------------------------------
+# --fix <action> does one thing to clear one guard, then stops: the next check
+# (the wizard's re-check) says whether it worked. It never runs the removal.
+[ -n "$fix" ] && fix_run
 
 # Whether the agent in the workspace about to be closed is mid-turn. Same answer
 # the board's archive chip and the sweep get, from the one reader of cmux's
@@ -464,14 +554,18 @@ kv size     "${size:-?}"
 [ -n "$sandboxed" ] && kv sandbox "registered${sb_state:+ ($sb_state)}"
 
 printf '\n'
+cid primary
 if [ "$gitdir" != "$common" ]; then
   pass "linked worktree, not the primary checkout"
 else
   fail "$top is the primary checkout, not a worktree"
 fi
 
+cid merged
 if [ -z "$branch" ]; then
+  cid detached
   fail "detached HEAD — resolve it by hand"
+  cid merged
   skip "merge check skipped: no branch"
 elif [ "${ahead:-1}" = "0" ]; then
   pass "merged: HEAD is an ancestor of $base"
@@ -479,17 +573,22 @@ elif [ -n "$landed" ]; then
   pass "merged: every change on it is already in $base (a squash or rebase merge)"
 else
   fail "${ahead:-?} commit(s) not in $base — not merged"
+  items "$(git -C "$top" log --oneline --no-decorate "$base..HEAD" 2>/dev/null | head -20)"
 fi
 
+cid dirty
 if [ "${dirty_n:-0}" = "0" ]; then
   pass "clean tree, nothing uncommitted"
 else
   fail "$dirty_n uncommitted change(s)"
+  items "$(git -C "$top" status --porcelain 2>/dev/null)"
+  fixes stash discard
 fi
 
 # Ignored files `git status` does not show and `git worktree remove` deletes.
 # There is no flag past this one, as there is none past uncommitted changes:
 # nothing on disk is ever forced.
+cid ignored
 if [ "$ignored_rc" -ne 0 ]; then
   fail "git could not list the ignored files — could not tell what would be lost with it"
 elif [ "$ignored_n" -eq 0 ]; then
@@ -499,6 +598,8 @@ else
   [ "$ignored_n" -gt 5 ] && ignored_names="$ignored_names, +$((ignored_n - 5)) more"
   fail "$ignored_n ignored file(s) would be deleted with it: $ignored_names"
   note "git status does not show these and git worktree remove does not ask — move them out of $top (or delete them) first"
+  items "$ignored_list"
+  fixes aside delete-ignored
 fi
 
 # Planning is unfinished work that does not show up in `git status`. A deep-plan
@@ -507,6 +608,7 @@ fi
 # strands it — and in the deep-plan case the plan outlives the worktree, so what
 # you lose is the thing you were about to build, not the build.
 family_ask=""
+cid plan
 case "$plan_state" in
   protected|error)
     if [ -z "$family_ok" ]; then
@@ -522,6 +624,7 @@ case "$plan_state" in
   missing) skip "deep-plan is not installed — no plan guard" ;;
   *)       pass "no live plan or family work here" ;;
 esac
+cid planmode
 if [ -n "$planmode_desc" ]; then
   fail "a session here is in plan mode: $planmode_desc"
   note "leave plan mode there, or close it — crew-sync drops the token within 120s"
@@ -531,6 +634,7 @@ fi
 # worktree yanks the cwd out from under the shell (and any agent) running in it.
 # Learned the hard way: every other guard passed and it deleted the live
 # worktree mid-session.
+cid shell
 if [ "$caller_top" != "$top" ]; then
   pass "this shell is not inside it"
 else
@@ -540,6 +644,7 @@ fi
 # The close is forced now, so it would take this terminal down with it — after
 # the close, before the removal. Same reason the board opens its reclaim
 # terminal anywhere but the workspace being reclaimed.
+cid terminal
 if [ -n "$ws" ]; then
   here_ws="${SEAMUX_WORKSPACE_ID:-${CMUX_WORKSPACE_ID:-}}"
   if [ -n "$here_ws" ] && [ "$here_ws" = "${ws_id:-$ws}" ]; then
@@ -549,6 +654,7 @@ if [ -n "$ws" ]; then
   fi
 fi
 
+cid others
 if [ ! -x "$CMUX" ] && [ ! -x "$SEAMUX" ]; then
   fail "neither cmux ($CMUX) nor seamux ($SEAMUX) found — could not tell whether another workspace is open here"
   note "put cmux on PATH, or install the seamux app (./install.sh --app)"
@@ -558,8 +664,11 @@ elif [ "$others" -eq 0 ]; then
   pass "no other workspace is open here"
 else
   fail "$others other workspace(s) still open here${others_desc:+: $others_desc}"
+  items "$(printf '%s' "$others_desc" | tr ',' '\n')"
+  fixes close-others
 fi
 
+cid agent
 case "$life" in
   "")      ;;
   running) fail "an agent is mid-turn in ${ws_title:-$ws} — let the turn end first" ;;
@@ -568,8 +677,9 @@ case "$life" in
   *)       fail "could not tell whether an agent is mid-turn in ${ws_title:-$ws}" ;;
 esac
 
+cid sandbox
 case "$sb_state" in
-  *running*)   fail "a sandbox is still running — run: crew-sandbox down $top" ;;
+  *running*)   fail "a sandbox is still running — run: crew-sandbox down $top"; fixes sandbox-down ;;
   unreachable) fail "sbx did not answer in 20s — check: crew-sandbox status $top" ;;
   "")          [ -n "$sandboxed" ] && pass "sandbox is not running" || skip "never sandboxed" ;;
   *)           pass "sandbox is not running ($sb_state)" ;;
