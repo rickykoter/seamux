@@ -102,6 +102,8 @@ export class DockView {
     });
     this.sheet.onPlace = (ws) => this.select(ws, true);
     // A reclaimed workspace is gone: show another.
+    // "Sort it out with Claude": show its new pane.
+    this.reclaim.onClaude = (ws, pane) => this.select(ws, true, "any", pane);
     this.reclaim.onReclaimed = (ws) => {
       if (this.ws !== ws) return;
       this.ws = "";

@@ -3,7 +3,7 @@
 //! itself comes as JSON (`crew-reclaim --json`); the run has no JSON form, so
 //! its own lines are read here. reclaim_app.rs runs it.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A workspace as the board names it: a UUID, or a ref like `workspace:4`.
 /// Never led by a dash, so it can never be read as one of crew-reclaim's
@@ -89,6 +89,73 @@ pub fn steps(stdout: &str, stderr: &str) -> Vec<Step> {
     out
 }
 
+/// The fixes crew-reclaim's `--fix` takes; the wizard may ask for no other.
+pub const FIXES: &[&str] = &["stash", "discard", "aside", "delete-ignored", "sandbox-down", "close-others"];
+
+pub fn fix_ok(action: &str) -> bool {
+    FIXES.contains(&action)
+}
+
+/// What a `crew-reclaim --fix` run said: every top-level ✓, → and ✗ line,
+/// on either stream (it prints no report).
+pub fn fix_steps(stdout: &str, stderr: &str) -> Vec<Step> {
+    let mut out = Vec::new();
+    for line in stdout.lines().chain(stderr.lines()) {
+        let l = strip_ansi(line);
+        if l.starts_with(' ') {
+            continue;
+        }
+        let kind = match l.split_once(' ') {
+            Some(("✓", _)) => "done",
+            Some(("→", _)) => "note",
+            Some(("✗", _)) => "error",
+            _ => continue,
+        };
+        out.push(Step { kind, text: l.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string() });
+    }
+    out
+}
+
+/// A guard that failed, as the wizard hands it to Claude.
+#[derive(Deserialize, Debug)]
+pub struct Blocker {
+    pub text: String,
+    #[serde(default)]
+    pub hint: Option<String>,
+    #[serde(default)]
+    pub items: Vec<String>,
+}
+
+/// The first prompt of a Claude asked to clear what blocks a reclaim: what
+/// each guard said, and the rules. It may investigate and fix, but asks
+/// before anything that loses work, and never reclaims: the person does that
+/// from the wizard, which checks every guard again.
+pub fn claude_prompt(branch: Option<&str>, worktree: &str, blockers: &[Blocker]) -> String {
+    let mut s = format!(
+        "I want to reclaim this worktree ({worktree}{}): close its workspace, remove the worktree and delete its branch. \
+         crew-reclaim refused, and these guards failed:\n",
+        branch.map(|b| format!(", branch {b}")).unwrap_or_default()
+    );
+    for b in blockers {
+        s.push_str(&format!("\n- {}", b.text.trim()));
+        if let Some(h) = b.hint.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+            s.push_str(&format!(" ({h})"));
+        }
+        for i in b.items.iter().take(30) {
+            s.push_str(&format!("\n    {}", i.trim_end()));
+        }
+        if b.items.len() > 30 {
+            s.push_str(&format!("\n    … {} more", b.items.len() - 30));
+        }
+    }
+    s.push_str(
+        "\n\nLook into each one and tell me what you find: what the changes or files are, and whether anything here is work worth keeping. \
+         Then help me clear them. Ask me before you discard, delete, commit, push or close anything. \
+         Never run crew-reclaim --yes or remove the worktree yourself: when the guards should pass, tell me, and I will re-check and reclaim from the wizard.",
+    );
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +202,36 @@ mod tests {
             s.iter().map(|x| (x.kind, x.text.as_str())).collect::<Vec<_>>(),
             vec![("error", "an agent is mid-turn in x — let the turn end first"), ("note", "1 blocker(s) — nothing was changed.")]
         );
+    }
+
+    #[test]
+    fn fixes_are_a_closed_list() {
+        assert!(fix_ok("stash") && fix_ok("delete-ignored"));
+        assert!(!fix_ok("--yes") && !fix_ok("") && !fix_ok("rm"));
+    }
+
+    #[test]
+    fn a_fix_reads_as_what_it_said() {
+        let s = fix_steps(
+            "\u{1b}[32m✓\u{1b}[0m stashed 2 change(s) as \"crew-reclaim: dev/x\"\n\u{1b}[2m→\u{1b}[0m the stash is in the shared repo\n",
+            "\u{1b}[31m✗\u{1b}[0m w:2 did not close (busy)\n",
+        );
+        assert_eq!(
+            s.iter().map(|x| (x.kind, x.text.as_str())).collect::<Vec<_>>(),
+            vec![("done", "stashed 2 change(s) as \"crew-reclaim: dev/x\""), ("note", "the stash is in the shared repo"), ("error", "w:2 did not close (busy)")]
+        );
+    }
+
+    #[test]
+    fn the_prompt_names_every_blocker_and_its_items() {
+        let b = vec![
+            Blocker { text: "2 uncommitted change(s)".into(), hint: None, items: vec!["M a.ts".into(), "?? b.md".into()] },
+            Blocker { text: "1 ignored file(s) would be deleted with it: .env".into(), hint: Some("move them out".into()), items: (0..32).map(|i| format!("f{i}")).collect() },
+        ];
+        let p = claude_prompt(Some("dev/x"), "/w/x", &b);
+        assert!(p.contains("/w/x, branch dev/x"));
+        assert!(p.contains("- 2 uncommitted change(s)\n    M a.ts\n    ?? b.md"));
+        assert!(p.contains("(move them out)") && p.contains("f29") && !p.contains("f30\n") && p.contains("… 2 more"));
+        assert!(p.contains("Never run crew-reclaim --yes"));
     }
 }

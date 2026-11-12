@@ -6,6 +6,17 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **The reclaim wizard helps clear what blocks a reclaim.** A failed guard
+  lists what is behind it (the changed files, the ignored files, the commits
+  not in the base, the other workspaces) and offers its fixes: stash or
+  discard the changes, move the ignored files aside to
+  `~/.cache/cmux-crew/reclaimed/` or delete them, stop the sandbox, close the
+  other workspaces. Discard and Delete ask first and name how many. Each
+  fix re-checks every guard, so the wizard goes on to Reclaim once they pass.
+  A mid-turn agent is re-checked every 15 seconds until its turn ends. "Sort
+  it out with Claude" opens a Claude in the workspace, told what failed. It
+  asks before it loses work, and the reclaim stays with you. At a terminal,
+  the same fixes are `crew-reclaim --fix <action>`.
 - **A native pane does more with what Claude prints and what you paste.**
   - A `! command` that Claude suggests gets a menu on hover or click: run it
     in the chat, which types it as bash mode would, run it in the ⌘J shell,

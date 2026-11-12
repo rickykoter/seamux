@@ -40,6 +40,7 @@ What is asserted:
 
     python3 crew/tools/workspaces_probe.py      exit 0 when all hold
 """
+import glob
 import json
 import os
 import subprocess
@@ -1002,6 +1003,32 @@ rc, out = reclaim("--yes", "ws-l")
 check("an ignored .env is a blocker that names it, and it is kept",
       rc == 1 and "1 ignored file(s) would be deleted with it: .env" in out
       and os.path.isfile(os.path.join(landed, ".env")) and len(rows()) == 1, out)
+rc, rep_, out = reclaim_json("ws-l")
+ign = next((c for c in (rep_ or {}).get("checks", []) if c.get("id") == "ignored"), {})
+check("--json names the ignored check, lists its files and offers its fixes",
+      rc == 1 and ign.get("kind") == "fail" and ign.get("items") == [".env"]
+      and ign.get("fixes") == ["aside", "delete-ignored"], out)
+fix_cache = os.path.join(T, "fix-cache")
+rc, out = reclaim("--fix", "aside", "ws-l", XDG_CACHE_HOME=fix_cache)
+aside = glob.glob(os.path.join(fix_cache, "cmux-crew", "reclaimed", "*", ".env"))
+check("--fix aside moves the ignored file to the cache, and closes and removes nothing",
+      rc == 0 and not os.path.exists(os.path.join(landed, ".env")) and len(aside) == 1
+      and open(aside[0]).read() == "SECRET=1\n" and os.path.isdir(landed) and len(rows()) == 1, out)
+open(os.path.join(landed, "scratch.txt"), "w").write("draft\n")
+rc, rep_, out = reclaim_json("ws-l")
+dirty = next((c for c in (rep_ or {}).get("checks", []) if c.get("id") == "dirty"), {})
+check("--json lists the uncommitted changes and offers stash or discard",
+      rc == 1 and dirty.get("items") == ["?? scratch.txt"] and dirty.get("fixes") == ["stash", "discard"], out)
+rc, out = reclaim("--fix", "stash", "ws-l")
+check("--fix stash stashes them, untracked too, where the stash outlives the worktree",
+      rc == 0 and not os.path.exists(os.path.join(landed, "scratch.txt"))
+      and "crew-reclaim: " in git(main, "stash", "list") and os.path.isdir(landed), out)
+git(main, "stash", "drop", "-q")
+rc, out = reclaim("--fix", "nonsense", "ws-l")
+check("an unknown fix is refused", rc == 1 and "unknown fix" in out, out)
+rc, out = reclaim("--fix", "stash", main)
+check("…and no fix touches the primary checkout", rc == 1 and "primary checkout" in out, out)
+open(os.path.join(landed, ".env"), "w").write("SECRET=1\n")
 open(os.path.join(main, ".env"), "w").write("SECRET=1\n")
 rc, out = reclaim("--dry-run", "ws-l")
 check("…but not one byte-identical to the primary checkout's copy",
@@ -1052,6 +1079,10 @@ put_registry([(W1, "landed", landed), (W2, "landed too", landed)])
 rc, out = reclaim("--dry-run", W1, **tmux_env)
 check("on the tmux backend, another registry workspace in the worktree is a blocker",
       rc == 1 and "1 other workspace(s) still open here" in out and W2 in out and os.path.isdir(landed), out)
+rc, out = reclaim("--fix", "close-others", W1, **tmux_env)
+reg = json.load(open(os.path.join(reg_dir, "workspaces.json")))
+check("--fix close-others closes the other workspace, and keeps the one being reclaimed",
+      rc == 0 and [w["id"] for w in reg["workspaces"]] == [W1] and os.path.isdir(landed), out)
 put_registry([(W1, "landed", landed)])
 rc, out = reclaim("--dry-run", W1, **tmux_env)
 check("…and alone in it, the folder comes from the registry and nothing else is open",
