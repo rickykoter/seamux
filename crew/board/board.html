@@ -650,6 +650,16 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pr.open{color:var(--pr-open)}
 .issue{color:var(--issue);text-decoration-color:currentColor}
 .pr:hover,.issue:hover{filter:brightness(1.25)}
+/* A worktree's many PRs as tally pills (crew-core prs.rs): open, a dashed
+   draft, amber for those waiting on people, then a plain merged count. Red
+   only where a check failed; a gate is never red. */
+.foot>.prp{display:inline-flex;align-items:center;gap:4px;min-height:20px;line-height:18px;padding:0 6px;
+  border:1px solid var(--edge);border-radius:9px;cursor:pointer;color:var(--fg2)}
+.foot>.prp.draft{border-style:dashed}
+.foot>.prp.people{color:var(--attend-t);border-color:var(--attend)}
+.foot>.prp.done{border:0;padding:0;color:var(--grey)}
+.prp>.x{color:var(--wilt-tx)} .prp>.r{color:var(--running-t)} .prp>.ok{color:var(--pr-open)}
+.foot>.prp:hover{filter:brightness(1.25)}
 /* Uncommitted work: a small hollow ring in the neutral text tier, then the
    word, small. Not a dot and not amber, so it is not read as a status or as
    "needs you"; the ring alone was a glyph you had to hover to read. A footer

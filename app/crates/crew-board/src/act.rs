@@ -19,10 +19,10 @@ use crate::plans::{plan_page, uuid_ok};
 use crate::server::{crew_file, current, log, quote};
 use crate::state::state_dir;
 
-pub const ACTIONS: [&str; 27] = [
+pub const ACTIONS: [&str; 28] = [
     "jump", "pane", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
     "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
-    "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake", "agent", "run", "runs", "adapter",
+    "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake", "prs", "agent", "run", "runs", "adapter",
 ];
 
 /// The notice row a Create adapter click names: by its task type, or by
@@ -681,7 +681,9 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
                 None => (false, "workspace-open did not finish".into()),
             }
         }
-        "wake" => {
+        // A PR pill (or the red-PR wilt's chip) outside the app: the Wake,
+        // which lists them. The app opens its own Wake on the group instead.
+        "wake" | "prs" => {
             // The Wake for this row's workspace, in one tab kept like a plan's:
             // a tap on another row moves it there, switching workspace with it.
             if cwd.is_empty() {

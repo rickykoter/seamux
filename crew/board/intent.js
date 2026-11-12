@@ -116,7 +116,7 @@ function __boardIntent(cfg) {
     "jump": "jump", "diff": "diff", "pr": "pr", "checks": "checks",
     "plan": "plan", "review": "plan", "take the check": "take the check",
     "reclaim": "reclaim", "close plan": "close plan", "code": "code",
-    "archive": "archive", "wake": "wake"
+    "archive": "archive", "wake": "wake", "prs": "prs"
   };
 
   // The verbs the app answers itself when it frames the board, and what it shows.
@@ -517,6 +517,13 @@ function __boardIntent(cfg) {
       if (framed() && t.a === "reclaim" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" reclaim ") >= 0) {
         var rn = row.querySelector ? row.querySelector(".nm") : null;
         tell({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid });
+        return;
+      }
+      // A PR pill, framed by an app whose Wake lists PRs: that workspace's
+      // Wake, on the pill's group. Anywhere else the prs action opens the Wake.
+      if (framed() && t.a === "prs" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" prs ") >= 0) {
+        tell({ crew: "prs", ws: rid, group: t.x || "" });
+        mark(rid);
         return;
       }
       // A pane row, framed by the app: show that workspace there with the

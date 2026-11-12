@@ -18,9 +18,11 @@ use serde_json::{json, Value};
 use crate::home::xdg_cache;
 use crate::md5;
 
-/// The list file for worktree `cwd`.
+/// The list file for worktree `cwd` ($CREW_PRS_DIR, for a test, else the
+/// crew cache).
 pub fn path(cwd: &str) -> PathBuf {
-    xdg_cache().join(format!("prs-{}.json", md5::hex(cwd.as_bytes())))
+    let dir = crate::py::env_or("CREW_PRS_DIR").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(xdg_cache);
+    dir.join(format!("prs-{}.json", md5::hex(cwd.as_bytes())))
 }
 
 /// The file as written, or None when there is none (or it does not parse).
