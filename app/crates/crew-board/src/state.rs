@@ -843,6 +843,11 @@ pub fn build(o: &Opts) -> Value {
         }
     }
     crate::tucked::break_snoozes(&mut all);
+    // On tmux, lookout's page for a diff chip has nowhere to open: the
+    // review is made and served, and nothing shows it. Not offered there.
+    if crate::backend::kind() == crew_core::backend::Kind::Tmux {
+        rank::drop_chip(&mut all, "diff");
+    }
     // Each workspace's panes: what each is doing, which owns the plan,
     // which has wandered past the pin.
     if let Some((live, files)) = &panes {

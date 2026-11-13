@@ -543,8 +543,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .row.here{box-shadow:0 0 0 2px var(--own,var(--grey))}
 
 /* --- the button row ---------------------------------------------------- */
-/* Every target is at least 28px tall: these are things you click while doing
-   something else. The first chip is the one that resolves the row, and on the
+/* Every target is at least 22px tall: small, since they are clicked rarely,
+   but still easy to hit while doing something else. The first chip is the one that resolves the row, and on the
    tiers that ask something of you -- attend, wilt, done -- it is filled, in
    the app's one primary style (--pri), never the tier's colour: the tier is
    on the card's ring, badge and frame, and amber spent on a fifth thing
@@ -553,11 +553,11 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    card's first button turned the board into a wall of colour. Actionable
    signals (CI, allow, deny, a ticket) join the row as ghosts in their own
    colour. Labels stay bare text: intent.js reads a chip's verb off its label. */
-.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
-.chip{display:inline-flex;align-items:center;min-height:28px;padding:0 11px;border-radius:7px;
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.chip{display:inline-flex;align-items:center;min-height:22px;padding:0 8px;border-radius:6px;
   border:1px solid var(--edge);background:transparent;color:var(--fg);
-  font:600 var(--fs-3)/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
-.chip.pri{background:var(--pri);border-color:var(--pri);color:var(--ink)}
+  font:500 var(--fs-2)/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
+.chip.pri{background:var(--pri);border-color:var(--pri);color:var(--ink);font-weight:600}
 .chip.pri:hover{filter:brightness(1.12)}
 .chip.sig{font-weight:500}
 /* A signal the collector sends in attend's amber (lookout running, CI
@@ -707,7 +707,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .row.quiet>.fold>.foot{margin-top:2px}
 .row.quiet>.top{min-height:22px}
 .row.quiet>.top>.chips{display:inline-flex;flex:none;flex-wrap:nowrap;gap:5px;margin:0}
-.row.quiet>.top>.chips>.chip{padding:0 9px}
+.row.quiet>.top>.chips>.chip{padding:0 7px}
 .row.quiet>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2)}
 .row.quiet>.top>.cost{margin-left:0;font:var(--fs-2)/1 ui-monospace,SFMono-Regular,Menlo,monospace;
   font-variant-numeric:tabular-nums}
@@ -784,7 +784,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 .kid .kidhd .dial{width:20px;height:20px}
 .kid .kidhd .nm{font-size:var(--fs-3);font-weight:500}
 .kid.attend .kidhd .nm,.kid.wilt .kidhd .nm{font-weight:600}
-.kidhd .chip{flex:none;padding:0 9px}
+.kidhd .chip{flex:none;padding:0 7px}
 /* The fold: a real button with a 24px target, though the mark is small. */
 .caret{flex:none;width:24px;height:24px;margin:-4px -6px -4px -8px;padding:0;border:0;border-radius:5px;
   background:none;color:var(--grey);font-size:var(--fs-1);line-height:24px;text-align:center;cursor:pointer}

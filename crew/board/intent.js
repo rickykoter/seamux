@@ -59,7 +59,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "23";
+  var V = "24";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -120,7 +120,7 @@ function __boardIntent(cfg) {
   };
 
   // The verbs the app answers itself when it frames the board, and what it shows.
-  var SHOWN = { "row": "any", "jump": "any", "plan": "plan", "wake": "wake" };
+  var SHOWN = { "row": "any", "jump": "any", "plan": "plan", "take the check": "plan", "wake": "wake" };
 
   function target(el) {
     // The nearest target to the click wins, explicit or chip: a family child's

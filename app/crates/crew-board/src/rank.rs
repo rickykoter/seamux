@@ -56,6 +56,15 @@ pub fn dedupe(chips: &[String], sigs: Vec<Value>, has_plan: bool) -> Vec<Value> 
         .collect()
 }
 
+/// Take `chip` off every row's chips: a verb this backend cannot carry out.
+pub fn drop_chip(rows: &mut [Value], chip: &str) {
+    for r in rows {
+        if let Some(c) = r.get_mut("chips").and_then(Value::as_array_mut) {
+            c.retain(|x| x.as_str() != Some(chip));
+        }
+    }
+}
+
 /// The value half of a `key:value` description token, or "".
 pub fn token_value(desc: &str, key: &str) -> String {
     let pre = format!("{key}:");
@@ -888,6 +897,13 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dropped_chip_leaves_every_row_and_the_other_chips() {
+        let mut rows = vec![json!({"chips": ["checks", "diff", "jump"]}), json!({"chips": ["diff"]}), json!({"name": "no chips"})];
+        drop_chip(&mut rows, "diff");
+        assert_eq!(rows, vec![json!({"chips": ["checks", "jump"]}), json!({"chips": []}), json!({"name": "no chips"})]);
+    }
 
     #[test]
     fn many_prs_become_pills_and_a_red_draft_wilts_the_row() {
