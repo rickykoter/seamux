@@ -19,7 +19,7 @@ import { Tray } from "./tray";
 
 /** A sub-agent's transcript page or a run's page, as the board names them. */
 const AGENT_PAGE = /^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$|^\/runs\/[A-Za-z0-9_-]+$/;
-import { setLevel, setResume, type Levels } from "./tuck";
+import { say, setLevel, setResume, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./tiles";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
@@ -157,7 +157,9 @@ export class DockView {
           (h?.act === "run" || h?.act === "copy" || h?.act === "dismiss") && typeof h.at === "number" && Number.isFinite(h.at)) {
         const pane = d.pane, act = h.act, at = h.at;
         this.select(d.ws, true, "any", pane);
-        void answerHeld(pane, act, at);
+        void answerHeld(pane, act, at).then((r) => {
+          if (r === null) say("Couldn't open that pane to answer: answer from its banner", undefined, true);
+        });
       }
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;

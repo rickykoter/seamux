@@ -150,7 +150,10 @@ export class HeldBanner {
       const h = await this.refresh();
       // bash-guard's clock has whole seconds, so two blocks can share a time:
       // the command must be the one shown too.
-      if (!h || (shown && (shown.at !== h.at || shown.command !== h.command)) || (seenAt !== undefined && seenAt !== h.at)) {
+      // From the Dock, the card's record time is what was seen: the banner's
+      // own copy may be stale (a pane off screen does not poll).
+      const stale = seenAt !== undefined ? seenAt !== h?.at : !!shown && (shown.at !== h?.at || shown.command !== h?.command);
+      if (!h || stale) {
         this.act.say(h ? "A newer command was held: look again" : "Nothing is held here now");
         return false;
       }

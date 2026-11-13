@@ -469,7 +469,9 @@ pub fn background_by_ws(panes: &[crew_core::status::Pane]) -> std::collections::
 
 /// Each workspace's held commands (crew_core::held), across its panes,
 /// newest first, keyed by the upper-cased workspace id. A record whose pane
-/// has moved on is dropped (and deleted) on the way.
+/// has moved on is dropped (and deleted) on the way. `dir` is the folder
+/// bash-guard and the app's banner use (crew_core::home::xdg_cache, which
+/// follows XDG_CACHE_HOME), so the card and the banner read the same record.
 pub fn held_by_ws(dir: &std::path::Path, panes: &[crew_core::status::Pane]) -> std::collections::HashMap<String, Vec<crew_core::held::Held>> {
     let mut out: std::collections::HashMap<String, Vec<crew_core::held::Held>> = std::collections::HashMap::new();
     for p in panes {
@@ -524,7 +526,7 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
     let panes = crew_core::status::all(&dir);
     let quiet = quiet_by_ws(&panes, (crew_core::py::now() * 1000.0) as u64,
                             crew_core::status::silent_threshold_ms(), &|p| crew_core::status::activity(&dir, p.key()));
-    rank_with_held(wss, plan_by_root, screens, quiet, background_by_ws(&panes), held_by_ws(&dir, &panes))
+    rank_with_held(wss, plan_by_root, screens, quiet, background_by_ws(&panes), held_by_ws(&crew_core::home::xdg_cache(), &panes))
 }
 
 /// rank() with the quiet panes and background tasks given, so a test needs

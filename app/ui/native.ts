@@ -177,7 +177,7 @@ const DETACH_AFTER = 1500;
  *  held, copy held or dismiss held), given once the Dock has brought that
  *  pane forward: its terminal is found as it attaches, then answers as its
  *  banner would, on the record seen at `at`. */
-export async function answerHeld(pane: string, what: HeldAct, at: number): Promise<boolean> {
+export async function answerHeld(pane: string, what: HeldAct, at: number): Promise<boolean | null> {
   const want = pane.toLowerCase();
   for (let i = 0; i < 30; i++) {
     const t = [...live].find((x) => x.pane.toLowerCase() === want && x.attached);
@@ -189,7 +189,9 @@ export async function answerHeld(pane: string, what: HeldAct, at: number): Promi
     }
     await new Promise((r) => setTimeout(r, 100));
   }
-  return false;
+  // The pane never showed: null, so the Dock says so (a refusal the pane
+  // made has already been said there).
+  return null;
 }
 
 export class NativeTerm {
