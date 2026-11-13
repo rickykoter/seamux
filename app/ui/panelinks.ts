@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { IBufferLine, ILink, ILinkProvider, Terminal } from "@xterm/xterm";
 import { findBangs } from "./bang";
 import { DOCK_FILE, joinWrapped, route } from "./linkroute";
-import { openPage, sheet, type Shown } from "./sheet";
+import { linkSheet, type Shown } from "./sheet";
 
 /** A link under the pointer: the text it shows on its row, and how to
  *  follow it (`e` is the click, for its modifier keys). */
@@ -30,7 +30,8 @@ export async function openFile(path: string, at: { line?: number; col?: number }
   if (e?.shiftKey || !DOCK_FILE.test(path)) return void (await editor());
   const shown = await invoke<Shown>("link_file", { path }).catch(() => null);
   if (!shown) return void (await editor());
-  sheet().show(shown, editor, { workspace: await placeOf(id) });
+  const to = linkSheet({ workspace: await placeOf(id) });
+  to.sheet.show(shown, editor, to.place);
 }
 
 /** Path-like text: led by /, ~/, ./ or ../, or a name with a dot extension,
@@ -214,13 +215,13 @@ export async function follow(uri: string, id: number | null, e?: MouseEvent): Pr
   }
   // ⌘-click or Shift-click: the browser, always.
   if (how !== "browser" && !e?.shiftKey && !e?.metaKey) {
-    const workspace = await placeOf(id);
+    const to = linkSheet({ workspace: await placeOf(id) });
     if (how === "page") {
       const u = new URL(uri);
-      await openPage({ path: u.pathname + u.search, title: decodeURIComponent(u.pathname.split("/")[2] ?? ""), workspace });
+      await to.sheet.open({ path: u.pathname + u.search, title: decodeURIComponent(u.pathname.split("/")[2] ?? ""), ...to.place });
       return;
     }
-    sheet().openWeb(uri, { workspace });
+    to.sheet.openWeb(uri, to.place);
     return;
   }
   await invoke("open_url", { url: uri }).catch(() => {});
