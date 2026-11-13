@@ -6,6 +6,18 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **A command bash-guard refuses is handed to you to run.** In a pane of
+  the app's tmux, bash-guard keeps a record of the refused command. A banner
+  over Claude's prompt shows it whole with the reason, and the workspace's
+  Dock card moves to *needs you*. A git command can run in the chat (typed
+  as a `!` command, so Claude sees the output) or in the ⌘J shell. Anything
+  else is copy only, and a hook or signing bypass gets no banner. A force
+  push can also be allowed for its branch for the rest of the Claude
+  session; the app writes that allow, and bash-guard refuses commands and
+  edits that touch it. Dock buttons name the pane and the record's time, and
+  the app reads the command again from the record before it types.
+  bash-guard's state folder now follows `XDG_CACHE_HOME`, as the app's does.
+  ADRs 0094 to 0097.
 - **The reclaim wizard helps clear what blocks a reclaim.** A failed guard
   lists what is behind it (the changed files, the ignored files, the commits
   not in the base, the other workspaces) and offers its fixes: stash or

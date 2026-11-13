@@ -396,6 +396,32 @@ instead of making you merge it, then runs the staleness and breaking-change
 checks CI would, and stops before the push.
 [restack's README](restack/README.md).
 
+### bash-guard: refuse what destroys work, then hand it to you
+
+A PreToolUse hook on every Bash call. It refuses commands that destroy work,
+leak secrets or rewrite shared history, and tells Claude to ask you instead:
+`rm -rf` on a home or root folder, a force push, `git reset --hard`, `curl |
+sh`, `--no-verify`, destructive SQL and more.
+
+In a pane of the seamux app's own tmux, a refused command doesn't stop
+there. A banner over Claude's prompt shows the whole command and why it was
+refused, and the workspace's Dock card moves to *needs you* with the same
+choices:
+
+- **Run in chat** types it into Claude's prompt as a `!` command. It runs as
+  you, and Claude sees its output. It waits for Claude's turn to end and for
+  an empty prompt, and a command of more than one line runs only in the ⌘J
+  shell.
+- **Run in ⌘J** runs it in the companion shell, out of the conversation.
+- **Run and allow `<branch>` this session**, for a force push, also lets a
+  leased push to that branch through for the rest of the Claude session.
+- **Copy** and **Dismiss**.
+
+Run is offered for git commands only. Anything else is copy only, and a
+hook or signing bypass gets no banner at all. To always allow a force push
+to some branches, set `BASH_GUARD_FORCE_PUSH_BRANCHES` to a pattern in your
+settings' `env` block. ADRs 0094 to 0097 have the details.
+
 ### humanize: prose that reads like a person wrote it
 
 Rewrites prose to remove AI writing tells and untangle sentences that are
@@ -742,6 +768,12 @@ Read these before you rely on seamux.
   of your go-ahead. A determined process, or a determined agent, can get
   around a PreToolUse hook. Use the gate to keep honest work honest, not to
   contain something you don't trust.
+- **bash-guard's session allow is a file Claude could write.** The app
+  writes `~/.cache/cmux-crew/allow/<session>.json` when you allow a force
+  push for a session, and bash-guard trusts it. bash-guard refuses commands
+  and edits that name that folder, but an agent that sets out to could
+  still build the path from pieces. The allow covers only a leased push to
+  the branches you named, and only for that session.
 - **`crew-sandbox` copies your Claude login out of the macOS Keychain into
   the sandbox as a plaintext `.credentials.json`.** That's the only way a
   sandboxed session can be signed in, and it's deliberate, but it's a real
