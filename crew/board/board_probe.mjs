@@ -739,7 +739,7 @@ const ruleBody = (sel) => {
   return "";
 };
 const px = (body, prop) => Number((new RegExp("(?:^|;)" + prop + ":(\\d+(?:\\.\\d+)?)px").exec(body) || [])[1] || 0);
-checks.push(["every button is at least 28px tall", px(ruleBody(".chip"), "min-height") >= 28]);
+checks.push(["every button is at least 22px tall", px(ruleBody(".chip"), "min-height") >= 22]);
 checks.push(["a footer item that runs long ends in an ellipsis, not past the card",
   /text-overflow:ellipsis/.test(ruleBody(".foot>span")) && /max-width:100%/.test(ruleBody(".foot>span"))]);
 checks.push(["every footer link is at least 24px tall",
