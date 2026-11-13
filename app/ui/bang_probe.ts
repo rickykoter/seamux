@@ -2,7 +2,7 @@
 // (bang.ts), and where its links go (linkroute.ts), with no DOM. Node runs
 // this file as TypeScript.
 import { findBangs, findPrompt } from "./bang.ts";
-import { DOCK_FILE, route } from "./linkroute.ts";
+import { DOCK_FILE, joinWrapped, route } from "./linkroute.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
@@ -90,6 +90,26 @@ ok("link: the web is the browser's", route("https://github.com/a/b/pull/1", inte
 ok("link: a file URL is a file", route("file:///tmp/a.png", intent) === "file");
 ok("link: no intent server, a plan link is a dev page", route("http://127.0.0.1:7777/plan/x", null) === "local");
 ok("link: the Dock shows images, PDFs and Markdown", ["a.png", "b.JPG", "c.pdf", "README.md"].every((f) => DOCK_FILE.test(f)) && !DOCK_FILE.test("main.rs") && !DOCK_FILE.test("x.md.rs"));
+
+// ---- a path Claude wrapped onto the next row ------------------------------
+{
+  const cols = 40;
+  const rows = [
+    "- Markdown: /private/tmp/claude-501/scra",
+    "  tchpad/feature-test.md (expect it to",
+    "  fill the window)",
+  ];
+  for (const at of [0, 1]) {
+    const j = joinWrapped(rows, at, cols);
+    ok(`wrap: row ${at} reads the whole path`, j.text.includes("/private/tmp/claude-501/scratchpad/feature-test.md "), j.text);
+  }
+  const j = joinWrapped(rows, 1, cols);
+  const k = j.text.indexOf("tchpad");
+  ok("wrap: each character knows its row and column", j.at[k].row === 1 && j.at[k].i === 2 && j.at[0].row === 0, JSON.stringify(j.at[k]));
+  ok("wrap: a row whose last word is prose is not joined to the next", joinWrapped(rows, 2, cols).text === "  fill the window)", joinWrapped(rows, 2, cols).text);
+  const prose = ["a sentence that happens to fill the row.", "Next sentence starts here"];
+  ok("wrap: prose ending in a full stop does not join", joinWrapped(prose, 1, 40).text === prose[1], joinWrapped(prose, 1, 40).text);
+}
 
 let bad = 0;
 for (const [name, pass, detail] of checks) {
