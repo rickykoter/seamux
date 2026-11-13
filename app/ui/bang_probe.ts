@@ -36,6 +36,12 @@ ok("bang: a list item's", cmds("  - ! cargo test").join() === "cargo test");
   ok("bang: a heading about `!` is not a command; the code after it is", cmds(t, s).join("|") === "git log --oneline -3", cmds(t, s).join("|"));
   ok("bang: …and without colours, a row starting with a phrase is not one", cmds(t).length === 0, cmds(t).join("|"));
 }
+{
+  // Blank cells carry a default style of their own: the prose's is the shown text's.
+  const t = "run ! make test now        ";
+  const s = [...t].map((ch, i) => (i >= 4 && i <= 14 ? "2:110" : ch === " " && i > 18 ? "0:1" : "0:0"));
+  ok("bang: blank cells do not set the plain style", cmds(t, s).join() === "make test", cmds(t, s).join());
+}
 ok("bang: a closing full stop is not the command's", cmds("! make check.").join() === "make check");
 ok("bang: exclamations in prose are not commands", cmds("Done! That worked!").length === 0 && cmds("Great!! Next").length === 0);
 ok("bang: a `!` with nothing after is not a command", cmds("  ! ").length === 0 && cmds("! !").length === 0);
@@ -107,6 +113,8 @@ ok("link: the Dock shows images, PDFs and Markdown", ["a.png", "b.JPG", "c.pdf",
   const k = j.text.indexOf("tchpad");
   ok("wrap: each character knows its row and column", j.at[k].row === 1 && j.at[k].i === 2 && j.at[0].row === 0, JSON.stringify(j.at[k]));
   ok("wrap: a row whose last word is prose is not joined to the next", joinWrapped(rows, 2, cols).text === "  fill the window)", joinWrapped(rows, 2, cols).text);
+  const list = ["- see /private/tmp/claude-501/feature.md", "- next item in the list"];
+  ok("wrap: a list item after a path that fills the row is its own line", joinWrapped(list, 0, 40).text === list[0], joinWrapped(list, 0, 40).text);
   const prose = ["a sentence that happens to fill the row.", "Next sentence starts here"];
   ok("wrap: prose ending in a full stop does not join", joinWrapped(prose, 1, 40).text === prose[1], joinWrapped(prose, 1, 40).text);
 }

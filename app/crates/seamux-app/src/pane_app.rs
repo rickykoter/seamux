@@ -39,7 +39,12 @@ pub fn workspace(t: &Target) -> Option<String> {
     // took the whole window instead of opening beside the terminal.
     cmux.or_else(|| {
         let b = seamux_app::backend::get().ok()?;
-        b.panes(None).ok()?.into_iter().find_map(|p| {
+        let mut panes = b.panes(None).ok()?;
+        // The backend names a pane's session after it (seamux-<pane id>): that
+        // pane is asked about first, so a click costs one tmux call, not one per pane.
+        let s = t.session.to_lowercase();
+        panes.sort_by_key(|p| !s.contains(&p.id.to_lowercase()));
+        panes.into_iter().find_map(|p| {
             let pt = b.target(&p.id).ok()??;
             (pt.session == t.session && pt.socket == t.socket).then_some(p.workspace)
         })

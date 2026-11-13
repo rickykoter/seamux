@@ -49,7 +49,7 @@ export function findBangs(text: string, style?: readonly string[]): Bang[] {
     if (!FIRST.test(text[from] ?? "")) continue;
     // Drawn in its own colour, as Claude draws inline code: that colour's
     // run is the command, wherever it sits on the row.
-    const coded = !!style && style[i] !== undefined && style[i] !== plainOf(style);
+    const coded = !!style && style[i] !== undefined && style[i] !== plainOf(style, text);
     let end: number;
     if (quote) {
       // Quoted: up to the closing quote.
@@ -78,9 +78,13 @@ export function findBangs(text: string, style?: readonly string[]): Bang[] {
 /** The row's plain text's style: the terminal's default colour where the
  *  row has it (panelinks.ts keys a cell `<colour mode>:<colour>`, mode 0
  *  the default), else its most common style. */
-function plainOf(style: readonly string[]): string {
-  const dflt = style.find((s) => s.startsWith("0:"));
-  if (dflt) return dflt;
+function plainOf(style: readonly string[], text?: string): string {
+  // The most common default-colour style among the row's shown characters:
+  // a blank cell's style says nothing of the prose's.
+  const shown = style.filter((s, i) => !text || (text[i] ?? " ").trim() !== "");
+  const dflt = new Map<string, number>();
+  for (const s of shown) if (s.startsWith("0:")) dflt.set(s, (dflt.get(s) ?? 0) + 1);
+  if (dflt.size) return [...dflt].sort((a, b) => b[1] - a[1])[0][0];
   const n = new Map<string, number>();
   for (const s of style) n.set(s, (n.get(s) ?? 0) + 1);
   let best = "";

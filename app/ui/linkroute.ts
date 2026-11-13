@@ -36,6 +36,8 @@ function wrapsInto(top: string, next: string, cols: number): boolean {
   const t = top.trimEnd();
   const n = next.trimStart();
   const word = t.slice(t.lastIndexOf(" ") + 1);
+  // A list item's bullet ("- next") starts a line of its own, not a path's tail.
+  if (/^[-*•+]\s/.test(n)) return false;
   return t.length >= cols - 3 && word.includes("/") && PATH_CH.test(t[t.length - 1] ?? "") && PATH_CH.test(n[0] ?? "");
 }
 
