@@ -49,7 +49,7 @@ pulldown-cmark = { version = "0.12", default-features = false, features = ["html
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPanel", "NSResponder", "NSWorkspace", "NSRunningApplication", "NSEvent", "NSGraphics", "NSPasteboard", "NSPasteboardItem", "block2"] }
 block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSData", "NSArray"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSData", "NSArray", "NSURL"] }
 # tauri-plugin-notification's notifier, switched to UNUserNotificationCenter.
 # The default NSUserNotificationCenter path reports every banner as dismissed
 # within a second on current macOS (its deliveredNotifications check comes
