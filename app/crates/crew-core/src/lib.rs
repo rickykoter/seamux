@@ -14,6 +14,7 @@ pub mod cachefacts;
 pub mod costs;
 pub mod dp_engine;
 pub mod families;
+pub mod held;
 pub mod focus;
 pub mod history;
 pub mod home;

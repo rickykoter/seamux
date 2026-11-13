@@ -7,6 +7,7 @@
 
 mod bg_app;
 mod clip_app;
+mod held_app;
 mod links_app;
 mod newws_app;
 mod notify_app;
@@ -248,6 +249,8 @@ fn main() {
             bg_app::bg_stop,
             stop_app::pane_stop,
             stop_app::pane_stop_cancel,
+            held_app::pane_held,
+            held_app::held_act,
             links_app::link_file,
             pane_app::open_in_vscode,
             pane_app::term_look,

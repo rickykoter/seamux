@@ -181,3 +181,35 @@
 .ps-btn:hover { border-color: var(--accent); }
 .ps-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
 .ps-close:hover { color: var(--fg); background: var(--strip); }
+
+/* bash-guard held a command here (heldbanner.ts): over Claude's prompt, the
+   command, why, and Run / Copy / Dismiss. native.ts sets its bottom. */
+.pane-held {
+  position: absolute; z-index: 6; left: 12px; right: 12px; bottom: 8px; max-width: 760px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px;
+  background: var(--card); color: var(--fg); border: 1px solid var(--role-attend); box-shadow: 0 6px 24px var(--shade);
+  font: var(--fs-2)/1.4 -apple-system, system-ui, sans-serif;
+}
+.pane-held[hidden] { display: none; }
+.pane-held[data-kind="copy"] { border-color: var(--line); }
+.ph-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ph-icon { flex: none; fill: none; stroke: var(--role-attend-t); stroke-width: 1.4; stroke-linecap: round; }
+.ph-title { font-weight: 600; white-space: nowrap; }
+.ph-why { color: var(--muted); min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ph-cmd {
+  margin: 0; padding: 6px 8px; border-radius: 6px; max-height: 40vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  background: var(--term, var(--strip)); color: var(--term-fg, var(--fg)); font: var(--fs-1)/1.45 ui-monospace, Menlo, monospace;
+}
+.ph-more { align-self: flex-start; padding: 0; border: 0; background: none; color: var(--accent); font: var(--fs-1) -apple-system, system-ui, sans-serif; cursor: pointer; }
+.ph-more[hidden] { display: none; }
+.ph-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.ph-btn {
+  font: var(--fs-1) -apple-system, system-ui, sans-serif; padding: 3px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  background: var(--strip); color: var(--fg); border: 1px solid var(--line);
+}
+.ph-btn.main { background: color-mix(in srgb, var(--accent) 16%, var(--strip)); }
+.ph-btn:hover { border-color: var(--accent); }
+.ph-btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.ph-btn[aria-disabled="true"]:hover { border-color: var(--line); }
+.ph-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.ph-close:hover { color: var(--fg); background: var(--strip); }
