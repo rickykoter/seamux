@@ -70,6 +70,26 @@ pub fn file_url_path(url: &str) -> Option<String> {
     Some(if p.len() > 1 { p.trim_end_matches('/').to_string() } else { p })
 }
 
+/// Whether `url` is a file reference URL (`file:///.file/id=…`), which names
+/// a file by its volume and inode, not its path. Finder copies these.
+pub fn is_file_reference(url: &str) -> bool {
+    url.strip_prefix("file://").map(|r| r.strip_prefix("localhost").unwrap_or(r)).is_some_and(|r| r.starts_with("/.file/id="))
+}
+
+/// A file URL off the pasteboard as the path it names. A file reference
+/// URL is resolved by Foundation to the file's path now (None if the file
+/// is gone); any other file URL is decoded as written.
+#[cfg(target_os = "macos")]
+fn local_path(url: &str) -> Option<String> {
+    if !is_file_reference(url) {
+        return file_url_path(url);
+    }
+    use objc2_foundation::{NSString, NSURL};
+    let u = NSURL::URLWithString(&NSString::from_str(url))?;
+    let p = u.filePathURL()?.path()?.to_string();
+    p.starts_with('/').then_some(p)
+}
+
 /// A new file name for a pasted image, unique within the second.
 fn image_name(n: u32) -> String {
     let ms = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
@@ -111,7 +131,7 @@ fn read() -> Result<Clip, String> {
     if let Some(items) = pb.pasteboardItems() {
         for item in items.iter() {
             if let Some(u) = item.stringForType(unsafe { NSPasteboardTypeFileURL }) {
-                if let Some(p) = file_url_path(&u.to_string()) {
+                if let Some(p) = local_path(&u.to_string()) {
                     paths.push(p);
                 }
             }
@@ -172,6 +192,32 @@ mod tests {
         assert_eq!(file_url_path("file:///caf%C3%A9.txt").as_deref(), Some("/café.txt"));
         assert_eq!(file_url_path("https://example.com/a"), None);
         assert_eq!(file_url_path("file://host/a"), None);
+    }
+
+    #[test]
+    fn a_file_reference_is_told_from_a_path() {
+        assert!(is_file_reference("file:///.file/id=6571367.39877705"));
+        assert!(is_file_reference("file://localhost/.file/id=1.2"));
+        assert!(!is_file_reference("file:///Users/me/a.png"));
+        assert!(!is_file_reference("https://x/.file/id=1"));
+    }
+
+    /// A real file's reference URL resolves to its path, as Finder's copy needs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_reference_resolves_to_its_path() {
+        use objc2_foundation::{NSString, NSURL};
+        let dir = std::env::temp_dir().join(format!("seamux-ref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("shot one.png");
+        std::fs::write(&f, b"x").unwrap();
+        let real = std::fs::canonicalize(&f).unwrap().to_string_lossy().into_owned();
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&real));
+        let reference = url.fileReferenceURL().and_then(|r| r.absoluteString()).map(|s| s.to_string()).unwrap();
+        assert!(is_file_reference(&reference), "{reference}");
+        assert_eq!(local_path(&reference).as_deref(), Some(real.as_str()));
+        assert_eq!(local_path("file:///tmp/plain%20name.png").as_deref(), Some("/tmp/plain name.png"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
