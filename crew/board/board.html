@@ -553,6 +553,13 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    card's first button turned the board into a wall of colour. Actionable
    signals (CI, allow, deny, a ticket) join the row as ghosts in their own
    colour. Labels stay bare text: intent.js reads a chip's verb off its label. */
+/* A command bash-guard held (render.js heldOf): one line until a click opens
+   it, then the whole of what the card has, wrapped. */
+.held{margin-top:4px;padding:3px 8px;border-radius:6px;border:1px solid var(--edge);cursor:pointer;min-width:0}
+.held .hc{display:block;font:var(--fs-2)/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.held.open .hc{white-space:pre-wrap;word-break:break-all;max-height:40vh;overflow:auto}
+.held .hm{display:block;margin-top:2px;color:inherit;font:italic var(--fs-1)/1.3 system-ui}
 .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .chip{display:inline-flex;align-items:center;min-height:22px;padding:0 8px;border-radius:6px;
   border:1px solid var(--edge);background:transparent;color:var(--fg);

@@ -18,6 +18,7 @@ import { findPrompt, type Prompt } from "./bang";
 import { BangMenu } from "./bangmenu";
 import { BgStrip } from "./bgstrip";
 import { StopBanner } from "./stopbanner";
+import { HeldBanner, type HeldAct } from "./heldbanner";
 import { bangLinks, follow, HoverCard, pathLinks, screenRows, type Hovered } from "./panelinks";
 import { PaneCat } from "./panecat";
 
@@ -172,6 +173,27 @@ function copied(text: string): string {
 /** How long an unseen terminal stays attached: a tab flick keeps it. */
 const DETACH_AFTER = 1500;
 
+/** The Dock's answer to a command bash-guard held in `pane` (a card's run
+ *  held, copy held or dismiss held), given once the Dock has brought that
+ *  pane forward: its terminal is found as it attaches, then answers as its
+ *  banner would, on the record seen at `at`. */
+export async function answerHeld(pane: string, what: HeldAct, at: number): Promise<boolean | null> {
+  const want = pane.toLowerCase();
+  for (let i = 0; i < 30; i++) {
+    const t = [...live].find((x) => x.pane.toLowerCase() === want && x.attached);
+    if (t) {
+      // A pane just shown draws its screen a moment after it attaches, and
+      // Run in chat reads Claude's prompt off that screen.
+      if (i > 0) await new Promise((r) => setTimeout(r, 300));
+      return t.held(what, at);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  // The pane never showed: null, so the Dock says so (a refusal the pane
+  // made has already been said there).
+  return null;
+}
+
 export class NativeTerm {
   /** The tmux client ended (the session closed, or it never attached). */
   onExit: () => void = () => {};
@@ -225,6 +247,8 @@ export class NativeTerm {
   private bg: BgStrip;
   /** Over the pane while an API error has its turn stopped. */
   private stopBanner: StopBanner;
+  /** Over Claude's prompt while bash-guard holds a command it refused here. */
+  private heldBanner: HeldBanner;
   /** Beside Claude's prompt in bash mode: run it in the ⌘J shell instead. */
   private bashChip = document.createElement("button");
   /** Claude's prompt as last read off the screen (buffer row, 1-based, in
@@ -267,7 +291,15 @@ export class NativeTerm {
       if (this.visible()) this.fit.fit();
     };
     this.stopBanner = new StopBanner({ type: (line) => this.typeLine(line), say: (t) => this.say(t) });
-    this.el.append(this.screen, this.bg.el, this.bg.list, this.stopBanner.el, this.pill, this.note, this.cat.el, this.bashChip);
+    this.heldBanner = new HeldBanner({
+      ready: () => this.promptFree(),
+      chat: (cmd) => this.runInChat(cmd),
+      shell: (cmd) => this.runInShell(cmd),
+      copy: (cmd) => void invoke("copy_text", { text: cmd }).then(() => this.say("Copied"), () => this.say("Couldn't copy")),
+      say: (t) => this.say(t),
+    });
+    this.heldBanner.onChange = () => this.placeHeld();
+    this.el.append(this.screen, this.bg.el, this.bg.list, this.stopBanner.el, this.heldBanner.el, this.pill, this.note, this.cat.el, this.bashChip);
     this.bang = new BangMenu(this.el, {
       chat: (cmd) => this.runInChat(cmd),
       shell: (cmd) => this.runInShell(cmd),
@@ -381,7 +413,7 @@ export class NativeTerm {
         // The pane's overlays take their own clicks (this runs first, on the
         // way down). A click anywhere else closes a `!` command's menu.
         const on = e.target instanceof Node ? e.target : null;
-        if (on && [this.bang.el, this.bg.el, this.bg.list, this.stopBanner.el, this.bashChip].some((x) => x.contains(on))) return;
+        if (on && [this.bang.el, this.bg.el, this.bg.list, this.stopBanner.el, this.heldBanner.el, this.bashChip].some((x) => x.contains(on))) return;
         if (!this.link) this.bang.hide();
         if (!this.link || e.button !== 0 || e.metaKey || e.altKey) return;
         // The screen may have moved under a still pointer: only a link still
@@ -473,6 +505,7 @@ export class NativeTerm {
       const rowPx = (this.term.element?.querySelector(".xterm-screen")?.clientHeight ?? this.screen.clientHeight) / Math.max(1, this.term.rows);
       this.bashChip.style.top = `${this.screen.offsetTop + p.row * rowPx + (rowPx - 18) / 2}px`;
     }
+    this.placeHeld();
     return this.promptNow;
   }
 
@@ -493,14 +526,15 @@ export class NativeTerm {
 
   /** Type `! cmd` into Claude's empty prompt and send it, as bash mode
    *  runs it: its output joins the conversation. A draft is never touched. */
-  private runInChat(cmd: string): void {
-    if (!this.promptFree()) return;
+  private runInChat(cmd: string): boolean {
+    if (!this.promptFree()) return false;
     this.send({ data: "!" }, true);
     this.pause(80);
     this.send({ data: cmd }, true);
     this.pause(80);
     this.send({ data: "\r" }, true);
     this.term.focus();
+    return true;
   }
 
   /** Type a line into Claude's empty prompt and send it ("continue", "/login"). */
@@ -513,13 +547,51 @@ export class NativeTerm {
   }
 
   /** Run `cmd` in the ⌘J shell, shown. */
-  private runInShell(cmd: string): void {
+  private runInShell(cmd: string): Promise<boolean> {
     const id = this.id;
-    if (id === null) return;
-    this.keys = this.keys.then(() => invoke("pty_shell_run", { id, cmd })).then(
-      () => this.say("Running in the ⌘J shell"),
-      (err) => this.say(`Couldn't run it: ${err}`),
+    if (id === null) return Promise.resolve(false);
+    const ran = this.keys.then(() => invoke("pty_shell_run", { id, cmd })).then(
+      () => {
+        this.say("Running in the ⌘J shell");
+        return true;
+      },
+      (err) => {
+        this.say(`Couldn't run it: ${err}`);
+        return false;
+      },
     );
+    this.keys = ran;
+    return ran;
+  }
+
+  /** The held banner sits just over Claude's prompt (the rule line above
+   *  it), or at the pane's foot while the prompt is off screen. */
+  private placeHeld(): void {
+    if (this.heldBanner.el.hidden) return;
+    const p = this.promptNow;
+    if (p.kind === "none") {
+      this.heldBanner.el.style.bottom = "8px";
+      return;
+    }
+    const rowPx = (this.term.element?.querySelector(".xterm-screen")?.clientHeight ?? this.screen.clientHeight) / Math.max(1, this.term.rows);
+    const ruleTop = this.screen.offsetTop + Math.max(0, p.row - 1) * rowPx;
+    this.heldBanner.el.style.bottom = `${Math.max(8, this.el.clientHeight - ruleTop + 4)}px`;
+  }
+
+  /** The Dock's answer to the command held in this pane (its card's
+   *  buttons): the same as the banner's, on the record seen at `at`. */
+  held(what: HeldAct, at: number): Promise<boolean> {
+    return this.heldBanner.answer(what, at);
+  }
+
+  /** The pane on show in this terminal. */
+  get pane(): string {
+    return this.surface;
+  }
+
+  /** Attached to its pane's tty, so keys reach it. */
+  get attached(): boolean {
+    return this.id !== null;
   }
 
   /** Claude's prompt is in bash mode: its command goes to the ⌘J shell
@@ -709,6 +781,7 @@ export class NativeTerm {
     this.surface = surface;
     this.bg.watch(surface);
     this.stopBanner.watch(surface);
+    this.heldBanner.watch(surface);
     this.cat.reset();
     delete this.el.dataset.agent;
     if (this.opened) this.term.reset();
@@ -720,6 +793,7 @@ export class NativeTerm {
   stop(): void {
     this.bg.watch("");
     this.stopBanner.watch("");
+    this.heldBanner.watch("");
     this.bang.hide();
     this.bashChip.hidden = true;
     this.detach();

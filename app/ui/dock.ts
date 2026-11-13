@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { MigrateBanner } from "./migrate";
+import { answerHeld } from "./native";
 import { NewWorkspace } from "./newws";
 import { sprite } from "./panecat";
 import { ReclaimWizard } from "./reclaim";
@@ -18,7 +19,7 @@ import { Tray } from "./tray";
 
 /** A sub-agent's transcript page or a run's page, as the board names them. */
 const AGENT_PAGE = /^\/(agent|run)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$|^\/runs\/[A-Za-z0-9_-]+$/;
-import { setLevel, setResume, type Levels } from "./tuck";
+import { say, setLevel, setResume, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./tiles";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
@@ -147,6 +148,18 @@ export class DockView {
         const ws = d.ws;
         this.select(ws, true);
         void this.sheet.open({ path: g.path, title: typeof g.title === "string" && g.title ? g.title : "Agent", workspace: ws });
+      }
+      // A held command's run held, copy held or dismiss held (ADR 0094):
+      // that pane forward, then its own banner answers, from the record it
+      // reads again. The message names the pane and the record's time only.
+      const h = d as { act?: unknown; at?: unknown } | null;
+      if (d?.crew === "held" && typeof d.ws === "string" && d.ws && typeof d.pane === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(d.pane) &&
+          (h?.act === "run" || h?.act === "copy" || h?.act === "dismiss") && typeof h.at === "number" && Number.isFinite(h.at)) {
+        const pane = d.pane, act = h.act, at = h.at;
+        this.select(d.ws, true, "any", pane);
+        void answerHeld(pane, act, at).then((r) => {
+          if (r === null) say("Couldn't open that pane to answer: answer from its banner", undefined, true);
+        });
       }
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;
@@ -280,7 +293,7 @@ export class DockView {
   private tell(): void {
     const peek = !!this.peek && this.peek === this.ws;
     if (this.frame?.contentWindow && this.origin)
-      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs"], peek, sprite: sprite.get() }, this.origin);
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs", "held"], peek, sprite: sprite.get() }, this.origin);
   }
 
   private draw(): void {

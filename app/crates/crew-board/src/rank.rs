@@ -370,6 +370,9 @@ struct Ctx {
     /// Per workspace (upper-cased id), the background sub-agents and
     /// workflows its panes' sessions still run.
     background: std::collections::HashMap<String, Vec<crew_core::status::Background>>,
+    /// Per workspace (upper-cased id), the commands bash-guard holds in its
+    /// panes for the person (crew_core::held), newest first.
+    held: std::collections::HashMap<String, Vec<crew_core::held::Held>>,
     cost_map: Map<String, Value>,
     jmap: Map<String, Value>,
     stuck_t: f64,
@@ -464,6 +467,34 @@ pub fn background_by_ws(panes: &[crew_core::status::Pane]) -> std::collections::
     out
 }
 
+/// Each workspace's held commands (crew_core::held), across its panes,
+/// newest first, keyed by the upper-cased workspace id. A record whose pane
+/// has moved on is dropped (and deleted) on the way. `dir` is the folder
+/// bash-guard and the app's banner use (crew_core::home::xdg_cache, which
+/// follows XDG_CACHE_HOME), so the card and the banner read the same record.
+pub fn held_by_ws(dir: &std::path::Path, panes: &[crew_core::status::Pane]) -> std::collections::HashMap<String, Vec<crew_core::held::Held>> {
+    let mut out: std::collections::HashMap<String, Vec<crew_core::held::Held>> = std::collections::HashMap::new();
+    for p in panes {
+        if let Some(h) = crew_core::held::for_pane(dir, p.key(), Some(p)) {
+            out.entry(p.ws.to_ascii_uppercase()).or_default().push(h);
+        }
+    }
+    for v in out.values_mut() {
+        v.sort_by_key(|h| std::cmp::Reverse(h.at));
+    }
+    out
+}
+
+/// What a card says of a held command: the reason in its markup, and the
+/// command for its row, clipped (the pane's banner shows it whole).
+pub fn held_row(h: &crew_core::held::Held) -> Value {
+    const CLIP: usize = 600;
+    let clipped: String = h.command.chars().take(CLIP).collect();
+    json!({"pane": h.pane, "at": h.at, "reason": h.reason, "kind": h.kind, "command": clipped,
+           "clipped": h.command.chars().count() > CLIP, "lines": h.command.lines().count().max(1),
+           "run": h.runnable(), "chat": h.chat()})
+}
+
 /// A working card's badge while background work runs: short, so it fits
 /// the card's head. What is running is named in the said line.
 fn background_badge(bg: &[crew_core::status::Background]) -> String {
@@ -495,7 +526,7 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
     let panes = crew_core::status::all(&dir);
     let quiet = quiet_by_ws(&panes, (crew_core::py::now() * 1000.0) as u64,
                             crew_core::status::silent_threshold_ms(), &|p| crew_core::status::activity(&dir, p.key()));
-    rank_with(wss, plan_by_root, screens, quiet, background_by_ws(&panes))
+    rank_with_held(wss, plan_by_root, screens, quiet, background_by_ws(&panes), held_by_ws(&crew_core::home::xdg_cache(), &panes))
 }
 
 /// rank() with the quiet panes and background tasks given, so a test needs
@@ -503,6 +534,14 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
 pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool,
                  silent: std::collections::HashMap<String, Quiet>,
                  background: std::collections::HashMap<String, Vec<crew_core::status::Background>>) -> (Vec<Value>, Vec<Value>) {
+    rank_with_held(wss, plan_by_root, screens, silent, background, std::collections::HashMap::new())
+}
+
+/// rank_with, and the commands bash-guard holds (held_by_ws).
+pub fn rank_with_held(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool,
+                      silent: std::collections::HashMap<String, Quiet>,
+                      background: std::collections::HashMap<String, Vec<crew_core::status::Background>>,
+                      held: std::collections::HashMap<String, Vec<crew_core::held::Held>>) -> (Vec<Value>, Vec<Value>) {
     let cwds: Vec<String> = wss.iter()
         .filter(|w| truthy(get(w, "cwd")))
         .map(|w| py_str(get(w, "cwd")))
@@ -513,6 +552,7 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
     let ctx = Ctx {
         silent,
         background,
+        held,
         cost_map: costs::costs_for(&cwds),
         jmap: judgments::fresh_map(None, None),
         stuck_t: judgments::stuck_threshold(),
@@ -557,10 +597,18 @@ pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool
         let blocked = plan.map(|p| get(progress(p), "blocked")).filter(|b| truthy(b));
 
         let stuck: Vec<&crew_core::status::Background> = bg.iter().filter(|b| !b.waiting.is_empty()).collect();
+        let held = ctx.held.get(&py_str(get(w, "id")).to_ascii_uppercase()).and_then(|v| v.first());
         if has(d, "phase:waiting") {
             (kind, badge) = (Some("attend"), "asked you");
             said = "Waiting on an answer.".into();
             chips = vec!["jump".into()];
+        } else if let Some(h) = held {
+            // bash-guard refused a command and holds it for you: run it,
+            // copy it or let it go, from the card or the pane's banner.
+            (kind, badge) = (Some("attend"), "held");
+            said = format!("bash-guard held a command: {{{{{}}}}}.", h.reason.replace("{{", "{ {").replace("}}", "} }"));
+            chips = if h.runnable() { vec!["run held".into(), "copy held".into(), "dismiss held".into()] }
+                    else { vec!["copy held".into(), "dismiss held".into()] };
         } else if !stuck.is_empty() {
             // A background agent stopped on a permission prompt: only you
             // can let it go on.
@@ -744,7 +792,7 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         };
 
         chips.push("wake".into());
-        if screens && matches!(kind, "attend" | "running" | "wilt") {
+        if screens && held.is_none() && matches!(kind, "attend" | "running" | "wilt") {
             let live = state::last_line(&py_str(get(w, "id")));
             if !live.is_empty() {
                 said = format!("`{live}`");
@@ -765,6 +813,9 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             r.insert("silent_ms".into(), json!(ms));
         }
         r.insert("chips".into(), json!(chips));
+        if let Some(h) = held {
+            r.insert("held".into(), held_row(h));
+        }
         r.insert("frac".into(), frac(plan));
         r.insert("meta".into(), json!(meta_bits.join(" · ")));
         r.insert("urgency".into(), pyjson::float(judgments::urgency_for(w, &ctx.jmap)));
@@ -1000,6 +1051,31 @@ mod tests {
         let (rows, _) = rank_with(&wss, &Map::new(), false, Default::default(), bg);
         assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("attend"), Some("agent needs you")));
         assert_eq!(rows[0]["said"], "{{Lookout review}} is waiting on a permission prompt.");
+    }
+
+    #[test]
+    fn a_command_bash_guard_holds_makes_the_card_need_you() {
+        use crew_core::held::Held;
+        let wss = vec![json!({"id": "w-h", "title": "h", "cwd": "/w/h", "desc": "phase:working", "running": true}),
+                       json!({"id": "w-c", "title": "c", "cwd": "/w/c", "desc": "phase:working", "running": true})];
+        let held = |kind: &str, reason: &str, command: &str, at: u64| Held {
+            pane: "P1".into(), workspace: "w-h".into(), session: "s1".into(), reason: reason.into(), kind: kind.into(),
+            command: command.into(), at, ..Default::default()
+        };
+        let mut by = std::collections::HashMap::new();
+        by.insert("W-H".to_string(), vec![held("run", "git reset --hard", "git reset --hard HEAD~1", 9)]);
+        by.insert("W-C".to_string(), vec![held("copy", "curl | sh", &"x".repeat(700), 3)]);
+        let (rows, _) = rank_with_held(&wss, &Map::new(), true, Default::default(), Default::default(), by);
+        let row = |id: &str| rows.iter().find(|r| r["id"] == id).unwrap();
+        let h = row("w-h");
+        assert_eq!((h["kind"].as_str(), h["badge"].as_str()), (Some("attend"), Some("held")));
+        assert_eq!(h["said"], "bash-guard held a command: {{git reset --hard}}.", "the screen's last line does not replace it");
+        assert_eq!(h["chips"].as_array().unwrap()[..3], [json!("run held"), json!("copy held"), json!("dismiss held")]);
+        assert_eq!((h["held"]["pane"].as_str(), h["held"]["at"].as_u64(), h["held"]["run"].as_bool()), (Some("P1"), Some(9), Some(true)));
+        // Copy only: no run chip, and a long command is clipped for the card.
+        let c = row("w-c");
+        assert!(!c["chips"].as_array().unwrap().contains(&json!("run held")));
+        assert_eq!((c["held"]["clipped"].as_bool(), c["held"]["command"].as_str().map(str::len)), (Some(true), Some(600)));
     }
 
     #[test]

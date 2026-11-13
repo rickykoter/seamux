@@ -34,7 +34,10 @@ function __boardRender(d) {
     "wake": "Open the Wake: what this workspace's sessions left behind",
     "prs": "Open the Wake on this workspace's pull requests",
     "adapter": "Open a new session in this worktree that writes a seamux adapter for this work",
-    "runs": "Open every background agent and run this session started"
+    "runs": "Open every background agent and run this session started",
+    "run held": "Run the command bash-guard held, as you: typed into Claude's prompt as a ! command, so Claude sees its output",
+    "copy held": "Copy the command bash-guard held",
+    "dismiss held": "Let it go: Claude carries on without it"
   };
 
   function esc(s) {
@@ -476,7 +479,7 @@ function __boardRender(d) {
     var fill = fills(a);
     var out = chipsOf(a).map(function (c, i) {
       return '<span class="chip' + (i === 0 && fill ? " pri" : "") +
-        '" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
+        '"' + heldAttrs(a, c) + ' title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     });
     var arm = armedChip(a);
     if (arm) out.push(arm);
@@ -1009,7 +1012,31 @@ function __boardRender(d) {
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
-    return (a.said || a.limited || reasonOf(a) ? '<p class="said">' + saidOf(a) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a, true);
+    return (a.said || a.limited || reasonOf(a) ? '<p class="said">' + saidOf(a) + "</p>" : "") + heldOf(a) + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a, true);
+  }
+
+  // A command bash-guard held in one of the card's panes (rank.rs held_row):
+  // its first line, and the whole of what the card has on a click. The card's
+  // own copy is clipped; the pane's banner shows it whole. Which one is open
+  // lives on the host, so a push keeps it open (intent.js heldFold).
+  function heldKey(h) { return String(h.pane || "") + ":" + String(h.at || 0); }
+  function heldOf(a) {
+    var h = a.held;
+    if (!h || !h.command) return "";
+    var key = heldKey(h), open = (host.getAttribute("data-held-open") || "") === key;
+    var long = (h.lines || 1) > 1 || !!h.clipped || String(h.command).length > 80;
+    return '<div class="held' + (open ? " open" : "") + '" data-a="heldfold" data-x="' + esc(key) + '"' +
+      (long ? ' title="' + (open ? "Fold" : "Show the whole command") + '"' : "") + ">" +
+      '<code class="hc">' + esc(h.command) + "</code>" +
+      (open && h.clipped ? '<span class="hm">… the pane shows the rest</span>' : "") + "</div>";
+  }
+  // A held row's chip carries what it answers: the act, the pane, and the
+  // record's time, so a newer block is never answered by an old click.
+  var HELD_ACT = { "run held": "run", "copy held": "copy", "dismiss held": "dismiss" };
+  function heldAttrs(a, c) {
+    var act = HELD_ACT[c];
+    if (!act || !a.held) return "";
+    return ' data-a="held" data-x="' + esc(act + "|" + a.held.pane + "|" + a.held.at) + '"';
   }
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot

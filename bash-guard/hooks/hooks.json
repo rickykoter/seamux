@@ -1,11 +1,17 @@
 {
-  "description": "bash-guard: refuse destructive shell commands before the Bash tool runs them",
+  "description": "bash-guard: refuse destructive shell commands before the Bash tool runs them, and edits to the session allow folder",
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_bash.sh\"", "timeout": 5 }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_write.sh\"", "timeout": 5 }
         ]
       }
     ]
