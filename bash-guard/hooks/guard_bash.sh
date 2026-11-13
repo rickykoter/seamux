@@ -72,14 +72,34 @@ shell_command() {
 # in the transcript), and only an unreadable payload goes unchecked, loudly.
 # Failing closed instead would refuse every Bash call on a machine without
 # python3, which would make the session unusable rather than safer.
+#
+# Besides the command, the payload's session_id and cwd are read: a held
+# record names them, and a session's force-push allow is keyed by the session.
+# python3 prints them on the first two lines, then the command; a cwd with a
+# newline in it is dropped rather than misread.
+NL0=$'\n'
 cmd=""
 read_by=""
+sid=""
+pcwd=""
 if command -v python3 >/dev/null 2>&1; then
-  if cmd="$(printf '%s' "$payload" | python3 -c 'import json,sys
+  if got="$(printf '%s' "$payload" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 c=(d.get("tool_input") or {}).get("command","")
-sys.stdout.write(c if isinstance(c,str) else str(c))' 2>/dev/null)"; then
+s=d.get("session_id") or ""
+w=d.get("cwd") or ""
+s=s if isinstance(s,str) and "\n" not in s else ""
+w=w if isinstance(w,str) and "\n" not in w else ""
+sys.stdout.write(s+"\n"+w+"\n"+(c if isinstance(c,str) else str(c))+".")' 2>/dev/null)"; then
     read_by=python3
+    # read, not ${got%%"$NL0"*}: bash 3.2 makes those quadratic on a long
+    # command. The trailing dot keeps an empty command from reading as the
+    # cwd; the command's own trailing newlines go, as $( ) took them before.
+    { IFS= read -r sid; IFS= read -r pcwd; IFS= read -r -d '' cmd; } <<<"$got"
+    # <<< added a newline after the dot.
+    cmd="${cmd%"$NL0"}"
+    cmd="${cmd%.}"
+    while [ "${cmd%"$NL0"}" != "$cmd" ]; do cmd="${cmd%"$NL0"}"; done
   else
     why="python3 could not parse the hook payload"
   fi
@@ -93,7 +113,13 @@ if [ -z "$read_by" ]; then
     printf 'bash-guard: %s, and the plain-shell fallback found no command: NOT checked\n' "$why" >&2
     exit 0
   fi
+  # The fallback reads the two plain fields only when they hold no escapes.
+  # Inside the command's JSON string every quote is escaped, so `"cwd"` there
+  # never reads as the key.
+  [[ "$payload" =~ \"session_id\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9_-]+)\" ]] && sid="${BASH_REMATCH[1]}"
+  [[ "$payload" =~ \"cwd\"[[:space:]]*:[[:space:]]*\"([^\"\\]*)\" ]] && pcwd="${BASH_REMATCH[1]}"
 fi
+[[ "$sid" =~ ^[A-Za-z0-9_-]{1,128}$ ]] || sid=""
 [ -n "$cmd" ] || exit 0
 
 # A JSON string of $1: backslash, quote and control characters escaped, so
@@ -114,26 +140,80 @@ json_str() {
   printf '"%s"' "$out"
 }
 
+# crew's state folder, where the app reads what bash-guard writes: the same
+# place crew-core's xdg_cache() names.
+state_dir="${XDG_CACHE_HOME:-${HOME}/.cache}/cmux-crew"
+
+# What a held record lets the person do with a blocked command (ADR 0095):
+# run it (the git blocks), only copy it (the rest), or nothing (a hook or
+# signing bypass, or a touch of the allow folder): no held record then.
+held_kind() {
+  case "$1" in
+    "git push --force" | "git reset --hard" | "git checkout/restore -- "* | \
+      "git switch --discard-changes"* | "git clean -f" | "git branch -D"*) printf run ;;
+    "--no-verify"* | "the session allow"*) printf none ;;
+    *) printf copy ;;
+  esac
+}
+
+# The command as a JSON string, at most held_max bytes of it. python3
+# escapes it in one pass; the plain-shell json_str walks it a character at a
+# time, so without python3 the record keeps less.
+held_max=16384
+command -v python3 >/dev/null 2>&1 || held_max=2000
+held_cmd_json() {
+  if [ "$held_max" -gt 2000 ]; then
+    printf '%s' "$cmd" | python3 -c 'import json,sys
+b=sys.stdin.buffer.read()[:int(sys.argv[1])]
+sys.stdout.write(json.dumps(b.decode("utf-8","ignore")))' "$held_max" 2>/dev/null && return 0
+  fi
+  json_str "${cmd:0:2000}"
+}
+
+# write_state NAME TEXT: TEXT into the state folder as NAME, whole or not at
+# all (a temp file moved into place).
+write_state() {
+  local tmp="$state_dir/.$1.$$"
+  mkdir -p "$state_dir" 2>/dev/null || return 0
+  if printf '%s\n' "$2" >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$state_dir/$1" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+}
+
 # How a block reaches the person. In cmux, cmux notify. In a pane of the
-# seamux app's own tmux (SEAMUX_BACKEND=tmux), a file in crew's state folder,
-# blocked-<pane>.json, which the app posts and deletes: bash-guard never
-# calls the app (ADR 0004).
+# seamux app's own tmux (SEAMUX_BACKEND=tmux), files in crew's state folder:
+# blocked-<pane>.json, which the app posts as a banner and deletes (ADR 0053),
+# and held-<pane>.json, the whole command with the session and the folder,
+# which the pane's banner and the Dock card offer to run, copy or dismiss
+# until the person acts (ADR 0097). bash-guard never calls the app (ADR 0004).
+# held_branch is a force push's destination, when check_segment found one.
+held_branch=""
 tell_block() {
-  local reason="$1" body key dir tmp
+  local reason="$1" kind="$2" body key cut=false branch=null
   body="$(printf '%s' "$cmd" | head -c 200)"
   if [ "${SEAMUX_BACKEND:-}" = tmux ]; then
     key="${SEAMUX_PANE_ID:-${SEAMUX_WORKSPACE_ID:-}}"
     [[ "$key" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || return 0
-    dir="${HOME}/.cache/cmux-crew"
-    mkdir -p "$dir" 2>/dev/null || return 0
-    tmp="$dir/.blocked-$key.$$"
-    if printf '{"pane": %s, "workspace": %s, "reason": %s, "command": %s, "at": %s}\n' \
+    write_state "blocked-$key.json" "$(printf '{"pane": %s, "workspace": %s, "reason": %s, "command": %s, "at": %s}' \
       "$(json_str "${SEAMUX_PANE_ID:-}")" "$(json_str "${SEAMUX_WORKSPACE_ID:-}")" \
-      "$(json_str "$reason")" "$(json_str "$body")" "$(date +%s)" >"$tmp" 2>/dev/null; then
-      mv -f "$tmp" "$dir/blocked-$key.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-    else
-      rm -f "$tmp" 2>/dev/null
+      "$(json_str "$reason")" "$(json_str "$body")" "$(date +%s)")"
+    # Nothing to offer: an earlier block's record must not stay on offer
+    # either, since it is no longer what this pane was last refused.
+    if [ "$kind" = none ]; then
+      rm -f "$state_dir/held-$key.json" 2>/dev/null
+      return 0
     fi
+    # A cut command is not the one Claude ran: it can only be copied.
+    if [ "${#cmd}" -gt "$held_max" ]; then
+      cut=true
+      kind=copy
+    fi
+    [ -z "$held_branch" ] || branch="$(json_str "$held_branch")"
+    write_state "held-$key.json" "$(printf '{"pane": %s, "workspace": %s, "session": %s, "cwd": %s, "reason": %s, "kind": "%s", "command": %s, "truncated": %s, "branch": %s, "at": %s}' \
+      "$(json_str "${SEAMUX_PANE_ID:-}")" "$(json_str "${SEAMUX_WORKSPACE_ID:-}")" "$(json_str "$sid")" \
+      "$(json_str "$pcwd")" "$(json_str "$reason")" "$kind" "$(held_cmd_json)" "$cut" "$branch" "$(date +%s)")"
     return 0
   fi
   if command -v cmux >/dev/null 2>&1 && [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
@@ -141,9 +221,32 @@ tell_block() {
   fi
 }
 
+# block REASON records a reason and the checks go on; finish_block, once they
+# are all done, refuses the command. Every reason is known by then, so the
+# held record's kind is the strictest of them: `git push --force && git commit
+# --no-verify` must not be offered to run because its first check is a push.
+reasons=()
+pushes_held=0
 block() {
-  reason="$1"
-  tell_block "$reason"
+  local r
+  for r in "${reasons[@]-}"; do [ "$r" != "$1" ] || return 0; done
+  reasons+=("$1")
+}
+
+finish_block() {
+  local r k kind=run reason=""
+  for r in "${reasons[@]}"; do
+    reason="${reason:+$reason; }$r"
+    k="$(held_kind "$r")"
+    case "$kind:$k" in
+      *:none) kind=none ;;
+      run:copy) kind=copy ;;
+    esac
+  done
+  # A force push's branch is offered for an allow only when the push is all
+  # that was blocked.
+  [ "$reason" = "git push --force" ] || held_branch=""
+  tell_block "$reason" "$kind"
   printf 'Blocked by bash-guard: %s\nCommand: %s\nIf this is intentional, ask the user to run it manually.\n' \
     "$reason" "$cmd" >&2
   exit 2
@@ -405,6 +508,81 @@ allowed_force_push() {
   return $ok
 }
 
+# A session's force-push allow (ADR 0096): the person's "Run and allow
+# <branch> this session" click has the app write allow/<session>.json, and a
+# leased push to a branch it lists then passes for the rest of that session.
+# push_dest SEGMENT sets held_branch to the branch a push lands on, but only
+# for a push the allow could cover: a plain `git push` (no global options),
+# --force-with-lease, no other option but -u, -q, -v and their long names,
+# --force-if-includes and --progress, at most a remote and one refspec, no
+# +refspec, no quoting, expansion or redirection. With no refspec, or HEAD,
+# the branch is the one checked out in the payload's cwd.
+push_dest() {
+  local seg="$1" w words leased="" n=0 refspec="" dest=""
+  held_branch=""
+  shopt -u nocasematch
+  case "$seg" in
+    *[\"\'\$\`\\\<\>\(\)]*) shopt -s nocasematch; return 1 ;;
+  esac
+  read -r -a words <<<"$seg"
+  if [ "${words[0]-}" != git ] || [ "${words[1]-}" != push ]; then
+    shopt -s nocasematch
+    return 1
+  fi
+  for w in "${words[@]:2}"; do
+    case "$w" in
+      --force-with-lease | --force-with-lease=*) leased=1 ;;
+      --force-if-includes | -u | --set-upstream | -q | --quiet | -v | --verbose | --progress) ;;
+      -*) shopt -s nocasematch; return 1 ;;
+      *)
+        n=$((n + 1))
+        [ "$n" = 2 ] && refspec="$w"
+        ;;
+    esac
+  done
+  if [ -z "$leased" ] || [ "$n" -gt 2 ]; then
+    shopt -s nocasematch
+    return 1
+  fi
+  case "$refspec" in
+    +* | :*) shopt -s nocasematch; return 1 ;;
+    *:*) dest="${refspec#*:}" ;;
+    *) dest="$refspec" ;;
+  esac
+  dest="${dest#refs/heads/}"
+  # The checkout is read now, before the command runs, so it names the push's
+  # branch only when the push is the whole command: `git switch main && git
+  # push --force-with-lease` would otherwise read the old branch and push main.
+  if [ -z "$dest" ] || [ "$dest" = HEAD ]; then
+    dest=""
+    [ "${#segments[@]}" = 1 ] && dest="$(git -C "${pcwd:-.}" symbolic-ref --short -q HEAD 2>/dev/null)"
+  fi
+  if [[ "$dest" =~ ^${branch_re}$ ]] && [[ "$dest" != *..* ]]; then
+    held_branch="$dest"
+  fi
+  shopt -s nocasematch
+  [ -n "$held_branch" ]
+}
+
+# Whether this session's allow lists held_branch in its forcePush array. The
+# app writes each branch as a quoted string, and a branch name holds no quote
+# or bracket, so finding it quoted inside the array is finding it listed.
+# Case matters: branches are refs.
+allow_list_re='"forcePush"[[:space:]]*:[[:space:]]*\[([^]]*)\]'
+session_allowed_push() {
+  local f text ok=1
+  [ -n "$held_branch" ] && [ -n "$sid" ] || return 1
+  f="$state_dir/allow/$sid.json"
+  [ -f "$f" ] || return 1
+  text="$(<"$f")" 2>/dev/null || return 1
+  [[ "$text" =~ $allow_list_re ]] || return 1
+  text="${BASH_REMATCH[1]}"
+  shopt -u nocasematch
+  [[ "$text" == *"\"$held_branch\""* ]] && ok=0
+  shopt -s nocasematch
+  return $ok
+}
+
 check_segment() {
   local seg="$1"
   # Quoted text goes out of the way unless the command runs it as code. A very
@@ -427,7 +605,17 @@ check_segment() {
   # --force-if-includes, -f alone or joined (-fu), a +refspec, --mirror.
   if git_args "$seg" push &&
     has "$args" '--force[-[:alnum:]]*(=[^[:space:]]*)?|--mir[a-z]*|-[[:alnum:]]*f[[:alnum:]]*|\+[^[:space:]]*'; then
-    allowed_force_push "$seg" || block "git push --force"
+    if ! allowed_force_push "$seg"; then
+      push_dest "$1"
+      if session_allowed_push; then
+        held_branch=""
+      else
+        # One allow is offered for one push: with two blocked, neither.
+        pushes_held=$((pushes_held + 1))
+        [ "$pushes_held" = 1 ] || held_branch=""
+        block "git push --force"
+      fi
+    fi
   fi
 
   # Deleting or renaming a branch on the remote closes any open PR on it
@@ -567,6 +755,23 @@ fi
 if [[ "$cmd" =~ chmod[[:space:]]+(-R[[:space:]]+)?777 ]]; then
   block "chmod 777"
 fi
+
+# The session allow folder is the person's: only the app writes it, on their
+# click (ADR 0096). Any command naming it is refused, reading included, since
+# telling a read from a write is past this guard. guard_write.sh refuses an
+# Edit or Write there. The check reads `code`, the command with its data
+# heredocs taken out, so a commit message (`git commit -F - <<EOF`) may name
+# the folder. A command that names cmux-crew and has allow as a path word of
+# its own anywhere counts too (`cd ~/.cache/cmux-crew && echo > allow/x`,
+# `... && cd allow && ...`). A determined agent could still build the path
+# from pieces; this stops the accident, not the attempt.
+allow_dir_re="cmux-crew/+allow([/[:space:]\"${q}]|\$)"
+allow_rel_re="(^|[^[:alnum:]_.-])allow([/[:space:]\"${q};&|)]|\$)"
+if [[ "$code" =~ $allow_dir_re ]] || { [[ "$code" == *cmux-crew* ]] && [[ "$code" =~ $allow_rel_re ]]; }; then
+  block "the session allow folder is the person's"
+fi
+
+[ "${#reasons[@]}" = 0 ] || finish_block
 
 if [ -n "$ask_reason" ]; then
   why="bash-guard: $ask_reason renames or deletes a branch on the remote, which closes any open PR on it. Approve only if no PR is open on that branch."

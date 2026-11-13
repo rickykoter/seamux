@@ -391,3 +391,25 @@ allow gh api repos/o/r/branches/feature-x
 allow gh api repos/o/r/git/refs/heads/feature-x
 allow gh api -X PATCH repos/o/r/git/refs/heads/feature-x -f sha=abc
 allow git push origin feature-x
+
+# ---- the session allow folder is the person's (ADR 0096): any command naming it
+block cat ~/.cache/cmux-crew/allow/s1.json
+block echo {} > ~/.cache/cmux-crew/allow/s1.json
+block printf x >> \"$HOME/.cache/cmux-crew/allow/s1.json\"
+block cp /tmp/a ~/.cache/cmux-crew/allow/
+block rm -r ~/.cache/cmux-crew/allow
+block ls ~/.cache/cmux-crew//allow
+block python3 -c 'open(\"/u/.cache/cmux-crew/allow/x.json\",\"w\")'
+block cd ~/.cache/cmux-crew && echo {} > allow/s1.json
+block cd ~/.cache/cmux-crew; cp /tmp/a ./allow/s1.json
+block cd ~/.cache/cmux-crew && cd allow && echo {} > s1.json
+block cd ~/.cache/cmux-crew;cd allow;touch s1.json
+allow cd ~/.cache/cmux-crew && ls -la
+allow git commit -F - <<'EOF'\nthe allow lives in cmux-crew/allow/<session>.json\nEOF
+allow cat ~/.cache/cmux-crew/held-P1.json
+allow ls ~/.cache/cmux-crew
+allow cat ~/.cache/cmux-crew/allowance.json
+block echo allow cmux-crew
+# ---- without a session allow, a leased push with no sha is still a force push
+block git push --force-with-lease origin dev/x
+block git push --force-with-lease
