@@ -8,7 +8,7 @@ const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
 const cmds = (text: string, style?: string[]) => findBangs(text, style).map((b) => b.cmd);
 /** A style per character: `code` marks the [from, to) span as inline code. */
-const styled = (text: string, from: number, to: number) => [...text].map((_, i) => (i >= from && i < to ? "code" : "plain"));
+const styled = (text: string, from: number, to: number) => [...text].map((_, i) => (i >= from && i < to ? "2:110" : "0:0"));
 
 // ---- `!` commands ---------------------------------------------------------
 {
@@ -27,6 +27,15 @@ ok("bang: quoted without a space", cmds("type '!ls -la' here").join() === "ls -l
 }
 ok("bang: a line of its own is the rest of the row", cmds("    ! npm install --save-dev vite").join() === "npm install --save-dev vite");
 ok("bang: a list item's", cmds("  - ! cargo test").join() === "cargo test");
+{
+  // The row from the test in the app: "- **`!` menu:** hover `! git log --oneline -3`."
+  const t = "- ! menu: hover ! git log --oneline -3.";
+  const codeAt = [2, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
+  // Bold prose is the default colour, as is the rest; inline code has its own.
+  const s = [...t].map((_, i) => (codeAt.includes(i) ? "2:110" : "0:0"));
+  ok("bang: a heading about `!` is not a command; the code after it is", cmds(t, s).join("|") === "git log --oneline -3", cmds(t, s).join("|"));
+  ok("bang: …and without colours, a row starting with a phrase is not one", cmds(t).length === 0, cmds(t).join("|"));
+}
 ok("bang: a closing full stop is not the command's", cmds("! make check.").join() === "make check");
 ok("bang: exclamations in prose are not commands", cmds("Done! That worked!").length === 0 && cmds("Great!! Next").length === 0);
 ok("bang: a `!` with nothing after is not a command", cmds("  ! ").length === 0 && cmds("! !").length === 0);
