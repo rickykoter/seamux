@@ -33,8 +33,22 @@ pub fn existing(t: &Target, cands: &[String]) -> Vec<Option<String>> {
 /// The cmux workspace the session belongs to.
 pub fn workspace(t: &Target) -> Option<String> {
     let file = crew_core::py::home().join(".cmux/local-tmux/sessions.json");
-    let reg: Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
-    workspace_of(&reg, &t.session)
+    let cmux = std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|reg| workspace_of(&reg, &t.session));
+    // On the app's own tmux, its registry: the pane whose session this is.
+    // Without it a Dock page opened from the pane had no workspace, and
+    // took the whole window instead of opening beside the terminal.
+    cmux.or_else(|| {
+        let b = seamux_app::backend::get().ok()?;
+        let mut panes = b.panes(None).ok()?;
+        // The backend names a pane's session after it (seamux-<pane id>): that
+        // pane is asked about first, so a click costs one tmux call, not one per pane.
+        let s = t.session.to_lowercase();
+        panes.sort_by_key(|p| !s.contains(&p.id.to_lowercase()));
+        panes.into_iter().find_map(|p| {
+            let pt = b.target(&p.id).ok()??;
+            (pt.session == t.session && pt.socket == t.socket).then_some(p.workspace)
+        })
+    })
 }
 
 /// Open `path` (absolute, existing) in VS Code at `line` and `col`.

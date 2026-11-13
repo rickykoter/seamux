@@ -12,7 +12,7 @@ import { MigrateBanner } from "./migrate";
 import { NewWorkspace } from "./newws";
 import { sprite } from "./panecat";
 import { ReclaimWizard } from "./reclaim";
-import { Sheet } from "./sheet";
+import { setDockSheet, Sheet } from "./sheet";
 import { splitter } from "./splitter";
 import { Tray } from "./tray";
 
@@ -101,6 +101,8 @@ export class DockView {
       measure: () => this.board.getBoundingClientRect().width,
     });
     this.sheet.onPlace = (ws) => this.select(ws, true);
+    // A link in the Dock's terminal opens its page here, beside it.
+    setDockSheet(this.sheet);
     // A reclaimed workspace is gone: show another.
     // "Sort it out with Claude": show its new pane.
     this.reclaim.onClaude = (ws, pane) => this.select(ws, true, "any", pane);

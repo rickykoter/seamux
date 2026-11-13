@@ -913,6 +913,7 @@ export class Sheet {
   /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
   show(s: Shown, toCmux: () => Promise<unknown>, place: { workspace?: string; dir?: string } = {}): void {
     this.enter(place, false);
+    this.pageHidden = false;
     const key = `file:${s.title}`;
     this.drop(key);
     this.tabs.push({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
@@ -923,6 +924,8 @@ export class Sheet {
    *  way out to the browser for one that will not be framed. */
   openWeb(url: string, place: { workspace?: string; dir?: string } = {}): void {
     this.enter(place, false);
+    // Opened by a click: seen, even if the side column was folded away.
+    this.pageHidden = false;
     const key = `web:${url}`;
     this.drop(key);
     let label = url;
@@ -938,6 +941,7 @@ export class Sheet {
 
   async open(p: Page): Promise<void> {
     this.enter({ workspace: p.workspace, dir: p.dir }, false);
+    this.pageHidden = false;
     const t = this.tabs.find((x) => x.key === p.path);
     if (t) {
       t.page = p;
@@ -1351,6 +1355,21 @@ export function openInCmux(p: Page): Promise<void> {
 }
 
 let shared: Sheet | null = null;
+/** The Dock's own sheet, its side column, once the Dock has made it. */
+let docked: Sheet | null = null;
+
+/** The Dock says which sheet is its side column (dock.ts). */
+export function setDockSheet(s: Sheet): void {
+  docked = s;
+}
+
+/** Where a pane's link opens a page: the Dock's side column, beside the
+ *  terminal and in the workspace it shows, while the Dock is on screen;
+ *  else the app's sheet over the stage, in `place`. */
+export function linkSheet(place: { workspace?: string; dir?: string }): { sheet: Sheet; place: { workspace?: string; dir?: string } } {
+  if (docked && !docked.el.hidden && docked.el.getClientRects().length > 0) return { sheet: docked, place: docked.here() };
+  return { sheet: sheet(), place };
+}
 
 /** The app's one sheet, made on first use and put over the stage. */
 export function sheet(): Sheet {

@@ -2,13 +2,13 @@
 // (bang.ts), and where its links go (linkroute.ts), with no DOM. Node runs
 // this file as TypeScript.
 import { findBangs, findPrompt } from "./bang.ts";
-import { DOCK_FILE, route } from "./linkroute.ts";
+import { DOCK_FILE, joinWrapped, route } from "./linkroute.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
 const cmds = (text: string, style?: string[]) => findBangs(text, style).map((b) => b.cmd);
 /** A style per character: `code` marks the [from, to) span as inline code. */
-const styled = (text: string, from: number, to: number) => [...text].map((_, i) => (i >= from && i < to ? "code" : "plain"));
+const styled = (text: string, from: number, to: number) => [...text].map((_, i) => (i >= from && i < to ? "2:110" : "0:0"));
 
 // ---- `!` commands ---------------------------------------------------------
 {
@@ -27,6 +27,21 @@ ok("bang: quoted without a space", cmds("type '!ls -la' here").join() === "ls -l
 }
 ok("bang: a line of its own is the rest of the row", cmds("    ! npm install --save-dev vite").join() === "npm install --save-dev vite");
 ok("bang: a list item's", cmds("  - ! cargo test").join() === "cargo test");
+{
+  // The row from the test in the app: "- **`!` menu:** hover `! git log --oneline -3`."
+  const t = "- ! menu: hover ! git log --oneline -3.";
+  const codeAt = [2, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
+  // Bold prose is the default colour, as is the rest; inline code has its own.
+  const s = [...t].map((_, i) => (codeAt.includes(i) ? "2:110" : "0:0"));
+  ok("bang: a heading about `!` is not a command; the code after it is", cmds(t, s).join("|") === "git log --oneline -3", cmds(t, s).join("|"));
+  ok("bang: …and without colours, a row starting with a phrase is not one", cmds(t).length === 0, cmds(t).join("|"));
+}
+{
+  // Blank cells carry a default style of their own: the prose's is the shown text's.
+  const t = "run ! make test now        ";
+  const s = [...t].map((ch, i) => (i >= 4 && i <= 14 ? "2:110" : ch === " " && i > 18 ? "0:1" : "0:0"));
+  ok("bang: blank cells do not set the plain style", cmds(t, s).join() === "make test", cmds(t, s).join());
+}
 ok("bang: a closing full stop is not the command's", cmds("! make check.").join() === "make check");
 ok("bang: exclamations in prose are not commands", cmds("Done! That worked!").length === 0 && cmds("Great!! Next").length === 0);
 ok("bang: a `!` with nothing after is not a command", cmds("  ! ").length === 0 && cmds("! !").length === 0);
@@ -81,6 +96,28 @@ ok("link: the web is the browser's", route("https://github.com/a/b/pull/1", inte
 ok("link: a file URL is a file", route("file:///tmp/a.png", intent) === "file");
 ok("link: no intent server, a plan link is a dev page", route("http://127.0.0.1:7777/plan/x", null) === "local");
 ok("link: the Dock shows images, PDFs and Markdown", ["a.png", "b.JPG", "c.pdf", "README.md"].every((f) => DOCK_FILE.test(f)) && !DOCK_FILE.test("main.rs") && !DOCK_FILE.test("x.md.rs"));
+
+// ---- a path Claude wrapped onto the next row ------------------------------
+{
+  const cols = 40;
+  const rows = [
+    "- Markdown: /private/tmp/claude-501/scra",
+    "  tchpad/feature-test.md (expect it to",
+    "  fill the window)",
+  ];
+  for (const at of [0, 1]) {
+    const j = joinWrapped(rows, at, cols);
+    ok(`wrap: row ${at} reads the whole path`, j.text.includes("/private/tmp/claude-501/scratchpad/feature-test.md "), j.text);
+  }
+  const j = joinWrapped(rows, 1, cols);
+  const k = j.text.indexOf("tchpad");
+  ok("wrap: each character knows its row and column", j.at[k].row === 1 && j.at[k].i === 2 && j.at[0].row === 0, JSON.stringify(j.at[k]));
+  ok("wrap: a row whose last word is prose is not joined to the next", joinWrapped(rows, 2, cols).text === "  fill the window)", joinWrapped(rows, 2, cols).text);
+  const list = ["- see /private/tmp/claude-501/feature.md", "- next item in the list"];
+  ok("wrap: a list item after a path that fills the row is its own line", joinWrapped(list, 0, 40).text === list[0], joinWrapped(list, 0, 40).text);
+  const prose = ["a sentence that happens to fill the row.", "Next sentence starts here"];
+  ok("wrap: prose ending in a full stop does not join", joinWrapped(prose, 1, 40).text === prose[1], joinWrapped(prose, 1, 40).text);
+}
 
 let bad = 0;
 for (const [name, pass, detail] of checks) {

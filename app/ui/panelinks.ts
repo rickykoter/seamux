@@ -10,8 +10,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { IBufferLine, ILink, ILinkProvider, Terminal } from "@xterm/xterm";
 import { findBangs } from "./bang";
-import { DOCK_FILE, route } from "./linkroute";
-import { openPage, sheet, type Shown } from "./sheet";
+import { DOCK_FILE, joinWrapped, route } from "./linkroute";
+import { linkSheet, type Shown } from "./sheet";
 
 /** A link under the pointer: the text it shows on its row, and how to
  *  follow it (`e` is the click, for its modifier keys). */
@@ -30,7 +30,8 @@ export async function openFile(path: string, at: { line?: number; col?: number }
   if (e?.shiftKey || !DOCK_FILE.test(path)) return void (await editor());
   const shown = await invoke<Shown>("link_file", { path }).catch(() => null);
   if (!shown) return void (await editor());
-  sheet().show(shown, editor, { workspace: await placeOf(id) });
+  const to = linkSheet({ workspace: await placeOf(id) });
+  to.sheet.show(shown, editor, to.place);
 }
 
 /** Path-like text: led by /, ~/, ./ or ../, or a name with a dot extension,
@@ -123,16 +124,30 @@ export function pathLinks(term: Terminal, id: () => number | null, hover: (h: Ho
   return {
     provideLinks(y, callback) {
       const tid = id();
-      const line = term.buffer.active.getLine(y - 1);
-      if (tid === null || !line) return callback(undefined);
-      const { text, col } = rowText(line, term.cols);
+      if (tid === null || !term.buffer.active.getLine(y - 1)) return callback(undefined);
+      // The row and those around it: Claude wraps a long path onto the next
+      // row, indented, and the link spans the rows (joinWrapped).
+      const top = Math.max(0, y - 1 - 4);
+      const near: { text: string; col: number[] }[] = [];
+      for (let r = top; r < Math.min(term.buffer.active.length, y + 4); r++) {
+        const l = term.buffer.active.getLine(r);
+        near.push(l ? rowText(l, term.cols) : { text: "", col: [] });
+      }
+      const joined = joinWrapped(near.map((n) => n.text), y - 1 - top, term.cols);
+      const text = joined.text;
+      const here = y - 1 - top;
+      /** Where text offset `i` is on screen: its column and row (1-based). */
+      const cell = (i: number) => ({ x: near[joined.at[i].row].col[joined.at[i].i], y: top + joined.at[i].row + 1 });
       const found: { start: number; end: number; path: string; line?: number; col?: number }[] = [];
       for (const m of text.matchAll(PATH_RE)) {
         const path = m[1].replace(/\.+$/, "");
         // A web address's tail (host.tld/...) is the web link's, not a path.
         if (!path || /:\/\/$/.test(text.slice(0, m.index))) continue;
         const shown = m[0].slice(0, m[1].length === path.length ? undefined : path.length);
-        found.push({ start: m.index, end: m.index + shown.length, path, line: m[2] ? +m[2] : undefined, col: m[3] ? +m[3] : undefined });
+        const end = m.index + shown.length;
+        // Only links on this row: the rows around it ask for their own.
+        if (joined.at[m.index].row > here || joined.at[end - 1].row < here) continue;
+        found.push({ start: m.index, end, path, line: m[2] ? +m[2] : undefined, col: m[3] ? +m[3] : undefined });
       }
       if (!found.length) return callback(undefined);
       const now = performance.now();
@@ -150,12 +165,15 @@ export function pathLinks(term: Terminal, id: () => number | null, hover: (h: Ho
             if (!abs) continue;
             const label = text.slice(f.start, f.end);
             const go = (e?: MouseEvent) => void openFile(abs, { line: f.line, col: f.col }, tid, e);
+            const start = cell(f.start);
+            // What the link shows on its first row: the click checks it is still there.
+            const firstRow = label.slice(0, joined.at.slice(f.start, f.end).filter((p) => p.row === joined.at[f.start].row).length);
             links.push({
-              range: { start: { x: col[f.start], y }, end: { x: col[f.end - 1], y } },
+              range: { start, end: cell(f.end - 1) },
               text: label,
               decorations: { underline: true, pointerCursor: true },
               activate: (e) => go(e),
-              hover: () => hover({ y, label, uri: abs, go }),
+              hover: () => hover({ y: start.y, label: firstRow, uri: abs, go }),
               leave: () => hover(null),
             });
           }
@@ -197,13 +215,13 @@ export async function follow(uri: string, id: number | null, e?: MouseEvent): Pr
   }
   // ⌘-click or Shift-click: the browser, always.
   if (how !== "browser" && !e?.shiftKey && !e?.metaKey) {
-    const workspace = await placeOf(id);
+    const to = linkSheet({ workspace: await placeOf(id) });
     if (how === "page") {
       const u = new URL(uri);
-      await openPage({ path: u.pathname + u.search, title: decodeURIComponent(u.pathname.split("/")[2] ?? ""), workspace });
+      await to.sheet.open({ path: u.pathname + u.search, title: decodeURIComponent(u.pathname.split("/")[2] ?? ""), ...to.place });
       return;
     }
-    sheet().openWeb(uri, { workspace });
+    to.sheet.openWeb(uri, to.place);
     return;
   }
   await invoke("open_url", { url: uri }).catch(() => {});

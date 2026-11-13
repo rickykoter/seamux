@@ -47,21 +47,26 @@ export function findBangs(text: string, style?: readonly string[]): Bang[] {
     if (text[from] === " ") from++;
     else if (!quote) continue;
     if (!FIRST.test(text[from] ?? "")) continue;
+    // Drawn in its own colour, as Claude draws inline code: that colour's
+    // run is the command, wherever it sits on the row.
+    const coded = !!style && style[i] !== undefined && style[i] !== plainOf(style, text);
     let end: number;
     if (quote) {
       // Quoted: up to the closing quote.
       end = text.indexOf(quote, from);
       if (end < 0 || end > lineEnd) continue;
+    } else if (coded) {
+      end = from;
+      while (end < lineEnd && style![end] === style![i]) end++;
     } else if (/^\s*│?\s*(?:[-*•⎿]\s+)?$/.test(text.slice(0, i))) {
       // A line of its own (a code block's, a list item's): the rest of the row.
       end = lineEnd;
-    } else if (style && style[i] !== undefined && style[i] !== plainOf(style)) {
-      // Drawn as inline code, in its own colour: as far as that colour goes.
-      end = from;
-      while (end < lineEnd && style[end] === style[i]) end++;
     } else continue;
     const cmd = tidy(text.slice(from, end));
     if (!cmd || cmd.length > MAX || !FIRST.test(cmd[0])) continue;
+    // A whole row taken as a command must read as one: "! menu: hover …"
+    // (a heading about `!`) starts with a word that ends a phrase.
+    if (!quote && !coded && /[:,;]$/.test(cmd.split(/\s+/)[0])) continue;
     // The covered span ends where the command's text does.
     const stop = from + text.slice(from, end).indexOf(cmd) + cmd.length;
     out.push({ start: quote ? i - 1 : i, end: quote ? Math.min(end + 1, text.length) : stop, cmd });
@@ -70,8 +75,16 @@ export function findBangs(text: string, style?: readonly string[]): Bang[] {
   return out;
 }
 
-/** The row's most common style: its plain text's. */
-function plainOf(style: readonly string[]): string {
+/** The row's plain text's style: the terminal's default colour where the
+ *  row has it (panelinks.ts keys a cell `<colour mode>:<colour>`, mode 0
+ *  the default), else its most common style. */
+function plainOf(style: readonly string[], text?: string): string {
+  // The most common default-colour style among the row's shown characters:
+  // a blank cell's style says nothing of the prose's.
+  const shown = style.filter((s, i) => !text || (text[i] ?? " ").trim() !== "");
+  const dflt = new Map<string, number>();
+  for (const s of shown) if (s.startsWith("0:")) dflt.set(s, (dflt.get(s) ?? 0) + 1);
+  if (dflt.size) return [...dflt].sort((a, b) => b[1] - a[1])[0][0];
   const n = new Map<string, number>();
   for (const s of style) n.set(s, (n.get(s) ?? 0) + 1);
   let best = "";
