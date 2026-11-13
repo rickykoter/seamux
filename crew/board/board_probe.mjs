@@ -3799,6 +3799,30 @@ setInterval(() => { try { fs.mkdirSync(p); fs.utimesSync(p, old, old); } catch {
   }
 }
 
+// ---- a command bash-guard held (rank.rs held_row, render.js heldOf) -------
+{
+  const held = { pane: "P-1", at: 42, reason: "git reset --hard", kind: "run", command: "git reset --hard <HEAD~1>\ngit status",
+                 clipped: false, lines: 2, run: true, chat: false };
+  const R = (id, extra) => ({ id, name: id, kind: "attend", badge: "held", said: "bash-guard held a command: {{git reset --hard}}.",
+    chips: ["run held", "copy held", "dismiss held", "jump"], frac: null, meta: "", ref: "workspace:1", cwd: "/w/" + id, held, ...extra });
+  render({ rows: [R("hw")], quiet: "" });
+  const h = els.rows.innerHTML;
+  checks.push(["held: the card shows the command, escaped, on a line that opens on a click",
+    /<div class="held" data-a="heldfold" data-x="P-1:42" title="Show the whole command"><code class="hc">git reset --hard &lt;HEAD~1&gt;\ngit status<\/code><\/div>/.test(h) &&
+    !/<HEAD~1>/.test(h), h.slice(0, 1200)]);
+  checks.push(["held: run, copy and dismiss name the pane and the record's time, never the command",
+    /data-a="held" data-x="run\|P-1\|42"[^>]*>run held</.test(h) && /data-a="held" data-x="copy\|P-1\|42"[^>]*>copy held</.test(h) &&
+    /data-a="held" data-x="dismiss\|P-1\|42"[^>]*>dismiss held</.test(h) && !/data-x="[^"]*reset/.test(h), h.slice(0, 2000)]);
+  // Opened (#rows, render.js's host, remembers which), it stays open across
+  // a push, and a clipped command says where the rest is.
+  els.rows.setAttribute("data-held-open", "P-1:42");
+  render({ rows: [R("hw", { held: { ...held, clipped: true } })], quiet: "" });
+  const o = els.rows.innerHTML;
+  checks.push(["held: an open line stays open on the next push, and a clipped one points at the pane",
+    /<div class="held open" data-a="heldfold" data-x="P-1:42"/.test(o) && /the pane shows the rest/.test(o), o.slice(0, 1200)]);
+  els.rows.removeAttribute("data-held-open");
+}
+
 let bad = 0;
 for (const [n, ok, extra] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}${!ok && extra !== undefined ? "  :: " + String(extra).slice(0, 600) : ""}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);

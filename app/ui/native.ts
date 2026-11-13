@@ -173,6 +173,25 @@ function copied(text: string): string {
 /** How long an unseen terminal stays attached: a tab flick keeps it. */
 const DETACH_AFTER = 1500;
 
+/** The Dock's answer to a command bash-guard held in `pane` (a card's run
+ *  held, copy held or dismiss held), given once the Dock has brought that
+ *  pane forward: its terminal is found as it attaches, then answers as its
+ *  banner would, on the record seen at `at`. */
+export async function answerHeld(pane: string, what: HeldAct, at: number): Promise<boolean> {
+  const want = pane.toLowerCase();
+  for (let i = 0; i < 30; i++) {
+    const t = [...live].find((x) => x.pane.toLowerCase() === want && x.attached);
+    if (t) {
+      // A pane just shown draws its screen a moment after it attaches, and
+      // Run in chat reads Claude's prompt off that screen.
+      if (i > 0) await new Promise((r) => setTimeout(r, 300));
+      return t.held(what, at);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
 export class NativeTerm {
   /** The tmux client ended (the session closed, or it never attached). */
   onExit: () => void = () => {};
@@ -566,6 +585,11 @@ export class NativeTerm {
   /** The pane on show in this terminal. */
   get pane(): string {
     return this.surface;
+  }
+
+  /** Attached to its pane's tty, so keys reach it. */
+  get attached(): boolean {
+    return this.id !== null;
   }
 
   /** Claude's prompt is in bash mode: its command goes to the ⌘J shell

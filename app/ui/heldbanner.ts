@@ -33,7 +33,9 @@ export type HeldActions = {
   say: (text: string) => void;
 };
 
-export type HeldAct = "chat" | "shell" | "copy" | "dismiss" | "allow";
+/** "run" is the Dock's: in the chat when the command can go there, else
+ *  in the ⌘J shell. */
+export type HeldAct = "run" | "chat" | "shell" | "copy" | "dismiss" | "allow";
 
 const POLL_MS = 2000;
 /** Lines shown before the command folds. */
@@ -152,6 +154,7 @@ export class HeldBanner {
         this.act.say(h ? "A newer command was held: look again" : "Nothing is held here now");
         return false;
       }
+      if (what === "run") what = h.chat ? "chat" : "shell";
       switch (what) {
         case "copy":
           this.act.copy(h.command);

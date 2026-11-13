@@ -467,6 +467,27 @@ function __boardIntent(cfg) {
       ev.preventDefault();
       ev.stopPropagation();
       if (t.a === "fold") return fold(row, rid);
+      // A held command's line: open or fold it. Which one is open lives on
+      // the host, so the next push keeps it (render.js heldOf).
+      if (t.a === "heldfold") {
+        var hk = t.x, was = host.getAttribute("data-held-open") || "";
+        host.setAttribute("data-held-open", was === hk ? "" : hk);
+        if (t.el.classList) t.el.classList.toggle("open", was !== hk);
+        return;
+      }
+      // A held command's Run, Copy or Dismiss: only the seamux app runs
+      // one, in that pane, from its own record of the command (ADR 0094).
+      // The message names the pane and the record's time, never the text.
+      if (t.a === "held") {
+        var hp = String(t.x).split("|");
+        if (framed() && hp.length === 3 && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" held ") >= 0) {
+          tell({ crew: "held", ws: rid, act: hp[0], pane: hp[1], at: Number(hp[2]) });
+          mark(rid);
+        } else {
+          toast("a held command runs from the seamux app, in its pane");
+        }
+        return;
+      }
       // The ⋯ menu (framed by the app only): open it, or hand the choice to
       // the app, which keeps tucked.json and says what it did, with Undo.
       if (t.a === "tk") {
