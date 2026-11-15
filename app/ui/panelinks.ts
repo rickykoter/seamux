@@ -9,7 +9,7 @@
 // native.ts finds the links; this follows them.
 import { invoke } from "@tauri-apps/api/core";
 import type { IBufferLine, ILink, ILinkProvider, Terminal } from "@xterm/xterm";
-import { findBangs } from "./bang";
+import { bangAcross } from "./bang";
 import { DOCK_FILE, joinWrapped, route } from "./linkroute";
 import { linkSheet, type Shown } from "./sheet";
 
@@ -93,19 +93,31 @@ export function bangLinks(term: Terminal, promptRow: () => number, hover: (h: Ho
     provideLinks(y, callback) {
       const line = term.buffer.active.getLine(y - 1);
       if (!line || y === promptRow()) return callback(undefined);
-      const { text, col, style } = rowCells(line, term.cols);
-      if (!text.includes("!")) return callback(undefined);
-      const links: ILink[] = findBangs(text, style).map((b) => {
-        const label = text.slice(b.start, b.end);
+      // This row and the few above it: a command Claude wrapped onto this
+      // row started on one of them, and is offered whole on every row it
+      // covers (bangAcross).
+      const top = Math.max(0, y - 1 - 4);
+      const near: ReturnType<typeof rowCells>[] = [];
+      for (let r = top; r < Math.min(term.buffer.active.length, y + 4); r++) {
+        const l = term.buffer.active.getLine(r);
+        near.push(l ? rowCells(l, term.cols) : { text: "", col: [], style: [], dimFrom: -1 });
+      }
+      const here = y - 1 - top;
+      if (!near.slice(0, here + 1).some((n) => n.text.includes("!"))) return callback(undefined);
+      const links: ILink[] = bangAcross(near, here, term.cols).flatMap((b) => {
+        const s = b.spans.find((p) => p.row === here);
+        if (!s) return [];
+        const { text, col } = near[here];
+        const label = text.slice(s.start, s.end);
         const go = (e?: MouseEvent) => pin(b.cmd, e);
-        return {
-          range: { start: { x: col[b.start], y }, end: { x: col[b.end - 1], y } },
+        return [{
+          range: { start: { x: col[s.start], y }, end: { x: col[s.end - 1], y } },
           text: label,
           decorations: { underline: true, pointerCursor: true },
-          activate: (e) => go(e),
-          hover: (e) => hover({ y, label, uri: b.cmd, go }, b.cmd, e),
+          activate: (e: MouseEvent) => go(e),
+          hover: (e: MouseEvent) => hover({ y, label, uri: b.cmd, go }, b.cmd, e),
           leave: () => hover(null, b.cmd),
-        };
+        }];
       });
       callback(links.length ? links : undefined);
     },
