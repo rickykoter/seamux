@@ -45,7 +45,8 @@ fn run(args: &[String]) -> i32 {
             0
         }
         "--version" => {
-            println!("seamux {}", env!("CARGO_PKG_VERSION"));
+            // The commit it was built from, for a landing's check (plan landing).
+            println!("seamux {} ({})", env!("CARGO_PKG_VERSION"), env!("SEAMUX_BUILD_SHA"));
             0
         }
         "-h" | "--help" => {

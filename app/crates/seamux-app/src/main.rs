@@ -199,6 +199,9 @@ fn main() {
         })
         .setup(|app| {
             shell::install(app)?;
+            // What is running, for a landing that waits on it: the commit
+            // this app was built from (plan landing).
+            seamux_app::build_stamp::write(&crew_core::home::xdg_cache());
             // The board's server, on this app's backend.
             std::thread::spawn(|| {
                 shell::ensure_intent();
