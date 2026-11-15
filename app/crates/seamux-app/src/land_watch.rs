@@ -497,6 +497,53 @@ pub fn act(cwd: &str, merge: &str, recipe: &str, what: &str) -> Result<String, S
     }
 }
 
+/// Every workspace's pull requests (crew-sync's lists), each with the
+/// worktree and workspace it came from: the Lookout tab's rows for PRs no
+/// review covers, and how it finds a review's merge.
+pub fn workspace_prs() -> Vec<Value> {
+    let rows = crew_core::backend::open(seamux_app::backend::kind()).and_then(|b| b.workspaces()).unwrap_or_default();
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for w in rows.iter().filter(|w| !w.cwd.is_empty()) {
+        for mut p in crew_core::prs::list(&w.cwd) {
+            let url = p.get("url").and_then(Value::as_str).unwrap_or("").to_string();
+            if url.is_empty() || !seen.insert(url) {
+                continue;
+            }
+            p["cwd"] = json!(w.cwd);
+            p["ws"] = json!(w.id);
+            p["ws_title"] = json!(w.title);
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// The last lines of a recipe's land log. The path is the state file's, and
+/// is read only inside crew's landings folder.
+pub fn log_of(cwd: &str, merge: &str, recipe: &str) -> Result<String, String> {
+    let v = landing_of(cwd, merge).ok_or("no landing for that merge")?;
+    let log = v["state"]["recipes"][recipe]["log"].as_str().ok_or("no log for that recipe")?.to_string();
+    let base = landing::home().join("landings");
+    let p = std::fs::canonicalize(&log).map_err(|e| e.to_string())?;
+    if !p.starts_with(std::fs::canonicalize(&base).map_err(|e| e.to_string())?) {
+        return Err("that log is not a landing's".into());
+    }
+    let text = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = text.lines().collect();
+    Ok(lines[lines.len().saturating_sub(300)..].join("\n"))
+}
+
+#[tauri::command]
+pub async fn landing_prs() -> Result<Vec<Value>, String> {
+    tauri::async_runtime::spawn_blocking(workspace_prs).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn landing_log(cwd: String, merge: String, recipe: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || log_of(&cwd, &merge, &recipe)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn landing_get(cwd: String, merge: String) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || landing_of(&cwd, &merge)).await.map_err(|e| e.to_string())

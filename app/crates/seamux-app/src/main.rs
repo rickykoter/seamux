@@ -259,6 +259,8 @@ fn main() {
             held_app::held_act,
             land_watch::landing_get,
             land_watch::land_act,
+            land_watch::landing_prs,
+            land_watch::landing_log,
             links_app::link_file,
             pane_app::open_in_vscode,
             pane_app::term_look,

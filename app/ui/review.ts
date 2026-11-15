@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { chipFor, landPanel, mergePanel, prPanel, railEl, stageFor, stagesOf, type Landing, type PrRow, type Stage } from "./release";
 
 // A job as review_app.rs serves it.
 /** What review_app's orphan() refusal says: an agent from the last session still runs there. */
@@ -273,6 +274,13 @@ export class ReviewView {
   private fold = 0;
   private fitWidth = 0;
 
+  /** Every workspace's PRs (landing_prs), and each merged one's landing
+   *  by its merge commit (landing_get), for the rail (release.ts). */
+  private prs: PrRow[] = [];
+  private lands = new Map<string, Landing | null>();
+  /** The stage each change was last shown at, by its list key. */
+  private stageSel = new Map<string, Stage>();
+  private stageBox = el("div", "r-stage");
   private side = el("aside", "r-side");
   private main = el("section", "r-main");
   private input = el("input", "r-input");
@@ -364,7 +372,8 @@ export class ReviewView {
       void this.start(this.input.value.trim(), this.depth.value, this.model.value, this.reviewer.value);
     });
     this.side.append(form, this.list);
-    this.main.append(this.head, this.ctl, this.frameBox);
+    this.stageBox.hidden = true;
+    this.main.append(this.head, this.ctl, this.stageBox, this.frameBox);
     this.root.append(this.side, this.main);
 
     // A click anywhere but the ⋯ menu closes it. A click in the framed page
@@ -453,6 +462,65 @@ export class ReviewView {
     this.take(await invoke<Job[]>("review_jobs"));
     void this.loadOthers();
     window.setInterval(() => void this.loadOthers(), 30_000);
+    void this.loadPrs();
+    window.setInterval(() => void this.loadPrs(), 30_000);
+    // A landing moves on its own: the one on show is read every few seconds.
+    window.setInterval(() => {
+      const pr = this.prFor(this.selected);
+      if (!document.hidden && this.root.isConnected && pr?.merge) void this.loadLanding(pr, true);
+    }, 4000);
+  }
+
+  private async loadPrs(): Promise<void> {
+    try {
+      this.prs = await invoke<PrRow[]>("landing_prs");
+    } catch (e) {
+      console.error("landing_prs", e);
+      return;
+    }
+    await Promise.all(this.prs.filter((p) => p.merge).map((p) => this.loadLanding(p, false)));
+    this.render();
+  }
+
+  private async loadLanding(pr: PrRow, draw: boolean): Promise<void> {
+    if (!pr.merge) return;
+    const got = await invoke<Landing | null>("landing_get", { cwd: pr.cwd, merge: pr.merge.sha }).catch(() => undefined);
+    if (got === undefined) return;
+    const was = JSON.stringify(this.lands.get(pr.merge.sha) ?? null);
+    this.lands.set(pr.merge.sha, got);
+    if (draw && JSON.stringify(got) !== was) this.render();
+  }
+
+  /** The workspace PR a list entry is about: a pasted review's PR, a
+   *  session review's linked PR, or a PR row itself. */
+  private prFor(sel: string | null): PrRow | null {
+    if (!sel) return null;
+    const same = (u: string) => (p: PrRow) => p.url.toLowerCase() === u.toLowerCase();
+    if (sel.startsWith("pr:")) return this.prs.find(same(sel.slice(3))) ?? null;
+    const j = sel.startsWith("job:") ? this.jobs.find((x) => `job:${x.id}` === sel) : undefined;
+    if (j?.repo && j.pr) return this.prs.find(same(`https://github.com/${j.repo}/pull/${j.pr}`)) ?? null;
+    const o = sel.startsWith("other:") ? this.others.find((x) => `other:${x.id}` === sel) : undefined;
+    if (o?.gh?.url) return this.prs.find(same(o.gh.url)) ?? null;
+    return null;
+  }
+
+  private landOf(pr: PrRow | null): Landing | null {
+    return pr?.merge ? (this.lands.get(pr.merge.sha) ?? null) : null;
+  }
+
+  /** A change's landing, from a Dock card's land log or the Wake's chip:
+   *  its review (or its PR row) picked, at the Land stage. */
+  async focusLanding(cwd: string, merge: string): Promise<void> {
+    if (!this.prs.some((p) => p.merge?.sha === merge)) await this.loadPrs();
+    const pr = this.prs.find((p) => p.merge?.sha === merge && (!cwd || p.cwd === cwd)) ?? this.prs.find((p) => p.merge?.sha === merge);
+    if (!pr) return;
+    const same = (u: string) => u.toLowerCase() === pr.url.toLowerCase();
+    const job = this.jobs.find((j) => j.repo && j.pr && same(`https://github.com/${j.repo}/pull/${j.pr}`));
+    const other = this.others.find((o) => o.gh?.url && same(o.gh.url));
+    const sel = job ? `job:${job.id}` : other ? `other:${other.id}` : `pr:${pr.url}`;
+    this.stageSel.set(sel, "land");
+    await this.loadLanding(pr, false);
+    this.pick(sel);
   }
 
   /**
@@ -715,6 +783,10 @@ export class ReviewView {
       b.setAttribute("aria-current", this.selected === sel ? "true" : "false");
       const top = el("span", "r-item-top");
       top.append(el("span", `r-dot ${dot}`), el("span", "r-item-name", name));
+      // Where the change is on its way to release (release.ts).
+      const pr = this.prFor(sel);
+      const chip = chipFor(pr, this.landOf(pr));
+      if (chip) top.append(el("span", `r-stage-chip ${chip.cls}`, chip.text));
       b.append(top, line);
       b.addEventListener("click", () => this.pick(sel));
       return b;
@@ -751,6 +823,20 @@ export class ReviewView {
         items.push(row(`other:${o.id}`, o.title, line, n ? "open" : "closed"));
       }
     }
+
+    // The workspaces' PRs no review covers: an ad hoc PR still lands, and is
+    // followed here from PR to Land.
+    const covered = new Set<string>();
+    for (const j of this.jobs) if (j.repo && j.pr) covered.add(`https://github.com/${j.repo}/pull/${j.pr}`.toLowerCase());
+    for (const o of this.others) if (o.gh?.url) covered.add(o.gh.url.toLowerCase());
+    const bare = this.prs.filter((p) => !covered.has(p.url.toLowerCase()) && p.state !== "closed");
+    if (bare.length) {
+      items.push(el("h3", "r-sec", "Pull requests"));
+      for (const p of bare) {
+        const dir = p.cwd.split("/").filter(Boolean).pop() ?? p.cwd;
+        items.push(row(`pr:${p.url}`, `${dir} · PR #${p.n}`, el("span", "r-item-line", p.title), p.state === "merged" ? "closed" : "open"));
+      }
+    }
     this.list.replaceChildren(...items);
   }
 
@@ -762,6 +848,9 @@ export class ReviewView {
     const sel = this.selected;
     const job = sel?.startsWith("job:") ? this.jobs.find((j) => `job:${j.id}` === sel) : undefined;
     const other = sel?.startsWith("other:") ? this.others.find((o) => `other:${o.id}` === sel) : undefined;
+    const prRow = sel?.startsWith("pr:") ? this.prFor(sel) : null;
+    const relPr = this.prFor(sel);
+    const relLand = this.landOf(relPr);
 
     // The page is drawn once per review and kept: moving or redrawing an
     // iframe reloads it, losing the reader's place. A new page posts its own
@@ -776,10 +865,16 @@ export class ReviewView {
     }
     this.tellLooking();
 
-    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.note, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
+    const key = JSON.stringify([sel, folded, this.frameDown, job, other, prRow, relPr, relLand, this.stageSel.get(sel ?? ""), this.note, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
     if (force || key !== this.drawn) {
       this.drawn = key;
-      const draw = () => (job ? this.drawJob(job) : other ? this.drawOther(other) : this.drawEmpty());
+      const draw = () => {
+        if (job) this.drawJob(job);
+        else if (other) this.drawOther(other);
+        else if (prRow) this.drawPr(prRow);
+        else this.drawEmpty();
+        this.drawRail(sel, !!(job || other), relPr, relLand);
+      };
       // From nothing folded, fold one more tool into ⋯ until the row fits.
       this.fold = 0;
       draw();
@@ -797,6 +892,45 @@ export class ReviewView {
     }
     if (job?.status === "ready") void this.loadFindings(job);
     this.syncPicks(job);
+  }
+
+  /** A PR no review covers: its name, its title, and the rail. */
+  private drawPr(p: PrRow): void {
+    const dir = p.cwd.split("/").filter(Boolean).pop() ?? p.cwd;
+    this.headOf(`${dir} · PR #${p.n}`, null, p.ws_title || "", p.url, [], { key: `pr:${p.url}`, items: [] });
+    this.ctl.replaceChildren(el("p", "r-detail", p.title));
+  }
+
+  /** The rail under the header, and the panel for its stage in place of
+   *  the review page (release.ts). Nothing without a PR to follow. */
+  private drawRail(sel: string | null, hasReview: boolean, pr: PrRow | null, land: Landing | null): void {
+    if (!sel || !pr) {
+      this.stageBox.hidden = true;
+      this.stageBox.replaceChildren();
+      if (this.framed) this.frameBox.hidden = false;
+      return;
+    }
+    let stage = this.stageSel.get(sel) ?? stageFor(hasReview, pr, land);
+    if (stage === "review" && !hasReview) stage = "pr";
+    const can: Record<Stage, boolean> = { review: hasReview, pr: true, merge: true, land: true };
+    this.head.append(railEl(stagesOf(hasReview, pr, land), stage, (s) => {
+      this.stageSel.set(sel, s);
+      this.render(true);
+    }, can));
+    const open = (url: string) => void invoke("open_url", { url }).catch((err) => (this.err.textContent = String(err)));
+    const panel = stage === "pr" ? prPanel(pr, open)
+      : stage === "merge" ? mergePanel(pr, open)
+      : stage === "land" ? landPanel(land, pr.state === "merged", {
+          open,
+          act: (recipe, what) => void invoke<string>("land_act", { cwd: pr.cwd, merge: pr.merge?.sha ?? "", recipe, act: what }).then(
+            (m) => { this.note = { sel, text: m }; void this.loadLanding(pr, true); this.render(true); },
+            (err) => { this.note = { sel, text: `Couldn't: ${err}` }; this.render(true); }),
+          log: (recipe) => invoke<string>("landing_log", { cwd: pr.cwd, merge: pr.merge?.sha ?? "", recipe }),
+        })
+      : null;
+    this.stageBox.hidden = !panel;
+    this.stageBox.replaceChildren(...(panel ? [panel] : []));
+    this.frameBox.hidden = !!panel || !this.framed;
   }
 
   /**
