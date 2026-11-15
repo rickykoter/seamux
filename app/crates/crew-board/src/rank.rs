@@ -636,6 +636,16 @@ pub fn rank_with_landings(wss: &[Value], plan_by_root: &Map<String, Value>, scre
             said = format!("bash-guard held a command: {{{{{}}}}}.", h.reason.replace("{{", "{ {").replace("}}", "} }"));
             chips = if h.runnable() { vec!["run held".into(), "copy held".into(), "dismiss held".into()] }
                     else { vec!["copy held".into(), "dismiss held".into()] };
+        } else if !stuck.is_empty() {
+            // A background agent stopped on a permission prompt: only you
+            // can let it go on.
+            (kind, badge) = (Some("attend"), "agent needs you");
+            let n: usize = stuck.iter().map(|b| b.waiting.len()).sum();
+            said = match (stuck.as_slice(), n) {
+                ([one], 1) => format!("{{{{{}}}}} is waiting on a permission prompt.", one.label.replace("{{", "{ {").replace("}}", "} }")),
+                (_, n) => format!("{n} background agents are waiting on a permission prompt."),
+            };
+            chips = vec!["jump".into()];
         } else if let Some(l) = land_needs {
             // A merge's landing waits on the person, failed, or stopped:
             // approve or skip it, or retry it and read its log.
@@ -651,19 +661,9 @@ pub fn rank_with_landings(wss: &[Value], plan_by_root: &Map<String, Value>, scre
                     (kind, badge) = (Some("attend"), if l.status == "failed" { "landing failed" } else { "landing stopped" });
                     said = format!("{pr}'s {{{{{}}}}} {} at {{{{{}}}}}.", at(&l.recipe), if l.status == "failed" { "failed" } else { "stopped" },
                                    at(if l.stage.is_empty() { "its start" } else { &l.stage }));
-                    chips = vec!["retry land".into(), "land log".into()];
+                    chips = vec!["retry land".into(), "land log".into(), "dismiss land".into()];
                 }
             }
-        } else if !stuck.is_empty() {
-            // A background agent stopped on a permission prompt: only you
-            // can let it go on.
-            (kind, badge) = (Some("attend"), "agent needs you");
-            let n: usize = stuck.iter().map(|b| b.waiting.len()).sum();
-            said = match (stuck.as_slice(), n) {
-                ([one], 1) => format!("{{{{{}}}}} is waiting on a permission prompt.", one.label.replace("{{", "{ {").replace("}}", "} }")),
-                (_, n) => format!("{n} background agents are waiting on a permission prompt."),
-            };
-            chips = vec!["jump".into()];
         } else if plan.is_some() && phase == "review" {
             (kind, badge) = (Some("attend"), "review");
             said = format!("{{{{Alignment check not taken.}}}} {} increments are locked behind it — \

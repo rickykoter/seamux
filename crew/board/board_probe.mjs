@@ -3830,9 +3830,9 @@ setInterval(() => { try { fs.mkdirSync(p); fs.utimesSync(p, old, old); } catch {
   render({ rows: [{ id: "lw", name: "lw", kind: "attend", badge: "landing needs you", said: "#231's {{seamux}} waits at {{notebook}}.",
     chips: ["approve land", "skip land", "land log"], frac: null, meta: "", ref: "workspace:1", cwd: "/w/lw", landing }], quiet: "" });
   const h = els.rows.innerHTML;
-  checks.push(["land: approve, skip and log carry the act, the merge and the recipe",
-    h.includes(`data-a="land" data-x="approve|${merge}|seamux@app"`) && h.includes(`data-a="land" data-x="skip|${merge}|seamux@app"`) &&
-    h.includes(`data-a="land" data-x="log|${merge}|seamux@app"`), h.slice(0, 1500)]);
+  checks.push(["land: approve, skip and log carry the act, the merge, the recipe and the card's worktree",
+    h.includes(`data-a="land" data-x="approve|${merge}|seamux@app|/w/lw"`) && h.includes(`data-a="land" data-x="skip|${merge}|seamux@app|/w/lw"`) &&
+    h.includes(`data-a="land" data-x="log|${merge}|seamux@app|/w/lw"`), h.slice(0, 1500)]);
   checks.push(["land: the chips say what they do", /title="Approve this recipe&#39;s writing steps/.test(h)]);
 }
 

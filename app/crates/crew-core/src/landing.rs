@@ -141,6 +141,10 @@ pub fn for_worktree(home: &Path, cwd: &str) -> Option<View> {
         .filter(|e| e.get("cwd").and_then(Value::as_str).is_some_and(|c| crate::prs::key(c) == want))
         .filter(|e| e.get("started").and_then(Value::as_i64).unwrap_or(0) > 0)
         .max_by_key(|e| e.get("at").and_then(Value::as_i64).unwrap_or(0))?;
+    // The person took it off the card (land_act dismiss).
+    if e.get("dismissed").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
     let s = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let recipes: Vec<String> = e.get("recipes").and_then(Value::as_array).into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect();
     if recipes.is_empty() {
@@ -237,6 +241,10 @@ mod tests {
         let v = for_worktree(&d, &cwd).unwrap();
         assert_eq!((v.status, v.ended, v.live), ("done", 77, true));
         assert!(for_worktree(&d, "/nowhere").is_none());
+        let mut idx: Value = serde_json::from_str(&std::fs::read_to_string(d.join("landings").join("index.json")).unwrap()).unwrap();
+        idx["k/new"]["dismissed"] = json!(true);
+        std::fs::write(d.join("landings").join("index.json"), idx.to_string()).unwrap();
+        assert!(for_worktree(&d, &cwd).is_none(), "a dismissed landing is off the card");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -14,13 +14,21 @@
     "name": "a Datadog notebook watching the rollout",
     "match": [],
     "steps": [
-      { "stage": "notebook", "writes": true,
-        "run": "jq -n --arg sha \"$MERGE_SHA\" --arg pr \"$PR\" '{data: {type: \"notebooks\", attributes: {name: (\"Rollout of \" + ($sha[0:7]) + (if $pr == \"\" then \"\" else \" (PR #\" + $pr + \")\" end)), time: {live_span: \"4h\"}, cells: [{type: \"notebook_cells\", attributes: {definition: {type: \"markdown\", text: (\"Watching the rollout of \" + $sha + \". Replace this cell with the service's error rate and latency.\")}}}]}}}' | curl -fsS -X POST \"https://api.$DD_SITE/api/v1/notebooks\" -H \"DD-API-KEY: $DD_API_KEY\" -H \"DD-APPLICATION-KEY: $DD_APP_KEY\" -H 'Content-Type: application/json' -d @- 2>/dev/null | jq -r --arg site \"$DD_SITE\" '\"https://app.\" + $site + \"/notebook/\" + (.data.id | tostring)'",
+      {
+        "stage": "notebook",
+        "writes": true,
+        "run": "body=$(jq -n --arg sha \"$MERGE_SHA\" --arg pr \"$PR\" '{data: {type: \"notebooks\", attributes: {name: (\"Rollout of \" + ($sha[0:7]) + (if $pr == \"\" then \"\" else \" (PR #\" + $pr + \")\" end)), time: {live_span: \"4h\"}, cells: [{type: \"notebook_cells\", attributes: {definition: {type: \"markdown\", text: (\"Watching the rollout of \" + $sha + \". Replace this cell with the service's error rate and latency.\")}}}]}}}') || exit 1; out=$(printf '%s' \"$body\" | curl -fsS -X POST \"https://api.$DD_SITE/api/v1/notebooks\" -H \"DD-API-KEY: $DD_API_KEY\" -H \"DD-APPLICATION-KEY: $DD_APP_KEY\" -H 'Content-Type: application/json' -d @-) || exit 1; id=$(printf '%s' \"$out\" | jq -r '.data.id // empty') && [ -n \"$id\" ] || { echo 'Datadog made no notebook' >&2; exit 1; }; echo \"https://app.$DD_SITE/notebook/$id\"",
         "export": "NOTEBOOK",
-        "note": "creates the notebook and prints its URL; the keys come from the environment, never from this file" }
+        "note": "creates the notebook and prints its URL; fails unless Datadog answered with one. The keys come from the environment, never from this file"
+      }
     ],
     "outputs": {
-      "links": [ { "label": "Rollout notebook", "url": "$NOTEBOOK" } ]
+      "links": [
+        {
+          "label": "Rollout notebook",
+          "url": "$NOTEBOOK"
+        }
+      ]
     }
   }
 }

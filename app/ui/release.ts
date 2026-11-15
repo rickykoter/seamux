@@ -171,7 +171,7 @@ export function mergePanel(pr: PrRow, open: (url: string) => void): HTMLElement 
 }
 
 export type LandActs = {
-  act: (recipe: string, what: "approve" | "skip" | "retry") => void;
+  act: (recipe: string, what: "approve" | "skip" | "retry" | "dismiss") => void;
   log: (recipe: string) => Promise<string>;
   open: (url: string) => void;
 };
@@ -191,6 +191,10 @@ export function landPanel(land: Landing | null, merged: boolean, acts: LandActs)
   }
   const recipes = Object.values(land.state.recipes);
   if (!recipes.length) box.append(el("p", "r-detail", "Its landing has not started a recipe yet."));
+  if (land.overall.status === "failed" || land.overall.status === "stopped") {
+    const first = recipes[0]?.key ?? "";
+    box.append(button("Dismiss", "Take this landing off the Dock card: you have seen to it", () => acts.act(first, "dismiss")));
+  }
   for (const r of recipes) {
     const row = el("div", `r-land ${r.status}`);
     const head = el("div", "r-land-head");
@@ -213,7 +217,10 @@ export function landPanel(land: Landing | null, merged: boolean, acts: LandActs)
       tools.append(button("Approve", "Approve this recipe's writing steps as it is now, and let it go on", () => acts.act(r.key, "approve"), "r-btn primary"));
       tools.append(button("Skip", "Skip this recipe for this merge", () => acts.act(r.key, "skip")));
     }
-    if (r.status === "failed" || land.overall.status === "stopped") tools.append(button("Retry", "Run it again from the stage that stopped", () => acts.act(r.key, "retry"), "r-btn primary"));
+    // Retry only a recipe that has not finished: a done one is not landed
+    // again from here, and its writing steps never run twice.
+    const unfinished = r.status === "failed" || (land.overall.status === "stopped" && !["done", "skipped"].includes(r.status));
+    if (unfinished) tools.append(button("Retry", "Run it again from the stage that stopped", () => acts.act(r.key, "retry"), "r-btn primary"));
     const logBox = el("pre", "r-land-log");
     logBox.hidden = true;
     tools.append(button("Log", "Show the end of this recipe's log", () => {
@@ -227,4 +234,20 @@ export function landPanel(land: Landing | null, merged: boolean, acts: LandActs)
     box.append(row);
   }
   return box;
+}
+
+/** Read each merged PR's landing into `into` (by merge commit), through
+ *  `get` (landing_get). Whether any changed. The Lookout tab and the Wake
+ *  both read landings this way. */
+export async function readLandings(prs: { cwd: string; merge?: { sha: string } }[], into: Map<string, Landing | null>,
+                                   get: (cwd: string, merge: string) => Promise<Landing | null>): Promise<boolean> {
+  let moved = false;
+  await Promise.all(prs.filter((p) => p.merge).map(async (p) => {
+    const sha = p.merge!.sha;
+    const got = await get(p.cwd, sha).catch(() => undefined);
+    if (got === undefined) return;
+    if (JSON.stringify(got) !== JSON.stringify(into.get(sha) ?? null)) moved = true;
+    into.set(sha, got);
+  }));
+  return moved;
 }

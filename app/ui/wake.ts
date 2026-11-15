@@ -4,7 +4,7 @@ import { sheet, type Sheet, type Shown } from "./sheet";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, Viewer } from "./wakeview";
 import { age, badgeOf, bar, byUrl, countsSaid, doneSaid, GROUP_SAID, grouped, type Group, type Pr } from "./prs";
-import { chipFor, type Landing, type PrRow } from "./release";
+import { chipFor, readLandings, type Landing, type PrRow } from "./release";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -367,13 +367,9 @@ export class Wake {
       const same = ws === this.prsWs && JSON.stringify(prs) === JSON.stringify(this.prs);
       this.prs = Array.isArray(prs) ? prs : [];
       this.prsByUrl = byUrl(this.prs);
-      const before = JSON.stringify([...this.lands]);
-      await Promise.all(this.prs.filter((p) => p.merge).map(async (p) => {
-        const got = await invoke<Landing | null>("landing_get", { cwd: ws, merge: p.merge!.sha }).catch(() => undefined);
-        if (got !== undefined) this.lands.set(p.merge!.sha, got);
-      }));
+      const landsMoved = await readLandings(this.prs.map((p) => ({ cwd: ws, merge: p.merge })), this.lands,
+        (cwd, merge) => invoke<Landing | null>("landing_get", { cwd, merge }));
       if (ws !== this.ws) return;
-      const landsMoved = JSON.stringify([...this.lands]) !== before;
       this.prsWs = ws;
       const mine = this.prsFocus && this.focusHere(this.prsFocusDir);
       // A focus asked for a worktree with no PRs has nothing to scroll to.

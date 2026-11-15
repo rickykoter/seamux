@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { chipFor, landPanel, mergePanel, prPanel, railEl, stageFor, stagesOf, type Landing, type PrRow, type Stage } from "./release";
+import { chipFor, landPanel, mergePanel, prPanel, railEl, readLandings, stageFor, stagesOf, type Landing, type PrRow, type Stage } from "./release";
 
 // A job as review_app.rs serves it.
 /** What review_app's orphan() refusal says: an agent from the last session still runs there. */
@@ -120,6 +120,7 @@ const STEPS: [string[], string][] = [
   [["ingesting"], "Save the findings"],
 ];
 const SEL_KEY = "seamux.lookout.selected";
+const getLanding = (cwd: string, merge: string) => invoke<Landing | null>("landing_get", { cwd, merge });
 /** "shown" when the reader opened the review list beside an open review; folded otherwise. */
 const LIST_KEY = "seamux.lookout.list";
 const SVG = "http://www.w3.org/2000/svg";
@@ -478,17 +479,12 @@ export class ReviewView {
       console.error("landing_prs", e);
       return;
     }
-    await Promise.all(this.prs.filter((p) => p.merge).map((p) => this.loadLanding(p, false)));
+    await readLandings(this.prs, this.lands, getLanding);
     this.render();
   }
 
   private async loadLanding(pr: PrRow, draw: boolean): Promise<void> {
-    if (!pr.merge) return;
-    const got = await invoke<Landing | null>("landing_get", { cwd: pr.cwd, merge: pr.merge.sha }).catch(() => undefined);
-    if (got === undefined) return;
-    const was = JSON.stringify(this.lands.get(pr.merge.sha) ?? null);
-    this.lands.set(pr.merge.sha, got);
-    if (draw && JSON.stringify(got) !== was) this.render();
+    if (await readLandings([pr], this.lands, getLanding) && draw) this.render();
   }
 
   /** The workspace PR a list entry is about: a pasted review's PR, a

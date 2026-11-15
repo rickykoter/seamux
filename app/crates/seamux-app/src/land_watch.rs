@@ -93,6 +93,8 @@ pub struct Entry {
     pub error: String,
     pub tries: u32,
     pub next_try: i64,
+    /// The person took a failed or stopped landing off the card.
+    pub dismissed: bool,
 }
 
 pub type Index = BTreeMap<String, Entry>;
@@ -430,10 +432,22 @@ pub fn start_watch(app: AppHandle) {
 
 // ---------------------------------------------------------------- commands
 
+/// A worktree's kept checkout and repo key, asked of git once per worktree:
+/// the Lookout tab and the Wake read every merged PR's landing often.
+fn repo_of(cwd: &str) -> Result<(PathBuf, String), String> {
+    static FACTS: Mutex<BTreeMap<String, (PathBuf, String)>> = Mutex::new(BTreeMap::new());
+    if let Some(v) = FACTS.lock().unwrap_or_else(|p| p.into_inner()).get(cwd) {
+        return Ok(v.clone());
+    }
+    let (_, repo, _) = crew_core::workspace_open::worktree_facts(Path::new(cwd)).map_err(|e| e.to_string())?;
+    let v = (repo.clone(), landing::repo_key(&repo));
+    FACTS.lock().unwrap_or_else(|p| p.into_inner()).insert(cwd.to_string(), v.clone());
+    Ok(v)
+}
+
 /// The index entry for `merge` whose repo is `cwd`'s, if the watcher knows it.
 fn known(cwd: &str, merge: &str) -> Result<(PathBuf, Entry), String> {
-    let (_, repo, _) = crew_core::workspace_open::worktree_facts(Path::new(cwd)).map_err(|e| e.to_string())?;
-    let key = landing::repo_key(&repo);
+    let (repo, key) = repo_of(cwd)?;
     let id = format!("{key}/{merge}");
     let e = load(&landing::home()).remove(&id).ok_or("the app has not landed that merge")?;
     if Path::new(&e.repo) != repo {
@@ -445,8 +459,7 @@ fn known(cwd: &str, merge: &str) -> Result<(PathBuf, Entry), String> {
 /// A merge's landing for the UI: its state file and its overall status, or
 /// null when none was started. `cwd` is any worktree of the repo.
 pub fn landing_of(cwd: &str, merge: &str) -> Option<Value> {
-    let (_, repo, _) = crew_core::workspace_open::worktree_facts(Path::new(cwd)).ok()?;
-    let key = landing::repo_key(&repo);
+    let (repo, key) = repo_of(cwd).ok()?;
     let state = landing::read(&landing::home(), &key, merge)?;
     let entry = load(&landing::home()).remove(&format!("{key}/{merge}"));
     let o = match &entry {
@@ -466,6 +479,15 @@ pub fn act(cwd: &str, merge: &str, recipe: &str, what: &str) -> Result<String, S
         return Err("not a merge commit".into());
     }
     let (repo, e) = known(cwd, merge)?;
+    if what == "dismiss" {
+        let id = format!("{}/{}", e.key, e.merge);
+        with_index(&landing::home(), |idx| {
+            if let Some(x) = idx.get_mut(&id) {
+                x.dismissed = true;
+            }
+        });
+        return Ok("taken off the card".into());
+    }
     if !e.recipes.iter().any(|r| r == recipe) {
         return Err(format!("{recipe} is not one of this merge's recipes"));
     }
@@ -479,9 +501,10 @@ pub fn act(cwd: &str, merge: &str, recipe: &str, what: &str) -> Result<String, S
             }
             let pid = spawn_runs(&repo, merge, e.pr, &[recipe.to_string()]).ok_or("could not start the run")?;
             if let Some(x) = idx.get_mut(&id) {
-                // Tracked like the watcher's own, and told afresh.
+                // Tracked like the watcher's own, told afresh, and back on the card.
                 x.pid = pid;
                 x.told.clear();
+                x.dismissed = false;
             }
             Ok(label.to_string())
         })

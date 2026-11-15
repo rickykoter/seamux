@@ -41,7 +41,8 @@ function __boardRender(d) {
     "approve land": "Approve this recipe's writing steps as it is now, and let the landing go on",
     "skip land": "Skip this recipe for this merge",
     "retry land": "Run the landing again from the stage that stopped",
-    "land log": "Open the change in the Lookout tab, at its Land stage"
+    "land log": "Open the change in the Lookout tab, at its Land stage",
+    "dismiss land": "Take this landing off the card: you have seen to it"
   };
 
   function esc(s) {
@@ -1041,11 +1042,11 @@ function __boardRender(d) {
     var act = HELD_ACT[c];
     if (act && a.held) return ' data-a="held" data-x="' + esc(act + "|" + a.held.pane + "|" + a.held.at) + '"';
     var land = LAND_ACT[c];
-    if (land && a.landing) return ' data-a="land" data-x="' + esc(land + "|" + a.landing.merge + "|" + a.landing.recipe) + '"';
+    if (land && a.landing) return ' data-a="land" data-x="' + esc(land + "|" + a.landing.merge + "|" + a.landing.recipe + "|" + (a.cwd || "")) + '"';
     return "";
   }
   // A landing's chip carries its act, its merge and its recipe (rank.rs).
-  var LAND_ACT = { "approve land": "approve", "skip land": "skip", "retry land": "retry", "land log": "log" };
+  var LAND_ACT = { "approve land": "approve", "skip land": "skip", "retry land": "retry", "land log": "log", "dismiss land": "dismiss" };
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot
   // for it in board.html, and one image is not worth a stylesheet rule.
