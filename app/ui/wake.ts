@@ -4,6 +4,7 @@ import { sheet, type Sheet, type Shown } from "./sheet";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, Viewer } from "./wakeview";
 import { age, badgeOf, bar, byUrl, countsSaid, doneSaid, GROUP_SAID, grouped, type Group, type Pr } from "./prs";
+import { chipFor, readLandings, type Landing, type PrRow } from "./release";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -169,6 +170,8 @@ export class Wake {
   /** The worktree's pull requests (crew-sync's list, wake_prs), for the
    *  Pull requests block and the pr rows' badges; when they were read. */
   private prs: Pr[] = [];
+  /** Each merged PR's landing by its merge commit (land_watch.rs). */
+  private lands = new Map<string, Landing | null>();
   /** `prs` by canonical URL, for the pr rows' badges: built once per read. */
   private prsByUrl = new Map<string, Pr>();
   private prsAt = 0;
@@ -364,11 +367,14 @@ export class Wake {
       const same = ws === this.prsWs && JSON.stringify(prs) === JSON.stringify(this.prs);
       this.prs = Array.isArray(prs) ? prs : [];
       this.prsByUrl = byUrl(this.prs);
+      const landsMoved = await readLandings(this.prs.map((p) => ({ cwd: ws, merge: p.merge })), this.lands,
+        (cwd, merge) => invoke<Landing | null>("landing_get", { cwd, merge }));
+      if (ws !== this.ws) return;
       this.prsWs = ws;
       const mine = this.prsFocus && this.focusHere(this.prsFocusDir);
       // A focus asked for a worktree with no PRs has nothing to scroll to.
       if (mine && !this.prs.length) this.prsFocus = null;
-      if ((!same || mine) && this.data.workspaces.length) this.draw();
+      if ((!same || mine || landsMoved) && this.data.workspaces.length) this.draw();
     } catch {
       /* no list: the block stays away */
     }
@@ -697,6 +703,21 @@ export class Wake {
     const t = el("span", "w-pr-t", p.title || p.url);
     if (p.state === "draft" && g !== "draft") t.prepend(el("span", "w-pr-tag", "draft "));
     li.append(t, el("time", "w-pr-age", age(p.updatedAt)));
+    // A merged PR's landing: where it is, and a click to follow it in the
+    // Lookout tab at its Land stage.
+    const land = p.merge ? this.lands.get(p.merge.sha) ?? null : null;
+    const chip = p.merge ? chipFor({ ...p, cwd: this.ws, ws: "", ws_title: "" } as PrRow, land) : null;
+    if (p.merge && land && chip) {
+      const c = el("button", `w-pr-land ${chip.cls}`, chip.text);
+      c.type = "button";
+      c.title = "Follow this merge's landing in the Lookout tab";
+      const merge = p.merge.sha, cwd = this.ws;
+      c.addEventListener("click", (e) => {
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent("seamux:land-open", { detail: { cwd, merge } }));
+      });
+      li.append(c);
+    }
     const failing = p.failing ?? [];
     if (failing.length) {
       const shown = this.prsShown.get(p.n) ?? g === "you";

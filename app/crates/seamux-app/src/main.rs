@@ -8,6 +8,7 @@
 mod bg_app;
 mod clip_app;
 mod held_app;
+mod land_watch;
 mod links_app;
 mod newws_app;
 mod notify_app;
@@ -199,6 +200,9 @@ fn main() {
         })
         .setup(|app| {
             shell::install(app)?;
+            // What is running, for a landing that waits on it: the commit
+            // this app was built from (plan landing).
+            seamux_app::build_stamp::write(&crew_core::home::xdg_cache());
             // The board's server, on this app's backend.
             std::thread::spawn(|| {
                 shell::ensure_intent();
@@ -209,6 +213,8 @@ fn main() {
             views_app::start(app.handle().clone());
             review_app::start(app.handle().clone());
             pr_watch::start(app.handle().clone());
+            // Merged PRs landed by their land recipes (plan landing).
+            land_watch::start_watch(app.handle().clone());
             // Armed sessions a usage limit stopped, continued at the reset.
             resume_watch::start(app.handle().clone());
             Ok(())
@@ -251,6 +257,10 @@ fn main() {
             stop_app::pane_stop_cancel,
             held_app::pane_held,
             held_app::held_act,
+            land_watch::landing_get,
+            land_watch::land_act,
+            land_watch::landing_prs,
+            land_watch::landing_log,
             links_app::link_file,
             pane_app::open_in_vscode,
             pane_app::term_look,

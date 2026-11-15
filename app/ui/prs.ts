@@ -19,6 +19,8 @@ export type Pr = {
   /** The group crew-sync filed it in (crew-core prs.rs `group`): the one
    *  rule the Dock's pills count by. groupOf falls back to its copy. */
   group?: string;
+  /** A merged PR's merge commit, when and into what (plan landing). */
+  merge?: { sha: string; at: string; base: string };
 };
 
 /** The Wake's groups, in the order they show. */

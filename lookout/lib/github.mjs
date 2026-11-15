@@ -523,7 +523,7 @@ export function gateNames(cwd) {
 }
 const isGate = (name, names) => names ? names.includes(String(name).toLowerCase()) : GATE_RE.test(name);
 
-const PRS_GQL_FIELDS = `number url title state isDraft reviewDecision mergeable updatedAt headRefName author { login }
+const PRS_GQL_FIELDS = `number url title state isDraft reviewDecision mergeable updatedAt headRefName baseRefName mergedAt mergeCommit { oid } author { login }
   commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes {
     __typename
     ... on CheckRun { name status conclusion detailsUrl }
@@ -549,13 +549,18 @@ export function checkBucket(c, gates, approved = false) {
 }
 
 // One PR node as the Dock and the Wake read it. Merged and closed PRs carry
-// no counts: nothing on them needs doing.
+// no counts: nothing on them needs doing. A merged one carries its merge
+// commit, when it was merged and into what: what the app lands (plan
+// landing).
 export function prOf(node, gates) {
   const state = node.state === "MERGED" ? "merged" : node.state === "CLOSED" ? "closed" : node.isDraft ? "draft" : "open";
   const out = { n: node.number, url: node.url || "", title: node.title || "", state,
     review: node.reviewDecision || "", conflict: node.mergeable === "CONFLICTING",
     author: (node.author || {}).login || "", branch: node.headRefName || "", updatedAt: node.updatedAt || "",
     checks: null, failing: [], gating: [] };
+  const sha = ((node.mergeCommit || {}).oid || "").toLowerCase();
+  if (state === "merged" && /^[0-9a-f]{40}$/.test(sha))
+    out.merge = { sha, at: node.mergedAt || "", base: node.baseRefName || "" };
   if (state === "merged" || state === "closed") return out;
   const all = (((((node.commits || {}).nodes || [])[0] || {}).commit || {}).statusCheckRollup || {}).contexts || {};
   const ctx = all.nodes || [];

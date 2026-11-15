@@ -165,5 +165,28 @@
   { "id": "crew-store-rust", "kind": "test",
     "run": "cargo test --manifest-path app/Cargo.toml -p crew-store",
     "match": ["app/crates/crew-store/**", "app/crates/crew-core/**", "app/Cargo.lock"], "default": true,
-    "note": "the Artifact Log store: schema, read side, Keep and the indexer" }
+    "note": "the Artifact Log store: schema, read side, Keep and the indexer" },
+  { "id": "app-ui-release", "kind": "test",
+    "run": "node app/ui/release_probe.ts",
+    "match": ["app/ui/release.ts", "app/ui/release_probe.ts"], "default": true,
+    "note": "the Lookout tab's rail from review to release: each stage's state, where a change opens, a row's chip; a pure module Node runs as TypeScript" },
+  { "id": "seamux-plugins", "kind": "land",
+    "name": "the plugins, pulled into the kept checkout",
+    "match": ["deep-plan/**", "lookout/**", "restack/**", "bash-guard/**", "humanize/**", "seamux-mods/**", "shared/**", ".claude-plugin/**"],
+    "steps": [
+      { "stage": "checkout", "run": "sh tools/land/kept-checkout.sh" },
+      { "stage": "pull", "run": "git pull --ff-only --quiet origin main" }],
+    "note": "the plugins run straight from the kept checkout, so a pull lands them; a session takes them at /reload-plugins" },
+  { "id": "seamux-app", "kind": "land",
+    "name": "the app and crew, installed and running",
+    "match": ["app/**", "crew/**", "theme/**", "install.sh"],
+    "timeout": 1800,
+    "steps": [
+      { "stage": "checkout", "run": "sh tools/land/kept-checkout.sh" },
+      { "stage": "pull", "run": "git pull --ff-only --quiet origin main" },
+      { "stage": "crew", "run": "./crew/bin/crew apply" },
+      { "stage": "install", "run": "./install.sh --app" },
+      { "stage": "live", "wait": "sh tools/land/app-live.sh", "export": "LIVE", "timeout": 600, "interval": 10 }],
+    "outputs": { "version": { "expect": "$MERGE_SHA", "live": "$LIVE" } },
+    "note": "crew apply before install.sh --app: the install restarts the app, which then loads the board's fresh pages. live waits until the running app was built from a commit containing the merge" }
 ] }

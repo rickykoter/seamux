@@ -9,7 +9,9 @@
 //!     checks: { fail, run, pass, gate, unseen } | null, failing, gating, … } ] }
 //!
 //! `state` is open, draft, merged or closed; a merged or closed PR has no
-//! checks. `failing` and `gating` are [{ name, url }].
+//! checks. `failing` and `gating` are [{ name, url }]. A merged PR read since
+//! plan landing also has `merge: { sha, at, base }`: its merge commit (40
+//! hex), when it merged (ISO 8601) and the branch it merged into.
 
 use std::path::PathBuf;
 
@@ -58,6 +60,29 @@ pub fn count(pr: &Value, bucket: &str) -> u64 {
 /// The PR's number, 0 when it has none.
 pub fn number(pr: &Value) -> u64 {
     pr.get("n").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// A merged PR's merge: its commit, when, and into which branch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Merge {
+    pub sha: String,
+    pub at: String,
+    pub base: String,
+}
+
+/// The PR's merge, when it is merged and lookout read its commit (a merge
+/// read before plan landing has none). The sha must be 40 hex characters.
+pub fn merge_of(pr: &Value) -> Option<Merge> {
+    if s(pr, "state") != "merged" {
+        return None;
+    }
+    let m = pr.get("merge")?;
+    let sha = m.get("sha").and_then(Value::as_str)?.to_ascii_lowercase();
+    (sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| Merge {
+        sha,
+        at: m.get("at").and_then(Value::as_str).unwrap_or("").to_string(),
+        base: m.get("base").and_then(Value::as_str).unwrap_or("").to_string(),
+    })
 }
 
 /// Where the Wake files a PR: "you" (an open PR that is red, has changes
@@ -193,6 +218,20 @@ mod tests {
     fn pr(n: u64, state: &str, review: &str, c: Option<[u64; 4]>) -> Value {
         json!({"n": n, "state": state, "review": review, "conflict": false,
                "checks": c.map(|[f, r, p, g]| json!({"fail": f, "run": r, "pass": p, "gate": g, "unseen": 0}))})
+    }
+
+    #[test]
+    fn a_merged_pr_gives_its_merge_and_nothing_else_does() {
+        let sha = "89FC6C2C".to_string() + &"a".repeat(32);
+        let mut m = pr(3, "merged", "", None);
+        m["merge"] = json!({"sha": sha, "at": "2026-11-13T07:31:00Z", "base": "main"});
+        assert_eq!(merge_of(&m), Some(Merge { sha: sha.to_ascii_lowercase(), at: "2026-11-13T07:31:00Z".into(), base: "main".into() }));
+        assert_eq!(merge_of(&pr(3, "merged", "", None)), None, "a merge read before landing has no commit");
+        let mut open = pr(4, "open", "", None);
+        open["merge"] = json!({"sha": "a".repeat(40)});
+        assert_eq!(merge_of(&open), None, "only a merged PR lands");
+        m["merge"]["sha"] = json!("89fc6c2c");
+        assert_eq!(merge_of(&m), None, "a short sha is not a merge commit");
     }
 
     #[test]

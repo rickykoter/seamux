@@ -373,6 +373,9 @@ struct Ctx {
     /// Per workspace (upper-cased id), the commands bash-guard holds in its
     /// panes for the person (crew_core::held), newest first.
     held: std::collections::HashMap<String, Vec<crew_core::held::Held>>,
+    /// Per workspace (upper-cased id), its worktree's latest landing (plan
+    /// landing), as crew_core::landing::for_worktree reads it.
+    landings: std::collections::HashMap<String, crew_core::landing::View>,
     cost_map: Map<String, Value>,
     jmap: Map<String, Value>,
     stuck_t: f64,
@@ -485,6 +488,11 @@ pub fn held_by_ws(dir: &std::path::Path, panes: &[crew_core::status::Pane]) -> s
     out
 }
 
+/// Whether a said line is only the quiet default, which a landing may replace.
+fn kind_was_quiet(said: &str) -> bool {
+    said.is_empty() || said == "Mid-turn."
+}
+
 /// What a card says of a held command: the reason in its markup, and the
 /// command for its row, clipped (the pane's banner shows it whole).
 pub fn held_row(h: &crew_core::held::Held) -> Value {
@@ -526,7 +534,14 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
     let panes = crew_core::status::all(&dir);
     let quiet = quiet_by_ws(&panes, (crew_core::py::now() * 1000.0) as u64,
                             crew_core::status::silent_threshold_ms(), &|p| crew_core::status::activity(&dir, p.key()));
-    rank_with_held(wss, plan_by_root, screens, quiet, background_by_ws(&panes), held_by_ws(&crew_core::home::xdg_cache(), &panes))
+    let home = crew_core::landing::home();
+    let landings = wss.iter()
+        .filter_map(|w| {
+            let cwd = get(w, "cwd").as_str().filter(|c| !c.is_empty())?;
+            Some((py_str(get(w, "id")).to_ascii_uppercase(), crew_core::landing::for_worktree(&home, cwd)?))
+        })
+        .collect();
+    rank_with_landings(wss, plan_by_root, screens, quiet, background_by_ws(&panes), held_by_ws(&crew_core::home::xdg_cache(), &panes), landings)
 }
 
 /// rank() with the quiet panes and background tasks given, so a test needs
@@ -542,6 +557,15 @@ pub fn rank_with_held(wss: &[Value], plan_by_root: &Map<String, Value>, screens:
                       silent: std::collections::HashMap<String, Quiet>,
                       background: std::collections::HashMap<String, Vec<crew_core::status::Background>>,
                       held: std::collections::HashMap<String, Vec<crew_core::held::Held>>) -> (Vec<Value>, Vec<Value>) {
+    rank_with_landings(wss, plan_by_root, screens, silent, background, held, std::collections::HashMap::new())
+}
+
+/// rank_with_held, and each workspace's latest landing.
+pub fn rank_with_landings(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool,
+                          silent: std::collections::HashMap<String, Quiet>,
+                          background: std::collections::HashMap<String, Vec<crew_core::status::Background>>,
+                          held: std::collections::HashMap<String, Vec<crew_core::held::Held>>,
+                          landings: std::collections::HashMap<String, crew_core::landing::View>) -> (Vec<Value>, Vec<Value>) {
     let cwds: Vec<String> = wss.iter()
         .filter(|w| truthy(get(w, "cwd")))
         .map(|w| py_str(get(w, "cwd")))
@@ -553,6 +577,7 @@ pub fn rank_with_held(wss: &[Value], plan_by_root: &Map<String, Value>, screens:
         silent,
         background,
         held,
+        landings,
         cost_map: costs::costs_for(&cwds),
         jmap: judgments::fresh_map(None, None),
         stuck_t: judgments::stuck_threshold(),
@@ -598,6 +623,8 @@ pub fn rank_with_held(wss: &[Value], plan_by_root: &Map<String, Value>, screens:
 
         let stuck: Vec<&crew_core::status::Background> = bg.iter().filter(|b| !b.waiting.is_empty()).collect();
         let held = ctx.held.get(&py_str(get(w, "id")).to_ascii_uppercase()).and_then(|v| v.first());
+        let land = ctx.landings.get(&py_str(get(w, "id")).to_ascii_uppercase());
+        let land_needs = land.filter(|l| matches!(l.status, "awaiting" | "failed" | "stopped"));
         if has(d, "phase:waiting") {
             (kind, badge) = (Some("attend"), "asked you");
             said = "Waiting on an answer.".into();
@@ -619,6 +646,24 @@ pub fn rank_with_held(wss: &[Value], plan_by_root: &Map<String, Value>, screens:
                 (_, n) => format!("{n} background agents are waiting on a permission prompt."),
             };
             chips = vec!["jump".into()];
+        } else if let Some(l) = land_needs {
+            // A merge's landing waits on the person, failed, or stopped:
+            // approve or skip it, or retry it and read its log.
+            let pr = if l.pr > 0 { format!("#{}", l.pr) } else { l.merge.chars().take(7).collect() };
+            let at = |s: &str| s.replace("{{", "{ {").replace("}}", "} }");
+            match l.status {
+                "awaiting" => {
+                    (kind, badge) = (Some("attend"), "landing needs you");
+                    said = format!("{pr}'s {{{{{}}}}} waits at {{{{{}}}}}: approve or skip it.", at(&l.recipe), at(&l.stage));
+                    chips = vec!["approve land".into(), "skip land".into(), "land log".into()];
+                }
+                _ => {
+                    (kind, badge) = (Some("attend"), if l.status == "failed" { "landing failed" } else { "landing stopped" });
+                    said = format!("{pr}'s {{{{{}}}}} {} at {{{{{}}}}}.", at(&l.recipe), if l.status == "failed" { "failed" } else { "stopped" },
+                                   at(if l.stage.is_empty() { "its start" } else { &l.stage }));
+                    chips = vec!["retry land".into(), "land log".into(), "dismiss land".into()];
+                }
+            }
         } else if plan.is_some() && phase == "review" {
             (kind, badge) = (Some("attend"), "review");
             said = format!("{{{{Alignment check not taken.}}}} {} increments are locked behind it — \
@@ -721,6 +766,26 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             chips = vec!["close plan".into()];
         }
 
+        let mut live_badge: Option<String> = None;
+        // A landing under way, or one that went live in the last hour, says
+        // so on a card that has nothing more pressing to say.
+        if let Some(l) = land.filter(|_| !matches!(kind, Some("attend") | Some("wilt"))) {
+            let recent = l.ended > 0 && crew_core::history::now_ms().saturating_sub(l.ended) < 3_600_000;
+            if l.status == "landing" {
+                kind = Some("running");
+                badge_text = if l.stage.is_empty() { "landing".into() } else { format!("landing · {}", l.stage) };
+                if said.is_empty() || kind_was_quiet(&said) {
+                    said = format!("Landing {}.", if l.pr > 0 { format!("#{}", l.pr) } else { l.merge.chars().take(7).collect() });
+                }
+                if chips.is_empty() {
+                    chips = vec!["land log".into(), "jump".into()];
+                }
+            } else if l.status == "done" && recent && matches!(kind, None | Some("done")) {
+                badge_text = if l.live { "live ✓".into() } else { "landed".into() };
+                live_badge = Some(badge_text.clone());
+            }
+        }
+
         let (cost, unpriced) = ctx.cost(get(w, "cwd"));
         let tail = |r: &mut Map<String, Value>, signals: Vec<Value>, feedby: Value, feedgate: Value| {
             for (k, v) in ctx.issue_fields(w) {
@@ -752,7 +817,8 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         };
 
         let Some(kind) = kind else {
-            let qbadge = if plan.is_some() { "plan idle" }
+            let qbadge = if let Some(b) = live_badge.as_deref() { b }
+                else if plan.is_some() { "plan idle" }
                 else if !is_none_str(pr) { "pr open" }
                 else if truthy(get(w, "dirty")) { "uncommitted" }
                 else { "idle" };
@@ -815,6 +881,9 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         r.insert("chips".into(), json!(chips));
         if let Some(h) = held {
             r.insert("held".into(), held_row(h));
+        }
+        if let Some(l) = land {
+            r.insert("landing".into(), json!({"status": l.status, "stage": l.stage, "recipe": l.recipe, "merge": l.merge, "pr": l.pr, "live": l.live}));
         }
         r.insert("frac".into(), frac(plan));
         r.insert("meta".into(), json!(meta_bits.join(" · ")));
@@ -1051,6 +1120,37 @@ mod tests {
         let (rows, _) = rank_with(&wss, &Map::new(), false, Default::default(), bg);
         assert_eq!((rows[0]["kind"].as_str(), rows[0]["badge"].as_str()), (Some("attend"), Some("agent needs you")));
         assert_eq!(rows[0]["said"], "{{Lookout review}} is waiting on a permission prompt.");
+    }
+
+    #[test]
+    fn a_landing_shows_on_its_card() {
+        use crew_core::landing::View;
+        let ws = |id: &str| json!({"id": id, "title": id, "cwd": format!("/w/{id}"), "desc": "", "running": false});
+        let wss = vec![ws("w-a"), ws("w-f"), ws("w-l"), ws("w-v"), ws("w-o")];
+        let view = |status: &'static str, stage: &str, ended: u64, live: bool| View { status, stage: stage.into(), recipe: "seamux".into(),
+            merge: "a".repeat(40), pr: 231, live, ended };
+        let now = crew_core::history::now_ms();
+        let mut by = std::collections::HashMap::new();
+        by.insert("W-A".to_string(), view("awaiting", "notebook", 0, false));
+        by.insert("W-F".to_string(), view("failed", "install", 0, false));
+        by.insert("W-L".to_string(), view("landing", "install", 0, false));
+        by.insert("W-V".to_string(), view("done", "", now - 60_000, true));
+        by.insert("W-O".to_string(), view("done", "", now - 7_200_000, true));
+        let (rows, quiet) = rank_with_landings(&wss, &Map::new(), false, Default::default(), Default::default(), Default::default(), by);
+        let all: Vec<&Value> = rows.iter().chain(quiet.iter()).collect();
+        let row = |id: &str| *all.iter().find(|r| r["id"] == id).unwrap();
+        let a = row("w-a");
+        assert_eq!((a["kind"].as_str(), a["badge"].as_str()), (Some("attend"), Some("landing needs you")));
+        assert_eq!(a["said"], "#231's {{seamux}} waits at {{notebook}}: approve or skip it.");
+        assert_eq!(a["chips"].as_array().unwrap()[..2], [json!("approve land"), json!("skip land")]);
+        assert_eq!((a["landing"]["merge"].as_str().map(str::len), a["landing"]["recipe"].as_str()), (Some(40), Some("seamux")));
+        let f = row("w-f");
+        assert_eq!((f["kind"].as_str(), f["badge"].as_str()), (Some("attend"), Some("landing failed")));
+        assert_eq!(f["chips"].as_array().unwrap()[0], json!("retry land"));
+        let l = row("w-l");
+        assert_eq!((l["kind"].as_str(), l["badge"].as_str()), (Some("running"), Some("landing · install")));
+        assert_eq!(row("w-v")["badge"], "live ✓", "live for an hour after it lands");
+        assert_ne!(row("w-o")["badge"], "live ✓", "and not after that");
     }
 
     #[test]

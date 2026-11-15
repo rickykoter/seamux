@@ -6,6 +6,23 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **A merged PR lands itself, and Lookout follows it from review to
+  release.** A project writes `kind: "land"` recipes in
+  `.seamux/verify.json`: stages to run after a merge (wait for the deploy,
+  check the live version, open a rollout notebook), matched to the files
+  the merge changed. When a workspace's PR merges, the app runs them in the
+  repo's kept checkout, one landing per repo at a time, in a process that
+  outlives an app restart. The Lookout tab's new rail (Review, PR, Merge,
+  Land) shows each recipe's stages and times, the live version against the
+  merge, and its links. A step that writes to an outside system waits for
+  your approval the first time, and again after the recipe changes. The
+  Dock card says "landing · <stage>", then "live ✓", and asks when a
+  landing needs you or fails; a banner says when it is live. seamux lands
+  itself the same way: pull, `crew apply`, `install.sh --app`, then wait
+  until the running app was built from the merge. `deep-plan land` runs a
+  landing by hand, and two templates (a GitHub deployment, a Datadog
+  notebook) start a recipe. The app's build now carries its commit
+  (`seamux --version`). ADRs 0098 to 0105.
 - **A `!` command that wraps onto the next row is offered whole.** When
   Claude's inline `! command` ran past the pane's edge, its hover menu
   offered only the part on the first row, and widening the pane was the only

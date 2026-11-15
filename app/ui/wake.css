@@ -223,3 +223,11 @@
 .w-st.pr-bad { color: var(--bad-t); }
 .w-st.pr-wait { color: var(--ask-t); }
 .w-st.pr-ok { color: var(--good-t); }
+
+/* A merged PR's landing (release.ts chipFor): a click follows it in Lookout. */
+.w-pr-land { margin-left: 6px; font-size: var(--fs-1); padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.w-pr-land.done { color: var(--good-t); }
+.w-pr-land.now { color: var(--accent-t); }
+.w-pr-land.needs { color: var(--role-attend-t); border-color: var(--role-attend); }
+.w-pr-land.failed { color: var(--bad-t); }
+.w-pr-land:hover { border-color: var(--accent); }

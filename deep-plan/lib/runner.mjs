@@ -85,7 +85,11 @@ export function acquireSteps(exec) {
 // the caller records as the verdict. `from` ("wait" or "claim") resumes past
 // the acquire steps, which a person has run. `claim` carries the caller's
 // hooks into its claim steps (state for the Dock, presets from --set).
-export function runExec(exec, { root, from = "", log = "", env = {}, browser = {}, claim = {} } = {}) {
+// `vars: true` also returns the environment the steps ended with (`env` plus
+// every export), for a caller that runs a recipe one step at a time and
+// hands each step's exports to the next (lib/land.mjs). Off by default: a
+// check's verdict is stored in plan state, where exports have no place.
+export function runExec(exec, { root, from = "", log = "", env = {}, browser = {}, claim = {}, vars: wantVars = false } = {}) {
   const started = Date.now();
   const cwd = path.resolve(root, exec.cwd || ".");
   const steps = exec.steps || [];
@@ -108,7 +112,7 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
         note += ` — release failed, still held: deep-plan check release`;
       } else if (claim.hooks && claim.hooks.released) claim.hooks.released();
     }
-    return { status, note, ran: { ms: Date.now() - started, log, ...extra } };
+    return { status, note, ran: { ms: Date.now() - started, log, ...extra }, ...(wantVars ? { vars: { ...vars } } : {}) };
   };
   if (!fs.existsSync(cwd)) return done("fail", `the recipe's cwd ${exec.cwd} does not exist`, { code: -1 });
 

@@ -209,6 +209,15 @@ mod tests {
     }
 
     #[test]
+    fn a_merged_prs_merge_commit_is_written_as_lookout_read_it() {
+        let mut merged = pr(5, "merged");
+        merged["merge"] = json!({"sha": "a".repeat(40), "at": "2026-11-13T07:31:00Z", "base": "main"});
+        let (got, _) = gather(&[u(5)], &[], &mut |_, _| Some(json!({"prs": [merged.clone()], "missing": [], "unread": []}))).unwrap();
+        assert_eq!(got[0]["merge"], merged["merge"], "the landing watcher reads it from the file");
+        assert_eq!(crew_core::prs::merge_of(&got[0]).map(|m| m.base), Some("main".to_string()));
+    }
+
+    #[test]
     fn a_skip_keeps_the_file_and_unread_prs_keep_their_last_read() {
         let prev = vec![pr(2, "open"), pr(3, "open")];
         assert_eq!(gather(&[u(2), u(3)], &prev, &mut |_, _| Some(json!({"skipped": "backoff"}))), None);

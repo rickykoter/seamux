@@ -62,6 +62,8 @@ pub enum NoteKind {
     Digest,
     /// A session's prompt cache is about to lapse (cachefacts), from a note file.
     Stale,
+    /// A merge landed, failed to, or waits on the person (land_watch.rs).
+    Landing,
 }
 
 impl NoteKind {
@@ -77,6 +79,7 @@ impl NoteKind {
             NoteKind::Pr => "pr",
             NoteKind::Digest => "digest",
             NoteKind::Stale => "stale",
+            NoteKind::Landing => "landing",
         }
     }
 
@@ -91,6 +94,7 @@ impl NoteKind {
             NoteKind::Pr => "Tink",
             NoteKind::Digest => "Submarine",
             NoteKind::Stale => "Funk",
+            NoteKind::Landing => "Hero",
         }
     }
 }
@@ -282,6 +286,7 @@ pub fn merge(notes: Vec<Note>) -> Vec<Note> {
                 NoteKind::Pr => format!("{count} pull requests changed"),
                 NoteKind::Digest => format!("{count} digests"),
                 NoteKind::Stale => format!("{count} sessions' caches are going stale"),
+                NoteKind::Landing => format!("{count} merges landed or need you"),
             };
             // Each one's label is the part of its title before " · ".
             let mut names: Vec<&str> = Vec::new();
@@ -573,6 +578,19 @@ pub fn review_note(kind: NoteKind, title: String, body: String, review: &str, it
     Note { kind, title, body, pane: String::new(), ws: String::new(), options: Vec::new(), asked_at: None,
            review: review.into(), item: item.into() }
 }
+/// A banner the app raises itself, not about a pane (land_watch.rs): logged
+/// and posted, its click going to its workspace.
+pub fn post_note(app: &AppHandle, n: &Note) {
+    crew_core::notifications::record(entry(n, true));
+    post(app, n);
+}
+
+/// A landing's banner for workspace `ws`.
+pub fn landing_note(ws: &str, title: String, body: String) -> Note {
+    Note { kind: NoteKind::Landing, title, body, pane: String::new(), ws: ws.into(), options: Vec::new(), asked_at: None,
+           review: String::new(), item: String::new() }
+}
+
 pub fn post_review(app: &AppHandle, n: &Note) {
     let here = review_looking().lock().unwrap_or_else(|p| p.into_inner()).clone();
     let seen = here.as_deref() == Some(n.review.as_str()) && crate::shell::in_front(app);

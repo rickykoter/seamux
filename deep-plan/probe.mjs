@@ -3613,7 +3613,7 @@ if (want("verify init: detector, templates, setup prompt")) {
   ok("a project with no e2e script gets a run step that fails loudly until filled in",
     /TODO: the e2e command/.test(tr2.steps.at(-1).run) && /exit 1/.test(tr2.steps.at(-1).run));
   ok("an unknown template is refused, naming the ones there are",
-    /no template "nope" — there are: firebase-channel, github-deployment, rwx-run, vercel-preview/.test(
+    /no template "nope" — there are: firebase-channel, github-deployment, land-datadog-notebook, land-github-deployment, rwx-run, vercel-preview/.test(
       cli("verify", "init", "--root", DR, "--template", "nope").stderr));
 
   // Every shipped template: a valid recipe once filled, remote-shaped, honest
@@ -3627,11 +3627,23 @@ if (want("verify init: detector, templates, setup prompt")) {
     fs.writeFileSync(path.join(dir, ".seamux", "verify.json"), JSON.stringify({ recipes: [recipe] }));
     const L = loadVerify(dir);
     const kinds = L.recipes[0] ? L.recipes[0].steps.map(s => s.kind).join(",") : "";
-    ok(`template ${t.template}: a valid recipe once filled`, L.errors.length === 0);
-    ok(`template ${t.template}: acquire, then a wait that exports, then run`,
-      kinds === "acquire,wait,run" && !!L.recipes[0].steps[1].export && L.recipes[0].tier === "expensive");
+    ok(`template ${t.template}: a valid recipe once filled`, L.errors.length === 0, L.errors.join("; "));
     ok(`template ${t.template}: says whether it was proven, and how to prove it`,
       typeof t.verified === "boolean" && typeof t.verify === "string" && t.verify.length > 40 && Array.isArray(t.needs));
+    if (t.recipe.kind === "land") {
+      // A land template: every step a named stage, every wait discarding
+      // stderr, a step that writes outside marked so, and outputs to show.
+      const steps = L.recipes[0] ? L.recipes[0].steps : [];
+      ok(`template ${t.template}: a land recipe whose every step is a stage`, steps.length > 0 && steps.every(s => typeof s.stage === "string" && s.stage));
+      ok(`template ${t.template}: its waits discard stderr, so an error is never read as a value`,
+        steps.filter(s => s.kind === "wait").every(s => /2>\/dev\/null/.test(s.command)));
+      ok(`template ${t.template}: a step that calls out with a key is marked writes`,
+        steps.filter(s => /-X POST|-X PUT|-X DELETE/.test(s.command)).every(s => s.writes === true));
+      ok(`template ${t.template}: outputs to show`, !!L.recipes[0].outputs && (!!L.recipes[0].outputs.version || (L.recipes[0].outputs.links || []).length > 0));
+      continue;
+    }
+    ok(`template ${t.template}: acquire, then a wait that exports, then run`,
+      kinds === "acquire,wait,run" && !!L.recipes[0].steps[1].export && L.recipes[0].tier === "expensive");
     ok(`template ${t.template}: its wait discards stderr, so an error is never read as a value`,
       /2>\/dev\/null/.test(L.recipes[0].steps[1].command));
   }
@@ -6265,6 +6277,207 @@ if (want("recipe fields: uses, env, prereqs, sideEffects, noFix, evidence")) {
   ok("fields: a running check carries its start and timeout, and the page ticks it",
     /<span class="dp-elapsed" data-since="1700000000000" data-timeout="900">running<\/span>/.test(wp) && wp.includes("dp-late") && wp.includes("past its "), wp.slice(0, 200));
   cli("close", "fields-1");
+}
+
+// -------------------------------------------------- land: recipes that run after a merge
+if (want("land: recipes that run after a merge")) {
+  const L = await import("./lib/land.mjs");
+  const LR = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "land-")));
+  // Crew's durable folder under TMP: nothing reaches ~/.claude/crew (L8).
+  const home = path.join(LR, "crew");
+  const LENV = { ...ENV, CREW_DURABLE_DIR: home };
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const repo = path.join(LR, "r");
+  fs.mkdirSync(path.join(repo, ".seamux"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "app"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
+  const put = recipes => fs.writeFileSync(path.join(repo, ".seamux", "verify.json"), JSON.stringify({ recipes }, null, 2));
+  const ship = (extra = {}) => ({ id: "ship", kind: "land", match: ["app/**"], steps: [
+    { stage: "build", run: "echo built" },
+    { stage: "deploy", run: "echo v-$MERGE_SHA", export: "LIVE" },
+    { stage: "notebook", writes: true, run: "echo https://nb.example/$PR", export: "NB" }],
+    outputs: { version: { expect: "v-$MERGE_SHA", live: "$LIVE" }, links: [{ label: "Notebook", url: "$NB" }] }, ...extra });
+  put([{ id: "unit", kind: "test", run: "true", default: true }, ship()]);
+  fs.writeFileSync(path.join(repo, "app", "a.txt"), "a\n");
+  execSync(`git init -q -b main && git add -A && ${G} commit -q -m one`, { cwd: repo });
+  const commit = (file, text) => { fs.writeFileSync(path.join(repo, file), text); execSync(`git add -A && ${G} commit -q -m x`, { cwd: repo }); return execSync("git rev-parse HEAD", { cwd: repo, encoding: "utf8" }).trim(); };
+  const land = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "land", ...a, "--repo", repo], { encoding: "utf8", env: LENV, cwd: repo });
+  const state = m => JSON.parse(fs.readFileSync(L.statePath(home, L.repoKey(repo), m), "utf8"));
+
+  // Validation: what a land recipe may hold, and what only it may.
+  const errOf = r => { put([r]); return loadVerify(repo).errors.join("; "); };
+  ok("land: a land recipe with stages, writes and outputs loads clean", errOf(ship()) === "", errOf(ship()));
+  const warnOf = r => { put([r]); const c = loadVerify(repo); return c.errors.length ? `ERR ${c.errors.join("; ")}` : c.warnings.join("; "); };
+  ok("land: stage and writes on another kind warn and are ignored, not refused",
+    /stage and writes belong to a recipe of kind land, and are ignored/.test(warnOf({ id: "t", steps: [{ run: "true", stage: "x" }] })), warnOf({ id: "t", steps: [{ run: "true", stage: "x" }] }));
+  ok("land: outputs on another kind warn and are ignored", /outputs belong to a recipe of kind land, and are ignored/.test(warnOf({ id: "t", run: "true", outputs: {} })));
+  ok("land: its steps are run or wait", /steps are run or wait, not claim/.test(errOf(ship({ steps: [{ claim: "x", export: "E" }, { run: "true" }] }))));
+  ok("land: never a default check, and no uses", /never a default check/.test(errOf(ship({ default: true }))) &&
+    /takes no uses/.test(errOf(ship({ uses: [{ resource: "db" }] }))));
+  ok("land: an output may name only exports and the built-ins", /names \$NOPE, which no step exports/.test(errOf(ship({ outputs: { version: { live: "$NOPE" } } }))));
+  ok("land: outputs hold only version and links", /outputs.chart is not one of version, links/.test(errOf(ship({ outputs: { chart: {} } }))));
+
+  // Plan checks never pick a land recipe; the land resolver gives only them.
+  put([{ id: "unit", kind: "test", run: "true", default: true }, ship()]);
+  const rf = resolveFiles(repo, ["app/a.txt"]);
+  ok("land: plan check resolution leaves land recipes out", rf.recipes.map(r => r.id).join() === "unit", rf.recipes.map(r => r.id).join());
+  ok("land: the land resolver gives only land recipes", resolver(repo, { land: true }).file("app/a.txt").recipes.map(r => r.id).join() === "ship");
+  ok("land: a test recipe's hash is unchanged by the new fields", recipeHash(loadVerify(repo).recipes[0], "") === recipeHash({ ...loadVerify(repo).recipes[0], outputs: undefined }, ""));
+
+  // A merge: its recipes, a run that waits for approval, then lands.
+  execSync(`git add -A && ${G} commit -q --allow-empty -m cfg`, { cwd: repo });
+  const m1 = commit("app/a.txt", "b\n");
+  const docs = commit("docs/x.md", "d\n");
+  let p = land("plan", "--merge", m1, "--json");
+  const pj = JSON.parse(p.stdout || "{}");
+  ok("land: plan lists the recipes a merge's files reach, with their stages", p.status === 0 && pj.recipes.length === 1 &&
+    pj.recipes[0].stages.join() === "build,deploy,notebook" && pj.recipes[0].writes === true && !("_recipes" in pj), p.stdout + p.stderr);
+  ok("land: a docs-only merge lands nothing", /no land recipe covers/.test(land("plan", "--merge", docs).stdout));
+  ok("land: a commit not in the checkout asks for a fetch", /fetch first/.test(land("plan", "--merge", "deadbeefdeadbeef").stderr));
+  let r = land("run", "--merge", m1, "--recipe", "ship", "--pr", "7");
+  let e = state(m1).recipes.ship;
+  ok("land: a writing stage waits for approval, exit 3", r.status === 3 && e.status === "awaiting" &&
+    e.stages.map(s => s.status).join() === "done,done,awaiting", r.stdout + JSON.stringify(e.stages));
+  ok("land: the state file is the owner's only", (fs.statSync(L.statePath(home, L.repoKey(repo), m1)).mode & 0o077) === 0 &&
+    (fs.statSync(e.log).mode & 0o077) === 0);
+  // Approval is the person's: refused inside a Claude session, and without --by human.
+  const asPerson = (...a) => { const { CLAUDECODE, ...env } = LENV; return spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "land", ...a, "--repo", repo], { encoding: "utf8", env, cwd: repo }); };
+  const inClaude = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "land", "approve", "--recipe", "ship", "--by", "human", "--repo", repo],
+    { encoding: "utf8", env: { ...LENV, CLAUDECODE: "1" }, cwd: repo });
+  ok("land: approve is refused inside a Claude session", inClaude.status !== 0 && /the person's/.test(inClaude.stderr), inClaude.stderr);
+  const noBy = asPerson("approve", "--recipe", "ship");
+  ok("land: approve needs --by human", noBy.status !== 0 && /--by human/.test(noBy.stderr), noBy.stderr);
+  asPerson("approve", "--recipe", "ship", "--by", "human");
+  r = land("run", "--merge", m1, "--recipe", "ship", "--pr", "7");
+  e = state(m1).recipes.ship;
+  ok("land: approved, it picks up at the waiting stage and lands", r.status === 0 && e.status === "done" &&
+    e.version.live === `v-${m1}` && e.version.match === true && e.links[0].url === "https://nb.example/7" &&
+    e.stages.every(s => s.status === "done" && s.end >= s.start), JSON.stringify(e));
+  ok("land: exports are kept for a resume, built-ins are not", e.exports.LIVE === `v-${m1}` && !("MERGE_SHA" in e.exports));
+
+  // An edited recipe asks again.
+  put([{ id: "unit", kind: "test", run: "true", default: true }, ship({ name: "Ship it" })]);
+  execSync(`git add -A && ${G} commit -q -m cfg2`, { cwd: repo });
+  const m2 = commit("app/a.txt", "c\n");
+  r = land("run", "--merge", m2, "--recipe", "ship");
+  ok("land: an edited recipe waits for approval again", r.status === 3 && state(m2).recipes.ship.status === "awaiting");
+  r = land("skip", "--merge", m2, "--recipe", "ship");
+  ok("land: skip leaves it for this merge", r.status === 0 && state(m2).recipes.ship.status === "skipped" &&
+    state(m2).recipes.ship.stages[2].status === "skipped");
+
+  // A failing stage, and a retry that resumes there with the earlier exports.
+  const flag = path.join(LR, "deploy-ok");
+  put([{ id: "flaky", kind: "land", match: ["app/**"], steps: [
+    { stage: "build", run: "echo B1", export: "BUILD" },
+    { stage: "deploy", run: `test -f ${flag} && echo "$BUILD-live"`, export: "LIVE" }],
+    outputs: { version: { expect: "B1-live", live: "$LIVE" } } }]);
+  execSync(`git add -A && ${G} commit -q -m cfg3`, { cwd: repo });
+  const m3 = commit("app/a.txt", "d\n");
+  r = land("run", "--merge", m3, "--recipe", "flaky");
+  e = state(m3).recipes.flaky;
+  ok("land: a failing stage fails the recipe and says where", r.status === 1 && e.status === "failed" &&
+    e.stages.map(s => s.status).join() === "done,failed" && /deploy/.test(r.stdout), r.stdout + JSON.stringify(e.stages));
+  fs.writeFileSync(flag, "");
+  const firstStart = e.stages[0].start;
+  r = land("run", "--merge", m3, "--recipe", "flaky");
+  e = state(m3).recipes.flaky;
+  ok("land: a retry resumes at the failed stage with the earlier exports", r.status === 0 && e.status === "done" &&
+    e.stages[0].start === firstStart && e.version.live === "B1-live" && e.version.match, JSON.stringify(e));
+
+  // A done recipe is not landed again unless forced; a forced run starts over.
+  const count = path.join(LR, "count");
+  put([{ id: "once", kind: "land", match: ["app/**"], steps: [{ stage: "go", run: `echo x >> ${count}` }] }]);
+  execSync(`git add -A && ${G} commit -q -m cfg4`, { cwd: repo });
+  const m4 = commit("app/a.txt", "e\n");
+  land("run", "--merge", m4, "--recipe", "once");
+  r = land("run", "--merge", m4, "--recipe", "once");
+  const lines = () => fs.readFileSync(count, "utf8").split("\n").filter(Boolean).length;
+  ok("land: a done recipe is not run again", r.status === 0 && /already done/.test(r.stdout) && lines() === 1, r.stdout);
+  land("run", "--merge", m4, "--recipe", "once", "--force");
+  ok("land: --force lands it again", lines() === 2);
+  // Every stage done but the status left at running (killed after its last
+  // step): the next run finishes it and runs nothing.
+  const sp4 = L.statePath(home, L.repoKey(repo), m4);
+  const s4 = JSON.parse(fs.readFileSync(sp4, "utf8"));
+  s4.recipes.once.status = "running";
+  fs.writeFileSync(sp4, JSON.stringify(s4));
+  r = land("run", "--merge", m4, "--recipe", "once");
+  ok("land: all stages done but not marked: it finishes without running a step", r.status === 0 && lines() === 2 && state(m4).recipes.once.status === "done", r.stdout);
+  // One run of a recipe at a time; a lock left by a process that is gone is taken back.
+  const runLock = `${sp4.replace(/\.json$/, "")}.once.run`;
+  fs.writeFileSync(runLock, String(process.pid));
+  r = land("run", "--merge", m4, "--recipe", "once", "--force");
+  ok("land: a recipe already landing is not started twice", r.status === 1 && /already landing/.test(r.stdout) && lines() === 2, r.stdout);
+  fs.writeFileSync(runLock, "999999");
+  r = land("run", "--merge", m4, "--recipe", "once", "--force");
+  ok("land: a dead holder's lock is taken back", r.status === 0 && lines() === 3 && !fs.existsSync(runLock), r.stdout + r.stderr);
+  // A lock appears with its pid in it: never as an empty file another
+  // process could take for a dead holder's.
+  ok("land: a lock is never seen without its pid", (() => {
+    const lp = path.join(LR, "x.lock");
+    for (let i = 0; i < 20; i++) {
+      if (!L.takeLock(lp)) return false;
+      if (fs.readFileSync(lp, "utf8") !== String(process.pid)) return false;
+      if (L.takeLock(lp)) return false;
+      fs.rmSync(lp);
+    }
+    return fs.readdirSync(LR).filter(f => f.startsWith("x.lock.")).length === 0;
+  })());
+  // Eight processes taking over one dead holder's lock at once: one wins.
+  {
+    const lp = path.join(LR, "race.lock");
+    fs.writeFileSync(lp, "999999");
+    const src = `import(${JSON.stringify(path.join(HERE, "lib", "land.mjs"))}).then(L => { console.log(L.takeLock(${JSON.stringify(lp)}) ? "GOT" : "no"); setTimeout(() => {}, 800); })`;
+    const got = await Promise.all([...Array(8)].map(() => new Promise(res => {
+      const c = spawn(process.execPath, ["-e", src], { env: LENV });
+      let o = "";
+      c.stdout.on("data", d => (o += d));
+      c.on("exit", () => res(o.trim()));
+    })));
+    ok("land: eight takers of a dead holder's lock, one winner", got.filter(x => x === "GOT").length === 1, got.join(","));
+  }
+  // A writing stage a crash cut off waits for the person, even approved.
+  put([{ id: "nb", kind: "land", match: ["app/**"], steps: [{ stage: "notebook", writes: true, run: `echo x >> ${count}` }] }]);
+  execSync(`git add -A && ${G} commit -q -m cfg4b`, { cwd: repo });
+  const m4b = commit("app/a.txt", "e2\n");
+  asPerson("approve", "--recipe", "nb", "--by", "human");
+  land("run", "--merge", m4b, "--recipe", "nb");
+  const before = lines();
+  const sp4b = L.statePath(home, L.repoKey(repo), m4b);
+  const s4b = JSON.parse(fs.readFileSync(sp4b, "utf8"));
+  Object.assign(s4b.recipes.nb, { status: "running" });
+  s4b.recipes.nb.stages[0] = { name: "notebook", status: "running", start: 1 };
+  fs.writeFileSync(sp4b, JSON.stringify(s4b));
+  r = land("run", "--merge", m4b, "--recipe", "nb");
+  ok("land: a writing stage cut off mid-run waits instead of running again", r.status === 3 && /cut off/.test(r.stdout) &&
+    lines() === before && state(m4b).recipes.nb.stages[0].cut === true, r.stdout);
+  r = land("run", "--merge", m4b, "--recipe", "nb");
+  ok("land: a retry then runs it", r.status === 0 && lines() === before + 1, r.stdout);
+  // Two recipes of one merge, side by side: each keeps its entry.
+  put([{ id: "a", kind: "land", match: ["app/**"], steps: [{ stage: "s", run: "sleep 1; echo a" }] },
+       { id: "b", kind: "land", match: ["app/**"], steps: [{ stage: "s", run: "sleep 1; echo b" }] }]);
+  execSync(`git add -A && ${G} commit -q -m cfg5`, { cwd: repo });
+  const m5 = commit("app/a.txt", "f\n");
+  const both = await Promise.all(["a", "b"].map(k => new Promise(res => {
+    const c = spawn("node", [path.join(HERE, "deep_plan.mjs"), "land", "run", "--merge", m5, "--recipe", k, "--repo", repo], { env: LENV, cwd: repo });
+    c.on("exit", res);
+  })));
+  const s5 = state(m5).recipes;
+  ok("land: two recipes landing side by side keep both entries", both.every(c => c === 0) && s5.a && s5.b && s5.a.status === "done" && s5.b.status === "done", JSON.stringify(s5));
+  // A link that is not a web address is dropped.
+  ok("land: only http(s) links are kept", (() => {
+    put([{ id: "l", kind: "land", match: ["app/**"], steps: [{ run: "echo 'javascript:alert(1)'", export: "U" }, { run: "echo https://ok.example/x", export: "V" }],
+      outputs: { links: [{ label: "bad", url: "$U" }, { label: "good", url: "$V" }] } }]);
+    execSync(`git add -A && ${G} commit -q -m cfg6`, { cwd: repo });
+    const m6 = commit("app/a.txt", "g\n");
+    land("run", "--merge", m6, "--recipe", "l");
+    const ls = state(m6).recipes.l.links;
+    return ls.length === 1 && ls[0].label === "good";
+  })());
+
+  // Versions: shas match on a common prefix; anything else exactly.
+  ok("land: versionMatch takes a short sha for its long one, and nothing looser",
+    L.versionMatch("89fc6c2c", "89fc6c2cabcdef") && !L.versionMatch("89fc6c", "89fc6c2c") && !L.versionMatch("v1.2", "v1.20") && L.versionMatch("v1.2", "v1.2"));
 }
 
 // -------------------------------------------------- check run enforces prereqs, uses, env and noFix

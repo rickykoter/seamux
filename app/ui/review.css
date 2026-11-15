@@ -193,3 +193,56 @@
   .review.folded { grid-template-rows: minmax(0, 1fr); }
   .r-side { border-right: 0; border-bottom: 1px solid var(--line); max-height: 40vh; }
 }
+
+/* From review to release (release.ts): the rail under the header, the
+   stage panels in place of the review page, and a row's stage chip. */
+.r-rail { display: flex; align-items: center; gap: 6px; padding: 6px 12px 8px; flex-wrap: wrap; }
+.r-rail-sep { color: var(--line); letter-spacing: -2px; }
+.r-rail-stage {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  font: var(--fs-2) -apple-system, system-ui, sans-serif; color: var(--fg); background: transparent; border: 1px solid var(--line);
+}
+.r-rail-stage:disabled { cursor: default; color: var(--muted); }
+.r-rail-stage.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.r-rail-mark { font-weight: 700; }
+.r-rail-stage.done .r-rail-mark { color: var(--good-t); }
+.r-rail-stage.now .r-rail-mark { color: var(--accent-t); }
+.r-rail-stage.needs .r-rail-mark { color: var(--role-attend-t); }
+.r-rail-stage.failed .r-rail-mark { color: var(--bad-t); }
+.r-rail-stage.none .r-rail-mark { color: var(--muted); }
+.r-stage { flex: 1; min-height: 0; overflow: auto; padding: 4px 16px 16px; }
+.r-stage[hidden] { display: none; }
+.r-stage-panel { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.r-stage-h { margin: 6px 0 0; font-size: var(--fs-2); color: var(--section); }
+.r-stage-list { margin: 0; padding-left: 18px; }
+.r-land { width: 100%; max-width: 820px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.r-land.awaiting { border-color: var(--role-attend); }
+.r-land.failed { border-color: var(--bad); }
+.r-land-head { display: flex; align-items: baseline; gap: 8px; }
+.r-land-name { font-weight: 600; }
+.r-land-status { font-size: var(--fs-1); color: var(--muted); }
+.r-land-status.done { color: var(--good-t); }
+.r-land-status.failed { color: var(--bad-t); }
+.r-land-status.awaiting { color: var(--role-attend-t); }
+.r-land-stages { display: flex; flex-wrap: wrap; gap: 6px; font: var(--fs-1)/1.4 ui-monospace, Menlo, monospace; }
+.r-land-sep { color: var(--line); }
+.r-land-stage.pending, .r-land-stage.skipped { color: var(--muted); }
+.r-land-stage.done { color: var(--fg); }
+.r-land-stage.running { color: var(--accent-t); }
+.r-land-stage.failed { color: var(--bad-t); }
+.r-land-stage.awaiting { color: var(--role-attend-t); }
+.r-land-version { margin: 0; font: var(--fs-1) ui-monospace, Menlo, monospace; }
+.r-land-version.match { color: var(--good-t); }
+.r-land-version.differs { color: var(--muted); }
+.r-land-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.r-land-error { margin: 0; color: var(--bad-t); font-size: var(--fs-2); }
+.r-land-log {
+  margin: 0; max-height: 40vh; overflow: auto; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-all;
+  background: var(--term); color: var(--fg); font: var(--fs-1)/1.45 ui-monospace, Menlo, monospace;
+}
+.r-land-log[hidden] { display: none; }
+.r-stage-chip { margin-left: auto; font-size: var(--fs-1); padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.r-stage-chip.done { color: var(--good-t); }
+.r-stage-chip.now { color: var(--accent-t); }
+.r-stage-chip.needs { color: var(--role-attend-t); border-color: var(--role-attend); }
+.r-stage-chip.failed { color: var(--bad-t); }

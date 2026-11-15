@@ -2672,7 +2672,8 @@ if (want("github: many PRs in one read")) {
     p1: node(1, ctx([run("test", "FAILURE"), run("lint", "SUCCESS"), run("Require approval", "FAILURE"), run("required-tests", "FAILURE"),
                      run("lint-review-bot", "FAILURE"), status("deploy/preview", "FAILURE")], 108)),
     p2: node(2, { isDraft: true, ...ctx([run("test", null, "IN_PROGRESS"), run("lint", "SKIPPED")]) }),
-    p3: node(3, { state: "MERGED", ...ctx([run("test", "FAILURE")]) }),
+    p3: node(3, { state: "MERGED", mergeCommit: { oid: "89FC6C2C".padEnd(40, "a") }, mergedAt: "2026-11-13T07:31:00Z", baseRefName: "main",
+                  ...ctx([run("test", "FAILURE")]) }),
     p4: null,
     p5: node(5, { reviewDecision: "APPROVED", ...ctx([run("Require approval", "FAILURE")]) }) } } };
   const setMap = m => fs.writeFileSync(ENV.FAKE_GH_MAP, JSON.stringify(m));
@@ -2691,6 +2692,10 @@ if (want("github: many PRs in one read")) {
   ok("prs: a draft keeps its CI, running and skipped counted", by(2).state === "draft" &&
      JSON.stringify(by(2).checks) === JSON.stringify({ fail: 0, run: 1, pass: 1, gate: 0, unseen: 0 }), JSON.stringify(by(2)));
   ok("prs: a merged PR carries no counts", by(3).state === "merged" && by(3).checks === null && by(3).failing.length === 0, JSON.stringify(by(3)));
+  ok("prs: a merged PR carries its merge commit, when and into what; an open one none",
+     JSON.stringify(by(3).merge) === JSON.stringify({ sha: "89fc6c2c".padEnd(40, "a"), at: "2026-11-13T07:31:00Z", base: "main" }) && !("merge" in by(1)),
+     JSON.stringify(by(3)));
+  ok("prs: the query asks for the merge commit", (log().at(-1).argv.find(a => a.startsWith("query=")) || "").includes("mergeCommit { oid }"));
   ok("prs: the numbers go in the query, the repo as variables", (() => {
     const q = log().at(-1).argv.find(a => a.startsWith("query="));
     return /p1: pullRequest\(number: 1\)/.test(q) && /p4: pullRequest\(number: 4\)/.test(q) && log().at(-1).argv.includes("owner=o");

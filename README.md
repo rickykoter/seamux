@@ -105,6 +105,7 @@ each station leaves something you can check before the next one starts.
 | **Review** | a fresh reviewer agent; you close what matters | `lookout gate --plan <slug> --inc <n>` | findings on their lines, and the plan's map held against the diff; an open blocker or major holds the gate |
 | **Ship** | you | `deep-plan deliver <slug>` | a reviewed branch, its evidence, and tickets if you want them |
 | **Retro** | you, with the agent | `deep-plan retro <slug>` | the plan's misses kept, merged or dropped as rules in `.seamux/lessons.md` |
+| **Land** | the app, after the merge | `kind: "land"` recipes in `.seamux/verify.json` | each recipe's stages timed, the live version against the merge, links such as a rollout notebook, in the Lookout tab |
 
 You give each go yourself unless the plan opts into auto-go
 (`"go": "auto"` in its spec). Then a `done` whose checks all passed gives
@@ -364,6 +365,17 @@ risks, ADRs, families, loops and lessons.
 ![a deep-plan review page: context, decisions, diagrams and the quiz](docs/img/plan-review.png)
 
 ### lookout: review a diff with the agent
+
+In the seamux app, the Lookout tab runs a change from review to release. A
+rail over the selected change shows four stages: Review, PR (its checks),
+Merge (read-only: what stands in the way, or what it merged into) and Land.
+When a workspace's PR merges, the app runs the land recipes whose `match`
+covers what it changed, in the repo's kept checkout. Land shows each
+recipe's stages with their times, the live version against the merge, and
+its links. A step that writes to an outside system waits for your approval
+the first time; Approve, Skip and Retry sit on its line, and the Dock card
+asks too. A PR with no review gets a row of its own. Recipe format and
+templates: [deep-plan's checks.md](deep-plan/references/checks.md#land-recipes).
 
 Opens a branch, a commit range or the working tree as a review page, files
 ranked by risk. A fresh reviewer agent files findings on their lines, each

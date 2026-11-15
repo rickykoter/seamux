@@ -110,6 +110,14 @@ void listen<{ review: string; item: string }>("notify:review", (e) => {
   void reviewView.focus(e.payload.review, e.payload.item);
 });
 
+// A landing's log (a Dock card's chip): the change in the Lookout tab, at its
+// Land stage.
+window.addEventListener("seamux:land-open", (e) => {
+  const d = (e as CustomEvent<{ cwd: string; merge: string }>).detail;
+  tabs.select("review");
+  void reviewView.focusLanding(d?.cwd ?? "", d?.merge ?? "");
+});
+
 // ⌘. (a shell.rs shortcut, so it works in a framed page too): on to the next
 // workspace that needs you.
 void listen<string>("sheet:key", (e) => {

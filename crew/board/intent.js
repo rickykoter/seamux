@@ -475,6 +475,20 @@ function __boardIntent(cfg) {
         if (t.el.classList) t.el.classList.toggle("open", was !== hk);
         return;
       }
+      // A landing's Approve, Skip, Retry or Log: the seamux app answers it
+      // (land_watch.rs), for a merge it knows; anywhere else nothing runs.
+      if (t.a === "land") {
+        var lp = String(t.x).split("|");
+        if (framed() && lp.length >= 3 && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" land ") >= 0) {
+          // The worktree the board read the landing from; the app checks it
+          // belongs to the merge's repo before it acts.
+          tell({ crew: "land", ws: rid, act: lp[0], merge: lp[1], recipe: lp[2], cwd: lp.slice(3).join("|") });
+          mark(rid);
+        } else {
+          toast("a landing is answered from the seamux app");
+        }
+        return;
+      }
       // A held command's Run, Copy or Dismiss: only the seamux app runs
       // one, in that pane, from its own record of the command (ADR 0094).
       // The message names the pane and the record's time, never the text.

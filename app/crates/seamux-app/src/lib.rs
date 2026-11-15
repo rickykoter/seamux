@@ -2,6 +2,7 @@
 //! share. The window and its commands live in main.rs and shell.rs.
 
 pub mod actions;
+pub mod build_stamp;
 pub mod backend;
 pub mod ghostty;
 pub mod pane;
