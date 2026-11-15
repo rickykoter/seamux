@@ -32,7 +32,14 @@ import crypto from "node:crypto";
 import { resolveSeamux } from "./host.mjs";
 
 export const VERIFY_REL = path.join(".seamux", "verify.json");
-export const RECIPE_KINDS = ["test", "e2e", "observability", "browser"];
+export const RECIPE_KINDS = ["test", "e2e", "observability", "browser", "land"];
+// A land recipe is not a check: it runs after a merge, in the repo's kept
+// checkout (lib/land.mjs). Plan check resolution never picks one, and its
+// steps are run and wait only, each a stage the engine times.
+export const LAND_STEP_KINDS = ["run", "wait"];
+// The variables every land step sees, beside what earlier steps export.
+export const LAND_VARS = ["MERGE_SHA", "PR", "REPO"];
+const STAGE_RE = /^[a-z0-9][a-z0-9 ._-]{0,39}$/i;
 export const TIERS = ["cheap", "expensive"];
 // Order is part of the protocol: acquire steps (a person's) first; then
 // claim, wait and run in any order (claim an env, deploy, watch the job);
@@ -53,7 +60,7 @@ export const USE_MODES = ["exclusive", "shared"];
 // field from a newer engine is named rather than dropped without a word.
 // Keys starting with $ are comments.
 export const RECIPE_FIELDS = ["id", "kind", "name", "tier", "match", "default", "cwd", "timeout", "run", "steps",
-  "note", "brief", "scripts", "uses", "env", "prereqs", "sideEffects", "noFix", "evidence"];
+  "note", "brief", "scripts", "uses", "env", "prereqs", "sideEffects", "noFix", "evidence", "outputs"];
 // ${worktree} and ${slot}, expanded by check run before the steps start.
 export const ENV_TOKENS = ["worktree", "slot"];
 export const DEFAULT_WAIT = { timeout: 1200, interval: 15 };
@@ -137,6 +144,10 @@ function normalizeRecipe(r) {
     // Where the recipe's command was found (CI config, a README): for people.
     // A string, or a list of them as verify init drafts it.
     evidence: r.evidence === undefined ? "" : r.evidence,
+    // A land recipe's outputs: { version: { expect, live }, links: [{ label,
+    // url }] }, strings that may name $VARS. Present only when given, so
+    // every other recipe keeps its hash.
+    ...(r.outputs !== undefined ? { outputs: r.outputs } : {}),
     _raw: r,
   };
 }
@@ -148,6 +159,10 @@ function normalizeStep(s) {
   const out = { kind, command: kind ? (kind === "claim" && (s[kind] === null || s[kind] === "") ? "" : s[kind]) : "",
     note: (s && s.note) || "" };
   if (s && s.export !== undefined) out.export = s.export;
+  // A land recipe's step: the stage it is drawn as, and whether it writes to
+  // an outside system (and so waits for the person's first approval).
+  if (s && s.stage !== undefined) out.stage = s.stage;
+  if (s && s.writes !== undefined) out.writes = s.writes;
   if (kind === "claim") for (const f of ["ask", "choices", "lock", "release"]) if (s[f] !== undefined) out[f] = s[f];
   if (kind === "wait" || kind === "claim") {
     out.timeout = s.timeout === undefined ? DEFAULT_WAIT.timeout : s.timeout;
@@ -255,12 +270,75 @@ function validateRecipe(r, i) {
     if ((s.kind === "wait" || s.kind === "claim") && !(typeof s.interval === "number" && s.interval > 0))
       errs.push(`${at}: interval must be a positive number of seconds`);
   });
+  // On any other kind, outputs, stage and writes mean nothing; load() warns
+  // about them (landOnly) rather than refuse the file.
+  if (r.kind === "land") errs.push(...validateLand(r, label));
   if (r.steps.length && !r.steps.some(s => s.kind === "run" || s.kind === "browser"))
     errs.push(`${label}: needs a run or browser step — waiting on a deploy proves nothing until something runs against it`);
   if (r.tier === "cheap" && r.steps.some(s => s.kind === "acquire" || s.kind === "wait" || s.kind === "claim"))
     errs.push(`${label}: a recipe with acquire, claim or wait steps must be expensive — a deploy wait outlasts an inline run`);
   return errs;
 }
+
+// What a land recipe may hold, past what every recipe is checked for. Its
+// steps are run and wait only: a claim's or a lock's hold would end with
+// each stage, and nothing after a merge is a person's acquire. It is never a
+// default check and takes no uses. Outputs may name only the built-in
+// variables and what a step exports.
+function validateLand(r, label) {
+  const errs = [];
+  if (r._raw.default === true) errs.push(`${label}: a land recipe is never a default check`);
+  if (Array.isArray(r.uses) && r.uses.length) errs.push(`${label}: a land recipe takes no uses (a lock would end with each stage)`);
+  const exported = new Set(LAND_VARS);
+  r.steps.forEach((s, k) => {
+    const at = `${label} step ${k + 1}`;
+    if (s.kind && !LAND_STEP_KINDS.includes(s.kind)) errs.push(`${at}: a land recipe's steps are run or wait, not ${s.kind}`);
+    if (s.stage !== undefined && !(typeof s.stage === "string" && STAGE_RE.test(s.stage)))
+      errs.push(`${at}: stage must be a short name (letters, digits, space, dot, dash; up to 40)`);
+    if (s.writes !== undefined && typeof s.writes !== "boolean") errs.push(`${at}: writes must be true or false`);
+    if (typeof s.export === "string") exported.add(s.export);
+  });
+  const o = r.outputs;
+  if (o === undefined) return errs;
+  if (!o || typeof o !== "object" || Array.isArray(o)) return [...errs, `${label}: outputs must be { version, links }`];
+  for (const k of Object.keys(o)) if (!["version", "links"].includes(k)) errs.push(`${label}: outputs.${k} is not one of version, links`);
+  const named = (v, at) => {
+    if (typeof v !== "string") { errs.push(`${label}: ${at} must be a string`); return; }
+    for (const m of v.matchAll(LAND_VAR_RE))
+      if (!exported.has(m[1] || m[2])) errs.push(`${label}: ${at} names $${m[1] || m[2]}, which no step exports (built in: ${LAND_VARS.join(", ")})`);
+  };
+  if (o.version !== undefined) {
+    if (!o.version || typeof o.version !== "object" || Array.isArray(o.version)) errs.push(`${label}: outputs.version must be { expect, live }`);
+    else for (const k of Object.keys(o.version)) {
+      if (!["expect", "live"].includes(k)) errs.push(`${label}: outputs.version.${k} is not expect or live`);
+      else named(o.version[k], `outputs.version.${k}`);
+    }
+  }
+  if (o.links !== undefined) {
+    if (!Array.isArray(o.links)) errs.push(`${label}: outputs.links must be a list of { label, url }`);
+    else o.links.forEach((l, k) => {
+      if (!l || typeof l !== "object" || typeof l.label !== "string" || !l.label.trim()) errs.push(`${label}: outputs.links ${k + 1} needs a label`);
+      else named(l.url, `outputs.links ${k + 1} url`);
+    });
+  }
+  return errs;
+}
+// A non-land recipe carrying a land recipe's fields: warned about and
+// ignored, so a file written before land recipes existed still loads.
+function landOnly(r, i) {
+  if (r.kind === "land") return [];
+  const label = `recipe ${r.id ? `"${r.id}"` : `#${i + 1}`}`;
+  const out = [];
+  if (r.outputs !== undefined) out.push(`${label}: outputs belong to a recipe of kind land, and are ignored here`);
+  r.steps.forEach((s, k) => {
+    if (s.stage !== undefined || s.writes !== undefined)
+      out.push(`${label} step ${k + 1}: stage and writes belong to a recipe of kind land, and are ignored here`);
+  });
+  return out;
+}
+
+// $NAME or ${NAME} in a land recipe's output string.
+export const LAND_VAR_RE = /\$(?:\{([A-Z_][A-Z0-9_]*)\}|([A-Z_][A-Z0-9_]*))/g;
 
 // One config file. Missing is not an error — most directories have none, and
 // a repo with none at all still plans; it just infers no checks.
@@ -280,7 +358,8 @@ export function load(dir) {
   const recipes = obj.recipes.map(r => normalizeRecipe(r && typeof r === "object" ? r : {}));
   const errors = recipes.flatMap(validateRecipe);
   const warnings = recipes.flatMap((r, i) => Object.keys(r._raw).filter(k => !k.startsWith("$") && !RECIPE_FIELDS.includes(k))
-    .map(k => `recipe ${r.id ? `"${r.id}"` : `#${i + 1}`}: unknown field "${k}" is ignored`));
+    .map(k => `recipe ${r.id ? `"${r.id}"` : `#${i + 1}`}: unknown field "${k}" is ignored`))
+    .concat(recipes.flatMap(landOnly));
   const ids = recipes.map(r => r.id).filter(Boolean);
   for (const id of new Set(ids.filter((x, k) => ids.indexOf(x) !== k)))
     errors.push(`two recipes share the id "${id}"`);
@@ -333,7 +412,9 @@ function nearestDir(root, rel) {
 }
 
 // A resolver over one root, loading each config once.
-export function resolver(root) {
+// `land`: false (the default) gives every recipe but kind land, for a plan's
+// checks; true gives only land recipes, for a merge (lib/land.mjs).
+export function resolver(root, { land = false } = {}) {
   root = path.resolve(root);
   const cache = new Map();
   const cfg = dir => {
@@ -352,7 +433,7 @@ export function resolver(root) {
       for (const r of cfg(root).recipes)
         if (r.id && !ids.has(r.id)) out.push(describe(r, root, true));
     }
-    return out;
+    return out.filter(r => (r.kind === "land") === land);
   };
   const describe = (r, dir, inherited) => {
     const project = posix(path.relative(root, dir));

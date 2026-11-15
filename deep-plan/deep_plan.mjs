@@ -6559,6 +6559,11 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--token") flags.token = rest[++i];
   else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
   else if (rest[i] === "--base") flags.base = rest[++i] || die("--base needs a sha");
+  // land: the kept checkout, the merge commit, one recipe's key, the PR.
+  else if (rest[i] === "--repo") flags.repo = rest[++i] ? path.resolve(rest[i]) : die("--repo needs the repo's kept checkout");
+  else if (rest[i] === "--merge") flags.merge = rest[++i] || die("--merge needs the merge commit's sha");
+  else if (rest[i] === "--recipe") flags.recipe = rest[++i] || die("--recipe needs a land recipe's key");
+  else if (rest[i] === "--pr") flags.prNumber = rest[++i] || die("--pr needs a PR number");
   else if (rest[i] === "--by") {
     // Only "human" can be claimed: parent and self are worked out from where
     // the command runs, never asserted.
@@ -6825,6 +6830,63 @@ switch (cmd) {
     const p = protects(dir);
     if (flags.json) { process.stdout.write(JSON.stringify(p) + "\n"); break; }
     say(p.protected ? `protected: ${p.why}` : p.plan ? `not protected: ${p.why}` : `not protected: no tracked plan or family holds ${path.resolve(dir)}${fs.existsSync(dir) ? "" : " (it does not exist)"}`);
+    break;
+  }
+  case "land": {
+    // A merge's landing (lib/land.mjs): plan lists the land recipes its files
+    // reach; run runs one; approve is the person's yes for a recipe's writing
+    // steps; skip is their no; status prints the merge's state file.
+    const L = await import("./lib/land.mjs");
+    const sub = args[0];
+    const root = flags.repo || gitRoot(process.cwd()) || process.cwd();
+    const usage = "land plan|run|status --repo DIR --merge SHA [--recipe KEY] [--pr N] [--json]  |  land approve|skip --repo DIR [--merge SHA] --recipe KEY";
+    const out = (obj, text) => flags.json ? process.stdout.write(JSON.stringify(obj, null, 2) + "\n") : say(text);
+    if (sub === "plan") {
+      if (!flags.merge) die(usage);
+      const p = L.landPlan(root, flags.merge);
+      if (p.error) die(`land plan: ${p.error}`);
+      const { _recipes, ...shown } = p;
+      out(shown, p.recipes.length
+        ? p.recipes.map(r => `${r.key}  ${r.stages.join(" → ")}${r.writes ? "  (writes)" : ""}`).join("\n")
+        : `no land recipe covers ${flags.merge}'s ${p.files.length} file(s)`);
+      if (p.errors.length) { for (const e of p.errors) console.error(`  ! ${e}`); process.exitCode = 1; }
+    } else if (sub === "run") {
+      if (!flags.merge || !flags.recipe) die(usage);
+      const r = L.landRun(root, { merge: flags.merge, recipe: flags.recipe, pr: flags.prNumber || "", fresh: !!flags.force });
+      out(r, `land ${flags.recipe}: ${r.status} — ${r.note}`);
+      // 0 done, 3 waiting for approval, 1 anything else: the app reads the
+      // state file either way, and a person reads the line.
+      process.exitCode = r.status === "done" ? 0 : r.status === "awaiting" ? 3 : 1;
+    } else if (sub === "approve") {
+      if (!flags.recipe) die(usage);
+      // The person's yes, from the Lookout tab, the Dock, or their own
+      // terminal; never an agent's, which would open the write gate itself.
+      if (process.env.CLAUDECODE && !process.env.DEEP_PLAN_FROM_SERVE)
+        die("land approve is the person's: they approve a recipe from the Lookout tab or the Dock, or run this in their own terminal");
+      if (!flags.byHuman) die("land approve takes --by human: it is the person's yes for the recipe's writing steps");
+      // The recipe as it is in the kept checkout now: a merge is named only
+      // to find it when its files are the way to it.
+      const R = resolver(root, { land: true });
+      const all = new Map();
+      const walk = d => { for (const r of R.available(d)) all.set(r.key, r); };
+      walk(root);
+      if (flags.merge) { const p = L.landPlan(root, flags.merge); for (const r of p._recipes || []) all.set(r.key, r); }
+      const r = [...all.values()].find(x => x.key === flags.recipe || x.id === flags.recipe);
+      if (!r) die(`land approve: no land recipe "${flags.recipe}" in ${root}${flags.merge ? "" : " (name --merge for one in a project folder)"}`);
+      L.approve(L.crewHome(), L.repoKey(root), r.key, r.hash);
+      out({ approved: r.key, hash: r.hash }, `approved ${r.key} as it is now (${r.hash}); an edit to it asks again`);
+    } else if (sub === "skip") {
+      if (!flags.merge || !flags.recipe) die(usage);
+      const r = L.landSkip(root, { merge: flags.merge, recipe: flags.recipe });
+      out(r, `land ${flags.recipe}: ${r.status} — ${r.note}`);
+      if (r.status === "error") process.exitCode = 1;
+    } else if (sub === "status") {
+      if (!flags.merge) die(usage);
+      const st = L.landStatus(root, flags.merge);
+      if (!st) { out(null, `no landing for ${flags.merge}`); process.exitCode = 1; break; }
+      out(st, Object.values(st.recipes).map(e => `${e.key}: ${e.status}  ` +
+        e.stages.map(s => `${s.name} ${s.status}${s.end && s.start ? ` ${Math.round((s.end - s.start) / 1000)}s` : ""}`).join(" │ ")).join("\n"));
+    } else die(usage);
     break;
   }
   case "verify": {
