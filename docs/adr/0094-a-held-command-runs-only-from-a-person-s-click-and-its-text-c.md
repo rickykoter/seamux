@@ -16,6 +16,6 @@ A held command runs only from a click in the pane's banner or on its Dock card. 
 
 ## Consequences
 
-A Dock click names a record, never a command. If the pane no longer holds that record, or holds a newer one, the click does nothing and says why. bash-guard writes times in whole seconds, so the banner also checks that the command matches the one it showed. The app's own UI is the only thing that types.
+A Dock click names a record, never a command. If the pane no longer holds that record, or holds a newer one, the click does nothing and says why. bash-guard writes times in milliseconds (whole seconds without python3), and a click in the banner also checks that the command matches the one it showed. The app's own UI is the only thing that types.
 
 Alternatives considered: posting the command text in the board's message; having the intent server type it as an ask option.

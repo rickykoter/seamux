@@ -9,12 +9,15 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 - **A command bash-guard refuses is handed to you to run.** In a pane of
   the app's tmux, bash-guard keeps a record of the refused command. A banner
   over Claude's prompt shows it whole with the reason, and the workspace's
-  Dock card moves to *needs you*. A git command can run in the chat (typed
-  as a `!` command, so Claude sees the output) or in the ⌘J shell. Anything
-  else is copy only, and a hook or signing bypass gets no banner. A force
-  push can also be allowed for its branch for the rest of the Claude
-  session; the app writes that allow, and bash-guard refuses commands and
-  edits that touch it. Dock buttons name the pane and the record's time, and
+  Dock card moves to *needs you*. A one-line git command can run in the
+  chat (typed as a `!` command, so Claude sees the output) or in the ⌘J
+  shell, in the folder it was refused in. Anything else, a git command of
+  more than one line or with a control character included, is copy only,
+  and a hook or signing bypass gets no banner. A force push can also be
+  allowed for its branch for the rest of the Claude session; with no
+  refspec, its branch is where git would push it (`@{push}`). The app
+  writes that allow, and bash-guard refuses commands and edits that touch
+  it. Dock buttons name the pane and the record's time, and
   the app reads the command again from the record before it types.
   bash-guard's state folder now follows `XDG_CACHE_HOME`, as the app's does.
   ADRs 0094 to 0097.

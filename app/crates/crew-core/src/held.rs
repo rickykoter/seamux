@@ -53,15 +53,19 @@ impl Held {
         (!h.command.is_empty() && matches!(h.kind.as_str(), "run" | "copy")).then_some(h)
     }
 
-    /// May be run at all: a git block, kept whole.
+    /// May be run at all: a git block, kept whole, on one line with no
+    /// control characters. Both ways to run it type the text as keys (into
+    /// Claude's prompt, or into the ⌘J shell, which refuses a second line),
+    /// so a newline would send it early and any other control byte would be
+    /// a key the banner never showed. Such a command can only be copied.
     pub fn runnable(&self) -> bool {
-        self.kind == "run" && !self.truncated
+        self.kind == "run" && !self.truncated && !self.command.chars().any(|c| c.is_control())
     }
 
-    /// May be typed into Claude's prompt as `!cmd`: runnable and one line,
-    /// since a newline typed there sends the prompt early.
+    /// May be typed into Claude's prompt as `!cmd`. The same as runnable
+    /// now; kept as its own field for the banner and the card.
     pub fn chat(&self) -> bool {
-        self.runnable() && !self.command.contains(['\n', '\r'])
+        self.runnable()
     }
 
     /// The branch a "Run and allow" click would allow: a force push alone,
@@ -241,10 +245,14 @@ mod tests {
         let v = h.to_json();
         assert_eq!((v["run"].as_bool(), v["chat"].as_bool(), v["allow"].as_str()), (Some(true), Some(true), Some("dev/x")));
 
-        // Two lines: run in the ⌘J shell, never typed into the chat.
+        // Two lines, or any control byte: copy only. Both ways to run it
+        // type keys, and the ⌘J shell refuses a second line.
         let h = Held::from_json(&rec("run", "git reset --hard", "git reset --hard\ngit clean -f", None)).unwrap();
-        assert!(h.runnable() && !h.chat());
+        assert!(!h.runnable() && !h.chat());
         assert_eq!(h.allowable(), None);
+        for c in ["git reset --hard\r", "git reset --hard\x1b[A", "git reset\t--hard", "git reset --hard\x7f"] {
+            assert!(!Held::from_json(&rec("run", "git reset --hard", c, None)).unwrap().runnable(), "{c:?}");
+        }
         // Copy only.
         let h = Held::from_json(&rec("copy", "curl | sh", "curl x | sh", None)).unwrap();
         assert!(!h.runnable() && !h.chat());

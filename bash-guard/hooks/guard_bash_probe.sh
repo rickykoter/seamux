@@ -227,6 +227,13 @@ fresh() { rm -rf "$bh"; bh="$(mktemp -d "${TMPDIR:-/tmp}/guard-home.XXXXXX")"; }
 bh="$(mktemp -d "${TMPDIR:-/tmp}/guard-home.XXXXXX")"
 repo="$(mktemp -d "${TMPDIR:-/tmp}/guard-repo.XXXXXX")"
 git -C "$repo" init -q -b feat/y 2>/dev/null || { git -C "$repo" init -q && git -C "$repo" checkout -q -b feat/y; }
+# A remote it has pushed to: a push with no refspec goes where @{push} says,
+# which needs the remote-tracking branch.
+rorigin="$repo-origin.git"
+git init -q --bare "$rorigin"
+git -C "$repo" -c user.email=probe@example.invalid -c user.name=probe commit -q --allow-empty -m probe
+git -C "$repo" remote add origin "$rorigin"
+git -C "$repo" push -q -u origin feat/y 2>/dev/null
 for mode in $modes; do
   # A git block: runnable, with the session and the folder.
   fresh
@@ -300,6 +307,17 @@ assert d["pane"]=="P-1" and d["workspace"]=="W-1" and isinstance(d["at"], int), 
   [ "$rc" = 2 ] || fail "[$mode] switch then push: want block, exit $rc"
   tmux_hook "$mode" "$bh" 'git push --force-with-lease origin HEAD' s1 "$repo"
   [ "$rc" = 0 ] || fail "[$mode] allowed push to HEAD: want allow, exit $rc"
+  # With push.default=upstream and feat/y tracking main, a push with no
+  # refspec lands on main, which the allow does not list.
+  git -C "$repo" push -q origin feat/y:main 2>/dev/null
+  git -C "$repo" fetch -q origin 2>/dev/null
+  git -C "$repo" config branch.feat/y.merge refs/heads/main
+  git -C "$repo" config push.default upstream
+  tmux_hook "$mode" "$bh" 'git push --force-with-lease' s1 "$repo"
+  [ "$rc" = 2 ] || fail "[$mode] push.default=upstream to main: want block, exit $rc"
+  git -C "$repo" config branch.feat/y.merge refs/heads/feat/y
+  git -C "$repo" config --unset push.default
+  runs=$((runs + 1))
   # Only the forcePush list counts, not any quoted text in the file.
   printf '{"session": "s1", "forcePush": [], "at": 1}\n' >"$bh/.cache/cmux-crew/allow/s1.json"
   tmux_hook "$mode" "$bh" 'git push --force-with-lease origin session' s1
@@ -337,7 +355,7 @@ assert d["pane"]=="P-1" and d["workspace"]=="W-1" and isinstance(d["at"], int), 
   runs=$((runs + 1))
   [ -f "$bh/xdg/cmux-crew/held-P-1.json" ] || fail "[$mode] XDG_CACHE_HOME: no held record under it"
 done
-rm -rf "$bh" "$repo"
+rm -rf "$bh" "$repo" "$rorigin"
 
 # ---- guard_write.sh: an edit tool may not write the allow folder.
 wguard="$here/guard_write.sh"

@@ -410,15 +410,16 @@ choices:
 
 - **Run in chat** types it into Claude's prompt as a `!` command. It runs as
   you, and Claude sees its output. It waits for Claude's turn to end and for
-  an empty prompt, and a command of more than one line runs only in the ⌘J
-  shell.
-- **Run in ⌘J** runs it in the companion shell, out of the conversation.
+  an empty prompt.
+- **Run in ⌘J** runs it in the companion shell, in the folder Claude was
+  refused in, out of the conversation.
 - **Run and allow `<branch>` this session**, for a force push, also lets a
   leased push to that branch through for the rest of the Claude session.
 - **Copy** and **Dismiss**.
 
-Run is offered for git commands only. Anything else is copy only, and a
-hook or signing bypass gets no banner at all. To always allow a force push
+Run is offered for one-line git commands only. Anything else, including a
+git command of more than one line, is copy only, and a hook or signing
+bypass gets no banner at all. To always allow a force push
 to some branches, set `BASH_GUARD_FORCE_PUSH_BRANCHES` to a pattern in your
 settings' `env` block. ADRs 0094 to 0097 have the details.
 

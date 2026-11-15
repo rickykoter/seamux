@@ -12,7 +12,7 @@ A rebased feature branch gets pushed several times in one session, and asking ea
 
 ## Decision
 
-The held banner's "Run and allow <branch> this session" runs the push in the chat, then has the app add the branch to `forcePush` in `cmux-crew/allow/<session>.json`. For the rest of that session, bash-guard lets a leased push to a listed branch through. That means a plain `git push` with `--force-with-lease` (and optionally `--force-if-includes`, `-u`, `-q` or `-v`), at most a remote and one refspec, and no `-f`, `--force`, `+refspec` or `--mirror`. Without a refspec, the branch is the one checked out in the session's folder, and only when the push is the whole command.
+The held banner's "Run and allow <branch> this session" runs the push in the chat, then has the app add the branch to `forcePush` in `cmux-crew/allow/<session>.json`. For the rest of that session, bash-guard lets a leased push to a listed branch through. That means a plain `git push` with `--force-with-lease` (and optionally `--force-if-includes`, `-u`, `-q` or `-v`), at most a remote and one refspec, and no `-f`, `--force`, `+refspec` or `--mirror`. With a HEAD refspec, the branch is the one checked out in the session's folder. Without a refspec, it is where git itself would push (`@{push}`, which follows push.default, the upstream and pushRemote), and a remote named in the command must be that one. Either is read only when the push is the whole command.
 
 ## Consequences
 

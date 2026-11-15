@@ -1,10 +1,11 @@
 // Over Claude's prompt in a native pane, while bash-guard holds a command it
 // refused there (held_app.rs, ADRs 0094-0097): the command, why, and what you
-// can do. A git block can run in the chat (typed as `!cmd`, so its output
-// joins the conversation) or in the ⌘J shell; a force push can also be
-// allowed for its branch for the rest of the session. Every other block is
-// copy only. The command shown and run is always the record's, read again
-// from the app before anything is typed.
+// can do. A one-line git block can run in the chat (typed as `!cmd`, so its
+// output joins the conversation) or in the ⌘J shell, in the folder it was
+// refused in; a force push can also be allowed for its branch for the rest
+// of the session. Every other block, and any command of more than one line
+// or with a control character, is copy only. The command shown and run is
+// always the record's, read again from the app before anything is typed.
 import { invoke } from "@tauri-apps/api/core";
 
 export type Held = {
@@ -12,6 +13,8 @@ export type Held = {
   reason: string;
   kind: "run" | "copy";
   command: string;
+  /** The folder Claude ran it in (the hook's cwd). */
+  cwd: string;
   truncated: boolean;
   branch: string | null;
   at: number;
@@ -48,6 +51,18 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: s
   return e;
 }
 
+/** Why a held command can only be copied. */
+function copyWhy(h: Held): string {
+  if (h.kind !== "run") return "This kind is copy only: paste it yourself if you mean it";
+  if (h.truncated) return "Only the start of a longer command was kept: copy it";
+  return "It has more than one line or a control character: copy it";
+}
+
+/** `s` as one single-quoted shell word. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 export class HeldBanner {
   el = el("div", "pane-held");
   /** Told when a record comes or goes, so the pane can place the banner. */
@@ -59,6 +74,7 @@ export class HeldBanner {
   private open = false;
   private busy = false;
   private why = el("span", "ph-why");
+  private where = el("div", "ph-where");
   private cmd = el("pre", "ph-cmd");
   private more = el("button", "ph-more");
   private buttons = el("div", "ph-btns");
@@ -89,7 +105,7 @@ export class HeldBanner {
       this.open = !this.open;
       this.draw();
     });
-    this.el.append(head, this.cmd, this.more, this.buttons);
+    this.el.append(head, this.where, this.cmd, this.more, this.buttons);
     // Its clicks are its own, never tmux's.
     this.el.addEventListener("mousedown", (e) => e.stopPropagation(), true);
   }
@@ -165,7 +181,7 @@ export class HeldBanner {
         case "dismiss":
           return await this.done(h, "dismiss");
         case "chat":
-          if (!h.chat) return this.no(h.run ? "It's more than one line: run it in the ⌘J shell" : "This one is copy only");
+          if (!h.chat) return this.no(copyWhy(h));
           if (!h.idle) return this.no("Claude is still working: run it once its turn ends");
           if (!this.act.chat(h.command)) return false;
           return await this.done(h, "ran");
@@ -182,8 +198,10 @@ export class HeldBanner {
           }
           return true;
         case "shell":
-          if (!h.run) return this.no("This one is copy only");
-          if (!(await this.act.shell(h.command))) return false;
+          if (!h.run) return this.no(copyWhy(h));
+          // The shell keeps its own folder: the command runs in the one
+          // Claude was refused in.
+          if (!(await this.act.shell(h.cwd ? `cd -- ${shq(h.cwd)} && ${h.command}` : h.command))) return false;
           return await this.done(h, "ran");
       }
     } finally {
@@ -229,6 +247,8 @@ export class HeldBanner {
     this.el.dataset.kind = h.kind;
     this.why.textContent = h.reason;
     this.why.title = h.reason;
+    this.where.textContent = h.cwd ? `in ${h.cwd}` : "";
+    this.where.hidden = !h.cwd;
     const long = h.lines > FOLD;
     this.cmd.textContent = long && !this.open ? h.command.split("\n").slice(0, FOLD).join("\n") + "\n…" : h.command;
     this.cmd.title = h.truncated ? "Only the start of a longer command was kept: it can be copied, not run" : "";
@@ -243,9 +263,9 @@ export class HeldBanner {
       btns.push(this.button(`Run and allow ${h.allow} this session`, `Run it in the chat, and let a leased force push to ${h.allow} through for the rest of this Claude session`, "allow", { off: busy }));
     }
     if (h.run) {
-      btns.push(this.button("Run in ⌘J", h.chat ? "Run it in the companion shell: its output stays out of the conversation" : "Run it in the companion shell (more than one line, so not in the chat)", "shell", { main: !h.chat }));
+      btns.push(this.button("Run in ⌘J", "Run it in the companion shell, in the folder above: its output stays out of the conversation", "shell"));
     }
-    btns.push(this.button("Copy", h.run ? "Copy the command" : "Copy the command: bash-guard offers this kind only to paste yourself", "copy", { main: !h.run }));
+    btns.push(this.button("Copy", h.run ? "Copy the command" : `Copy the command: ${copyWhy(h).toLowerCase()}`, "copy", { main: !h.run }));
     this.buttons.replaceChildren(...btns);
     if (!was) this.onChange();
   }
