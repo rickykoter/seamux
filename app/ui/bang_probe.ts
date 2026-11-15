@@ -1,7 +1,7 @@
 // node app/ui/bang_probe.ts — a pane's `!` commands and Claude's prompt
 // (bang.ts), and where its links go (linkroute.ts), with no DOM. Node runs
 // this file as TypeScript.
-import { findBangs, findPrompt } from "./bang.ts";
+import { bangAcross, findBangs, findPrompt } from "./bang.ts";
 import { DOCK_FILE, joinWrapped, route } from "./linkroute.ts";
 
 const checks: [string, boolean, string?][] = [];
@@ -117,6 +117,38 @@ ok("link: the Dock shows images, PDFs and Markdown", ["a.png", "b.JPG", "c.pdf",
   ok("wrap: a list item after a path that fills the row is its own line", joinWrapped(list, 0, 40).text === list[0], joinWrapped(list, 0, 40).text);
   const prose = ["a sentence that happens to fill the row.", "Next sentence starts here"];
   ok("wrap: prose ending in a full stop does not join", joinWrapped(prose, 1, 40).text === prose[1], joinWrapped(prose, 1, 40).text);
+}
+
+// ---- a `!` command Claude wrapped onto the next row (bangAcross) -----------
+{
+  const cols = 60;
+  // A row: `text`, with [from, to) in inline code's colour, padded to the width.
+  const row = (text: string, from = -1, to = -1) => {
+    const t = text.padEnd(cols);
+    return { text: t, style: [...t].map((_, i) => (i >= from && i < to ? "2:110" : "0:0")) };
+  };
+  // The person's case: "… with ! cat" then the path on the next row.
+  const a = "dig in. You can see what's in the folder with ! cat";
+  const b = "~/.cache/cmux-crew/allow/1ef25a59.json";
+  const rows = [row(a, a.indexOf("!"), a.length), row(b, 0, b.length), row("next line of prose")];
+  const top = bangAcross(rows, 0, cols);
+  ok("across: a command wrapped at a space is whole on its first row", top.length === 1 && top[0].cmd === "cat " + b, JSON.stringify(top));
+  const second = bangAcross(rows, 1, cols);
+  ok("across: …and on the row it wrapped onto, with that row's part", second.length === 1 && second[0].cmd === "cat " + b &&
+    second[0].spans.find((s) => s.row === 1)?.end === b.length, JSON.stringify(second));
+  ok("across: the next row's prose is not part of it", bangAcross(rows, 2, cols).length === 0, JSON.stringify(bangAcross(rows, 2, cols)));
+  // A command that fills the row to the edge broke mid-word: no space added.
+  const full = "run ! git log --oneline origin/feature-branch-with-a-long-n";
+  const tail = "ame -3";
+  const mid = [row(full.slice(0, cols), full.indexOf("!"), cols), row("  " + tail, 2, 2 + tail.length)];
+  const m = bangAcross(mid, 0, cols);
+  ok("across: a row filled to the edge joins its next part with no space", m.length === 1 && m[0].cmd === "git log --oneline origin/feature-branch-with-a-long-name -3", JSON.stringify(m));
+  // Code that ends before the row does is not carried on.
+  const short = [row("type ! ls -la then", 5, 13), row("ls more", 0, 7)];
+  ok("across: a command that ends mid-row stays one row", bangAcross(short, 0, cols).map((x) => x.cmd).join() === "ls -la", JSON.stringify(bangAcross(short, 0, cols)));
+  // A next row in plain colour is prose, not the command's tail.
+  const prose = [row(a, a.indexOf("!"), a.length), row("and then something else")];
+  ok("across: a plain next row is not joined", bangAcross(prose, 0, cols).map((x) => x.cmd).join() === "cat", JSON.stringify(bangAcross(prose, 0, cols)));
 }
 
 let bad = 0;

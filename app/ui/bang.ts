@@ -75,6 +75,57 @@ export function findBangs(text: string, style?: readonly string[]): Bang[] {
   return out;
 }
 
+/** A row as the pane reads it: its text and each character's style. */
+export type Row = { text: string; style: readonly string[] };
+
+/** A `!` command that may run over several rows, and the part of each row
+ *  it covers (`row` an index into the rows given, `start`/`end` text
+ *  offsets in that row). */
+export type Across = { cmd: string; spans: { row: number; start: number; end: number }[] };
+
+/** How many rows a wrapped command may run on. */
+const WRAP_ROWS = 4;
+
+/** The `!` commands that cover row `at` of `rows`, each joined across the
+ *  rows Claude wrapped it onto. A command drawn as inline code (its own
+ *  colour) that runs to the end of its row goes on into the next row when
+ *  that row starts, past its indent, in the same colour. Claude wraps at a
+ *  space, so the parts join with one; a row filled to the right edge broke
+ *  mid-word, and its part joins with none. `cols` is the terminal's width. */
+export function bangAcross(rows: readonly Row[], at: number, cols: number): Across[] {
+  const out: Across[] = [];
+  for (let r = Math.max(0, at - WRAP_ROWS); r <= at; r++) {
+    const row = rows[r];
+    if (!row || !row.text.includes("!")) continue;
+    const plain = plainOf(row.style, row.text);
+    for (const b of findBangs(row.text, row.style)) {
+      const spans = [{ row: r, start: b.start, end: b.end }];
+      let cmd = b.cmd;
+      const code = row.style[b.end - 1];
+      let k = r;
+      // On while the command's colour reaches its row's last character.
+      while (code !== undefined && code !== plain && k - r < WRAP_ROWS) {
+        const cur = rows[k];
+        const last = spans[spans.length - 1];
+        const shown = cur.text.trimEnd().length;
+        if (last.end < shown || !rows[k + 1]) break;
+        const next = rows[k + 1];
+        const indent = next.text.length - next.text.trimStart().length;
+        let e = indent;
+        while (e < next.text.length && next.style[e] === code && next.text[e] !== "│") e++;
+        const piece = next.text.slice(indent, e).trimEnd();
+        if (!piece) break;
+        cmd += (shown >= cols - 1 ? "" : " ") + piece;
+        spans.push({ row: k + 1, start: indent, end: indent + piece.length });
+        k++;
+      }
+      const whole = tidy(cmd);
+      if (whole.length <= MAX * 2 && spans.some((s) => s.row === at)) out.push({ cmd: whole, spans });
+    }
+  }
+  return out;
+}
+
 /** The row's plain text's style: the terminal's default colour where the
  *  row has it (panelinks.ts keys a cell `<colour mode>:<colour>`, mode 0
  *  the default), else its most common style. */

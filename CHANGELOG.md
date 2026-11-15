@@ -6,6 +6,11 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **A `!` command that wraps onto the next row is offered whole.** When
+  Claude's inline `! command` ran past the pane's edge, its hover menu
+  offered only the part on the first row, and widening the pane was the only
+  way round it. The menu now follows the command's colour onto the rows it
+  wrapped to, on whichever row you hover.
 - **A command bash-guard refuses is handed to you to run.** In a pane of
   the app's tmux, bash-guard keeps a record of the refused command. A banner
   over Claude's prompt shows it whole with the reason, and the workspace's
