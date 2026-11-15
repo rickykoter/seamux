@@ -117,6 +117,50 @@ fn overall_now(state: &Value) -> Overall {
     Overall { status: "done", stage: String::new(), recipe: String::new(), live: !versions.is_empty() && versions.iter().all(|m| *m) }
 }
 
+/// A worktree's latest landing, as the Dock shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct View {
+    pub status: &'static str,
+    pub stage: String,
+    pub recipe: String,
+    pub merge: String,
+    pub pr: u64,
+    pub live: bool,
+    /// When its last recipe ended (epoch ms), 0 while it lands.
+    pub ended: u64,
+}
+
+/// The latest merge the app's watcher landed from worktree `cwd` (its
+/// index, landings/index.json, names the worktree each merge came from),
+/// read against its planned recipes. A merge still landing whose process is
+/// gone reads as stopped.
+pub fn for_worktree(home: &Path, cwd: &str) -> Option<View> {
+    let idx: Value = serde_json::from_str(&std::fs::read_to_string(home.join("landings").join("index.json")).ok()?).ok()?;
+    let want = crate::prs::key(cwd);
+    let e = idx.as_object()?.values()
+        .filter(|e| e.get("cwd").and_then(Value::as_str).is_some_and(|c| crate::prs::key(c) == want))
+        .filter(|e| e.get("started").and_then(Value::as_i64).unwrap_or(0) > 0)
+        .max_by_key(|e| e.get("at").and_then(Value::as_i64).unwrap_or(0))?;
+    let s = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let recipes: Vec<String> = e.get("recipes").and_then(Value::as_array).into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect();
+    if recipes.is_empty() {
+        return None;
+    }
+    let state = read(home, &s("key"), &s("merge"));
+    let mut o = match &state {
+        Some(st) => overall_of(st, &recipes),
+        None => Overall { status: "landing", stage: String::new(), recipe: recipes[0].clone(), live: false },
+    };
+    let pid = e.get("pid").and_then(Value::as_u64).unwrap_or(0) as i32;
+    if o.status == "landing" && (pid <= 0 || unsafe { libc::kill(pid, 0) } != 0) {
+        o.status = "stopped";
+    }
+    let ended = state.as_ref().and_then(|st| st.get("recipes")).and_then(Value::as_object)
+        .map(|m| m.values().filter_map(|r| r.get("ended").and_then(Value::as_u64)).max().unwrap_or(0)).unwrap_or(0);
+    Some(View { status: o.status, stage: o.stage, recipe: o.recipe, merge: s("merge"), pr: e.get("pr").and_then(Value::as_u64).unwrap_or(0),
+                live: o.live, ended: if o.status == "done" { ended } else { 0 } })
+}
+
 /// Seconds since the epoch for an ISO 8601 UTC time as GitHub writes it
 /// (2026-11-13T07:31:00Z), or None.
 pub fn iso_secs(t: &str) -> Option<i64> {
@@ -168,6 +212,32 @@ mod tests {
         let o = overall_of(&st(vec![done.clone()]), &["a".into(), "later".into()]);
         assert_eq!((o.status, o.recipe.as_str()), ("landing", "later"));
         assert_eq!(overall_of(&st(vec![done]), &["a".into()]).status, "done");
+    }
+
+    #[test]
+    fn a_worktree_shows_its_latest_landing() {
+        let d = std::env::temp_dir().join(format!("landing-view-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("landings").join("k")).unwrap();
+        let wt = d.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let cwd = wt.to_string_lossy().into_owned();
+        let me = std::process::id();
+        std::fs::write(d.join("landings").join("index.json"), json!({
+            "k/old": {"key": "k", "merge": "old", "cwd": cwd, "at": 1, "started": 1, "pid": 0, "recipes": ["ship"], "pr": 1},
+            "k/new": {"key": "k", "merge": "new", "cwd": cwd, "at": 2, "started": 2, "pid": me, "recipes": ["ship"], "pr": 2},
+            "k/other": {"key": "k", "merge": "x", "cwd": "/elsewhere", "at": 9, "started": 9, "pid": me, "recipes": ["ship"]},
+        }).to_string()).unwrap();
+        std::fs::write(state_path(&d, "k", "new"), json!({"recipes": {"ship": {"key": "ship", "status": "running",
+            "stages": [{"name": "install", "status": "running"}]}}}).to_string()).unwrap();
+        let v = for_worktree(&d, &cwd).unwrap();
+        assert_eq!((v.status, v.stage.as_str(), v.merge.as_str(), v.pr), ("landing", "install", "new", 2), "the newest merge of this worktree");
+        std::fs::write(state_path(&d, "k", "new"), json!({"recipes": {"ship": {"key": "ship", "status": "done", "ended": 77,
+            "stages": [], "version": {"match": true}}}}).to_string()).unwrap();
+        let v = for_worktree(&d, &cwd).unwrap();
+        assert_eq!((v.status, v.ended, v.live), ("done", 77, true));
+        assert!(for_worktree(&d, "/nowhere").is_none());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

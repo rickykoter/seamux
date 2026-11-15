@@ -161,6 +161,17 @@ export class DockView {
           if (r === null) say("Couldn't open that pane to answer: answer from its banner", undefined, true);
         });
       }
+      // A landing's chip (land_watch.rs): approve, skip or retry through the
+      // app, for the workspace's worktree; log opens the change in Lookout.
+      const l = d as { act?: unknown; merge?: unknown; recipe?: unknown } | null;
+      if (d?.crew === "land" && typeof d.ws === "string" && d.ws && typeof l?.merge === "string" && /^[0-9a-f]{40}$/.test(l.merge) &&
+          typeof l.recipe === "string" && /^[A-Za-z0-9._@/-]{1,120}$/.test(l.recipe) && ["approve", "skip", "retry", "log"].includes(String(l?.act))) {
+        const cwd = this.tiles.find((t) => t.workspace === d.ws && t.cwd)?.cwd ?? "";
+        const merge = l.merge, recipe = l.recipe, act = String(l.act);
+        if (act === "log") window.dispatchEvent(new CustomEvent("seamux:land-open", { detail: { cwd, merge, recipe } }));
+        else if (!cwd) say("Couldn't find that workspace's folder", undefined, true);
+        else void invoke<string>("land_act", { cwd, merge, recipe, act }).then((m) => say(m), (err) => say(`Couldn't: ${err}`, undefined, true));
+      }
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;
       if (d?.crew === "reclaim" && typeof d.ws === "string" && d.ws) this.reclaim.open(d.ws, typeof r?.name === "string" ? r.name : d.ws);
@@ -293,7 +304,7 @@ export class DockView {
   private tell(): void {
     const peek = !!this.peek && this.peek === this.ws;
     if (this.frame?.contentWindow && this.origin)
-      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs", "held"], peek, sprite: sprite.get() }, this.origin);
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs", "held", "land"], peek, sprite: sprite.get() }, this.origin);
   }
 
   private draw(): void {

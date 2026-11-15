@@ -3823,6 +3823,19 @@ setInterval(() => { try { fs.mkdirSync(p); fs.utimesSync(p, old, old); } catch {
   els.rows.removeAttribute("data-held-open");
 }
 
+// ---- a landing (rank.rs landing, render.js heldAttrs/LAND_ACT) -------------
+{
+  const merge = "a".repeat(40);
+  const landing = { status: "awaiting", stage: "notebook", recipe: "seamux@app", merge, pr: 231, live: false };
+  render({ rows: [{ id: "lw", name: "lw", kind: "attend", badge: "landing needs you", said: "#231's {{seamux}} waits at {{notebook}}.",
+    chips: ["approve land", "skip land", "land log"], frac: null, meta: "", ref: "workspace:1", cwd: "/w/lw", landing }], quiet: "" });
+  const h = els.rows.innerHTML;
+  checks.push(["land: approve, skip and log carry the act, the merge and the recipe",
+    h.includes(`data-a="land" data-x="approve|${merge}|seamux@app"`) && h.includes(`data-a="land" data-x="skip|${merge}|seamux@app"`) &&
+    h.includes(`data-a="land" data-x="log|${merge}|seamux@app"`), h.slice(0, 1500)]);
+  checks.push(["land: the chips say what they do", /title="Approve this recipe&#39;s writing steps/.test(h)]);
+}
+
 let bad = 0;
 for (const [n, ok, extra] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}${!ok && extra !== undefined ? "  :: " + String(extra).slice(0, 600) : ""}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);

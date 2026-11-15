@@ -37,7 +37,11 @@ function __boardRender(d) {
     "runs": "Open every background agent and run this session started",
     "run held": "Run the command bash-guard held, as you: typed into Claude's prompt as a ! command, so Claude sees its output",
     "copy held": "Copy the command bash-guard held",
-    "dismiss held": "Let it go: Claude carries on without it"
+    "dismiss held": "Let it go: Claude carries on without it",
+    "approve land": "Approve this recipe's writing steps as it is now, and let the landing go on",
+    "skip land": "Skip this recipe for this merge",
+    "retry land": "Run the landing again from the stage that stopped",
+    "land log": "Open the change in the Lookout tab, at its Land stage"
   };
 
   function esc(s) {
@@ -1035,9 +1039,13 @@ function __boardRender(d) {
   var HELD_ACT = { "run held": "run", "copy held": "copy", "dismiss held": "dismiss" };
   function heldAttrs(a, c) {
     var act = HELD_ACT[c];
-    if (!act || !a.held) return "";
-    return ' data-a="held" data-x="' + esc(act + "|" + a.held.pane + "|" + a.held.at) + '"';
+    if (act && a.held) return ' data-a="held" data-x="' + esc(act + "|" + a.held.pane + "|" + a.held.at) + '"';
+    var land = LAND_ACT[c];
+    if (land && a.landing) return ' data-a="land" data-x="' + esc(land + "|" + a.landing.merge + "|" + a.landing.recipe) + '"';
+    return "";
   }
+  // A landing's chip carries its act, its merge and its recipe (rank.rs).
+  var LAND_ACT = { "approve land": "approve", "skip land": "skip", "retry land": "retry", "land log": "log" };
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot
   // for it in board.html, and one image is not worth a stylesheet rule.
