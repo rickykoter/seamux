@@ -170,6 +170,13 @@ sys.stdout.write(json.dumps(b.decode("utf-8","ignore")))' "$held_max" 2>/dev/nul
   json_str "${cmd:0:2000}"
 }
 
+# A held record's time, in milliseconds: the Dock answers a record by its
+# time, and two blocks in one second must not share one. Without python3,
+# whole seconds (date has no finer clock on macOS).
+held_at() {
+  python3 -c 'import time; print(time.time_ns() // 1000000)' 2>/dev/null || printf '%s000' "$(date +%s)"
+}
+
 # write_state NAME TEXT: TEXT into the state folder as NAME, whole or not at
 # all (a temp file moved into place).
 write_state() {
@@ -213,7 +220,7 @@ tell_block() {
     [ -z "$held_branch" ] || branch="$(json_str "$held_branch")"
     write_state "held-$key.json" "$(printf '{"pane": %s, "workspace": %s, "session": %s, "cwd": %s, "reason": %s, "kind": "%s", "command": %s, "truncated": %s, "branch": %s, "at": %s}' \
       "$(json_str "${SEAMUX_PANE_ID:-}")" "$(json_str "${SEAMUX_WORKSPACE_ID:-}")" "$(json_str "$sid")" \
-      "$(json_str "$pcwd")" "$(json_str "$reason")" "$kind" "$(held_cmd_json)" "$cut" "$branch" "$(date +%s)")"
+      "$(json_str "$pcwd")" "$(json_str "$reason")" "$kind" "$(held_cmd_json)" "$cut" "$branch" "$(held_at)")"
     return 0
   fi
   if command -v cmux >/dev/null 2>&1 && [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
@@ -515,10 +522,11 @@ allowed_force_push() {
 # for a push the allow could cover: a plain `git push` (no global options),
 # --force-with-lease, no other option but -u, -q, -v and their long names,
 # --force-if-includes and --progress, at most a remote and one refspec, no
-# +refspec, no quoting, expansion or redirection. With no refspec, or HEAD,
-# the branch is the one checked out in the payload's cwd.
+# +refspec, no quoting, expansion or redirection. With a HEAD refspec the
+# branch is the one checked out in the payload's cwd; with none, the one git
+# would push to (@{push}).
 push_dest() {
-  local seg="$1" w words leased="" n=0 refspec="" dest=""
+  local seg="$1" w words leased="" n=0 remote="" refspec="" dest=""
   held_branch=""
   shopt -u nocasematch
   case "$seg" in
@@ -536,6 +544,7 @@ push_dest() {
       -*) shopt -s nocasematch; return 1 ;;
       *)
         n=$((n + 1))
+        [ "$n" = 1 ] && remote="$w"
         [ "$n" = 2 ] && refspec="$w"
         ;;
     esac
@@ -553,9 +562,22 @@ push_dest() {
   # The checkout is read now, before the command runs, so it names the push's
   # branch only when the push is the whole command: `git switch main && git
   # push --force-with-lease` would otherwise read the old branch and push main.
-  if [ -z "$dest" ] || [ "$dest" = HEAD ]; then
+  # A HEAD refspec lands on the branch of the same name. With no refspec the
+  # branch is wherever git itself would push (@{push}: push.default, the
+  # upstream and pushRemote), and the remote named, if any, must be its.
+  if [ -n "$refspec" ] && [ "$dest" = HEAD ]; then
     dest=""
     [ "${#segments[@]}" = 1 ] && dest="$(git -C "${pcwd:-.}" symbolic-ref --short -q HEAD 2>/dev/null)"
+  elif [ -z "$refspec" ]; then
+    dest=""
+    if [ "${#segments[@]}" = 1 ]; then
+      w="$(git -C "${pcwd:-.}" rev-parse --abbrev-ref --symbolic-full-name '@{push}' 2>/dev/null)"
+      if [ -n "$remote" ]; then
+        [ "${w#"$remote/"}" != "$w" ] && dest="${w#"$remote/"}"
+      elif [[ "$w" == ?*/?* ]]; then
+        dest="${w#*/}"
+      fi
+    fi
   fi
   if [[ "$dest" =~ ^${branch_re}$ ]] && [[ "$dest" != *..* ]]; then
     held_branch="$dest"
