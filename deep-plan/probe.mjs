@@ -3613,7 +3613,7 @@ if (want("verify init: detector, templates, setup prompt")) {
   ok("a project with no e2e script gets a run step that fails loudly until filled in",
     /TODO: the e2e command/.test(tr2.steps.at(-1).run) && /exit 1/.test(tr2.steps.at(-1).run));
   ok("an unknown template is refused, naming the ones there are",
-    /no template "nope" — there are: firebase-channel, github-deployment, rwx-run, vercel-preview/.test(
+    /no template "nope" — there are: firebase-channel, github-deployment, land-datadog-notebook, land-github-deployment, rwx-run, vercel-preview/.test(
       cli("verify", "init", "--root", DR, "--template", "nope").stderr));
 
   // Every shipped template: a valid recipe once filled, remote-shaped, honest
@@ -3627,11 +3627,23 @@ if (want("verify init: detector, templates, setup prompt")) {
     fs.writeFileSync(path.join(dir, ".seamux", "verify.json"), JSON.stringify({ recipes: [recipe] }));
     const L = loadVerify(dir);
     const kinds = L.recipes[0] ? L.recipes[0].steps.map(s => s.kind).join(",") : "";
-    ok(`template ${t.template}: a valid recipe once filled`, L.errors.length === 0);
-    ok(`template ${t.template}: acquire, then a wait that exports, then run`,
-      kinds === "acquire,wait,run" && !!L.recipes[0].steps[1].export && L.recipes[0].tier === "expensive");
+    ok(`template ${t.template}: a valid recipe once filled`, L.errors.length === 0, L.errors.join("; "));
     ok(`template ${t.template}: says whether it was proven, and how to prove it`,
       typeof t.verified === "boolean" && typeof t.verify === "string" && t.verify.length > 40 && Array.isArray(t.needs));
+    if (t.recipe.kind === "land") {
+      // A land template: every step a named stage, every wait discarding
+      // stderr, a step that writes outside marked so, and outputs to show.
+      const steps = L.recipes[0] ? L.recipes[0].steps : [];
+      ok(`template ${t.template}: a land recipe whose every step is a stage`, steps.length > 0 && steps.every(s => typeof s.stage === "string" && s.stage));
+      ok(`template ${t.template}: its waits discard stderr, so an error is never read as a value`,
+        steps.filter(s => s.kind === "wait").every(s => /2>\/dev\/null/.test(s.command)));
+      ok(`template ${t.template}: a step that calls out with a key is marked writes`,
+        steps.filter(s => /-X POST|-X PUT|-X DELETE/.test(s.command)).every(s => s.writes === true));
+      ok(`template ${t.template}: outputs to show`, !!L.recipes[0].outputs && (!!L.recipes[0].outputs.version || (L.recipes[0].outputs.links || []).length > 0));
+      continue;
+    }
+    ok(`template ${t.template}: acquire, then a wait that exports, then run`,
+      kinds === "acquire,wait,run" && !!L.recipes[0].steps[1].export && L.recipes[0].tier === "expensive");
     ok(`template ${t.template}: its wait discards stderr, so an error is never read as a value`,
       /2>\/dev\/null/.test(L.recipes[0].steps[1].command));
   }

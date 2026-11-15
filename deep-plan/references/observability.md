@@ -19,6 +19,9 @@ for keys — never key values). On an opted-in project:
    instrumentation in the code, and for monitors/dashboards an **importable
    JSON definition (labeled with the API version it targets) or step-by-step
    manual setup** — never a live API write from the plan. The human imports
-   or clicks; the plan only produces reviewable artifacts.
+   or clicks; the plan only produces reviewable artifacts. A land recipe
+   (checks.md, Land recipes) is the one place a write may run: committed,
+   reviewed code, its writing step marked `writes`, and run only once the
+   person has approved the recipe.
 4. Not opted in, or the sweep cannot answer? Plan as always — the block is
    simply absent. Never guess monitor state you could not read.

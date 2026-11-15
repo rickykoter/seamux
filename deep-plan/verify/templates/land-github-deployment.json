@@ -1,0 +1,33 @@
+{
+  "template": "land-github-deployment",
+  "describes": "A land recipe for any host that reports to GitHub Deployments (Vercel, Netlify, Render and others, through their GitHub apps). After a merge, wait for a successful production deployment of the merge commit, wait until the service reports that commit as the one it runs, then smoke-test it. The Lookout tab shows each stage's time and the live version against the merge.",
+  "verified": false,
+  "verify": "After a merge has deployed, run the deploy wait by hand from the repo root with MERGE_SHA set to the merge commit: it must print the deployment's URL and exit 0, and print nothing while the deployment builds. Point the live wait at how your service reports its commit (a /version endpoint, a header) and check it prints the commit. Then set \"verified\": true here, with the date and the host in \"verifiedAgainst\".",
+  "needs": [
+    "gh authenticated (gh auth status) with read access to the repo's deployments",
+    "the host's GitHub app posting deployment statuses with an environment_url for the production environment",
+    "the service reporting the commit it runs (the live wait reads $URL/version)"
+  ],
+  "recipe": {
+    "id": "deploy",
+    "kind": "land",
+    "name": "the merge, deployed and live",
+    "match": [],
+    "timeout": 600,
+    "steps": [
+      { "stage": "deploy",
+        "wait": "s=$(gh api \"repos/{owner}/{repo}/deployments?sha=$MERGE_SHA&environment=production&per_page=1\" --jq '.[0].statuses_url // empty' 2>/dev/null) && [ -n \"$s\" ] && gh api \"$s\" --jq '[.[] | select(.state==\"success\")][0].environment_url // empty' 2>/dev/null",
+        "export": "URL", "timeout": 3600, "interval": 30,
+        "note": "prints nothing until a production deployment of the merge reports success; stderr is discarded so an auth error is never read as a URL" },
+      { "stage": "live",
+        "wait": "curl -fsS \"$URL/version\" 2>/dev/null | grep -o \"$MERGE_SHA\" | head -1",
+        "export": "LIVE", "timeout": 900, "interval": 20,
+        "note": "prints the merge commit once the service says it runs it; replace with however yours reports its commit" },
+      { "stage": "smoke", "run": "curl -fsS -o /dev/null \"$URL/\"" }
+    ],
+    "outputs": {
+      "version": { "expect": "$MERGE_SHA", "live": "$LIVE" },
+      "links": [ { "label": "Deployment", "url": "$URL" } ]
+    }
+  }
+}

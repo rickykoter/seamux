@@ -7,6 +7,7 @@ Read this while deciding how each increment is proven (discipline step 4) and be
 - [Choosing checks](#choosing-checks)
 - [What counts as a deliverable's checks](#what-counts-as-a-deliverables-checks)
 - [Recipe format](#recipe-format)
+- [Land recipes](#land-recipes)
 - [Browser checks](#browser-checks)
 - [Claim steps](#claim-steps)
 - [PR proof](#pr-proof)
@@ -108,6 +109,45 @@ none of them behaves as before and keeps its hash.
 
 Any other field is a warning that names the file and recipe, never a silent
 drop. Keys starting with `$` are comments.
+
+## Land recipes
+
+A recipe of `"kind": "land"` is not a check. It says what happens after a
+merge, and the seamux app runs it when a workspace's PR merges: in the
+repo's kept checkout, never a feature worktree. Plan check resolution never
+picks one, and a check cannot name one.
+
+```json
+{ "id": "deploy", "kind": "land", "match": ["services/api/**"], "steps": [
+    { "stage": "deploy", "wait": "scripts/deployed.sh 2>/dev/null", "export": "URL", "timeout": 3600, "interval": 30 },
+    { "stage": "live", "wait": "curl -fsS \"$URL/version\" 2>/dev/null", "export": "LIVE", "interval": 20 },
+    { "stage": "notebook", "writes": true, "run": "scripts/dd-notebook.sh", "export": "NOTEBOOK" } ],
+  "outputs": { "version": { "expect": "$MERGE_SHA", "live": "$LIVE" },
+               "links": [ { "label": "Rollout notebook", "url": "$NOTEBOOK" } ] } }
+```
+
+- **Steps are run and wait only**, each a `stage` the engine times. Every
+  step sees `MERGE_SHA`, `PR` and `REPO` (the kept checkout), and what
+  earlier steps exported. No acquire, claim, browser or `uses`: a hold
+  would end with each stage.
+- **A step that writes to an outside system** (a deploy, a notebook, a
+  ticket) is marked `"writes": true`. A recipe's first writing run waits
+  until the person approves the recipe as it is now, from the Lookout tab
+  or the Dock (`deep-plan land approve --by human` at their own terminal).
+  An edit to the recipe asks again. The agent never approves.
+- **`outputs`** maps exports onto what the Lookout tab draws: `version`
+  (`expect` against `live`; commit shas match on a common prefix) and
+  `links` (http and https only). Nothing else is drawn; put more behind a
+  link.
+- **Recipes are read from the kept checkout as it is**, before any pull a
+  recipe does. A recipe a merge adds or changes takes effect for the next
+  merge; land the first one by hand.
+- `deep-plan land plan|run|status --repo DIR --merge SHA` runs the same by
+  hand; `land skip` leaves a waiting recipe for that merge. Each merge's
+  state is one file under `~/.claude/crew/landings/`.
+- Templates: `deep-plan verify init --template land-github-deployment` (a
+  deploy wait, a live-version wait, a smoke) and `land-datadog-notebook`
+  (a rollout notebook, marked writes).
 
 ## Browser checks
 
