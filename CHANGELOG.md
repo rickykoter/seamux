@@ -6,6 +6,13 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **A landing finds your tools, and notices a merge without waiting for a
+  turn.** Landings run with your login shell's PATH ahead of the app's, so
+  a step that needs cargo, gh or jq finds them when the app was opened from
+  Finder. The first landing of #232 failed with "cargo is required". On the
+  tmux backend, the watcher now starts crew-sync when a workspace's PR list
+  is past its refresh. Before, only the end of a Claude turn ran it, so a
+  merge made while every session sat idle waited.
 - **A merged PR lands itself, and Lookout follows it from review to
   release.** A project writes `kind: "land"` recipes in
   `.seamux/verify.json`: stages to run after a merge (wait for the deploy,
