@@ -16,7 +16,7 @@
 // own fixes would be the self-certification ADR 0006 removed.
 export const SEVERITIES = ["blocker", "major", "minor", "nit"];
 export const BLOCKING = new Set(["blocker", "major"]);
-export const CATEGORIES = ["correctness", "security", "performance", "maintainability", "smell"];
+export const CATEGORIES = ["correctness", "security", "performance", "maintainability", "smell", "cross-system"];
 // Code smells (duplication, dead code, comments that restate the code,
 // needless abstraction, a refactor that removes a branch) are worth saying
 // but never hold a gate: a smell finding is minor or nit, and one filed
@@ -26,6 +26,12 @@ export const SMELL = "smell";
 // worse, so it holds the gate until the human closes it (a dismiss is the
 // record that the deviation was meant); only a review of a plan has one.
 export const DRIFT = "plan-drift";
+// A claim about code outside the diff (a consumer, a framework hook, what an
+// image copies) that does not hold, or that nobody could check. A note on a
+// contract file needs one of these on its files or an assumption cited to a
+// line (notes.mjs). Minor or worse: a nit would let an unchecked claim pass
+// as noise.
+export const CROSS = "cross-system";
 export const VERDICTS = ["CONFIRMED", "PLAUSIBLE"];
 export const STATUSES = ["open", "addressed", "resolved", "dismissed"];
 const CLOSED = new Set(["resolved", "dismissed"]);
@@ -130,6 +136,8 @@ export function validate(review, items, anchors) {
     const drift = category === DRIFT;
     if (category === SMELL && BLOCKING.has(severity))
       return bad("a smell is minor or nit at most; file it lower, or as maintainability with the bug it causes");
+    if (category === CROSS && severity === "nit")
+      return bad("a cross-system finding is minor or worse: an unchecked claim about other code is not a nit");
     if (drift && !(review.source && review.source.plan))
       return bad("plan-drift needs a plan increment to drift from, and this review has none; use another category");
     const summary = clip(x.summary, 1000);

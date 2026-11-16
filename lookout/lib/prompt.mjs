@@ -14,7 +14,7 @@
 // conceptual ownership instead of inheriting the agent's account.
 import fs from "node:fs";
 import path from "node:path";
-import { SEVERITIES, DRIFT, SMELL, FINDING } from "./findings.mjs";
+import { SEVERITIES, DRIFT, SMELL, FINDING, CROSS } from "./findings.mjs";
 import { outputSchema, TOUCHES, MAX_WATCH, MAX_EDGES } from "./notes.mjs";
 
 const PLAN_CAP = 6000;
@@ -94,6 +94,56 @@ const BULLETS = [
 ];
 const OWNS = { correctness: ["correctness", "maintainability"], security: ["security"], performance: ["performance", SMELL] };
 
+// The contract files a review touches (marked at open, lib/contracts.mjs)
+// and the ones its branch changed outside it (contractsOutside), with how to
+// trace each one through the code that reads it. Built only from the review
+// and the repo: the author's account of the change has no place here.
+export function contractsSection(review) {
+  const src = review.source || {};
+  const inDiff = (review.files || []).filter(f => f.contract);
+  const co = review.contractsOutside || {};
+  const out = co.files || [];
+  if (!inDiff.length && !out.length) return "";
+  const git = src.kind !== "patch" && src.root;
+  const carried = out.map(f => `  ${f.path}  (${f.kind}, ${f.status === "D" ? "deleted" : f.status === "A" ? "added" : "changed"})` +
+    (git && co.base && co.head ? `\n      git -C ${src.root} ${f.status === "D" ? `show ${co.base}:${f.path}` : `show ${co.head}:${f.path}`}` +
+      `\n      git -C ${src.root} diff ${co.base} ${co.head} -- ${f.path}` : "")).join("\n");
+  return `
+## Contracts
+
+These files are contracts: other code reads or writes by them, so a change
+to one reaches code outside the diff.
+${inDiff.length ? `
+In this diff:
+
+${inDiff.map(f => `  ${f.path}  (${f.contract})`).join("\n")}
+` : ""}${out.length ? `
+Changed by this branch outside the diff you review (the code here may
+produce or consume them, so read them too):
+
+${carried}${co.more ? `\n  and ${co.more} more` : ""}
+` : ""}
+For each contract, before you write about the files that use it:
+
+1. Find every producer and consumer in the repo: \`git grep\` for the
+   contract's file name, its message, type or table names, and the classes
+   generated from it.
+2. Follow each consumer's receive path from where the message, request or
+   row arrives to where it is decoded or used. Go through base classes,
+   shared libraries and framework hooks. Note every call that validates the
+   payload against a schema, and which copy of the schema it loads.
+3. Check what each build copies into its image (Dockerfiles, build scripts,
+   generated code). A deployed consumer runs the copy it was built with,
+   not the one in this diff.
+4. Judge both mixed-version orders: a new producer sending to an old
+   consumer, and an old producer sending to a new one. Say what each one
+   does with the payload, at the line that does it.
+
+What you find goes in the group's note as assumptions, or in a
+"${CROSS}" finding when you could not find the line that settles it.
+`;
+}
+
 const SKEPTIC_JUDGE = `## How to judge it
 
 Read the hunks the finding points at and the code around them: its callers,
@@ -144,6 +194,9 @@ export function brief(review, { patchPath, plansDir, outPath, reply = false, rou
       (rails ? "\n    linked because:\n" + rails : "");
   }).join("\n");
   const conv = src.kind === "patch" ? [] : conventions(src.root);
+  // The lead and the correctness finder trace contracts; a re-review round
+  // and a skeptic judge only what they were handed.
+  const contracts = !round && (lead || dimension === "correctness") ? contractsSection(review) : "";
   const roundText = round ? `
 ## Re-review, round ${round.n}
 
@@ -185,7 +238,7 @@ Groups (lookout's, by imports, test pairs and folders; riskiest first). The
 ones marked "note" are owed a note${quiz ? ', and "note + quiz" a question too' : ""}:
 
 ${groups || "  (no groups)"}
-` : ""}${plan ? `
+` : ""}${contracts}${plan ? `
 ## What the change is for (${src.inc === "all" ? "the plan it delivers, every increment" : "the plan increment it implements"})
 
 ${plan.trim()}
@@ -210,8 +263,11 @@ ${conv.join("\n")}
 Rules:
 - Every finding needs a concrete failure_scenario: the input or state, and
   the wrong result. If you cannot name one, it is not a finding.
-- Verify before you report: read the surrounding code and the callers. Mark
-  verdict CONFIRMED only when you traced it; otherwise PLAUSIBLE.
+- Verify before you report: read the surrounding code and the callers. When
+  what the change does depends on code outside the diff (a base class, a
+  library, a framework hook, another service, a deployed image), follow the
+  runtime path into that code and read it. Mark verdict CONFIRMED only when
+  you traced it; otherwise PLAUSIBLE.
 - No formatting or preference comments (a smell names a cost, not a taste).
   No praise. A finding is a defect, never a summary${lead ? `; what a change means goes
   in its group's note` : ""}.
@@ -247,9 +303,18 @@ files it covers, normally the group's files as listed.
   restate the diff ("adds a function that…") or guess at intent the code
   does not show.
 - watch — up to ${MAX_WATCH} things a human should verify by hand, each anchored to the
-  line where it shows (same file/line/side rules as findings). Hidden
-  assumptions belong here: what this code expects of a caller, a config, a
-  schema, another service.
+  line where it shows (same file/line/side rules as findings). A claim about
+  code outside the diff is not a watch item; it is an assumption.
+- assumptions — what this group assumes about code outside the diff: a
+  consumer, a caller, a framework hook, what an image copies. Each is
+  {text, enforced_at: {path, line, side}}, where enforced_at is the line
+  that makes the claim true. It may be in any file in the repo, inside the
+  diff or not, and lookout checks that the line exists. A note that covers a
+  contract file or touches cross-system-assumption needs at least one. When
+  you cannot find the line that makes a claim true, do not write the claim:
+  file a finding with category "${CROSS}", verdict PLAUSIBLE, severity minor
+  or worse, at the line in the diff the claim rests on. Say what is
+  unchecked and what breaks if it is false.
 - touches — which fundamentals it touches, from: ${TOUCHES.join(", ")}.
   [] when none.
 ${quiz ? `- quiz — required on every group marked "note + quiz", and only there. One

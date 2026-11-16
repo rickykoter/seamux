@@ -24,7 +24,7 @@ import { spawn, spawnSync } from "node:child_process";
 import * as V from "./lib/vendor.mjs";
 import * as S from "./lib/store.mjs";
 import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenerated,
-         generatedByAttr, LARGE_LINES, repoInfo, moved } from "./lib/patch.mjs";
+         generatedByAttr, LARGE_LINES, repoInfo, moved, git } from "./lib/patch.mjs";
 import * as TU from "./lib/turns.mjs";
 import * as SC from "./lib/score.mjs";
 import * as GR from "./lib/group.mjs";
@@ -500,6 +500,27 @@ function cmdPrompt() {
                                   dimension, skeptic }));
 }
 
+// The check behind a note assumption's enforced_at (notes.mjs validateNotes):
+// the file at that side's revision and its line count. A patch-file review
+// has no repo to look in, so its citations stay unverified.
+export function citer(src) {
+  if (!src || src.kind === "patch" || !src.root) return () => null;
+  const seen = new Map();
+  return (p, side) => {
+    const rev = side === "old" ? src.oldRev : src.newRev;
+    if (!rev) return null;
+    const key = side + "\0" + p;
+    if (!seen.has(key)) {
+      // cat-file blob: a folder's path is not a line anyone can cite.
+      const buf = git(src.root, ["cat-file", "blob", `${rev}:${p}`], { allowFail: true, buffer: true });
+      seen.set(key, buf == null
+        ? { missing: `does not exist on the ${side} side (${String(rev).slice(0, 8)})` }
+        : { lines: buf.toString("utf8").replace(/\n$/, "").split("\n").length });
+    }
+    return seen.get(key);
+  };
+}
+
 function cmdFindings() {
   const sub = positional()[0];
   const id = positional()[1];
@@ -529,7 +550,7 @@ function cmdFindings() {
       ev = N.validateEdges(cur, input.edges);
       edgesAdded = N.ingestEdges(cur, ev.accepted);
       arrange(cur);
-      nv = N.validateNotes(cur, input.notes, anchors);
+      nv = N.validateNotes(cur, input.notes, anchors, { cite: citer(cur.source) });
       notesIn = N.ingestNotes(cur, nv.accepted, "reviewer");
       arrange(cur);
       owed = N.missing(cur);
@@ -551,6 +572,11 @@ function cmdFindings() {
     for (const n of review.notes || [])
       say(`  ${n.id} ${String(n.group || "-").padEnd(4)} ${n.files.join(", ")}` +
           (n.quiz ? "  [quiz]" : "") + (n.partial ? "  (partial: its files are split)" : "") + (n.stale ? "  (stale)" : ""));
+    for (const a of N.assumptionsOf(review)) {
+      const e = a.enforced_at;
+      say(`    ${a.id} assumes: ${a.text.slice(0, 80)}${a.text.length > 80 ? "…" : ""}  @ ${e.path}:${e.line}` +
+          (e.side === "old" ? " (old)" : "") + (a.verified ? "" : "  (unverified: a patch review cannot check it)"));
+    }
     for (const m of owed) say(`  still owed: ${m}`);
     return;
   }

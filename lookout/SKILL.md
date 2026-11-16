@@ -84,6 +84,12 @@ change in the context that wrote it reads your intent instead of the code.
      fundamentals it touches (invariant, security-boundary, data-model,
      cross-system-assumption). A note names its files, so it lands on
      whichever group holds them, and goes stale when their hunks change.
+   - **assumptions** on a note, `{text, enforced_at: {path, line, side}}`:
+     what the change assumes about code outside it, each claim cited to
+     the line that makes it true, anywhere in the repo. A note that covers
+     a contract file or touches cross-system-assumption needs one, unless
+     a `cross-system` finding (minor or worse) sits on its files.
+     `findings add` checks that each cited line exists at that side.
    - **edges** `{a, b, why}`: links the grouping rules missed. They only
      join files, under the six-file cap, and their why shows on the rail.
    - **with the quiz on**, a question on each high group's note,

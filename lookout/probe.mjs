@@ -2871,6 +2871,166 @@ if (want("contracts")) {
     (CT.outside({ kind: "range", root: lone, newRev: ln, oldRev: sh(lone, "git rev-parse HEAD~1").trim() }, ["x.proto"]).files || ["x"]).length === 0);
 }
 
+// ---------------------------------------------------------------- assumptions
+// A note on a contract file states what it assumes about other code, each
+// claim cited to the line that enforces it, or a cross-system finding says
+// the claim is open. Citations are checked against the repo at ingest.
+if (want("assumptions ingest")) {
+  const N = await import("./lib/notes.mjs");
+  const FD = await import("./lib/findings.mjs");
+  const RA = repo("ra");
+  write(RA, "schemas/orders/v1/OrderDecided.json", '{\n  "type": "object",\n  "additionalProperties": false\n}\n');
+  write(RA, "consumer/handler.kt", "fun handle() {}\n");
+  write(RA, "libs/bus/BusHandler.kt", "class BusHandler {\n  fun run(m: String) {\n    validateSchema(m)\n    handle(m)\n  }\n}\n");
+  write(RA, "lib/util.js", "export const u = 1;\n");
+  sh(RA, `git add -A && ${G} commit -q -m base && git checkout -q -b feature`);
+  write(RA, "schemas/orders/v1/OrderDecided.json", '{\n  "type": "object",\n  "additionalProperties": false,\n  "properties": { "reason": {} }\n}\n');
+  write(RA, "lib/util.js", "export const u = 2;\n");
+  sh(RA, `git add -A && ${G} commit -q -m schema`);
+  const open = id => cli(RA, "open", "--id", id, "--no-jev", "--no-open", "--plain");
+  const add = (id, obj) => {
+    const f = path.join(TMP, `${id}-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(f, JSON.stringify(obj));
+    return cli(RA, "findings", "add", id, f);
+  };
+  const SCHEMA = "schemas/orders/v1/OrderDecided.json";
+  const note = extra => ({ files: [SCHEMA], why_risky: "consumers validate against their own copy",
+    direction: "the message gains an optional field", watch: [], touches: [], ...extra });
+  const bus = { path: "libs/bus/BusHandler.kt", line: 3 };
+  const claim = (e = bus, text = "consumers validate before decoding, so an old image rejects reason") => ({ text, enforced_at: e });
+
+  ok("schema: a note's assumptions cite a path, line and side",
+    (() => { const a = N.noteSchema(false).properties.assumptions; return a.items.required.join() === "text,enforced_at" &&
+      a.items.properties.enforced_at.properties.side.default === "new"; })());
+  ok("schema: cross-system is a listed finding category", FD.CATEGORIES.includes("cross-system") &&
+    /cross-system/.test(FD.FINDING.properties.category.description));
+
+  open("as-bare");
+  const bare = add("as-bare", { findings: [], edges: [], notes: [note()] });
+  ok("refused: a note on a contract file with no assumption and no cross-system finding",
+    /rejected note 0: this note covers schemas\/orders\/v1\/OrderDecided\.json, a contract file \(JSON Schema\): add assumptions/.test(bare.stdout) &&
+    !(S.read("as-bare").notes || []).length, bare.stdout + bare.stderr);
+  open("as-touch");
+  const touch = add("as-touch", { findings: [], edges: [], notes: [{ ...note(), files: ["lib/util.js"], touches: ["cross-system-assumption"] }] });
+  ok("refused: a note that touches cross-system-assumption, on any file, needs one too",
+    /rejected note 0: this note touches cross-system-assumption/.test(touch.stdout), touch.stdout);
+  open("as-plain");
+  const plain = add("as-plain", { findings: [], edges: [], notes: [{ ...note(), files: ["lib/util.js"] }] });
+  ok("accepted: a note on other files owes no assumption", /1 note\(s\) added/.test(plain.stdout) && !/rejected note/.test(plain.stdout), plain.stdout);
+
+  open("as-good");
+  const good = add("as-good", { findings: [], edges: [], notes: [note({ assumptions: [claim(), claim({ ...bus, side: "old", line: 4 }, "the old handler also validates")] })] });
+  const n1 = (S.read("as-good").notes || [])[0] || {};
+  const [a1, a2] = n1.assumptions || [];
+  ok("accepted: an assumption cited to a line outside the diff, checked against the repo",
+    /1 note\(s\) added/.test(good.stdout) && a1 && a1.id === `${n1.id}.a1` && a2.id === `${n1.id}.a2` &&
+    a1.enforced_at.side === "new" && a2.enforced_at.side === "old" && a1.inDiff === false && a1.verified === true && a1.verdict === null,
+    good.stdout + JSON.stringify(n1));
+  ok("findings add lists each assumption with its cited line", new RegExp(`${n1.id}\\.a1 assumes: .* @ libs/bus/BusHandler\\.kt:3`).test(good.stdout), good.stdout);
+  open("as-indiff");
+  add("as-indiff", { findings: [], edges: [], notes: [note({ assumptions: [claim({ path: SCHEMA, line: 3 }, "additionalProperties stays false")] })] });
+  ok("a cited line the diff shows is marked inDiff", ((S.read("as-indiff").notes || [])[0]?.assumptions || [])[0]?.inDiff === true);
+
+  const refused = (id, e, re) => {
+    open(id);
+    const r = add(id, { findings: [], edges: [], notes: [note({ assumptions: [claim(e)] })] });
+    return re.test(r.stdout) && !(S.read(id).notes || []).length ? true : r.stdout + r.stderr;
+  };
+  const r1 = refused("as-nofile", { path: "libs/bus/Nope.kt", line: 1 }, /enforced_at: "libs\/bus\/Nope\.kt" does not exist on the new side/);
+  ok("refused: a cited path that does not exist at that side", r1 === true, r1);
+  const r2 = refused("as-pastend", { path: "libs/bus/BusHandler.kt", line: 99 }, /BusHandler\.kt has 6 line\(s\) on the new side, not 99/);
+  ok("refused: a cited line past the file's end", r2 === true, r2);
+  const r3 = refused("as-folder", { path: "libs/bus", line: 1 }, /does not exist on the new side/);
+  ok("refused: a folder is not a citable line", r3 === true, r3);
+  open("as-noat2");
+  const noat = add("as-noat2", { findings: [], edges: [], notes: [note({ assumptions: [{ text: "x" }] })] });
+  ok("refused: an assumption with no enforced_at", /assumptions\[0\]\.enforced_at is required/.test(noat.stdout), noat.stdout);
+  // The schema changed at the new side only: the old side's line count holds.
+  const r5 = refused("as-oldside", { path: SCHEMA, line: 5, side: "old" }, /has 4 line\(s\) on the old side, not 5/);
+  ok("refused: the old side is checked at the old revision", r5 === true, r5);
+
+  open("as-cross");
+  const cross = add("as-cross", { findings: [{ file: SCHEMA, line: 4, severity: "major", category: "cross-system", verdict: "PLAUSIBLE",
+    summary: "old consumers may reject reason", failure_scenario: "an old image validates with additionalProperties false" }], edges: [], notes: [note()] });
+  ok("accepted: a cross-system finding on its files stands in for an assumption",
+    /1 finding\(s\) added/.test(cross.stdout) && /1 note\(s\) added/.test(cross.stdout) && !/rejected/.test(cross.stdout), cross.stdout);
+  open("as-nit");
+  const nit = add("as-nit", { findings: [{ file: SCHEMA, line: 4, severity: "nit", category: "cross-system",
+    summary: "s", failure_scenario: "f" }], edges: [], notes: [] });
+  ok("refused: a cross-system finding filed as a nit", /cross-system finding is minor or worse/.test(nit.stdout + nit.stderr), nit.stdout + nit.stderr);
+
+  // A note that replaces another keeps its id, drops the old verdicts, and
+  // numbers its assumptions past the old ones.
+  S.update("as-good", r => { r.notes[0].assumptions[0].verdict = { status: "held" }; return r; });
+  add("as-good", { findings: [], edges: [], notes: [note({ assumptions: [claim(bus, "restated")] })] });
+  const n2 = S.read("as-good").notes;
+  ok("replaced: the note keeps its id, its assumptions are new and carry no verdict",
+    n2.length === 1 && n2[0].id === n1.id && n2[0].assumptions.length === 1 &&
+    n2[0].assumptions[0].id === `${n1.id}.a3` && n2[0].assumptions[0].verdict === null && n2[0].assumptions[0].text === "restated",
+    JSON.stringify(n2));
+  ok("assumptionsOf lists every assumption with its note", N.assumptionsOf(S.read("as-good")).map(a => a.note + ":" + a.id).join() === `${n1.id}:${n1.id}.a3`);
+
+  // A patch-file review has no repo to look in: the citation is kept, unverified.
+  const pf = path.join(TMP, "ra.patch");
+  fs.writeFileSync(pf, sh(RA, "git diff main feature"));
+  cli(RA, "open", "--patch", pf, "--id", "as-patch", "--no-jev", "--no-open", "--plain");
+  const pr = add("as-patch", { findings: [], edges: [], notes: [note({ assumptions: [claim({ path: "anywhere/at/all.kt", line: 9 })] })] });
+  const pa = ((S.read("as-patch").notes || [])[0]?.assumptions || [])[0];
+  ok("patch review: the citation is accepted and marked unverified",
+    pa && pa.verified === false && /\(unverified: a patch review cannot check it\)/.test(pr.stdout), pr.stdout + pr.stderr);
+
+  // The page lists them in the note body.
+  const page = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+  ok("page: the note body lists assumptions with their line and a verdict slot",
+    /function assumptionItem\(a\)/.test(page) && /n\.assumptions\.map\(assumptionItem\)/.test(page) && /no verdict yet/.test(page));
+}
+
+// ---------------------------------------------------------------- brief
+// The brief's Contracts section and its assumptions rules, built from a
+// review object alone (no repo), so each case is exact.
+if (want("brief: contracts and assumptions")) {
+  const PR = await import("./lib/prompt.mjs");
+  const base = { id: "bc", title: "t", files: [], groups: [], findings: [], policy: {},
+    source: { kind: "range", root: "/r", range: "a..b", oldRev: "a1", newRev: "b2" } };
+  const schemaFile = { path: "schemas/v1/X.json", status: "M", adds: 1, dels: 0, band: "high", risk: 0.7, contract: "JSON Schema", reasons: [] };
+  const codeFile = { path: "svc/Handler.kt", status: "M", adds: 1, dels: 0, band: "low", risk: 0.2, reasons: [] };
+  const out = { base: "m0", head: "b2", files: [{ path: "schemas/v1/Y.json", status: "M", kind: "JSON Schema" },
+                                                 { path: "db/migrate/1_gone.rb", status: "D", kind: "migration" }], more: 3 };
+  const b = (review, o = {}) => PR.brief({ ...base, ...review }, { patchPath: "/p", plansDir: "/x", outPath: "/o", ...o });
+  const none = b({ files: [codeFile] });
+  ok("brief: no contracts, no Contracts section", !/## Contracts/.test(none));
+  const inDiff = b({ files: [schemaFile, codeFile] });
+  ok("brief: a contract in the diff is listed with its kind", /## Contracts[\s\S]*In this diff:\n\n  schemas\/v1\/X\.json  \(JSON Schema\)/.test(inDiff));
+  ok("brief: it asks for producers, consumers, the receive path, the image and both mixed-version orders",
+    /every producer and consumer/.test(inDiff) && /base classes,\s+shared libraries and framework hooks/.test(inDiff) &&
+    /copies into its image/.test(inDiff) && /both mixed-version orders/.test(inDiff));
+  const carried = b({ files: [codeFile], contractsOutside: out });
+  ok("brief: carried-in contracts come with the commands to read them",
+    /Changed by this branch outside the diff/.test(carried) &&
+    carried.includes("git -C /r show b2:schemas/v1/Y.json") && carried.includes("git -C /r diff m0 b2 -- schemas/v1/Y.json"));
+  ok("brief: a deleted carried-in file is shown at the branch's start", carried.includes("git -C /r show m0:db/migrate/1_gone.rb") &&
+    /db\/migrate\/1_gone\.rb  \(migration, deleted\)/.test(carried));
+  ok("brief: more carried in than listed says how many", /and 3 more/.test(carried));
+  const patch = b({ files: [schemaFile], source: { kind: "patch", file: "/x.patch" } });
+  ok("brief: a patch review lists its contracts without git commands", /## Contracts/.test(patch) && !/git -C undefined/.test(patch) && !/  git -C/.test(patch.split("## Contracts")[1].split("## How")[0]));
+  const ctx = b({ files: [schemaFile], context: "AUTHOR-SAYS-SAFE" });
+  ok("brief: the Contracts section carries nothing of the author's", !PR.contractsSection({ ...base, files: [schemaFile], context: "AUTHOR-SAYS-SAFE" }).includes("AUTHOR") &&
+    ctx.indexOf("AUTHOR-SAYS-SAFE") > ctx.indexOf("## Contracts"));
+  ok("brief: the correctness finder traces contracts; the security finder and the skeptic do not",
+    /## Contracts/.test(b({ files: [schemaFile] }, { dimension: "correctness" })) &&
+    !/## Contracts/.test(b({ files: [schemaFile] }, { dimension: "security" })) &&
+    !/## Contracts/.test(b({ files: [schemaFile] }, { skeptic: true })));
+  ok("brief: a re-review round does not", !/## Contracts/.test(b({ files: [schemaFile] },
+    { round: { n: 1, findings: [{ id: "f1", file: schemaFile.path, line: 1, severity: "major", summary: "s", thread: [] }] } })));
+  ok("brief: verify means following the runtime path out of the diff", /follow the\s+runtime path into that code and read it/.test(inDiff));
+  ok("brief: the watch bullet no longer collects hidden assumptions",
+    !/Hidden\s+assumptions belong here/.test(inDiff) && /A claim about\s+code outside the diff is not a watch item; it is an assumption/.test(inDiff));
+  ok("brief: the assumptions bullet: cite the line, or file a PLAUSIBLE cross-system finding of minor or worse",
+    /- assumptions — /.test(inDiff) && /enforced_at is the line\s+that makes the claim true/.test(inDiff) &&
+    /category "cross-system", verdict PLAUSIBLE, severity minor\s+or worse/.test(inDiff));
+  ok("brief: the output schema carries assumptions", /"assumptions"/.test(inDiff) && /"enforced_at"/.test(inDiff));
+}
+
 // ---------------------------------------------------------------- replay
 // The replay harness without a model: the fixture builds, both scenarios
 // open, and each brief prints. What a reviewer finds costs model spend and is

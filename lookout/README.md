@@ -68,6 +68,19 @@ The reviewer can also link files the grouping rules missed, such as a
 migration and the query that reads its table, and the link's reason shows
 on the group's rail.
 
+A note also lists what the change assumes about code outside the diff,
+such as "consumers validate each message against their own copy of the
+schema". Each assumption cites the line that makes it true, as
+`enforced_at: {path, line, side}`, and that line can be anywhere in the
+repo. A note on a contract file (a message schema, a .proto, an OpenAPI
+document, a migration, or a glob in `.seamux/lookout.json` `contracts`)
+must carry one, and so must a note that touches cross-system-assumption,
+unless a `cross-system` finding of minor or worse sits on its files.
+`lookout findings add` refuses a citation whose file is missing at that
+side's revision or whose line is past the end. A patch-file review has
+no repo to check against, so it keeps the citation marked unverified.
+The note body lists each assumption with its line.
+
 `lookout open --quiz` (or `.seamux/lookout.json` `{"quiz": true}`, or a
 plan's `review.quiz`) adds a question to each high-risk group and hides its
 note until you answer, so you form your own reading of the change before
