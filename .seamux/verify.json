@@ -170,6 +170,16 @@
     "run": "node app/ui/release_probe.ts",
     "match": ["app/ui/release.ts", "app/ui/release_probe.ts"], "default": true,
     "note": "the Lookout tab's rail from review to release: each stage's state, where a change opens, a row's chip; a pure module Node runs as TypeScript" },
+  { "id": "land-selftest", "kind": "land",
+    "name": "a scratch recipe for the landing plan's live checks, removed once they pass",
+    "match": [".seamux/land-selftest"],
+    "steps": [
+      { "stage": "checkout", "run": "sh tools/land/kept-checkout.sh" },
+      { "stage": "write", "writes": true, "run": "echo \"a writing step would run here for $MERGE_SHA\"" },
+      { "stage": "check", "run": "if git show \"$MERGE_SHA:.seamux/land-selftest\" 2>/dev/null | grep -q fail; then echo 'failing on purpose: the merge set .seamux/land-selftest to fail' >&2; exit 1; fi; echo ok" },
+      { "stage": "pull", "run": "git pull --ff-only --quiet origin main" }
+    ],
+    "note": "write waits for the person's approval on its first landing; check fails while the merge's .seamux/land-selftest says fail" },
   { "id": "seamux-plugins", "kind": "land",
     "name": "the plugins, pulled into the kept checkout",
     "match": ["deep-plan/**", "lookout/**", "restack/**", "bash-guard/**", "humanize/**", "seamux-mods/**", "shared/**", ".claude-plugin/**"],
