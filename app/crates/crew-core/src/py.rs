@@ -399,7 +399,16 @@ mod tests {
         assert!(held.is_some());
         assert!(Flock::try_exclusive(&p).unwrap().is_none());
         drop(held);
-        assert!(Flock::try_exclusive(&p).unwrap().is_some());
+        // A sibling test that spawns a child while the lock is open shares
+        // its file description until the child execs, so the lock can read
+        // as held for a moment after the drop: try again briefly.
+        let retaken = (0..50).any(|_| {
+            Flock::try_exclusive(&p).unwrap().is_some() || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                false
+            }
+        });
+        assert!(retaken, "the released lock is taken again");
         let _ = fs::remove_file(&p);
     }
 
