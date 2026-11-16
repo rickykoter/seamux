@@ -221,8 +221,9 @@ impl Feed {
         // the pane-status files and the registry: a Claude that asks there is
         // no cmux event, only a pane file write. On both backends, the
         // notification log: a banner posted or skipped shows in the footer.
+        // And the landings: a stage moving, or a retry, shows on the card.
         let resume = || std::fs::metadata(crate::state::resume_file()).and_then(|m| m.modified()).ok();
-        let print = || (plan_fingerprint(), crate::tucked::stamp(), resume(), pane_fingerprint(), notes_fingerprint());
+        let print = || (plan_fingerprint(), crate::tucked::stamp(), resume(), pane_fingerprint(), notes_fingerprint(), landing_fingerprint());
         let mut last = print();
         loop {
             std::thread::sleep(Duration::from_millis(250));
@@ -252,6 +253,22 @@ fn pane_fingerprint() -> Print {
     }
     let mut out = fingerprint(&crate::state::state_dir(), &|n| n.starts_with("pane-") && n.ends_with(".json"));
     out.extend(fingerprint(&crew_core::backend::tmux::state_dir(), &|n| n == "workspaces.json"));
+    out
+}
+
+/// The landings' index and every merge's state file (crew_core::landing):
+/// deep-plan land run writes its state at each stage, and the app's watcher
+/// writes the index when a landing starts, is retried or is dismissed.
+fn landing_fingerprint() -> Print {
+    let home = crew_core::landing::home().join("landings");
+    let mut out = fingerprint(&home, &|n| n == "index.json");
+    for repo in std::fs::read_dir(&home).into_iter().flatten().flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
+        let key = repo.file_name().to_string_lossy().into_owned();
+        out.extend(fingerprint(&repo.path(), &|n| n.ends_with(".json")).into_iter().map(|(n, t, l)| (format!("{key}/{n}"), t, l)));
+    }
+    // read_dir's order is the file system's: sorted, or a still folder
+    // would read as changed.
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 

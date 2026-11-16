@@ -6,6 +6,10 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **The Dock shows a landing's move at once.** The board now rebuilds when
+  a landing's index or state file changes, so a stage moving or a Retry
+  shows on the card within a moment. Before, it waited for the board's
+  30-second heartbeat.
 - **A landing finds your tools, and notices a merge without waiting for a
   turn.** Landings run with your login shell's PATH ahead of the app's, so
   a step that needs cargo, gh or jq finds them when the app was opened from
