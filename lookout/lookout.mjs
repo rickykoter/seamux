@@ -31,6 +31,7 @@ import * as GR from "./lib/group.mjs";
 import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
+import * as CT from "./lib/contracts.mjs";
 import { brief, DIMENSIONS } from "./lib/prompt.mjs";
 import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
@@ -274,6 +275,12 @@ function cmdOpen() {
   const prior = S.exists(id) ? S.read(id) : null;
   const hash = S.patchHash(text);
   const cfg = repoConfig(src.root);
+  // Contract files, by the built-in rules and the repo's own globs. Marked on
+  // the file (risk ranks it; the brief lists it), and for a review that covers
+  // part of its branch, the ones the branch changed outside it.
+  const globs = CT.repoGlobs(cfg);
+  for (const m of meta) { const k = CT.contractKind(m.path, texts[m.path], globs); if (k) m.contract = k; }
+  const outside = CT.outside(src, meta.map(m => m.path), globs);
   let scoring;
   if (prior && prior.scoring && prior.scoring.patchHash === hash && prior.scoring.ok && !flag("rescore")) scoring = prior.scoring;
   else if (flag("no-jev")) scoring = { ok: false, jev: {}, why: "Jev scoring was turned off (--no-jev)" };
@@ -330,6 +337,8 @@ function cmdOpen() {
     // --pr: the pull request this review belongs to, for `lookout gh sync`
     // (else it is found from the branch). Kept across re-opens without it.
     ...(opt("pr") ? { prRef: opt("pr") } : {}),
+    // Always set, so a re-open that finds nothing outside clears the last one.
+    contractsOutside: outside.files && outside.files.length ? outside : null,
     stats: { files: meta.length, adds: meta.reduce((x, f) => x + f.adds, 0), dels: meta.reduce((x, f) => x + f.dels, 0) },
     files: meta,
     edges: found.edges,
@@ -388,7 +397,9 @@ function cmdOpen() {
   }
   if (flag("json")) {
     process.stdout.write(JSON.stringify({ id, page, store: p.json, patch: p.patch, files: meta.length,
-      shown: shown || null, highlight: review.highlight, quiz: !!review.policy.quiz, reviewer: review.policy.reviewer, linking,
+      shown: shown || null, highlight: review.highlight,
+      contracts: { inDiff: review.files.filter(f => f.contract).map(f => f.path),
+                   outside: ((review.contractsOutside && review.contractsOutside.files) || []).map(f => f.path) }, quiz: !!review.policy.quiz, reviewer: review.policy.reviewer, linking,
       scoring: { ok: review.scoring.ok, content: !!review.scoring.content, why: review.scoring.why || "" } }, null, 2) + "\n");
     return;
   }
@@ -399,6 +410,10 @@ function cmdOpen() {
   say(`  risk:  ${bands}; ${review.groups.filter(g => g.files.length > 1).length} related group(s)` +
       (review.scoring.ok ? `  (Jev${review.scoring.content ? " with hunk text" : ", paths and counts only"})`
                          : `  (signals only: ${review.scoring.why})`));
+  const inDiff = review.files.filter(f => f.contract).length;
+  const out = (review.contractsOutside && review.contractsOutside.files) || [];
+  if (inDiff || out.length)
+    say(`  contracts: ${inDiff} in the diff` + (out.length ? `, ${out.length} the branch changed outside it (the brief lists them)` : ""));
   say(`  page:  ${page}${shown ? "  (" + shown + ")" : ""}`);
   if (review.policy.quiz) say("  quiz:  on (a question on each high group before its note)");
   if (quizNote) say("  note:  " + quizNote);

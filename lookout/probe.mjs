@@ -2781,6 +2781,126 @@ if (want("engine pointer")) {
   ok("pointer: an unreadable pointer is rewritten", root() === HERE);
 }
 
+// ---------------------------------------------------------------- contracts
+// Which changed files are contracts, how they rank, and what a review of part
+// of a branch learns about the contracts the rest of it changed.
+if (want("contracts")) {
+  const CT = await import("./lib/contracts.mjs");
+  const SC = await import("./lib/score.mjs");
+  const k = (p, t = "", g = []) => CT.contractKind(p, t, g);
+  ok("contracts: proto, GraphQL and migrations by path",
+    k("api/v1/orders.proto") === "protobuf" && k("web/schema.graphql") === "GraphQL schema" && k("x/types.gql") === "GraphQL schema" &&
+    k("db/migrate/20260101_add_reason.rb") === "migration" && k("svc/migrations/V3__reason.sql") === "migration");
+  ok("contracts: OpenAPI by name or by its first key",
+    k("docs/openapi.yaml") === "OpenAPI" && k("svc/api.yml", "openapi: 3.0.0\ninfo:\n") === "OpenAPI" &&
+    k("svc/api.json", '{\n  "swagger": "2.0"\n}') === "OpenAPI" && k("svc/ci.yml", "jobs:\n  build:\n") === "");
+  ok("contracts: JSON Schema by its $schema key or a schema-named folder",
+    k("message_schemas/orders/v1/OrderDecided.json") === "JSON Schema" &&
+    k("conf/thing.json", '{ "$schema": "http://json-schema.org/draft-07/schema#" }') === "JSON Schema" &&
+    k("conf/settings.json", '{ "a": 1 }') === "" && k("package.json", '{ "name": "x" }') === "");
+  ok("contracts: docs and code are not contracts", k("README.md") === "" && k("db/migrate/README.md") === "" && k("src/app.js") === "");
+  ok("contracts: a repo's globs add its own", k("events/order.avsc", "", ["events/**/*.avsc"]) === "listed in .seamux/lookout.json" &&
+    k("events/order.avsc", "", ["events/*.json"]) === "" && k("a/b/c.avsc", "", ["**/*.avsc"]) !== "");
+  ok("contracts: globs: ** spans folders, * stays in one",
+    CT.globRe("a/**/x.json").test("a/x.json") && CT.globRe("a/**/x.json").test("a/b/c/x.json") &&
+    CT.globRe("a/*.json").test("a/x.json") && !CT.globRe("a/*.json").test("a/b/x.json"));
+  ok("contracts: only a list of strings counts as globs",
+    CT.repoGlobs({ contracts: ["a/*", 3, ""] }).join() === "a/*" && CT.repoGlobs({ contracts: "a/*" }).length === 0 && CT.repoGlobs({}).length === 0);
+  const sig = f => SC.signals({ adds: 9, dels: 0, status: "M", ...f });
+  const asConfig = sig({ path: "message_schemas/orders/v1/OrderDecided.json" });
+  const asContract = sig({ path: "message_schemas/orders/v1/OrderDecided.json", contract: "JSON Schema" });
+  ok("contracts: a message schema ranks high as a contract, where it was medium as config",
+    SC.bandOf(asConfig.value) === "medium" && asConfig.reasons.includes("config") &&
+    SC.bandOf(asContract.value) === "high" && asContract.reasons.join() === "contract: JSON Schema", JSON.stringify([asConfig, asContract]));
+  const authy = sig({ path: "auth/token.proto", contract: "protobuf" });
+  ok("contracts: a path kind that ranks higher keeps its weight and label",
+    authy.reasons.includes("contract: protobuf") && authy.reasons.includes("auth or secrets"), authy.reasons);
+
+  // A branch off main: the schema changes in one commit, a consumer in the next.
+  const RC = repo("rc");
+  write(RC, "schemas/orders/v1/OrderDecided.json", '{ "type": "object", "additionalProperties": false }\n');
+  write(RC, "consumer/handler.kt", "fun handle() {}\n");
+  write(RC, "api/orders.proto", 'syntax = "proto3";\n');
+  sh(RC, `git add -A && ${G} commit -q -m base && git checkout -q -b feature`);
+  const base = sh(RC, "git rev-parse HEAD").trim();
+  write(RC, "schemas/orders/v1/OrderDecided.json", '{ "type": "object", "additionalProperties": false, "properties": { "reason": {} } }\n');
+  write(RC, "api/orders.proto", 'syntax = "proto3";\nmessage Order {}\n');
+  sh(RC, `git add -A && ${G} commit -q -m schema`);
+  const c1 = sh(RC, "git rev-parse HEAD").trim();
+  write(RC, "consumer/handler.kt", "fun handle() { /* reason */ }\n");
+  sh(RC, `git add -A && ${G} commit -q -m consumer`);
+  const c2 = sh(RC, "git rev-parse HEAD").trim();
+  const opened = (...a) => { const r = cli(RC, "open", ...a, "--no-jev", "--no-open", "--plain", "--json"); return { r, j: r.status === 0 ? JSON.parse(r.stdout) : null }; };
+  const rng = opened("--range", `${c1}..${c2}`, "--id", "ct-range");
+  const st = S.read("ct-range");
+  ok("carry-in: a range of consumer commits learns the contracts the branch changed before it",
+    rng.j && rng.j.contracts.inDiff.length === 0 &&
+    rng.j.contracts.outside.sort().join() === "api/orders.proto,schemas/orders/v1/OrderDecided.json" &&
+    st.contractsOutside.base === base && st.contractsOutside.head === c2 &&
+    st.contractsOutside.files.every(f => f.status === "M" && f.kind), rng.r.stdout + rng.r.stderr);
+  ok("carry-in: lookout open says so", /contracts: 0 in the diff, 2 the branch changed outside it/.test(cli(RC, "open", "--range", `${c1}..${c2}`, "--id", "ct-range", "--no-jev", "--no-open", "--plain").stdout));
+  const inc = opened("--base", c1, "--id", "ct-inc");
+  ok("carry-in: an increment review opened at its start sha carries them in too",
+    inc.j && inc.j.contracts.outside.length === 2 && inc.j.contracts.inDiff.length === 0);
+  const whole = opened("--id", "ct-whole");
+  ok("carry-in: a review of the whole branch has its contracts in the diff and nothing outside",
+    whole.j && whole.j.contracts.inDiff.sort().join() === "api/orders.proto,schemas/orders/v1/OrderDecided.json" &&
+    whole.j.contracts.outside.length === 0 && S.read("ct-whole").contractsOutside === null);
+  const both = opened("--range", `${base}..${c1}`, "--id", "ct-schema");
+  ok("carry-in: a contract already in the review is not carried in again",
+    both.j && both.j.contracts.inDiff.length === 2 && both.j.contracts.outside.length === 0);
+  write(RC, "consumer/handler.kt", "fun handle() { /* reason, uncommitted */ }\n");
+  const wt = opened("--worktree", "--id", "ct-wt");
+  ok("carry-in: the uncommitted work carries in the branch's committed contracts", wt.j && wt.j.contracts.outside.length === 2);
+  sh(RC, "git checkout -q -- consumer/handler.kt");
+  // The range again, after a re-open of the whole branch under the same id:
+  // the stale carry-in is cleared, not kept by the merge.
+  opened("--range", `${c1}..${c2}`, "--id", "ct-reopen");
+  opened("--range", `${base}..${c2}`, "--id", "ct-reopen");
+  ok("carry-in: a re-open that finds nothing outside clears the last carry-in", S.read("ct-reopen").contractsOutside === null);
+  write(RC, ".seamux/lookout.json", JSON.stringify({ contracts: ["consumer/**/*.kt"] }));
+  const cfgd = opened("--range", `${c1}..${c2}`, "--id", "ct-cfg");
+  ok("carry-in: a repo's globs mark files in the diff too", cfgd.j && cfgd.j.contracts.inDiff.join() === "consumer/handler.kt" &&
+    S.read("ct-cfg").files[0].reasons.includes("contract: listed in .seamux/lookout.json"));
+  fs.rmSync(path.join(RC, ".seamux"), { recursive: true });
+  ok("carry-in: a patch file has no branch to look at", CT.outside({ kind: "patch" }, []).skipped === "a patch file has no branch");
+  const lone = repo("rc-lone");
+  write(lone, "x.proto", "a\n"); sh(lone, `git add -A && ${G} commit -q -m x`);
+  const ln = sh(lone, "git rev-parse HEAD").trim();
+  ok("carry-in: a review on the default branch itself has nothing outside it",
+    (CT.outside({ kind: "range", root: lone, newRev: ln, oldRev: sh(lone, "git rev-parse HEAD~1").trim() }, ["x.proto"]).files || ["x"]).length === 0);
+}
+
+// ---------------------------------------------------------------- replay
+// The replay harness without a model: the fixture builds, both scenarios
+// open, and each brief prints. What a reviewer finds costs model spend and is
+// the lookout-replay recipe's job.
+if (want("replay fixture")) {
+  const replay = path.join(HERE, "tools", "replay", "replay.mjs");
+  const fx = path.join(TMP, "replay-fx");
+  const built = spawnSync("bash", [path.join(HERE, "tools", "replay", "deploy-order", "fixture.sh"), fx], { encoding: "utf8", env: ENV });
+  const shas = Object.fromEntries((built.stdout || "").trim().split(/\s+/).map(kv => kv.split("=")));
+  ok("replay: the fixture builds three commits and prints their shas", built.status === 0 && shas.base && shas.c1 && shas.c2, built.stderr);
+  const again = spawnSync("bash", [path.join(HERE, "tools", "replay", "deploy-order", "fixture.sh"), path.join(TMP, "replay-fx2")], { encoding: "utf8", env: ENV });
+  ok("replay: the fixture's shas are the same on every build", again.stdout === built.stdout, again.stdout + " vs " + built.stdout);
+  const show = (rev, f) => sh(fx, `git show ${rev}:${f}`);
+  ok("replay: the schema forbids unknown properties and c1 adds reason",
+    /"additionalProperties": false/.test(show(shas.base, "schemas/orders/v1/OrderDecided.json")) &&
+    !/"reason"/.test(show(shas.base, "schemas/orders/v1/OrderDecided.json")) && /"reason"/.test(show(shas.c1, "schemas/orders/v1/OrderDecided.json")));
+  ok("replay: the bus handler validates before handle, and the images carry the schemas",
+    /validateSchema\(busMessage\)\n\s+this\.validate\(busMessage\)\n\s+return this\.handle/.test(show(shas.base, "libs/bus/src/main/kotlin/com/example/bus/handlers/BusHandler.kt")) &&
+    /COPY schemas \/app\/schemas/.test(show(shas.base, "services/fulfillment/Dockerfile")));
+  ok("replay: c2 touches only the fulfillment handler",
+    sh(fx, `git diff --name-only ${shas.c1} ${shas.c2}`).trim() === "services/fulfillment/src/main/kotlin/com/example/fulfillment/worker/OrderDecidedHandler.kt");
+  const r = spawnSync("node", [replay, "--no-model"], { encoding: "utf8", env: ENV });
+  ok("replay: --no-model opens both scenarios and prints both briefs", r.status === 0 &&
+    /opened replay-base: 7 file\(s\); brief printed/.test(r.stdout) && /opened replay-range: 1 file\(s\); brief printed/.test(r.stdout), r.stdout + r.stderr);
+  const bad = spawnSync("node", [replay, "--no-model", "--lookout", path.join(TMP, "nowhere.mjs")], { encoding: "utf8", env: ENV });
+  ok("replay: a lookout that is not there is a harness failure", bad.status === 2 && /no lookout at/.test(bad.stderr));
+  const scen = spawnSync("node", [replay, "--no-model", "--scenario", "sideways"], { encoding: "utf8", env: ENV });
+  ok("replay: an unknown scenario is refused", scen.status === 2 && /--scenario wants/.test(scen.stderr));
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`lookout probe: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
