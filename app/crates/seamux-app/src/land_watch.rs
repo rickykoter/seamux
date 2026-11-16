@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crew_core::landing;
@@ -274,6 +274,32 @@ fn node_dp(args: &[&str], timeout: Duration) -> Result<String, String> {
     if code == 0 { Ok(out) } else { Err(err.trim().lines().last().unwrap_or("deep-plan failed").to_string()) }
 }
 
+/// The PATH a landing runs with: the person's login shell's first, then the
+/// app's. A landing runs as the person, and a recipe's tools (cargo for
+/// install.sh --app, gh, jq) live where their terminal finds them; an app
+/// opened from Finder has launchd's PATH plus node's folder (main.rs
+/// adopt_login_path), which has none of them. Asked of the shell once.
+fn run_path() -> String {
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let shell = crew_core::py::env_or("SHELL").unwrap_or_else(|| "/bin/zsh".into());
+        // An interactive login shell, since asdf and nvm hook in from .zshrc;
+        // the last line, since a shell may print a banner before it.
+        let login = crew_core::py::run(&shell, &["-ilc", "printf '%s' \"$PATH\""], Duration::from_secs(5))
+            .filter(|(code, _, _)| *code == 0)
+            .and_then(|(_, out, _)| out.lines().last().map(|l| l.trim().to_string()))
+            .unwrap_or_default();
+        join_path(&login, &std::env::var("PATH").unwrap_or_default())
+    })
+    .clone()
+}
+
+/// `first`'s folders, then `then`'s not already in it, in order.
+pub fn join_path(first: &str, then: &str) -> String {
+    let mut seen = BTreeSet::new();
+    first.split(':').chain(then.split(':')).filter(|d| !d.is_empty() && seen.insert(*d)).collect::<Vec<_>>().join(":")
+}
+
 /// Start `deep-plan land run` for each recipe, one after another, as one
 /// detached process in its own process group (it outlives the app). The
 /// pid, or None when it could not start.
@@ -298,6 +324,7 @@ pub fn spawn_runs(repo: &str, merge: &str, pr: u64, recipes: &[String]) -> Optio
         .stderr(Stdio::null())
         // A landing is the person's, run as them, never as a Claude session.
         .env_remove("CLAUDECODE")
+        .env("PATH", run_path())
         .process_group(0)
         .spawn()
         .ok()?;
@@ -323,6 +350,7 @@ fn tick(app: &AppHandle, keys: &mut HashMap<String, (String, String)>) {
     let home = landing::home();
     let now = crew_core::history::now_ms() as i64 / 1000;
     let rows = crew_core::backend::open(seamux_app::backend::kind()).and_then(|b| b.workspaces()).unwrap_or_default();
+    kick_sync(rows.iter().filter(|w| !w.cwd.is_empty()).map(|w| crew_core::prs::read(&w.cwd)), now);
     let mut seen: Vec<(String, Entry)> = Vec::new();
     for w in rows.iter().filter(|w| !w.cwd.is_empty()) {
         for s in merges_in(&w.id, &w.cwd, &crew_core::prs::list(&w.cwd), now) {
@@ -403,6 +431,41 @@ fn tick(app: &AppHandle, keys: &mut HashMap<String, (String, String)>) {
     });
     for n in notes {
         notify_app::post_note(app, &n);
+    }
+}
+
+/// Whether a PR list read at `at` (crew-sync's stamp, None for no list) is
+/// past its refresh at `now`: older than crew-sync's GitHub interval by a
+/// minute.
+pub fn stale(at: Option<f64>, now: i64, ttl: i64) -> bool {
+    at.is_some_and(|a| now as f64 - a > (ttl + 60) as f64)
+}
+
+/// Start crew-sync when a workspace's PR list is past its refresh. On the
+/// tmux backend only a turn's end runs it (crew-hooks sync_maybe), so a
+/// merge made while every session idles would wait for the next turn
+/// before it landed. At most once every two minutes; crew-sync's own lock
+/// and interval keep two runs from asking GitHub twice.
+fn kick_sync(lists: impl Iterator<Item = Option<Value>>, now: i64) {
+    static LAST: Mutex<i64> = Mutex::new(0);
+    let ttl = std::env::var("CREW_GH_INTERVAL").ok().and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(300);
+    let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+    if now - *last < 120 || !lists.into_iter().any(|l| stale(l.as_ref().and_then(|v| v.get("at")).and_then(Value::as_f64), now, ttl)) {
+        return;
+    }
+    *last = now;
+    let child = Command::new(crate::pane_app::seamux_cli())
+        .arg("crew-sync")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env_remove("CLAUDECODE")
+        .env("PATH", run_path())
+        .spawn();
+    if let Ok(mut c) = child {
+        std::thread::spawn(move || {
+            let _ = c.wait();
+        });
     }
 }
 
@@ -751,6 +814,20 @@ mod tests {
         // land_act answers only for a merge the watcher knows.
         assert_eq!(act(&repo.to_string_lossy(), &merge, "ship", "retry"), Err("the app has not landed that merge".to_string()));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_pr_list_is_stale_a_minute_past_its_refresh_and_none_is_not() {
+        assert!(!stale(Some(1000.0), 1000 + 360, 300));
+        assert!(stale(Some(1000.0), 1000 + 361, 300));
+        assert!(!stale(None, 1_000_000, 300), "no list: nothing to refresh");
+    }
+
+    #[test]
+    fn a_landing_path_puts_the_login_shells_folders_first_once_each() {
+        assert_eq!(join_path("/h/.cargo/bin:/usr/bin", "/usr/bin:/bin:/h/.cargo/bin"), "/h/.cargo/bin:/usr/bin:/bin");
+        assert_eq!(join_path("", "/usr/bin:/bin"), "/usr/bin:/bin", "no login PATH: the app's alone");
+        assert_eq!(join_path("/a::/b", ""), "/a:/b");
     }
 
     #[test]
