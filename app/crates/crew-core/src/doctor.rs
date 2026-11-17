@@ -5,6 +5,8 @@
 //! ```text
 //! seamux workspace-doctor           a summary, worst first
 //! seamux workspace-doctor --json    the scan: {tmux, registry, findings}
+//! seamux workspace-doctor --fix <id> [--verb v] [--dry-run]
+//! seamux workspace-doctor --fix-safe [--dry-run]
 //! ```
 //!
 //! A scan reads and never writes: the registry without its lock or a prune,
@@ -76,6 +78,8 @@ pub struct Finding {
     pub fixes: Vec<Fix>,
     /// The session id a resume would use, when there is one.
     pub session: String,
+    /// What the id names, as it was spelled (a pane id, a file name).
+    pub subject: String,
 }
 
 impl Finding {
@@ -83,7 +87,7 @@ impl Finding {
         json!({
             "id": self.id, "kind": self.kind, "class": self.class.name(),
             "ws": self.ws, "title": self.title, "cwd": self.cwd, "pane": self.pane,
-            "summary": self.summary, "detail": self.detail, "session": self.session,
+            "summary": self.summary, "detail": self.detail, "session": self.session, "subject": self.subject,
             "fixes": self.fixes.iter().map(|f| json!({"verb": f.verb, "label": f.label})).collect::<Vec<_>>(),
         })
     }
@@ -123,6 +127,8 @@ pub struct Doctor {
     /// A second pane-file folder readers once used (home_cache), when it is
     /// not the one the hooks write: its pane files are reported.
     pub other_cache: Option<PathBuf>,
+    /// The archive an archive fix records into (crew-resume's).
+    pub archive: PathBuf,
 }
 
 impl Default for Doctor {
@@ -134,6 +140,7 @@ impl Default for Doctor {
             projects: home.join(".claude/projects"),
             plans: home.join(".claude/deep-plan/state"),
             other_cache: (hc != xc).then_some(hc),
+            archive: crate::workspaces::archive_path(),
         }
     }
 }
@@ -232,6 +239,7 @@ impl Doctor {
                         detail: format!("{e}. Nothing reads or writes it until it parses again; move it aside to start over."),
                         fixes: vec![],
                         session: String::new(),
+                        subject: String::new(),
                     }],
                 };
             }
@@ -273,6 +281,7 @@ impl Doctor {
             detail: String::new(),
             fixes: vec![],
             session: String::new(),
+            subject: subject.to_string(),
         };
 
         // The registry's panes, as tmux and ps see them now.
@@ -483,7 +492,7 @@ impl Doctor {
                 // A pane we know, or a workspace that is not ours (cmux's).
                 continue;
             }
-            let mut f = base("orphan-pane-file", key, Class::Safe, &p.ws);
+            let mut f = base("orphan-pane-file", p.key(), Class::Safe, &p.ws);
             f.pane = p.key().to_string();
             f.summary = "a pane file with no pane".into();
             f.detail = format!("pane-{}.json says {}, but its workspace has no such pane.", p.key(), p.state);
@@ -566,6 +575,236 @@ impl Doctor {
     }
 }
 
+/// The shells a pane is left in when its Claude exits: only into one of
+/// these is a line typed, never into a command the person started.
+const SHELLS: [&str; 9] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "login-sh"];
+
+/// One fix's outcome, for `fix_safe` and the tab.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Done {
+    pub id: String,
+    pub verb: String,
+    pub result: Result<String, String>,
+}
+
+impl Done {
+    pub fn to_json(&self) -> Value {
+        match &self.result {
+            Ok(m) => json!({"id": self.id, "verb": self.verb, "ok": true, "message": m}),
+            Err(e) => json!({"id": self.id, "verb": self.verb, "ok": false, "message": e}),
+        }
+    }
+}
+
+impl Doctor {
+    /// Carry out fix `verb` on finding `id`. The doctor scans again and acts
+    /// only on a finding that scan found, and only with a fix it offers: a
+    /// state that changed since the page drew is refused with the reason.
+    pub fn fix(&self, id: &str, verb: &str, dry: bool) -> Result<String, String> {
+        let scan = self.scan();
+        if scan.tmux == "unreachable" {
+            return Err("tmux could not be asked: nothing is fixed until it answers".into());
+        }
+        let f = scan.find(id).ok_or("that is no longer the case: scan again")?;
+        if !f.fixes.iter().any(|x| x.verb == verb) {
+            return Err(format!("{} offers no {verb:?} fix", f.kind));
+        }
+        if dry {
+            return Ok(format!("would {verb}: {}", describe(f)));
+        }
+        self.apply(f, verb)
+    }
+
+    /// Every safe finding's first fix, from one scan; refused when tmux
+    /// cannot be asked. `dry` says what it would do.
+    pub fn fix_safe(&self, dry: bool) -> Result<Vec<Done>, String> {
+        let scan = self.scan();
+        if scan.tmux == "unreachable" {
+            return Err("tmux could not be asked: nothing is fixed until it answers".into());
+        }
+        Ok(scan
+            .findings
+            .iter()
+            .filter(|f| f.class == Class::Safe)
+            .filter_map(|f| f.fixes.first().map(|x| (f, x.verb)))
+            .map(|(f, verb)| Done {
+                id: f.id.clone(),
+                verb: verb.to_string(),
+                result: if dry { Ok(format!("would {verb}: {}", describe(f))) } else { self.apply(f, verb) },
+            })
+            .collect())
+    }
+
+    fn apply(&self, f: &Finding, verb: &str) -> Result<String, String> {
+        let t = &self.tmux;
+        let files = t.pane_files();
+        let name = if f.title.is_empty() { short(&f.subject).to_string() } else { f.title.clone() };
+        match (f.kind, verb) {
+            ("missing-worktree" | "duplicate-workspace", "forget") => {
+                t.close_workspace(&f.ws)?;
+                Ok(format!("forgot {name}"))
+            }
+            ("empty-workspace", "reopen") => {
+                let line = crate::native::claude_line(Some(&f.session).filter(|x| !x.is_empty()).map(String::as_str))?;
+                use crate::backend::Backend;
+                let pane = t.start_session(&f.ws, &f.cwd, &line)?;
+                Ok(format!("reopened {name} in pane {}", short(&pane)))
+            }
+            ("empty-workspace", "archive") => self.archive(f),
+            ("merged-live", "reclaim") => Err(format!("reclaim checks what would be lost first: open the reclaim wizard, or run crew-reclaim {}", f.ws)),
+            ("claude-exited", "resume" | "fresh") => {
+                use crate::backend::Backend;
+                let target = t.target(&f.pane)?.ok_or("its session is gone")?;
+                // Every process on the pane's terminal, not tmux's foreground
+                // (a shell without job control keeps its child in its own
+                // group, and tmux then names the shell).
+                let others = non_shells(&target).ok_or("could not tell what runs in the pane: nothing was typed")?;
+                if !others.is_empty() {
+                    return Err(format!("pane {} runs {}, not only its shell: nothing was typed", short(&f.pane), others.join(", ")));
+                }
+                let line = crate::native::claude_line(if verb == "resume" { Some(f.session.as_str()) } else { None })?;
+                // Clear whatever is half-typed at the prompt, then the line.
+                let _ = tmux::tmux(&target.socket, &["send-keys", "-t", &tmux::pane_of(&target), "C-u"]);
+                tmux::send_text(&target, &format!("{line}\r"))?;
+                Ok(format!("started {line} in {name}"))
+            }
+            ("stuck-working", "end") => {
+                let at = status::read(&files, &f.pane).map(|p| p.at).ok_or("its pane file is gone")?;
+                if status::end_stale(&files, &f.pane, at) {
+                    Ok(format!("marked pane {} ended", short(&f.pane)))
+                } else {
+                    Err("its pane file changed meanwhile".into())
+                }
+            }
+            ("dead-pane", "drop") => {
+                use crate::backend::Backend;
+                t.workspaces()?;
+                let still = list(&t.registry()?, "panes").iter().any(|p| s(p, "id").eq_ignore_ascii_case(&f.pane));
+                if still {
+                    return Err(format!("pane {} is still on the registry: tmux may not have answered", short(&f.pane)));
+                }
+                Ok(format!("dropped pane {}", short(&f.pane)))
+            }
+            ("dead-gone", "forget") => {
+                t.forget(&f.pane)?;
+                Ok(format!("forgot pane {}", short(&f.pane)))
+            }
+            ("lost-pane", "restart") => {
+                t.restart(&f.pane, &crate::native::claude_line(Some(&f.session))?)?;
+                Ok(format!("restarted pane {} in {name}", short(&f.pane)))
+            }
+            ("orphan-session", "adopt") => {
+                let session = format!("seamux-{}", f.pane);
+                t.adopt(&f.ws, &f.title, &f.cwd, &f.pane, &t.socket(), &session)?;
+                Ok(format!("adopted {session} into {name}"))
+            }
+            ("orphan-session", "kill") => {
+                let o = tmux::tmux(&t.socket(), &["kill-session", "-t", &format!("=seamux-{}", f.pane)]).map_err(|e| e.to_string())?;
+                if !o.status.success() {
+                    return Err(format!("tmux kill-session: {}", String::from_utf8_lossy(&o.stderr).trim()));
+                }
+                Ok(format!("ended seamux-{}", short(&f.pane)))
+            }
+            ("orphan-pane-file", "delete") => {
+                status::remove(&files, &f.subject);
+                crate::held::remove(&files, &f.subject);
+                for left in [status::path(&files, &f.subject), crate::held::path(&files, &f.subject)] {
+                    if left.exists() {
+                        return Err(format!("could not delete {}", left.display()));
+                    }
+                }
+                Ok(format!("deleted pane-{}.json", short(&f.subject)))
+            }
+            ("orphan-held", "delete") => {
+                crate::held::remove(&files, &f.subject);
+                if crate::held::path(&files, &f.subject).exists() {
+                    return Err(format!("could not delete held-{}.json", f.subject));
+                }
+                Ok(format!("deleted held-{}.json", short(&f.subject)))
+            }
+            ("registry-tmp", "delete") => {
+                std::fs::remove_file(t.dir().join(&f.subject)).map_err(|e| e.to_string())?;
+                Ok(format!("deleted {}", f.subject))
+            }
+            (kind, verb) => Err(format!("no {verb:?} fix for {kind}")),
+        }
+    }
+
+    /// Archive an empty workspace: remember it as crew-resume's archive does
+    /// (restore reopens it under its old id, resuming its newest session),
+    /// then close it. deep-plan's guard is asked first and is not overridden.
+    fn archive(&self, f: &Finding) -> Result<String, String> {
+        if f.cwd.is_empty() {
+            return Err("it has no folder to remember".into());
+        }
+        let name = if f.title.is_empty() { f.cwd.clone() } else { f.title.clone() };
+        let (ok, why) = crate::workspaces::guard(&f.cwd, &name, false);
+        if !ok {
+            return Err(why);
+        }
+        let rec = json!({
+            "cwd": f.cwd, "title": f.title, "color": "",
+            "branch": if Path::new(&f.cwd).is_dir() { crate::workspaces::branch(&f.cwd) } else { String::new() },
+            "session_id": f.session,
+            "sessions": if f.session.is_empty() { json!([]) } else { json!([f.session]) },
+            "workspace_id": f.ws,
+            "archived_at": crate::pyjson::float(crate::py::now()),
+        });
+        let mut rec = rec;
+        let before = crate::workspaces::update_at(&self.archive, |recs| {
+            // An earlier archive of this folder: its sessions carry on, as
+            // archive_with keeps them.
+            let prev = recs.get(&f.cwd).cloned();
+            if let Some(p) = prev.as_ref() {
+                let mut all = rec["sessions"].as_array().cloned().unwrap_or_default();
+                for x in p.get("sessions").and_then(Value::as_array).into_iter().flatten() {
+                    if !all.contains(x) {
+                        all.push(x.clone());
+                    }
+                }
+                rec["sessions"] = Value::Array(all);
+                if rec["session_id"].as_str().unwrap_or("").is_empty() {
+                    rec["session_id"] = p.get("session_id").cloned().unwrap_or(json!(""));
+                }
+            }
+            recs.insert(f.cwd.clone(), rec);
+            prev
+        })
+        .map_err(|e| format!("could not write the archive ({e})"))?;
+        if let Err(e) = self.tmux.close_workspace(&f.ws) {
+            let _ = crate::workspaces::update_at(&self.archive, |recs| match before {
+                Some(b) => recs.insert(f.cwd.clone(), b),
+                None => recs.remove(&f.cwd),
+            });
+            return Err(e);
+        }
+        Ok(format!("archived {name}"))
+    }
+}
+
+/// What runs on `t`'s terminal besides a shell, by name; None when tmux or
+/// ps does not say.
+fn non_shells(t: &crate::backend::Target) -> Option<Vec<String>> {
+    let tty = tmux::pane_tty(t)?;
+    let ps = crate::py::env_or("CREW_PS").unwrap_or_else(|| "/bin/ps".into());
+    let out = std::process::Command::new(ps).args(["-t", &tty, "-o", "comm="]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().trim_start_matches('-').rsplit('/').next().unwrap_or("").to_string())
+            .filter(|n| !n.is_empty() && !SHELLS.contains(&n.as_str()))
+            .collect(),
+    )
+}
+
+fn describe(f: &Finding) -> String {
+    let who = if f.title.is_empty() { short(&f.subject).to_string() } else { f.title.clone() };
+    format!("{who} ({})", f.summary)
+}
+
 /// A summary for a person, worst first.
 pub fn summary(scan: &Scan) -> String {
     let mut out = String::new();
@@ -589,12 +828,77 @@ pub fn summary(scan: &Scan) -> String {
 
 /// `seamux workspace-doctor`.
 pub fn main(args: &[String]) -> i32 {
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("seamux workspace-doctor [--json]\n\nWhat is broken about the app's tmux workspaces, and what would fix it.");
+    let has = |f: &str| args.iter().any(|a| a == f);
+    let value = |f: &str| args.iter().position(|a| a == f).map(|i| args.get(i + 1).filter(|v| !v.starts_with("--")).cloned());
+    if has("-h") || has("--help") {
+        println!(
+            "seamux workspace-doctor [--json]          what is broken, worst first
+seamux workspace-doctor --fix <id> [--verb <verb>] [--dry-run]
+                                          one finding's fix (its first, or --verb)
+seamux workspace-doctor --fix-safe [--dry-run]
+                                          every safe finding's fix
+
+What is broken about the app's tmux workspaces, and what would fix it. A fix
+scans again first and acts only on a finding that scan found."
+        );
         return 0;
     }
-    let scan = Doctor::default().scan();
-    if args.iter().any(|a| a == "--json") {
+    let d = Doctor::default();
+    let (json_out, dry) = (has("--json"), has("--dry-run"));
+    if has("--fix-safe") {
+        let done = match d.fix_safe(dry) {
+            Ok(done) => done,
+            Err(e) => {
+                eprintln!("workspace-doctor: {e}");
+                return 1;
+            }
+        };
+        if json_out {
+            println!("{}", serde_json::to_string_pretty(&done.iter().map(Done::to_json).collect::<Vec<_>>()).unwrap_or_default());
+        } else if done.is_empty() {
+            println!("nothing safe to fix");
+        } else {
+            for x in &done {
+                match &x.result {
+                    Ok(m) => println!("✓ {m}"),
+                    Err(e) => println!("✗ {}: {e}", x.id),
+                }
+            }
+        }
+        return if done.iter().all(|x| x.result.is_ok()) { 0 } else { 1 };
+    }
+    if let Some(id) = value("--fix") {
+        let Some(id) = id else {
+            eprintln!("workspace-doctor: --fix takes a finding id (see --json)");
+            return 1;
+        };
+        let verb = match value("--verb") {
+            Some(Some(v)) => v,
+            Some(None) => {
+                eprintln!("workspace-doctor: --verb takes a fix's verb");
+                return 1;
+            }
+            None => match d.scan().find(&id).and_then(|f| f.fixes.first().map(|x| x.verb.to_string())) {
+                Some(v) => v,
+                None => {
+                    eprintln!("workspace-doctor: {id} is not a finding with a fix now");
+                    return 1;
+                }
+            },
+        };
+        return match d.fix(&id, &verb, dry) {
+            Ok(m) => {
+                println!("✓ {m}");
+                0
+            }
+            Err(e) => {
+                eprintln!("workspace-doctor: {e}");
+                1
+            }
+        };
+    }
+    let scan = d.scan();
+    if json_out {
         println!("{}", serde_json::to_string_pretty(&scan.to_json()).unwrap_or_default());
     } else {
         print!("{}", summary(&scan));
@@ -634,7 +938,8 @@ mod tests {
             fs::write(&sh, "#!/bin/sh\nif [ \"$1\" = -lc ]; then exec /bin/sh -c \"$2\"; fi\nexec /bin/sh -i\n").unwrap();
             fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
             let tmux = TmuxBackend::at(root.join("state")).with_shell(&sh.to_string_lossy()).with_pane_files(&root.join("cache"));
-            Fx { d: Doctor { tmux, projects: root.join("projects"), plans: root.join("plans"), other_cache: None }, root }
+            let archive = root.join("cache/archive.json");
+            Fx { d: Doctor { tmux, projects: root.join("projects"), plans: root.join("plans"), other_cache: None, archive }, root }
         }
 
         fn wt(&self, name: &str) -> PathBuf {
@@ -834,6 +1139,7 @@ mod tests {
         assert_eq!(scan.tmux, "unreachable");
         assert!(scan.findings.iter().all(|x| x.fixes.is_empty() && x.class == Class::Report));
         assert!(summary(&scan).contains("could not be asked"));
+        assert!(f.d.fix_safe(true).unwrap_err().contains("could not be asked"), "refused, not 'nothing to fix'");
     }
 
     #[test]
@@ -844,5 +1150,146 @@ mod tests {
         assert_ne!(scan.registry, "ok");
         assert_eq!(scan.findings.len(), 1);
         assert_eq!(scan.findings[0].kind, "registry-unreadable");
+    }
+
+    fn ids(scan: &Scan, kind: &str) -> Vec<String> {
+        scan.findings.iter().filter(|x| x.kind == kind).map(|x| x.id.clone()).collect()
+    }
+
+    fn screen(t: &crate::backend::Target) -> String {
+        tmux::tmux(&t.socket, &["capture-pane", "-p", "-t", &tmux::pane_of(t)]).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_fix_acts_only_on_a_finding_the_fresh_scan_found() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fx::new("stale");
+        let t = &f.d.tmux;
+        let (ws, _) = t.open_workspace(&f.wt("s"), "sleep 600").unwrap();
+        t.close_pane(&t.panes(Some(&ws)).unwrap()[0].id).unwrap();
+        let id = format!("empty-workspace:{}", ws.to_uppercase());
+        assert!(f.d.scan().find(&id).is_some());
+        assert!(f.d.fix(&id, "kill", false).unwrap_err().contains("offers no"), "a verb it does not offer");
+        assert!(f.d.fix(&id, "reopen", true).unwrap().starts_with("would reopen"));
+        assert!(f.d.scan().find(&id).is_some(), "a dry run changes nothing");
+        f.d.fix(&id, "reopen", false).unwrap();
+        assert_eq!(t.panes(Some(&ws)).unwrap().len(), 1, "reopened with a pane");
+        let e = f.d.fix(&id, "reopen", false).unwrap_err();
+        assert!(e.contains("no longer"), "the second click finds it fixed: {e}");
+        assert!(f.d.fix("empty-workspace:NOPE", "reopen", false).is_err());
+    }
+
+    #[test]
+    fn a_resume_is_typed_only_into_a_bare_shell() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fx::new("type");
+        let t = &f.d.tmux;
+        let wt = f.wt("t");
+        let cwd = wt.to_string_lossy().into_owned();
+        let (ws, _) = t.open_workspace(&wt, "true").unwrap();
+        let shell = t.panes(Some(&ws)).unwrap()[0].id.clone();
+        let busy = t.start_session(&ws, &cwd, "sleep 600").unwrap();
+        let sid = "cccccccc-2222-4333-8444-555555555555";
+        f.pane_file(&shell, &ws, sid, "idle");
+        f.transcript(&wt, sid);
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        // sleep is the foreground of the second pane: nothing is typed there.
+        let e = f.d.fix(&format!("claude-exited:{}", busy.to_uppercase()), "fresh", false).unwrap_err();
+        assert!(e.contains("sleep") && e.contains("nothing was typed"), "{e}");
+        f.d.fix(&format!("claude-exited:{}", shell.to_uppercase()), "resume", false).unwrap();
+        let target = t.target(&shell).unwrap().unwrap();
+        let mut seen = String::new();
+        for _ in 0..30 {
+            seen = screen(&target);
+            if seen.contains(&format!("claude --resume {sid}")) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(seen.contains(&format!("claude --resume {sid}")), "typed into the shell: {seen}");
+    }
+
+    #[test]
+    fn fix_all_safe_cleans_leftovers_and_leaves_the_rest() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fx::new("safe");
+        let t = &f.d.tmux;
+        let wt = f.wt("x");
+        let cwd = wt.to_string_lossy().into_owned();
+        let (ws, _) = t.open_workspace(&wt, "true").unwrap();
+        let stuck = t.panes(Some(&ws)).unwrap()[0].id.clone();
+        f.pane_file(&stuck, &ws, "", "working");
+        let lost = t.start_session(&ws, &cwd, "sleep 600").unwrap();
+        let orphan = "CCCCCCCC-2222-4333-8444-555555555555";
+        f.pane_file(orphan, &ws, "", "working");
+        fs::write(t.pane_files().join("held-EEEEEEEE-2222-4333-8444-555555555555.json"), "{}").unwrap();
+        fs::write(t.dir().join("workspaces.json.999999.tmp"), "{}").unwrap();
+        // The second pane is lost with no session: it can never restart.
+        tmux::tmux(&t.socket(), &["kill-session", "-t", &format!("=seamux-{lost}")]).unwrap();
+        let before = f.d.scan();
+        let safe: Vec<&Finding> = before.findings.iter().filter(|x| x.class == Class::Safe).collect();
+        assert!(safe.len() >= 4, "{:?}", before.findings);
+        let dry = f.d.fix_safe(true).unwrap();
+        assert_eq!(dry.len(), safe.len());
+        assert_eq!(f.d.scan(), before, "a dry run changes nothing");
+        let done = f.d.fix_safe(false).unwrap();
+        assert!(done.iter().all(|x| x.result.is_ok()), "{done:?}");
+        let after = f.d.scan();
+        assert!(after.findings.iter().all(|x| x.class != Class::Safe), "{:?}", after.findings);
+        assert_eq!(ids(&after, "claude-exited").len(), 1, "a confirm finding is left for a person");
+        assert_eq!(status::read(&t.pane_files(), &stuck).map(|p| p.state), Some("ended".into()));
+        assert!(status::read(&t.pane_files(), orphan).is_none());
+        assert!(!t.dir().join("workspaces.json.999999.tmp").exists());
+    }
+
+    #[test]
+    fn archive_forget_adopt_and_kill() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fx::new("conf");
+        let t = &f.d.tmux;
+        // An empty workspace with a transcript: archived, resumable.
+        let wt = f.wt("arch");
+        let (ws, _) = t.open_workspace(&wt, "sleep 600").unwrap();
+        t.close_pane(&t.panes(Some(&ws)).unwrap()[0].id).unwrap();
+        let sid = "dddddddd-2222-4333-8444-555555555555";
+        f.transcript(&wt, sid);
+        // An earlier archive of the same folder: its session is kept.
+        let old = "99999999-2222-4333-8444-555555555555";
+        let key = wt.to_string_lossy().into_owned();
+        crate::workspaces::update_at(&f.d.archive, |r| r.insert(key.clone(), json!({"cwd": key, "session_id": old, "sessions": [old]}))).unwrap();
+        f.d.fix(&format!("empty-workspace:{}", ws.to_uppercase()), "archive", false).unwrap();
+        let rec = crate::workspaces::load_archive_at(&f.d.archive).get(&wt.to_string_lossy().into_owned()).cloned().expect("archived");
+        assert_eq!((rec["session_id"].as_str(), rec["workspace_id"].as_str()), (Some(sid), Some(ws.as_str())));
+        assert_eq!(rec["sessions"], json!([sid, old]), "the earlier archive's session carries on");
+        use crate::backend::Backend;
+        assert!(t.workspaces().unwrap().iter().all(|w| w.id != ws), "closed");
+        // A deleted worktree, forgotten.
+        let gone = f.wt("gone");
+        let (g, _) = t.open_workspace(&gone, "sleep 600").unwrap();
+        fs::remove_dir_all(&gone).unwrap();
+        f.d.fix(&format!("missing-worktree:{}", g.to_uppercase()), "forget", false).unwrap();
+        assert!(t.workspaces().unwrap().iter().all(|w| w.id != g));
+        // Two stray sessions: one adopted into its workspace, one ended.
+        let keep = f.wt("keep");
+        let (k, _) = t.open_workspace(&keep, "sleep 600").unwrap();
+        let (a, b) = (tmux::new_id(), tmux::new_id());
+        for id in [&a, &b] {
+            let env = format!("SEAMUX_WORKSPACE_ID={k}");
+            tmux::tmux(&t.socket(), &["new-session", "-d", "-s", &format!("seamux-{id}"), "-e", &env, "sleep 600"]).unwrap();
+        }
+        f.d.fix(&format!("orphan-session:{}", a.to_uppercase()), "adopt", false).unwrap();
+        f.d.fix(&format!("orphan-session:{}", b.to_uppercase()), "kill", false).unwrap();
+        assert!(t.panes(Some(&k)).unwrap().iter().any(|p| p.id == a), "adopted");
+        assert!(ids(&f.d.scan(), "orphan-session").is_empty());
+        // Reclaim is the wizard's, never done here.
+        assert!(f.d.apply(&Finding { kind: "merged-live", ..f.d.scan().findings[0].clone() }, "reclaim").unwrap_err().contains("reclaim wizard"));
     }
 }
