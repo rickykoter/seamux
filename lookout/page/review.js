@@ -347,12 +347,17 @@
     el("div", { class: "text" }, c.body));
   // Framed by the app, a new-tab link goes nowhere (the app's webview opens
   // no windows): the page asks its host to open it in the browser, and the
-  // host opens only a github.com link.
+  // host opens only a github.com link. A frame no host answered (the seamux
+  // app's Dock frames a review beside its terminal without taking over its
+  // tools) asks its parent all the same, and leaves the link to work as a
+  // link too: in a browser that frames it, the new tab opens as before.
   document.addEventListener("click", e => {
-    if (!hosted) return;
+    const framed = window.parent !== window;
+    if (!hosted && !framed) return;
     const a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
     const url = a && ghUrl(a.getAttribute("href"));
     if (!url) return;
+    if (!hosted) return void window.parent.postMessage({ lookout: "open", url }, "*");
     e.preventDefault();
     window.parent.postMessage({ lookout: "open", url }, hostOrigin);
   });

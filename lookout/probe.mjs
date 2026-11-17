@@ -2362,6 +2362,9 @@ if (want("page script")) {
      js.includes('window.parent.postMessage({ lookout: "open", url }, hostOrigin);') && js.includes("const url = a && ghUrl(a.getAttribute(\"href\"));") &&
      app.includes('else if (d.lookout === "open") {') && app.includes('/^https:\\/\\/github\\.com\\//.test(url)) void invoke("open_url", { url })') &&
      app.includes(`closest?.('a[target="_blank"]')`) && app.includes('void invoke("open_url", { url: a.href })'));
+  ok("page: framed but not hosted (the seamux Dock's column), a GitHub link still goes to the parent, and stays a link",
+     js.includes("const framed = window.parent !== window;") && js.includes("if (!hosted && !framed) return;") &&
+     js.includes('if (!hosted) return void window.parent.postMessage({ lookout: "open", url }, "*");'));
   ok("page: GitHub's mark is drawn as SVG, no emoji", js.includes("function ghMark()") && js.includes('createElementNS("http://www.w3.org/2000/svg", "svg")'));
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
