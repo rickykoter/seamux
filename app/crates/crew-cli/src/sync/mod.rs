@@ -585,6 +585,20 @@ pub fn main(args: &[String]) -> i32 {
         // gone only when no Claude of it is alive either.
         let ws_alive = |ws: &str| by_ws.get(ws).is_some_and(|l| l.iter().any(|(_, r)| facts::live(r)));
         for pane in crew_core::status::all(dir) {
+            // On the app's tmux a record carries `live` (a claude process on
+            // the pane's terminal) and no pid. A pane file still working there
+            // with no Claude is marked ended, not removed: the pane is still
+            // open, and its session id is what resumes it.
+            // Its own workspace's record: one session id may sit in two.
+            let own = by_ws.get(&pane.ws).and_then(|l| l.iter().find(|(s, _)| *s == pane.session)).map(|(_, r)| r);
+            let tmux_dead = out.tmux.is_some() && live_ws.contains(&pane.ws) && claude_gone_on_tmux(&pane, own);
+            if tmux_dead {
+                if crew_core::status::end_stale_locked(dir, pane.key(), pane.at) {
+                    touched.insert(pane.ws.clone());
+                    changes.push((crate::pyval::head(&pane.ws, 8), format!("ended pane {} (its Claude is gone)", crate::pyval::head(&pane.surface, 8))));
+                }
+                continue;
+            }
             let why = if !live_ws.contains(&pane.ws) && !ws_alive(&pane.ws) {
                 Some("workspace gone")
             } else if !live_ws.contains(&pane.ws) {
@@ -681,6 +695,14 @@ fn reviews_dir() -> std::path::PathBuf {
     }
 }
 
+
+/// On the app's tmux: whether `pane`'s file still says its Claude is about
+/// while the session's record (`live`: a claude process on the pane's
+/// terminal) says none runs. No record is no proof.
+fn claude_gone_on_tmux(pane: &crew_core::status::Pane, rec: Option<&Value>) -> bool {
+    pane.state != "ended" && rec.is_some_and(|r| r.get("live") == Some(&Value::Bool(false)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,5 +719,19 @@ mod tests {
     fn feed_tokens_and_stamp() {
         assert_eq!(feed_tokens("ci:pass feed:perm feedby:9 x feedx:1"), vec!["feed:perm", "feedby:9"]);
         assert_eq!(without_stamp("a synced:12 b"), "a b");
+    }
+
+    #[test]
+    fn a_tmux_pane_whose_claude_is_gone_is_told_from_one_that_runs() {
+        use crew_core::status::Pane;
+        let p = |state: &str| Pane { session: "S".into(), state: state.into(), ..Pane::new("W", "P") };
+        let dead = json!({"live": false});
+        let live = json!({"live": true});
+        assert!(claude_gone_on_tmux(&p("working"), Some(&dead)));
+        assert!(claude_gone_on_tmux(&p("idle"), Some(&dead)));
+        assert!(!claude_gone_on_tmux(&p("ended"), Some(&dead)), "already ended");
+        assert!(!claude_gone_on_tmux(&p("working"), Some(&live)));
+        assert!(!claude_gone_on_tmux(&p("working"), None), "no record is no proof");
+        assert!(!claude_gone_on_tmux(&p("working"), Some(&json!({"pid": 1}))), "a cmux record has no live");
     }
 }

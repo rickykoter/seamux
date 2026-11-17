@@ -567,7 +567,7 @@ fn tmux_waiting() -> Option<Vec<(f64, String, String)>> {
     use crew_core::backend::Backend;
     let t = crew_core::backend::tmux::in_play()?;
     let dirs: std::collections::HashMap<String, String> = t.workspaces().ok()?.into_iter().map(|w| (w.id.to_ascii_uppercase(), w.cwd)).collect();
-    let state = crew_core::home::home_cache();
+    let state = crew_core::status::pane_dir();
     let now = crew_core::py::now();
     let mut out = Vec::new();
     for p in t.panes(None).ok()? {

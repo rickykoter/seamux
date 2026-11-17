@@ -176,7 +176,7 @@ pub fn agent_sessions() -> Option<Vec<Value>> {
 fn tmux_sessions() -> Option<Vec<Value>> {
     use crate::backend::Backend;
     let t = crate::backend::tmux::in_play()?;
-    let dir = crate::home::home_cache();
+    let dir = crate::status::pane_dir();
     let mut out = Vec::new();
     let mut asked = false;
     for p in t.panes(None).ok()? {
@@ -916,7 +916,12 @@ fn write_json(path: &Path, data: &Value) -> std::io::Result<()> {
 
 /// {cwd: record}. A missing or unreadable file is an empty archive.
 pub fn load_archive() -> Map<String, Value> {
-    std::fs::read_to_string(archive_path())
+    load_archive_at(&archive_path())
+}
+
+/// `load_archive` from the archive at `path`.
+pub fn load_archive_at(path: &Path) -> Map<String, Value> {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|d| d.get("records").and_then(Value::as_object).cloned())
@@ -926,11 +931,18 @@ pub fn load_archive() -> Map<String, Value> {
 
 /// Read-modify-write the archive under an flock on a sidecar file.
 pub fn update<T>(f: impl FnOnce(&mut Map<String, Value>) -> T) -> std::io::Result<T> {
-    let path = archive_path();
+    update_at(&archive_path(), f)
+}
+
+/// `update` on the archive at `path` (the doctor's tests keep their own).
+pub fn update_at<T>(path: &Path, f: impl FnOnce(&mut Map<String, Value>) -> T) -> std::io::Result<T> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let _lock = Flock::exclusive(Path::new(&format!("{}.lock", path.display())))?;
-    let mut recs = load_archive();
+    let mut recs = load_archive_at(path);
     let out = f(&mut recs);
-    write_json(&path, &json!({"version": 1, "records": recs}))?;
+    write_json(path, &json!({"version": 1, "records": recs}))?;
     Ok(out)
 }
 

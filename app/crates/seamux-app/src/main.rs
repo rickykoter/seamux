@@ -17,6 +17,7 @@ mod pane_app;
 mod pr_watch;
 mod pty_app;
 mod radar_app;
+mod doctor_app;
 mod reclaim_app;
 mod resume;
 mod resume_app;
@@ -283,6 +284,14 @@ fn main() {
             migrate_app::migrate_apply,
             migrate_app::migrate_forget,
             pane_app::gh_card,
+            doctor_app::doctor_scan,
+            doctor_app::doctor_fix,
+            doctor_app::doctor_fix_safe,
+            doctor_app::doctor_rows,
+            doctor_app::doctor_archive,
+            doctor_app::doctor_restore,
+            doctor_app::doctor_forget,
+            doctor_app::doctor_resume,
             reclaim_app::reclaim_check,
             reclaim_app::reclaim_run,
             reclaim_app::reclaim_fix,

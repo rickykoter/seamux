@@ -12,6 +12,7 @@ pub mod backend;
 pub mod bgshells;
 pub mod cachefacts;
 pub mod costs;
+pub mod doctor;
 pub mod dp_engine;
 pub mod families;
 pub mod held;
@@ -49,6 +50,7 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("pricing", pricing::main),
     ("runs", runs::main),
     ("typesafe", typesafe::main),
+    ("workspace-doctor", doctor::main),
     ("workspace-open", workspace_open::main),
     ("workspaces", workspaces::main),
 ];

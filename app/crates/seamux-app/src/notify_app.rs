@@ -613,7 +613,7 @@ fn answer(app: &AppHandle, n: &Note, k: u32) {
         post(app, &note);
     };
     let Some(label) = n.options.get(k as usize - 1) else { return fail(format!("there is no option {k}")) };
-    let open = crew_core::status::read(&crew_core::home::home_cache(), &n.pane)
+    let open = crew_core::status::read(&crew_core::status::pane_dir(), &n.pane)
         .filter(|p| p.state == "needs_input")
         .and_then(|p| p.question)
         .and_then(|q| q.get("at").and_then(Value::as_u64));
@@ -668,7 +668,7 @@ pub fn start(app: AppHandle) {
             // Off the plugin's thread: an answer reads the screen and waits.
             std::thread::spawn(move || on_action(&h, id, &action));
         });
-        let state = crew_core::home::home_cache();
+        let state = crew_core::status::pane_dir();
         let t = TmuxBackend::default();
         let mut n = Notifier::default();
         let mut dots: HashMap<String, String> = HashMap::new();

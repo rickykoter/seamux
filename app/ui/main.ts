@@ -13,6 +13,8 @@ import { ReviewView } from "./review";
 import "./review.css";
 import { RadarView } from "./radar";
 import "./radar.css";
+import { DoctorView } from "./doctor";
+import "./doctor.css";
 import { Palette } from "./palette";
 import { appearanceButton } from "./appearance";
 
@@ -61,6 +63,8 @@ const reviewEl = document.getElementById("review")!;
 const reviewView = new ReviewView(reviewEl);
 const radarEl = document.getElementById("radar")!;
 const radarView = new RadarView(radarEl);
+const doctorEl = document.getElementById("doctor")!;
+const doctorView = new DoctorView(doctorEl);
 
 const tabs = new Tabs(
   document.getElementById("strip")!,
@@ -69,12 +73,14 @@ const tabs = new Tabs(
     ["dock", dockEl],
     ["review", reviewEl],
     ["radar", radarEl],
+    ["doctor", doctorEl],
   ]),
 );
 tabs.onSelect = (id) => {
   if (id === "dock") dockView.shown();
   reviewView.setShown(id === "review");
   radarView.setShown(id === "radar");
+  if (id === "doctor") doctorView.shown();
 };
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
 // at the end of the strip. Choosing a session shows it in the Dock.

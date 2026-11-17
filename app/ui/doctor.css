@@ -1,0 +1,75 @@
+/* The Doctor tab (doctor.ts): a triage list, worst first. */
+.doctor { padding: 0 0 24px; color: var(--fg); background: var(--bg); }
+.doc-head {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 12px;
+  padding: 14px 20px 10px; background: var(--bg); border-bottom: 1px solid var(--line2);
+}
+.doc-title { font-size: var(--fs-5); }
+.doc-headline { color: var(--muted); font-size: var(--fs-3); }
+.doc-headline.bad { color: var(--bad-t); }
+.doc-grow { flex: 1; }
+.doctor .sheet-btn { background: none; border-color: var(--line2); white-space: nowrap; }
+.doctor .sheet-btn:hover:not(:disabled) { border-color: var(--fg); }
+.doctor .sheet-btn:focus-visible, .doctor summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.doctor .doc-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
+.doctor .doc-primary:disabled { background: none; border-color: var(--line2); color: var(--muted); font-weight: 400; }
+/* A confirm-class fix, armed: the destructive style, words in --bad-t. */
+.doctor .doc-danger { border-color: var(--bad); color: var(--bad-t); font-weight: 600; }
+.doctor .doc-danger:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+
+.doc-log { padding: 8px 20px 0; font-size: var(--fs-3); }
+.doc-log[hidden] { display: none; }
+.doc-log p { margin: 2px 0; }
+.doc-ok { color: var(--good-t); }
+.doc-refused { color: var(--bad-t); }
+
+.doc-body { padding: 4px 20px; display: flex; flex-direction: column; gap: 18px; max-width: 980px; }
+.doc-body h3 { margin: 12px 0 6px; font-size: var(--fs-2); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.doc-blocked, .doc-note, .doc-error { margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--line2); border-radius: 8px; font-size: var(--fs-3); }
+.doc-blocked, .doc-error { border-color: var(--bad); color: var(--bad-t); }
+
+.doc-row, .doc-leftovers { border: 1px solid var(--line2); border-radius: 10px; background: var(--card); margin-bottom: 8px; }
+.doc-row-top { display: flex; align-items: center; gap: 12px; padding: 10px 12px; flex-wrap: wrap; }
+.doc-name { display: flex; flex-direction: column; min-width: 180px; flex: 0 1 260px; overflow: hidden; }
+.doc-name b { font-size: var(--fs-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-cwd { color: var(--muted); font: var(--fs-1) ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-what { flex: 1; min-width: 160px; font-size: var(--fs-3); }
+.doc-what.confirm { color: var(--fg); }
+.doc-what.report { color: var(--ask-t); }
+.doc-what.safe { color: var(--muted); }
+.doc-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.doc-more { padding: 0 12px 8px; font-size: var(--fs-2); }
+.doc-more > summary { cursor: pointer; color: var(--muted); padding: 2px 0; }
+.doc-item { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-top: 1px dashed var(--line2); }
+.doc-item-words { flex: 1; min-width: 0; }
+.doc-detail { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-2); overflow-wrap: anywhere; }
+.doc-left-said { flex: 1; color: var(--muted); font-size: var(--fs-3); }
+
+.doc-calm { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 0; color: var(--muted); }
+.doc-calm-mark { width: 56px; height: 56px; color: var(--good); opacity: 0.8; }
+
+/* All workspaces: crew-resume's rows, filtered by state and searched. */
+.doc-all { padding: 4px 20px; max-width: 980px; }
+.doc-all-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0 8px; }
+.doc-all-head h3 { margin: 0; font-size: var(--fs-2); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.doc-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.doctor .doc-chip { padding: 2px 8px; border-radius: 999px; font-size: var(--fs-2); text-transform: capitalize; }
+.doctor .doc-chip.on { border-color: var(--accent); color: var(--accent-t); }
+.doc-search { flex: 1; min-width: 180px; padding: 4px 8px; border: 1px solid var(--line2); border-radius: 6px; background: var(--field); color: var(--fg); font-size: var(--fs-3); }
+.doc-search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.doc-list { display: flex; flex-direction: column; }
+.doc-ws { display: flex; align-items: center; gap: 12px; padding: 6px 4px; border-top: 1px solid var(--line); }
+.doc-ws .doc-name { flex: 0 1 300px; }
+.doc-ws .doc-name b { font-size: var(--fs-3); }
+.doc-latest { flex: 1; min-width: 0; color: var(--muted); font-size: var(--fs-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-when { width: 48px; text-align: right; color: var(--muted); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
+/* The state, as crew-resume tints it: live green, archived purple, past
+   quiet, gone red; a ring for the ones not open now. */
+.doc-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; border: 2px solid currentColor; }
+.doc-dot.live { color: var(--good); background: currentColor; }
+.doc-dot.archived { color: var(--ef-purple); }
+.doc-dot.past { color: var(--muted); }
+.doc-dot.gone { color: var(--bad); }
+.doc-ws.gone .doc-name b { color: var(--muted); }
+.doctor .doc-more-rows { align-self: flex-start; margin-top: 8px; }
