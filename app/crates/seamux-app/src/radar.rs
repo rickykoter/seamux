@@ -369,7 +369,14 @@ pub fn read_tree(root: &str, prev: Option<&Tree>) -> Tree {
             let mut l = s.lines().map(|x| x.trim().to_string());
             (l.next().unwrap_or_default(), l.next().unwrap_or_default(), l.next().unwrap_or_default())
         }
-        Git::Lost => return prev.map(|p| Tree { partial: true, ..p.clone() }).unwrap_or_default(),
+        Git::Lost => {
+            if let Some(p) = prev {
+                return Tree { partial: true, ..p.clone() };
+            }
+            // No last reading: the repo alone, if git can name it, so the workspace stays on the scope marked partial.
+            let common = git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).map(|s| s.trim().to_string()).unwrap_or_default();
+            return if common.is_empty() { Tree::default() } else { Tree { common, partial: true, ..Default::default() } };
+        }
         // A branch with no commit yet has no HEAD to name: the repo alone.
         Git::Failed => {
             let common = git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).map(|s| s.trim().to_string()).unwrap_or_default();
@@ -390,6 +397,13 @@ pub fn read_tree(root: &str, prev: Option<&Tree>) -> Tree {
 
     // The committed side: files changed from the fork point to HEAD, and the base's CODEOWNERS.
     let (mut committed, mut base_codeowners, mut key) = (Vec::new(), None, None);
+    if partial {
+        // The base went unread: keep the last reading's committed side.
+        if let Some(p) = prev {
+            committed = p.committed.clone();
+            base_codeowners = p.base_codeowners.clone();
+        }
+    }
     if let Some((_, sha)) = &base {
         let want = (head.clone(), sha.clone());
         if let Some(p) = prev.filter(|p| p.key.as_ref() == Some(&want)) {
