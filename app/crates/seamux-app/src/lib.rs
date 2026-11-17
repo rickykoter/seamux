@@ -7,6 +7,7 @@ pub mod backend;
 pub mod ghostty;
 pub mod pane;
 pub mod pty;
+pub mod radar;
 pub mod reclaim;
 pub mod review;
 pub mod sessions;

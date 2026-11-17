@@ -13,12 +13,13 @@ export type Tab = {
   missing?: string;
 };
 
-/** The views, in the strip, Command-1 and Command-2. The Wake is no view
+/** The views, in the strip, Command-1 to Command-3. The Wake is no view
  *  of its own: each workspace's is beside its terminal in the Dock (⌘E),
  *  with a picker for any other's, so one word means one place. */
 export const TABS: Tab[] = [
   { id: "dock", label: "Dock" },
   { id: "review", label: "Lookout" },
+  { id: "radar", label: "Radar" },
 ];
 
 /** The pages behind the ⋯ menu, framed from the intent server. */
@@ -144,7 +145,7 @@ export class Tabs {
     this.onSelect(id);
   }
 
-  /** Command-1 and Command-2 pick the views. */
+  /** Command-1 to Command-3 pick the views. */
   selectIndex(i: number): void {
     const tab = TABS[i];
     if (tab) this.select(tab.id);
