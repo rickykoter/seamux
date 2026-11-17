@@ -5,6 +5,8 @@ type Planned = { path: string; plan: string; inc: number; title: string };
 type Contact = {
   ws: string; pane: string; title: string; root: string; branch: string;
   color: string | null; state: string; editing: string[]; planned: Planned[];
+  /** Git didn't answer in time on this worktree: `editing` is its last good reading and may be missing files. */
+  partial?: boolean;
 };
 /** `owners`: each file on the scope to its CODEOWNERS owners ([] when no rule names one); absent when the repo has no CODEOWNERS. */
 type Repo = { name: string; common: string; contacts: Contact[]; collisions: string[]; owners?: Record<string, string[]> };
@@ -279,6 +281,8 @@ export class RadarView {
   private reading = false;
   private shown = false;
   private failed = "";
+  /** A reading has come back; until then the tab says it is scanning. */
+  private loaded = false;
   private retrying = false;
   /** What the side card shows: the overview, a file, a wedge or a contact. */
   private focus: Focus | null = null;
@@ -316,6 +320,8 @@ export class RadarView {
     this.timer = undefined;
     this.shown = on;
     if (!on) return;
+    // The first scan can take seconds with many worktrees: say so instead of showing a blank tab.
+    if (!this.loaded) this.draw();
     void this.read();
     this.timer = window.setInterval(() => void this.read(), EVERY);
   }
@@ -338,6 +344,7 @@ export class RadarView {
       return;
     }
     this.reading = false;
+    this.loaded = true;
     // A read that lands after the tab hid draws nothing; the next show reads again.
     if (!this.shown) return;
     const json = JSON.stringify(f);
@@ -504,7 +511,7 @@ export class RadarView {
 
     if (!live) {
       submarine(svg, 0, -6, 1.6).classList.add("idle");
-      el("text", { x: 0, y: 34, class: "radar-empty" }, svg).textContent = this.failed ? "No reading yet" : "Nothing on the scope";
+      el("text", { x: 0, y: 34, class: "radar-empty" }, svg).textContent = this.failed ? "No reading yet" : this.loaded ? "Nothing on the scope" : "Scanning workspaces…";
       this.scope.replaceChildren(...parts, svg);
       return;
     }
@@ -790,6 +797,8 @@ export class RadarView {
         h2,
         h("p", "radar-dim", this.failed
           ? "No reading yet. The scope fills in once the workspaces can be read."
+          : !this.loaded
+          ? "Reading git in each open workspace. With many worktrees the first scan takes a few seconds."
           : "No workspaces are open in a git repo. Open one in the Dock and it shows up here. Tucked-away workspaces stay off the scope."),
       );
       return;
@@ -824,6 +833,12 @@ export class RadarView {
       status.append(document.createTextNode(`: ${nowPairs ? `${plural(nowPairs, "pair")} editing the same file now` : ""}${nowPairs && later ? ", " : ""}${later ? `${plural(later, "pair")} meet${later === 1 ? "s" : ""} a plan` : ""}`));
     }
     if (waiting) status.append(document.createTextNode(" · "), h("span", "radar-ask-t", `${waiting} need${waiting === 1 ? "s" : ""} you`));
+    const partial = repo.contacts.filter((c) => c.partial).length;
+    if (partial) {
+      const p = h("span", "radar-warn", `${plural(partial, "workspace")} not fully read`);
+      p.title = "Git didn't answer in time there, so the scope shows the last good reading and may be missing files. It tries again on the next scan.";
+      status.append(document.createTextNode(" · "), p);
+    }
     this.card.append(status);
 
     if (talk.length) {
@@ -851,7 +866,7 @@ export class RadarView {
         const li = this.row("contact", `${letter(i)}: ${c.title}, ${c.branch}`, () => this.pick({ kind: "contact", key: c.ws }));
         const top = h("div", "radar-row-top");
         const name = h("span", "radar-name", c.title);
-        name.title = `${c.title} · ${c.branch} · ${c.editing.length} editing · ${c.planned.length} planned`;
+        name.title = `${c.title} · ${c.branch} · ${c.editing.length} editing · ${c.planned.length} planned${c.partial ? " · not fully read" : ""}`;
         top.append(this.badge(i), name);
         if (c.state === "needs_input") top.append(h("span", "radar-ask", "needs you"));
         top.append(h("span", "radar-count", plural(c.editing.length + c.planned.length, "file")));
@@ -1107,7 +1122,9 @@ export class RadarView {
     h2.tabIndex = -1;
     head.append(this.badge(i), h2);
     if (c.state === "needs_input") head.append(h("span", "radar-ask", "needs you"));
-    this.card.append(head, h("p", "radar-dim", `branch ${c.branch}`), h("p", "radar-dim", `worktree ${c.root}`), this.jumpButton(c));
+    this.card.append(head, h("p", "radar-dim", `branch ${c.branch}`), h("p", "radar-dim", `worktree ${c.root}`));
+    if (c.partial) this.card.append(h("p", "radar-warn", "Git didn't answer in time on this worktree, so this is its last good reading and may be missing files."));
+    this.card.append(this.jumpButton(c));
     this.banded([...new Set([...c.editing, ...c.planned.map((p) => p.path)])], marksOf(repo), i);
   }
 }

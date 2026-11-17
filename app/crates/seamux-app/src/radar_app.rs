@@ -2,11 +2,15 @@
 //! read through git and deep-plan (seamux_app::radar).
 
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use seamux_app::radar::{self, Frame, Seat};
 use seamux_app::tuck::{root_of, Level, Store};
 
-/// Every repo's scope, built fresh: one git pass per worktree, in parallel.
+/// The last scan's reading of each worktree, handed to the next so an unchanged one is cheap.
+static TREES: Mutex<BTreeMap<String, radar::Tree>> = Mutex::new(BTreeMap::new());
+
+/// Every repo's scope: a git pass per worktree, a few at a time.
 #[tauri::command]
 pub async fn radar_frame() -> Result<Frame, String> {
     tauri::async_runtime::spawn_blocking(build).await.map_err(|e| e.to_string())
@@ -34,10 +38,12 @@ fn build() -> Frame {
     let mut roots: Vec<String> = seats.iter().map(|s| s.root.clone()).collect();
     roots.sort();
     roots.dedup();
-    let trees: BTreeMap<String, radar::Tree> = std::thread::scope(|sc| {
-        let hs: Vec<_> = roots.iter().map(|r| (r.clone(), sc.spawn(move || radar::read_tree(r)))).collect();
-        hs.into_iter().map(|(r, h)| (r, h.join().unwrap_or_default())).collect()
-    });
+    let prev = TREES.lock().map(|m| m.clone()).unwrap_or_default();
+    let trees = radar::scan(&roots, &prev, radar::SCAN_WORKERS);
+    // Only the roots on the wall now are kept, so a closed workspace's reading goes.
+    if let Ok(mut m) = TREES.lock() {
+        *m = trees.clone();
+    }
     let paths = crew_store::Paths::from_env();
     let state = std::path::PathBuf::from(&paths.dp_state);
     let keys = std::env::var_os("DEEP_PLAN_KEYS_DIR")
