@@ -5,10 +5,11 @@
   --radar-hot: var(--role-broken);
   /* Contact hues without a cmux colour: oklch lightness and chroma per mode. */
   --radar-l: 0.78; --radar-ch: 0.11;
+  --radar-isl-l: 0.72; --radar-isl-ch: 0.07;
   height: 100%; display: flex; flex-direction: column; min-height: 0;
 }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) #radar { --radar-l: 0.58; --radar-ch: 0.13; } }
-:root[data-theme="light"] #radar { --radar-l: 0.58; --radar-ch: 0.13; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) #radar { --radar-l: 0.58; --radar-ch: 0.13; --radar-isl-l: 0.62; --radar-isl-ch: 0.08; } }
+:root[data-theme="light"] #radar { --radar-l: 0.58; --radar-ch: 0.13; --radar-isl-l: 0.62; --radar-isl-ch: 0.08; }
 #radar[hidden] { display: none; }
 
 /* Repo chips: one per repo, busiest first. */
@@ -35,6 +36,18 @@
 .mini-hot { fill: var(--radar-hot); }
 
 /* The card is first in the DOM (Tab reaches it first) but sits right of the scope on wide windows. */
+/* Overlay toggles: a small segmented control above the scope. */
+.radar-tools { display: flex; align-items: center; gap: 2px; padding: 8px 14px 0; flex: none; font-size: var(--fs-2); }
+.radar-tool-l { color: var(--muted); margin-right: 6px; font-size: var(--fs-1); text-transform: uppercase; letter-spacing: 0.06em; }
+.radar-tool {
+  font: inherit; padding: 3px 10px; min-height: 26px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer;
+}
+.radar-tool:first-of-type { border-radius: 6px 0 0 6px; }
+.radar-tool:last-of-type { border-radius: 0 6px 6px 0; }
+.radar-tool + .radar-tool { margin-left: -1px; }
+.radar-tool[aria-pressed="true"] { background: var(--card); color: var(--fg); border-color: var(--line2); position: relative; }
+.radar-tool:disabled { opacity: 0.45; cursor: not-allowed; }
+.radar-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; position: relative; }
 .radar-body { flex: 1; min-height: 0; display: flex; gap: 14px; padding: 12px 14px 14px; }
 .radar-scope { order: 0; flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
 .radar-scope.stale .radar-svg { opacity: 0.45; filter: grayscale(0.6); }
@@ -92,6 +105,21 @@
 .radar-star { fill: var(--radar-hot); }
 .radar-star-i.later .radar-star { fill: none; stroke: var(--radar-hot); stroke-width: 1; }
 .radar-leader { stroke: var(--muted); stroke-width: 0.35; opacity: 0.8; }
+/* Ownership islands: a team's files as a tinted territory with a dashed coast, under the marks. */
+.radar-island { fill: color-mix(in srgb, var(--t) 22%, transparent); stroke: var(--t); stroke-width: 0.6; stroke-dasharray: 2 1.4; }
+.radar-island.lit { fill: color-mix(in srgb, var(--t) 40%, transparent); stroke-width: 1; }
+.radar-label-teams { font: 600 3.9px var(--ef-mono); pointer-events: none; }
+.radar-label-teams tspan { fill: var(--t, var(--muted)); }
+@media (max-width: 760px) { .radar-label-teams { font-size: 5.5px; } }
+/* A team's name as a chip, tinted the way its island is. */
+.radar-team {
+  display: inline-flex; align-items: center; font: 600 var(--fs-1) var(--ef-mono); padding: 0 6px; border-radius: 4px; white-space: nowrap;
+  color: var(--fg); background: color-mix(in srgb, var(--t) 28%, transparent); border: 1px dashed var(--t);
+}
+.radar-teams-of { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding-left: 4px; font-size: var(--fs-2); color: var(--muted); }
+.radar-owned { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 6px 0 0; color: var(--muted); }
+.radar-unowned { margin-top: 6px; font-size: var(--fs-2); }
+.radar-row.team .radar-who { margin-left: auto; }
 /* A bundle: a folder's collisions as one numbered star until opened. */
 .radar-cluster:not(.open) .radar-cluster-files { display: none; }
 .radar-cluster-badge { cursor: pointer; }

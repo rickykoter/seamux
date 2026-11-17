@@ -49,6 +49,10 @@ pub struct Repo {
     pub contacts: Vec<Contact>,
     /// Paths two or more contacts are on, editing or planned.
     pub collisions: Vec<String>,
+    /// Each path on the scope to its CODEOWNERS owners ([] for none); absent
+    /// when the repo has no CODEOWNERS file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owners: Option<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
@@ -62,6 +66,8 @@ pub struct Tree {
     pub common: String,
     pub branch: String,
     pub editing: Vec<String>,
+    /// The CODEOWNERS text this worktree's repo uses (the base branch's, else the worktree's).
+    pub codeowners: Option<String>,
 }
 
 /// An open plan: its worktree and its unfinished increments' files.
@@ -101,6 +107,10 @@ pub fn assemble(seats: &[Seat], trees: &BTreeMap<String, Tree>, plans: &[Plan]) 
             continue;
         }
         let mut planned: Vec<Planned> = plans.iter().filter(|p| p.root == s.root).flat_map(|p| p.planned.clone()).collect();
+        // Spec paths are written by hand: "./a.rs" and "/a.rs" are a.rs, the form git prints.
+        for p in &mut planned {
+            p.path = norm(&p.path);
+        }
         planned.sort_by(|a, b| (&a.path, &a.plan, a.inc).cmp(&(&b.path, &b.plan, b.inc)));
         planned.dedup_by(|a, b| a.path == b.path && a.plan == b.plan);
         let mut editing = t.editing.clone();
@@ -122,14 +132,36 @@ pub fn assemble(seats: &[Seat], trees: &BTreeMap<String, Tree>, plans: &[Plan]) 
         .into_iter()
         .map(|(common, mut contacts)| {
             contacts.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+            // A planned directory ("app/ui/") meets every file another workspace edits under it:
+            // it stands for those files, and stays as itself when nobody edits there.
+            let edits: Vec<(usize, Vec<String>)> = contacts.iter().enumerate().map(|(i, c)| (i, c.editing.clone())).collect();
+            for (i, c) in contacts.iter_mut().enumerate() {
+                let mut grown = Vec::new();
+                c.planned.retain(|p| {
+                    if !p.path.ends_with('/') {
+                        return true;
+                    }
+                    let under: Vec<&String> = edits.iter().filter(|(j, _)| *j != i).flat_map(|(_, e)| e.iter()).filter(|e| e.starts_with(&p.path)).collect();
+                    grown.extend(under.iter().map(|e| Planned { path: (*e).clone(), ..p.clone() }));
+                    under.is_empty()
+                });
+                c.planned.extend(grown);
+                c.planned.sort_by(|a, b| (&a.path, &a.plan, a.inc).cmp(&(&b.path, &b.plan, b.inc)));
+                c.planned.dedup_by(|a, b| a.path == b.path && a.plan == b.plan);
+            }
             let mut by_path: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
             for (i, c) in contacts.iter().enumerate() {
                 for p in c.editing.iter().chain(c.planned.iter().map(|p| &p.path)) {
                     by_path.entry(p.as_str()).or_default().insert(i);
                 }
             }
-            let collisions = by_path.into_iter().filter(|(_, who)| who.len() > 1).map(|(p, _)| p.to_string()).collect();
-            Repo { name: repo_name(&common), common, contacts, collisions }
+            let collisions = by_path.iter().filter(|(_, who)| who.len() > 1).map(|(p, _)| p.to_string()).collect();
+            // Ownership from the first contact's worktree that has a CODEOWNERS file.
+            let owners = contacts.iter().find_map(|c| trees.get(&c.root).and_then(|t| t.codeowners.as_deref())).map(|text| {
+                let rules = crate::codeowners::parse(text);
+                crate::codeowners::map(&rules, by_path.keys().map(|p| p.to_string()))
+            });
+            Repo { name: repo_name(&common), common, contacts, collisions, owners }
         })
         .collect();
     // Busiest scopes first: collisions, then contacts.
@@ -189,9 +221,22 @@ fn git(dir: &str, args: &[&str]) -> Option<String> {
     crew_core::py::run("git", &a, Duration::from_secs(5)).filter(|(code, _, _)| *code == 0).map(|(_, out, _)| out)
 }
 
-fn lines(s: Option<String>) -> Vec<String> {
-    s.unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+/// A repo-relative path as git prints it: no "./" or leading "/".
+fn norm(p: &str) -> String {
+    let mut p = p.trim();
+    while let Some(rest) = p.strip_prefix("./") {
+        p = rest;
+    }
+    p.trim_start_matches('/').to_string()
 }
+
+/// NUL-separated paths (`git … -z`): exact bytes, so spaces, quotes and non-ASCII survive.
+fn zpaths(s: Option<String>) -> Vec<String> {
+    s.unwrap_or_default().split('\0').filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+/// Untracked files the scope takes at most: a build folder git doesn't ignore must not flood it.
+pub const UNTRACKED_MAX: usize = 200;
 
 /// Git's view of worktree `root`: its repo, branch and changed files.
 pub fn read_tree(root: &str) -> Tree {
@@ -205,10 +250,16 @@ pub fn read_tree(root: &str) -> Tree {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s != "origin/HEAD")
         .or_else(|| ["main", "master"].iter().find(|b| git(root, &["rev-parse", "--verify", "--quiet", b]).is_some()).map(|b| b.to_string()));
-    let fork = base.and_then(|b| git(root, &["merge-base", "HEAD", &b])).map(|s| s.trim().to_string()).unwrap_or_else(|| "HEAD".into());
-    let mut editing = lines(git(root, &["diff", "--name-only", "--no-renames", &fork]));
-    editing.extend(lines(git(root, &["ls-files", "--others", "--exclude-standard"])));
-    Tree { common, branch, editing }
+    let fork = base.as_deref().and_then(|b| git(root, &["merge-base", "HEAD", b])).map(|s| s.trim().to_string()).unwrap_or_else(|| "HEAD".into());
+    let mut editing = zpaths(git(root, &["diff", "--name-only", "--no-renames", "-z", &fork]));
+    editing.extend(zpaths(git(root, &["ls-files", "--others", "--exclude-standard", "-z"])).into_iter().take(UNTRACKED_MAX));
+    // CODEOWNERS as the base branch has it (what GitHub enforces), else the worktree's own.
+    let codeowners = crate::codeowners::LOCATIONS.iter().find_map(|loc| {
+        base.as_deref()
+            .and_then(|b| git(root, &["show", &format!("{b}:{loc}")]))
+            .or_else(|| std::fs::read_to_string(std::path::Path::new(root).join(loc)).ok())
+    });
+    Tree { common, branch, editing, codeowners }
 }
 
 #[cfg(test)]
@@ -230,9 +281,9 @@ mod tests {
     #[test]
     fn radar_groups_worktrees_by_repo_and_finds_collisions() {
         let mut trees = BTreeMap::new();
-        trees.insert("/a".into(), Tree { common: "/r/.git".into(), branch: "dev/a".into(), editing: vec!["x.rs".into(), "y.rs".into()] });
-        trees.insert("/b".into(), Tree { common: "/r/.git".into(), branch: "dev/b".into(), editing: vec!["z.rs".into()] });
-        trees.insert("/c".into(), Tree { common: "/other/.git".into(), branch: "main".into(), editing: vec!["x.rs".into()] });
+        trees.insert("/a".into(), Tree { common: "/r/.git".into(), branch: "dev/a".into(), editing: vec!["x.rs".into(), "y.rs".into()], ..Default::default() });
+        trees.insert("/b".into(), Tree { common: "/r/.git".into(), branch: "dev/b".into(), editing: vec!["z.rs".into()], ..Default::default() });
+        trees.insert("/c".into(), Tree { common: "/other/.git".into(), branch: "main".into(), editing: vec!["x.rs".into()], ..Default::default() });
         let plans = vec![Plan { root: "/b".into(), planned: vec![Planned { path: "x.rs".into(), plan: "p".into(), inc: 2, title: "t".into() }] }];
         let f = assemble(&[seat("A", "/a"), seat("B", "/b"), seat("C", "/c"), seat("A2", "/a")], &trees, &plans);
         assert_eq!(f.repos.len(), 2);
@@ -241,6 +292,88 @@ mod tests {
         assert_eq!(r.contacts.len(), 2, "a second pane on /a is the same contact");
         assert_eq!(r.collisions, vec!["x.rs".to_string()]);
         assert!(f.repos[1].collisions.is_empty(), "the same path in another repo is no collision");
+    }
+
+    fn tree(common: &str, editing: &[&str], codeowners: Option<&str>) -> Tree {
+        Tree { common: common.into(), branch: "b".into(), editing: editing.iter().map(|s| s.to_string()).collect(), codeowners: codeowners.map(str::to_string) }
+    }
+    fn plan(root: &str, paths: &[&str]) -> Plan {
+        Plan { root: root.into(), planned: paths.iter().map(|p| Planned { path: p.to_string(), plan: "p".into(), inc: 1, title: "t".into() }).collect() }
+    }
+
+    #[test]
+    fn radar_planned_paths_are_normalized_before_matching() {
+        let mut trees = BTreeMap::new();
+        trees.insert("/a".into(), tree("/r/.git", &["src/x.rs"], None));
+        trees.insert("/b".into(), tree("/r/.git", &[], None));
+        let f = assemble(&[seat("A", "/a"), seat("B", "/b")], &trees, &[plan("/b", &["./src/x.rs"])]);
+        assert_eq!(f.repos[0].collisions, vec!["src/x.rs".to_string()]);
+    }
+
+    #[test]
+    fn radar_planned_directory_meets_files_edited_under_it() {
+        let mut trees = BTreeMap::new();
+        trees.insert("/a".into(), tree("/r/.git", &["app/ui/tabs.ts", "docs/x.md"], None));
+        trees.insert("/b".into(), tree("/r/.git", &[], None));
+        trees.insert("/c".into(), tree("/r/.git", &[], None));
+        let f = assemble(&[seat("A", "/a"), seat("B", "/b"), seat("C", "/c")], &trees, &[plan("/b", &["app/ui/"]), plan("/c", &["lib/"])]);
+        let r = &f.repos[0];
+        assert_eq!(r.collisions, vec!["app/ui/tabs.ts".to_string()]);
+        let c = r.contacts.iter().find(|c| c.ws == "C").unwrap();
+        assert_eq!(c.planned[0].path, "lib/", "a directory nobody edits under stays as itself");
+    }
+
+    #[test]
+    fn radar_owners_come_from_codeowners() {
+        let mut trees = BTreeMap::new();
+        trees.insert("/a".into(), tree("/r/.git", &["app/x.ts", "README.md"], Some("* @all\n/app/ @web\n")));
+        trees.insert("/o".into(), tree("/o/.git", &["y"], None));
+        let f = assemble(&[seat("A", "/a"), seat("O", "/o")], &trees, &[]);
+        let r = f.repos.iter().find(|r| r.name == "r").unwrap();
+        let o = r.owners.as_ref().unwrap();
+        assert_eq!(o["app/x.ts"], vec!["@web".to_string()]);
+        assert_eq!(o["README.md"], vec!["@all".to_string()]);
+        assert!(f.repos.iter().find(|r| r.name == "o").unwrap().owners.is_none(), "no CODEOWNERS, no owners");
+    }
+
+    #[test]
+    fn radar_zpaths_keep_odd_names() {
+        assert_eq!(zpaths(Some("a b.rs\0caf\u{e9}.md\0".into())), vec!["a b.rs".to_string(), "caf\u{e9}.md".to_string()]);
+        assert_eq!(norm("././x/y"), "x/y");
+        assert_eq!(norm("/x"), "x");
+    }
+
+    #[test]
+    fn radar_read_tree_on_a_real_repo() {
+        let d = std::env::temp_dir().join(format!("seamux-radar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join(".github")).unwrap();
+        let root = d.to_str().unwrap();
+        let sh = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(root).args(args).output().unwrap().status.success(), "{args:?}");
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.email", "t@t"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(d.join(".github/CODEOWNERS"), "* @base\n").unwrap();
+        std::fs::write(d.join("a.rs"), "1").unwrap();
+        sh(&["add", "-A"]);
+        sh(&["commit", "-q", "-m", "base"]);
+        sh(&["checkout", "-q", "-b", "dev"]);
+        // The worktree's CODEOWNERS differs: the base branch's is the one read.
+        std::fs::write(d.join(".github/CODEOWNERS"), "* @branch\n").unwrap();
+        std::fs::write(d.join("odd name \u{e9}.rs"), "x").unwrap();
+        sh(&["add", "-A"]);
+        sh(&["commit", "-q", "-m", "dev"]);
+        std::fs::create_dir_all(d.join("junk")).unwrap();
+        for k in 0..UNTRACKED_MAX + 50 {
+            std::fs::write(d.join(format!("junk/{k}.tmp")), "").unwrap();
+        }
+        let t = read_tree(root);
+        assert!(t.common.ends_with(".git"), "{}", t.common);
+        assert_eq!(t.branch, "dev");
+        assert!(t.editing.contains(&"odd name \u{e9}.rs".to_string()), "{:?}", &t.editing[..3.min(t.editing.len())]);
+        assert_eq!(t.editing.iter().filter(|p| p.starts_with("junk/")).count(), UNTRACKED_MAX);
+        assert_eq!(t.codeowners.as_deref(), Some("* @base\n"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

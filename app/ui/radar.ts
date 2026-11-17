@@ -6,7 +6,8 @@ type Contact = {
   ws: string; pane: string; title: string; root: string; branch: string;
   color: string | null; state: string; editing: string[]; planned: Planned[];
 };
-type Repo = { name: string; common: string; contacts: Contact[]; collisions: string[] };
+/** `owners`: each file on the scope to its CODEOWNERS owners ([] when no rule names one); absent when the repo has no CODEOWNERS. */
+type Repo = { name: string; common: string; contacts: Contact[]; collisions: string[]; owners?: Record<string, string[]> };
 type Frame = { repos: Repo[] };
 
 /** Who is on one file: each contact's index and whether it edits or plans it. */
@@ -15,7 +16,7 @@ type Mark = { c: number; editing: boolean; planned: Planned[] };
 type FileDot = { path: string; wedge: string; a: number; r: number; marks: Mark[]; risk: 0 | 1 | 2 };
 /** Two workspaces that share files, for the card's "who to talk to". */
 type Pair = { a: number; b: number; files: string[]; now: number };
-type Focus = { kind: "file" | "wedge" | "contact"; key: string };
+type Focus = { kind: "file" | "wedge" | "contact" | "team"; key: string };
 
 const SVG = "http://www.w3.org/2000/svg";
 /** One turn of the sweep, ms. */
@@ -110,44 +111,76 @@ function marksOf(repo: Repo): Map<string, Mark[]> {
 const riskOf = (marks: Mark[]): 0 | 1 | 2 => (marks.length < 2 ? 0 : marks.filter((m) => m.editing).length >= 2 ? 2 : 1);
 
 /** Lay a repo's files out: a wedge per top folder, sized by its files with collisions weighted up, and a band per risk. */
-export function layout(repo: Repo): { dots: FileDot[]; wedges: { name: string; a0: number; a1: number; n: number; hot: number }[] } {
+/** The team that owns a path: its first CODEOWNERS owner, or "" for nobody. */
+const teamOf = (repo: Repo, p: string) => repo.owners?.[p]?.[0] ?? "";
+/** Team tints (oklch hues), apart from the collision red and quieter than the workspace colours. */
+const TEAM_HUES = [215, 105, 295, 65, 165, 250, 135, 330];
+
+/** A slice of a wedge one sub-group (a team, with the Islands overlay) holds. */
+export type Sub = { wedge: string; key: string; a0: number; a1: number; n: number };
+
+/** Lay a repo's files out: a wedge per `keyOf` group (a top folder, or a team), sized by its files
+ * with collisions weighted up, and a band per risk. With `subOf`, each wedge splits further into one
+ * contiguous slice per sub-group, so a team's files inside a folder sit together as one island. */
+export function layout(repo: Repo, keyOf: (p: string) => string = wedgeOf, subOf?: (p: string) => string): { dots: FileDot[]; wedges: { name: string; a0: number; a1: number; n: number; hot: number }[]; subs: Sub[] } {
   const all = marksOf(repo);
   const by = new Map<string, string[]>();
   for (const p of all.keys()) {
-    const w = wedgeOf(p);
+    const w = keyOf(p);
     if (!by.has(w)) by.set(w, []);
     by.get(w)!.push(p);
   }
-  const names = [...by.keys()].sort((a, b) => (a === "·" ? 1 : b === "·" ? -1 : a.localeCompare(b)));
-  const weight = (n: string) => by.get(n)!.reduce((s, p) => s + (riskOf(all.get(p)!) ? 8 : 1), 0);
-  const total = names.reduce((s, n) => s + weight(n), 0);
+  const last = (a: string) => a === "·" || a === "";
+  const order = (a: string, b: string) => (last(a) ? 1 : last(b) ? -1 : a.localeCompare(b));
+  const names = [...by.keys()].sort(order);
+  const weigh = (ps: string[]) => ps.reduce((s, p) => s + (riskOf(all.get(p)!) ? 8 : 1), 0);
+  const total = names.reduce((s, n) => s + weigh(by.get(n)!), 0);
   const floor = names.length ? Math.min(20, 360 / names.length / 2) : 0;
   const spare = 360 - floor * names.length;
   const wedges: { name: string; a0: number; a1: number; n: number; hot: number }[] = [];
+  const subs: Sub[] = [];
   const dots: FileDot[] = [];
   let a = 0;
   for (const name of names) {
     const paths = by.get(name)!.sort();
-    const span = floor + (total ? (spare * weight(name)) / total : 0);
-    const pad = Math.min(4, span / 6);
-    const arc = ((span - 2 * pad) * Math.PI) / 180;
-    // Each band spreads across the whole wedge. Files go on as few rows as fit, outer rows first;
-    // with more than one row, neighbours alternate rows so no two sit side by side on one.
-    const spread = (list: string[], rows: number[], room: number) => {
-      let n = 1;
-      while (n < rows.length && list.length * room > rows.slice(0, n).reduce((s, r) => s + arc * r, 0)) n++;
-      list.forEach((path, k) => {
-        const marks = all.get(path)!;
-        dots.push({ path, wedge: name, a: a + pad + ((k + 0.5) / list.length) * (span - 2 * pad), r: rows[k % n], marks, risk: riskOf(marks) });
-      });
-    };
-    spread(paths.filter((p) => riskOf(all.get(p)!) === 2), ROWS_NOW, STAR_ROOM);
-    spread(paths.filter((p) => riskOf(all.get(p)!) === 1), ROWS_PLAN, STAR_ROOM);
-    spread(paths.filter((p) => riskOf(all.get(p)!) === 0), ROWS_LONE, 99);
+    const span = floor + (total ? (spare * weigh(paths)) / total : 0);
+    // The wedge's slices: one per sub-group, sized by weight with a small floor so none vanishes.
+    const groups = new Map<string, string[]>();
+    for (const p of paths) {
+      const k = subOf ? subOf(p) : "";
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(p);
+    }
+    const keys = [...groups.keys()].sort(order);
+    const gFloor = Math.min(6, span / keys.length / 2);
+    const gSpare = span - gFloor * keys.length;
+    const gTotal = keys.reduce((s, k) => s + weigh(groups.get(k)!), 0);
+    let g0 = a;
+    for (const key of keys) {
+      const list = groups.get(key)!;
+      const gSpan = gFloor + (gTotal ? (gSpare * weigh(list)) / gTotal : 0);
+      const pad = Math.min(subOf ? 2 : 4, gSpan / 6);
+      const arc = ((gSpan - 2 * pad) * Math.PI) / 180;
+      // Each band spreads across the whole slice. Files go on as few rows as fit, outer rows first;
+      // with more than one row, neighbours alternate rows so no two sit side by side on one.
+      const spread = (band: string[], rows: number[], room: number) => {
+        let n = 1;
+        while (n < rows.length && band.length * room > rows.slice(0, n).reduce((s, r) => s + arc * r, 0)) n++;
+        band.forEach((path, k) => {
+          const marks = all.get(path)!;
+          dots.push({ path, wedge: name, a: g0 + pad + ((k + 0.5) / band.length) * (gSpan - 2 * pad), r: rows[k % n], marks, risk: riskOf(marks) });
+        });
+      };
+      spread(list.filter((p) => riskOf(all.get(p)!) === 2), ROWS_NOW, STAR_ROOM);
+      spread(list.filter((p) => riskOf(all.get(p)!) === 1), ROWS_PLAN, STAR_ROOM);
+      spread(list.filter((p) => riskOf(all.get(p)!) === 0), ROWS_LONE, 99);
+      subs.push({ wedge: name, key, a0: g0, a1: g0 + gSpan, n: list.length });
+      g0 += gSpan;
+    }
     wedges.push({ name, a0: a, a1: a + span, n: paths.length, hot: paths.filter((p) => riskOf(all.get(p)!) > 0).length });
     a += span;
   }
-  return { dots, wedges };
+  return { dots, wedges, subs };
 }
 
 /** Pairs of workspaces that share a file, most urgent first. */
@@ -240,7 +273,11 @@ export class RadarView {
   private t0 = performance.now();
   /** When each collision (repo + path) first showed; 0 for the first reading's, which are old news. */
   private since = new Map<string, number>();
+  /** No reading with workspaces in it yet: the first one is the baseline, not news. */
   private first = true;
+  /** A read is in flight (the next tick waits for it), and whether the tab is showing. */
+  private reading = false;
+  private shown = false;
   private failed = "";
   private retrying = false;
   /** What the side card shows: the overview, a file, a wedge or a contact. */
@@ -249,6 +286,11 @@ export class RadarView {
   private allPeople = false;
   private open = new Set<string>();
   private chips = h("div", "radar-repos");
+  /** The CODEOWNERS overlay: off, islands drawn over the folder wedges, or wedges regrouped by team. */
+  private owners: "off" | "folders" | "teams" = (() => {
+    try { return (localStorage.getItem("radar.owners") as "off" | "folders" | "teams") || "off"; } catch { return "off"; }
+  })();
+  private tools = h("div", "radar-tools");
   private scope = h("div", "radar-scope");
   private card = h("aside", "radar-card");
 
@@ -256,9 +298,11 @@ export class RadarView {
     const body = h("div", "radar-body");
     // The card comes first in the DOM, so Tab reaches "who to talk to" before the scope's marks.
     body.append(this.card, this.scope);
+    this.tools.setAttribute("role", "toolbar");
+    this.tools.setAttribute("aria-label", "Overlays");
     this.chips.setAttribute("role", "toolbar");
     this.chips.setAttribute("aria-label", "Repos");
-    root.append(this.chips, body);
+    root.append(this.chips, this.tools, body);
     root.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && this.focus) {
         e.stopPropagation();
@@ -270,16 +314,22 @@ export class RadarView {
   setShown(on: boolean): void {
     window.clearInterval(this.timer);
     this.timer = undefined;
+    this.shown = on;
     if (!on) return;
     void this.read();
     this.timer = window.setInterval(() => void this.read(), EVERY);
   }
 
   private async read(): Promise<void> {
+    // A slow git pass must not stack up behind the next tick.
+    if (this.reading) return;
+    this.reading = true;
     let f: Frame;
     try {
       f = await invoke<Frame>("radar_frame");
     } catch (e) {
+      this.reading = false;
+      if (!this.shown) return;
       // The next good read must redraw even if it matches the last one.
       this.last = "";
       this.failed = String(e);
@@ -287,6 +337,9 @@ export class RadarView {
       this.draw();
       return;
     }
+    this.reading = false;
+    // A read that lands after the tab hid draws nothing; the next show reads again.
+    if (!this.shown) return;
     const json = JSON.stringify(f);
     const was = this.failed;
     this.failed = "";
@@ -297,11 +350,13 @@ export class RadarView {
     if (json === this.last && !was && !aged) return;
     this.last = json;
     this.frame = f;
-    for (const r of f.repos) for (const p of r.collisions) {
-      const k = r.common + "\0" + p;
-      if (!this.since.has(k)) this.since.set(k, this.first ? 0 : now);
-    }
-    this.first = false;
+    // When each collision first showed. One that has cleared is forgotten, so if it comes back it is new again.
+    const live = new Set(f.repos.flatMap((r) => r.collisions.map((p) => r.common + "\0" + p)));
+    for (const k of [...this.since.keys()]) if (!live.has(k)) this.since.delete(k);
+    for (const k of live) if (!this.since.has(k)) this.since.set(k, this.first ? 0 : now);
+    // The baseline is the first reading with workspaces in it: an empty frame before the wall has
+    // one must not make everything after it look new.
+    if (f.repos.length) this.first = false;
     if (!f.repos.some((r) => r.common === this.repo)) this.repo = f.repos[0]?.common ?? "";
     this.draw();
   }
@@ -320,7 +375,42 @@ export class RadarView {
     return c.color || `oklch(var(--radar-l) var(--radar-ch) ${HUES[i % HUES.length]})`;
   }
 
+  /** What groups files into wedges: their top folder, or with the team layout their owning team. */
+  private keyOf(repo: Repo): (p: string) => string {
+    return this.owners === "teams" && repo.owners ? (p: string) => teamOf(repo, p) : wedgeOf;
+  }
+
+  /** Every team in the repo, in a stable order, with its tint. */
+  private teams(repo: Repo): Map<string, string> {
+    const names = [...new Set(Object.values(repo.owners ?? {}).map((o) => o[0]).filter(Boolean))].sort();
+    return new Map(names.map((n, i) => [n, `oklch(var(--radar-isl-l) var(--radar-isl-ch) ${TEAM_HUES[i % TEAM_HUES.length]})`]));
+  }
+
+  private drawTools(repo: Repo | undefined): void {
+    this.tools.replaceChildren();
+    const has = !!repo?.owners;
+    const seg = (mode: "off" | "folders" | "teams", label: string, tip: string) => {
+      const b = h("button", "radar-tool", label);
+      b.type = "button";
+      b.title = has ? tip : "This repo has no CODEOWNERS file";
+      b.disabled = !has && mode !== "off";
+      b.setAttribute("aria-pressed", String(this.owners === mode));
+      b.addEventListener("click", () => {
+        this.owners = mode;
+        try { localStorage.setItem("radar.owners", mode); } catch { /* per-viewer nicety only */ }
+        this.focus = null;
+        this.draw();
+      });
+      return b;
+    };
+    this.tools.append(h("span", "radar-tool-l", "Owners"),
+      seg("off", "Off", "Hide CODEOWNERS teams"),
+      seg("folders", "Islands", "Tint each team's files over the folder layout"),
+      seg("teams", "By team", "Group the scope's wedges by owning team"));
+  }
+
   private draw(): void {
+    this.drawTools(this.current());
     this.drawChips();
     this.drawScope();
     this.drawCard();
@@ -419,7 +509,10 @@ export class RadarView {
       return;
     }
 
-    const { dots, wedges } = layout(repo);
+    const own = this.owners !== "off" && !!repo.owners;
+    const tints = this.teams(repo);
+    // Islands: folder wedges, each split into one slice per owning team. By team: the wedges are the teams.
+    const { dots, wedges, subs } = layout(repo, this.keyOf(repo), own && this.owners === "folders" ? (p) => teamOf(repo, p) : undefined);
     const busy = dots.length > BUSY;
     if (busy) sweep.classList.add("quiet");
     for (const w of wedges) {
@@ -430,7 +523,7 @@ export class RadarView {
       const mid = wedges.length > 1 ? (w.a0 + w.a1) / 2 : 0;
       const [lx, ly] = pt(narrow ? R + 6 : R + 9, mid);
       const anchor = Math.abs(lx) < 12 ? "middle" : lx > 0 ? "start" : "end";
-      const full = w.name === "·" ? "top level" : w.name;
+      const full = w.name === "·" ? "top level" : w.name === "" ? "no owner" : w.name;
       const max = narrow ? 8 : 16;
       const t = el("text", { x: lx, y: ly + 2.5, "text-anchor": anchor, class: "radar-label" }, svg);
       t.textContent = full.length > max ? full.slice(0, max - 1) + "…" : full;
@@ -438,6 +531,34 @@ export class RadarView {
       el("title", {}, t).textContent = `${full}: ${plural(w.n, "file")}${w.hot ? `, ${plural(w.hot, "collision")}` : ""}`;
       t.classList.toggle("on", this.focus?.kind === "wedge" && this.focus.key === w.name);
       act(t, `${full} folder: ${plural(w.n, "file")}, ${plural(w.hot, "collision")}`, () => this.pick({ kind: "wedge", key: w.name }));
+      // Islands: the folder's owning teams on a second line under its name, each in its tint.
+      if (own && this.owners === "folders") {
+        const ts = subs.filter((u) => u.wedge === w.name && u.key).map((u) => u.key);
+        if (ts.length) {
+          const tl = el("text", { x: lx, y: ly + (narrow ? 10 : 8.5), "text-anchor": anchor, class: "radar-label-teams" }, svg);
+          ts.slice(0, 2).forEach((team, k) => {
+            if (k) el("tspan", {}, tl).textContent = " ";
+            const sp = el("tspan", {}, tl);
+            sp.textContent = team;
+            sp.style.setProperty("--t", tints.get(team)!);
+          });
+          if (ts.length > 2) el("tspan", { class: "radar-who-sep" }, tl).textContent = ` +${ts.length - 2}`;
+        }
+      }
+    }
+
+    // Ownership islands sit under everything else: a run of neighbouring files one team owns,
+    // from the hub out to the rim, tinted in the team's colour with a dashed coast.
+    if (own) {
+      const isl = el("g", { class: "radar-islands" }, svg);
+      const runs = this.owners === "teams" ? wedges.map((w) => ({ key: w.name, a0: w.a0, a1: w.a1, n: w.n })) : subs;
+      for (const r of runs) {
+        if (!r.key) continue;
+        const g = el("path", { d: sector(6, R - 2, r.a0 + 0.5, r.a1 - 0.5), class: "radar-island" }, isl);
+        g.style.setProperty("--t", tints.get(r.key)!);
+        g.dataset.team = r.key;
+        el("title", {}, g).textContent = `${r.key}: ${plural(r.n, "file")} here`;
+      }
     }
 
     const blips = el("g", { class: busy ? "radar-blips busy" : "radar-blips" }, svg);
@@ -606,6 +727,7 @@ export class RadarView {
       const on = paths ? paths.includes(g.dataset.path ?? "") : !!who && (g.dataset.who ?? "").split(",").some((c) => who.includes(Number(c)));
       g.classList.toggle("lit", any && on);
     }
+    for (const i of this.scope.querySelectorAll<SVGPathElement>(".radar-island")) i.classList.toggle("lit", any && !!paths && [...blips.querySelectorAll<SVGGElement>(".radar-file.lit")].some((g) => teamOf(this.current()!, g.dataset.path ?? "") === i.dataset.team));
     // A bundle opens while a row lights files inside it, so the lit files are visible.
     for (const c of blips.querySelectorAll<SVGGElement>(".radar-cluster"))
       c.classList.toggle("open", c.classList.contains("held") || !!c.querySelector(".radar-file.lit"));
@@ -680,7 +802,8 @@ export class RadarView {
       this.card.append(back);
       if (this.focus.kind === "file") this.fileCard(repo, this.focus.key);
       else if (this.focus.kind === "wedge") this.wedgeCard(repo, this.focus.key);
-      else this.contactCard(repo, Number(this.focus.key));
+      else if (this.focus.kind === "team") this.teamCard(repo, this.focus.key);
+      else this.contactCard(repo, repo.contacts.findIndex((c) => c.ws === this.focus!.key));
       return;
     }
     const files = marksOf(repo);
@@ -714,6 +837,8 @@ export class RadarView {
       if (more) this.card.append(more);
     }
 
+    if (this.owners !== "off" && repo.owners) this.card.append(...this.teamSection(repo, files));
+
     // Everyone else, once: the workspaces that share nothing.
     const sharing = new Set(talk.map((t) => t.c));
     const rest = repo.contacts.map((_, i) => i).filter((i) => !sharing.has(i)).sort((x, y) =>
@@ -723,7 +848,7 @@ export class RadarView {
       const ul = h("ul", "radar-list key");
       for (const i of this.allPeople ? rest : rest.slice(0, PEOPLE_SHOWN)) {
         const c = repo.contacts[i];
-        const li = this.row("contact", `${letter(i)}: ${c.title}, ${c.branch}`, () => this.pick({ kind: "contact", key: String(i) }));
+        const li = this.row("contact", `${letter(i)}: ${c.title}, ${c.branch}`, () => this.pick({ kind: "contact", key: c.ws }));
         const top = h("div", "radar-row-top");
         const name = h("span", "radar-name", c.title);
         name.title = `${c.title} · ${c.branch} · ${c.editing.length} editing · ${c.planned.length} planned`;
@@ -744,7 +869,8 @@ export class RadarView {
   /** One workspace to talk to: who it collides with, how urgent, a jump to it, and each partner's files on demand. */
   private personRow(repo: Repo, t: Talk, files: Map<string, Mark[]>): HTMLLIElement {
     const c = repo.contacts[t.c];
-    const key = String(t.c);
+    // Keyed by workspace id, not list position: a refresh that reorders workspaces keeps it open.
+    const key = c.ws;
     const opened = this.open.has(key);
     const all = [...new Set(t.with.flatMap((p) => p.files))];
     const isNew = all.some((f) => this.isNew(repo, f));
@@ -780,6 +906,17 @@ export class RadarView {
     if (all.length > t.now) meta.append(h("span", "radar-tag", `${all.length - t.now} in plans`));
     if (isNew) meta.append(h("span", "radar-tag new", "new"));
     li.append(top, withRow, meta);
+    if (this.owners !== "off" && repo.owners) {
+      // The teams whose code this workspace touches: who else to bring in.
+      const ts = [...new Set([...c.editing, ...c.planned.map((p) => p.path)].map((p) => teamOf(repo, p)).filter(Boolean))].sort();
+      if (ts.length) {
+        const tl = h("div", "radar-teams-of");
+        tl.append(h("span", "radar-with-l", "touches"));
+        for (const t of ts.slice(0, 3)) tl.append(this.teamChip(repo, t));
+        if (ts.length > 3) tl.append(h("span", "radar-with-l", `+${ts.length - 3}`));
+        li.append(tl);
+      }
+    }
     this.hover(li, null, all);
     if (opened) {
       const fl = h("ul", "radar-list sub");
@@ -832,11 +969,71 @@ export class RadarView {
     return d;
   }
 
+  private teamChip(repo: Repo, team: string): HTMLSpanElement {
+    const s = h("span", "radar-team", team);
+    s.style.setProperty("--t", this.teams(repo).get(team) ?? "var(--muted)");
+    return s;
+  }
+
+  /** Teams to involve: each team whose files the workspaces touch, worst first, with who is in its code. */
+  private teamSection(repo: Repo, files: Map<string, Mark[]>): HTMLElement[] {
+    const rows = [...this.teams(repo).keys()].map((team) => {
+      const paths = [...files.keys()].filter((p) => teamOf(repo, p) === team);
+      const who = [...new Set(paths.flatMap((p) => files.get(p)!.map((m) => m.c)))].sort((a, b) => a - b);
+      const hot = paths.filter((p) => files.get(p)!.length > 1).length;
+      return { team, paths, who, hot };
+    }).filter((r) => r.who.length).sort((a, b) => b.hot - a.hot || b.who.length - a.who.length || a.team.localeCompare(b.team));
+    const unowned = [...files.keys()].filter((p) => !teamOf(repo, p));
+    if (!rows.length && !unowned.length) return [];
+    const head = h("h3", "", "Teams to involve");
+    const ul = h("ul", "radar-list");
+    for (const r of rows) {
+      const li = this.row("team" + (r.hot ? " hot" : ""), `${r.team}: ${plural(r.who.length, "workspace")} in its code, ${plural(r.hot, "collision")}`, () => this.pick({ kind: "team", key: r.team }));
+      const top = h("div", "radar-row-top");
+      top.append(this.teamChip(repo, r.team));
+      const w = h("span", "radar-who");
+      for (const c of r.who.slice(0, 6)) w.append(this.badge(c));
+      if (r.who.length > 6) w.append(h("span", "radar-with-l", `+${r.who.length - 6}`));
+      top.append(w);
+      const meta = h("div", "radar-meta", `${plural(r.paths.length, "file")} touched`);
+      if (r.hot) meta.append(h("span", "radar-tag now", `${plural(r.hot, "collision")} in its code`));
+      li.append(top, meta);
+      this.hover(li, null, r.paths);
+      ul.append(li);
+    }
+    const out: HTMLElement[] = [head, ul];
+    if (unowned.length) out.push(h("p", "radar-dim radar-unowned", `${plural(unowned.length, "touched file")} ${unowned.length === 1 ? "has" : "have"} no owner in CODEOWNERS.`));
+    return out;
+  }
+
+  /** A team's card: its files the workspaces touch, in bands, and who to bring in. */
+  private teamCard(repo: Repo, team: string): void {
+    const head = h("div", "radar-row-top");
+    const h2 = h("h2", "", team || "No owner");
+    h2.tabIndex = -1;
+    head.append(h2);
+    this.card.append(head);
+    const all = marksOf(repo);
+    const paths = [...all.keys()].filter((p) => teamOf(repo, p) === team);
+    const who = [...new Set(paths.flatMap((p) => all.get(p)!.map((m) => m.c)))];
+    this.card.append(h("p", "radar-dim", `${plural(who.length, "workspace")} in its code · ${plural(paths.length, "file")}`));
+    this.banded(paths, all);
+  }
+
   private fileCard(repo: Repo, path: string): void {
     const h2 = h("h2", "radar-path-h");
     h2.append(pathText(path));
     h2.tabIndex = -1;
     this.card.append(h2);
+    if (repo.owners) {
+      const o = repo.owners[path] ?? [];
+      const p = h("p", "radar-owned");
+      if (o.length) {
+        p.append(document.createTextNode("Owned by "));
+        o.forEach((t, k) => { if (k) p.append(document.createTextNode(" ")); p.append(this.teamChip(repo, t)); });
+      } else p.append(document.createTextNode("No owner in CODEOWNERS"));
+      this.card.append(p);
+    }
     const on = repo.contacts.map((c, i) => ({ c, i, ed: c.editing.includes(path), pl: c.planned.filter((p) => p.path === path) })).filter((x) => x.ed || x.pl.length);
     const editing = on.filter((x) => x.ed).length;
     if (on.length > 1)
@@ -891,6 +1088,8 @@ export class RadarView {
   }
 
   private wedgeCard(repo: Repo, wedge: string): void {
+    // With the team layout a wedge is a team.
+    if (this.owners === "teams" && repo.owners) return this.teamCard(repo, wedge);
     const h2 = h("h2", "", wedge === "·" ? "Top level" : `${wedge}/`);
     h2.tabIndex = -1;
     this.card.append(h2);
@@ -911,6 +1110,14 @@ export class RadarView {
     this.card.append(head, h("p", "radar-dim", `branch ${c.branch}`), h("p", "radar-dim", `worktree ${c.root}`), this.jumpButton(c));
     this.banded([...new Set([...c.editing, ...c.planned.map((p) => p.path)])], marksOf(repo), i);
   }
+}
+
+/** An annular sector from radius r0 to r1 between angles a0 and a1 (degrees clockwise from twelve). */
+function sector(r0: number, r1: number, a0: number, a1: number): string {
+  if (a1 - a0 >= 359.9) return `M0 ${-r1} A${r1} ${r1} 0 1 1 0 ${r1} A${r1} ${r1} 0 1 1 0 ${-r1} Z M0 ${-r0} A${r0} ${r0} 0 1 0 0 ${r0} A${r0} ${r0} 0 1 0 0 ${-r0} Z`;
+  const big = a1 - a0 > 180 ? 1 : 0;
+  const [x0, y0] = pt(r1, a0), [x1, y1] = pt(r1, a1), [x2, y2] = pt(r0, a1), [x3, y3] = pt(r0, a0);
+  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r1} ${r1} 0 ${big} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} L${x2.toFixed(2)} ${y2.toFixed(2)} A${r0} ${r0} 0 ${big} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z`;
 }
 
 /** A four-point star, the collision's mark. */
