@@ -152,7 +152,7 @@
     "note": "the side column's tab groups and their ⌘⇧ keys: a pure module, which Node runs as TypeScript, checked against sheet.ts and shell.rs" },
   { "id": "app-ui-doctor", "kind": "test",
     "run": "node app/ui/doctor_probe.ts",
-    "match": ["app/ui/doctor_model.ts", "app/ui/doctor_probe.ts"], "default": false,
+    "match": ["app/ui/doctor_model.ts", "app/ui/doctor_probe.ts"], "default": true,
     "note": "the Doctor tab's triage model: grouping findings by workspace, the safe set Fix all safe runs, and the archive rows' filters; a pure module, which Node runs as TypeScript" },
   { "id": "app-ui-bang", "kind": "test",
     "run": "node app/ui/bang_probe.ts",

@@ -22,8 +22,10 @@ export const TABS: Tab[] = [
   { id: "radar", label: "Radar" },
 ];
 
-/** The pages behind the ⋯ menu, framed from the intent server. */
+/** The pages behind the ⋯ menu: the app's own views (no path), and pages
+ *  framed from the intent server. */
 export const MENU: Tab[] = [
+  { id: "doctor", label: "Doctor" },
   { id: "usage", label: "Usage", path: "/usage" },
   {
     id: "board",
