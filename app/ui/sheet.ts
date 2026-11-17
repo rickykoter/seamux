@@ -631,6 +631,10 @@ export class Sheet {
   private menuShut = { group: "", at: 0 };
   /** The strip's own word after a key that found nothing (flash). */
   private noteEl = document.createElement("span");
+  /** The list is being redrawn: the item that had focus goes, and that is no leaving. */
+  private refilling = false;
+  /** Each group's tabs as its chip was last drawn, for an open list to follow a redraw. */
+  private groupTabs = new Map<string, Tab[]>();
   /** The tab shown when the strip was last drawn (drawTabs's focus). */
   private drawnActive = "";
   private sayTimer = 0;
@@ -708,6 +712,7 @@ export class Sheet {
     // Away on a click elsewhere, focus leaving it (Tab, a framed page), or the window going.
     document.addEventListener("click", () => this.closeGroupMenu());
     this.groupMenu.addEventListener("focusout", (e) => {
+      if (this.refilling) return;
       if (!this.groupMenu.contains(e.relatedTarget as Node | null)) this.closeGroupMenu();
     });
     window.addEventListener("blur", () => this.closeGroupMenu());
@@ -901,7 +906,7 @@ export class Sheet {
     this.pageHidden = false;
     const key = `file:${s.title}`;
     this.drop(key);
-    this.tabs.push({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
+    this.addTab({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
     this.select(key, true);
   }
 
@@ -920,7 +925,7 @@ export class Sheet {
     } catch {
       /* shown as written */
     }
-    this.tabs.push({ key, kind: "web", label, state: "", waiting: false, now: false, el: null, web: url, toCmux: () => invoke("open_url", { url }) });
+    this.addTab({ key, kind: "web", label, state: "", waiting: false, now: false, el: null, web: url, toCmux: () => invoke("open_url", { url }) });
     this.select(key, true);
   }
 
@@ -931,7 +936,7 @@ export class Sheet {
     if (t) {
       t.page = p;
       t.toCmux = p.toCmux ?? null;
-    } else this.tabs.push({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, toCmux: p.toCmux ?? null });
+    } else this.addTab({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, toCmux: p.toCmux ?? null });
     this.select(p.path, true);
   }
 
@@ -981,6 +986,12 @@ export class Sheet {
     this.select((t ?? this.tabs.find((x) => x.key === WAKE))?.key ?? WAKE);
   }
 
+  /** A tab opened here joins its kind's place in the strip, so ⌘] and ⌘[
+   *  step through the tabs in the order the strip draws them. */
+  private addTab(t: Tab): void {
+    this.tabs = ordered([...this.tabs, t]);
+  }
+
   private drop(key: string): void {
     const t = this.tabs.find((x) => x.key === key);
     t?.el?.remove();
@@ -1027,6 +1038,7 @@ export class Sheet {
    *  page. A kind with several lists them from its count. */
   private drawTabs(): void {
     const chips: HTMLElement[] = [];
+    this.groupTabs.clear();
     const wake = this.tabs.find((t) => t.key === WAKE);
     if (wake) chips.push(this.chip(wake, "Wake", [wake], "⌘E", "This workspace's Wake (⌘E, and again to go back)"));
     for (const g of GROUPS) {
@@ -1051,7 +1063,16 @@ export class Sheet {
     const had = (document.activeElement as HTMLElement | null)?.closest?.(".sheet-grp") as HTMLElement | null;
     const hadKind = had && this.tabsEl.contains(had) ? (this.drawnActive === this.active ? had.dataset.kind : on.dataset.kind) : undefined;
     this.drawnActive = this.active;
+    // An open list stays open over a redraw, rebuilt from the new chip, on the item that had focus.
+    const listFor = this.groupMenu.hidden ? "" : this.groupMenu.dataset.for ?? "";
+    const listAt = [...this.groupMenu.querySelectorAll("button")].indexOf(document.activeElement as HTMLButtonElement);
     this.tabsEl.replaceChildren(...chips, this.noteEl);
+    if (listFor) {
+      const chip = chips.find((c) => c.dataset.group === listFor);
+      const its = chip ? this.groupTabs.get(listFor) : undefined;
+      if (chip && its && its.length > 1) this.fillGroupMenu(chip, its, chip.querySelector<HTMLElement>(".sheet-tab")!, listAt);
+      else this.closeGroupMenu();
+    }
     if (hadKind) {
       const b = chips.find((c) => c.dataset.kind === hadKind)?.querySelector<HTMLButtonElement>(".sheet-tab");
       if (b) {
@@ -1117,6 +1138,7 @@ export class Sheet {
     wrap.append(b);
     if (many) {
       wrap.dataset.group = group;
+      this.groupTabs.set(group!, its);
       const more = document.createElement("button");
       more.type = "button";
       more.tabIndex = -1;
@@ -1165,8 +1187,17 @@ export class Sheet {
     if (!this.groupMenu.hidden && this.groupMenu.dataset.for === g) return this.closeGroupMenu();
     if (this.menuShut.group === g && Date.now() - this.menuShut.at < 300) return;
     this.closeGroupMenu();
+    this.fillGroupMenu(chip, its, from, "shown");
+  }
+
+  /** Draw the list under `chip`. `focus`: "shown" puts focus on the tab
+   *  shown (or the first); a number, on that item (a redraw keeping its
+   *  place); -1 leaves focus where it is. */
+  private fillGroupMenu(chip: HTMLElement, its: Tab[], from: HTMLElement, focus: "shown" | number): void {
+    const g = chip.dataset.group ?? "";
     this.menuFrom = from;
     this.groupMenu.dataset.for = g;
+    this.refilling = true;
     this.groupMenu.replaceChildren(
       ...its.map((t) => {
         const i = document.createElement("button");
@@ -1192,7 +1223,10 @@ export class Sheet {
     this.groupMenu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
     this.groupMenu.style.top = `${r.bottom + 4}px`;
     chip.querySelector(".sheet-tab-more")?.setAttribute("aria-expanded", "true");
-    (this.groupMenu.querySelector<HTMLButtonElement>(".on") ?? this.groupMenu.querySelector<HTMLButtonElement>("button"))?.focus();
+    const items = [...this.groupMenu.querySelectorAll<HTMLButtonElement>("button")];
+    this.refilling = false;
+    if (focus === "shown") (items.find((i) => i.classList.contains("on")) ?? items[0])?.focus();
+    else if (focus >= 0) items[Math.min(focus, items.length - 1)]?.focus();
   }
 
   private closeGroupMenu(refocus = false): void {
