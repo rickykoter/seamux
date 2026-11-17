@@ -94,7 +94,7 @@ pub async fn doctor_forget(cwd: String) -> Result<String, String> {
 pub async fn doctor_resume(cwd: String) -> Result<String, String> {
     blocking(move || {
         row_in(&cwd, "past")?;
-        crew_cli::resume::resume_latest(&cwd)
+        crew_cli::resume::resume_latest(&cwd, seamux_app::backend::kind())
     })
     .await
 }

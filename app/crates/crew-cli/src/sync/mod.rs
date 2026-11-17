@@ -589,7 +589,9 @@ pub fn main(args: &[String]) -> i32 {
             // the pane's terminal) and no pid. A pane file still working there
             // with no Claude is marked ended, not removed: the pane is still
             // open, and its session id is what resumes it.
-            let tmux_dead = out.tmux.is_some() && live_ws.contains(&pane.ws) && claude_gone_on_tmux(&pane, recs.get(pane.session.as_str()).copied());
+            // Its own workspace's record: one session id may sit in two.
+            let own = by_ws.get(&pane.ws).and_then(|l| l.iter().find(|(s, _)| *s == pane.session)).map(|(_, r)| r);
+            let tmux_dead = out.tmux.is_some() && live_ws.contains(&pane.ws) && claude_gone_on_tmux(&pane, own);
             if tmux_dead {
                 if crew_core::status::end_stale_locked(dir, pane.key(), pane.at) {
                     touched.insert(pane.ws.clone());

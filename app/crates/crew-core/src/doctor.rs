@@ -80,6 +80,9 @@ pub struct Finding {
     pub session: String,
     /// What the id names, as it was spelled (a pane id, a file name).
     pub subject: String,
+    /// The pane file's `at` the scan saw (0 for none): a fix of it acts
+    /// only while no hook has written since.
+    pub seen_at: u64,
 }
 
 impl Finding {
@@ -176,11 +179,9 @@ struct Seen {
 
 impl Doctor {
     /// Whether a transcript for Claude session `sid` exists anywhere.
+    /// Only whether the file is there: a transcript can be tens of MB.
     fn has_transcript(&self, sid: &str) -> bool {
-        crate::backend::migrate::transcript_cwd(&self.projects, sid).is_some()
-            || std::fs::read_dir(&self.projects)
-                .map(|rd| rd.flatten().any(|d| d.path().join(format!("{sid}.jsonl")).is_file()))
-                .unwrap_or(false)
+        std::fs::read_dir(&self.projects).map(|rd| rd.flatten().any(|d| d.path().join(format!("{sid}.jsonl")).is_file())).unwrap_or(false)
     }
 
     /// The newest transcript Claude stored for `cwd`: its session id.
@@ -240,6 +241,7 @@ impl Doctor {
                         fixes: vec![],
                         session: String::new(),
                         subject: String::new(),
+                        seen_at: 0,
                     }],
                 };
             }
@@ -282,6 +284,7 @@ impl Doctor {
             fixes: vec![],
             session: String::new(),
             subject: subject.to_string(),
+            seen_at: 0,
         };
 
         // The registry's panes, as tmux and ps see them now.
@@ -311,7 +314,9 @@ impl Doctor {
         let session_of = |id: &str| files.get(&up(id)).map(|f| f.session.clone()).unwrap_or_default();
         let why_not = |g: &Value| -> Option<&'static str> {
             let (sid, cwd, ws) = (session_of(&s(g, "id")), s(g, "cwd"), s(g, "ws"));
-            if sid.is_empty() {
+            if !files.contains_key(&up(&s(g, "id"))) {
+                Some("no pane file for it was found")
+            } else if sid.is_empty() {
                 Some("it has no Claude session to resume")
             } else if !Path::new(&cwd).is_dir() {
                 Some("its folder is gone")
@@ -334,6 +339,22 @@ impl Doctor {
         for w in &workspaces {
             by_cwd.entry(s(w, "cwd")).or_default().push(w);
         }
+        // Of two or more records for one folder, the one kept: one with a
+        // live pane, else one with a lost pane that can restart, else the
+        // oldest. Only the others are duplicates.
+        let live_in = |id: &str| seen.iter().any(|p| p.alive && p.ws.eq_ignore_ascii_case(id));
+        let kept: HashMap<String, String> = by_cwd
+            .iter()
+            .filter(|(_, v)| v.len() > 1)
+            .filter_map(|(cwd, v)| {
+                let k = v
+                    .iter()
+                    .find(|w| live_in(&s(w, "id")))
+                    .or_else(|| v.iter().find(|w| restartable.contains(&up(&s(w, "id")))))
+                    .or_else(|| v.iter().min_by_key(|w| w.get("created").and_then(Value::as_u64).unwrap_or(u64::MAX)))?;
+                Some((cwd.clone(), s(k, "id")))
+            })
+            .collect();
         for w in &workspaces {
             let (id, cwd) = (s(w, "id"), s(w, "cwd"));
             let panes: Vec<&Seen> = seen.iter().filter(|p| p.ws.eq_ignore_ascii_case(&id)).collect();
@@ -348,7 +369,8 @@ impl Doctor {
                 continue;
             }
             let twins = by_cwd.get(&cwd).map(|v| v.len()).unwrap_or(0);
-            if twins > 1 && live == 0 && server == Server::Up {
+            let is_kept = kept.get(&cwd).is_none_or(|k| k.eq_ignore_ascii_case(&id));
+            if twins > 1 && live == 0 && !is_kept && !restartable.contains(&up(&id)) && server == Server::Up {
                 let mut f = base("duplicate-workspace", &id, Class::Confirm, &id);
                 f.summary = format!("registered {twins} times for one folder");
                 f.detail = format!("Another workspace record holds {cwd}; this one ({}) has no pane.", short(&id));
@@ -409,6 +431,7 @@ impl Doctor {
                     let mut f = base("stuck-working", &p.id, Class::Safe, &p.ws);
                     f.pane = p.id.clone();
                     f.summary = format!("says {} with no Claude", file.state.replace('_', " "));
+                    f.seen_at = file.at;
                     f.detail = "Its pane file was never told the session ended, so the workspace reads as busy.".into();
                     f.fixes = vec![fix("end", "Mark ended")];
                     out.push(f);
@@ -459,7 +482,10 @@ impl Doctor {
                 out.push(f);
             } else {
                 let why = why.unwrap_or_default();
-                let mut f = base("dead-gone", &id, Class::Safe, &ws);
+                // No pane file at all may only mean it is in another cache
+                // folder (a shell that sets XDG_CACHE_HOME): a person decides.
+                let unsure = !files.contains_key(&up(&id));
+                let mut f = base("dead-gone", &id, if unsure { Class::Confirm } else { Class::Safe }, &ws);
                 f.pane = id.clone();
                 f.summary = "a lost pane that can never restart".into();
                 f.detail = format!("Pane {} was lost with its server, and {why}.", short(&id));
@@ -669,8 +695,8 @@ impl Doctor {
                 Ok(format!("started {line} in {name}"))
             }
             ("stuck-working", "end") => {
-                let at = status::read(&files, &f.pane).map(|p| p.at).ok_or("its pane file is gone")?;
-                if status::end_stale(&files, &f.pane, at) {
+                // The write the scan saw: a hook that wrote since wins.
+                if status::end_stale(&files, &f.pane, f.seen_at) {
                     Ok(format!("marked pane {} ended", short(&f.pane)))
                 } else {
                     Err("its pane file changed meanwhile".into())
@@ -1028,6 +1054,16 @@ mod tests {
         let dup = by("duplicate-workspace");
         assert_eq!(dup.len(), 1);
         assert_eq!(dup[0].ws, t2, "the record without a pane is the one to drop");
+        // Two records with no pane for one folder: the oldest stays.
+        let pair = f.wt("pair");
+        let (o1, _) = t.open_workspace(&pair, "sleep 600").unwrap();
+        let (o2, _) = t.open_workspace(&pair, "sleep 600").unwrap();
+        for w in [&o1, &o2] {
+            t.close_pane(&t.panes(Some(w)).unwrap()[0].id).unwrap();
+        }
+        let scan = f.d.scan();
+        let pd: Vec<_> = scan.findings.iter().filter(|x| x.kind == "duplicate-workspace" && x.cwd == pair.to_string_lossy()).collect();
+        assert_eq!(pd.len(), 1, "only one of the pair is a duplicate: {pd:?}");
         assert!(scan.findings.iter().all(|x| x.class != Class::Safe || !x.fixes.is_empty()));
     }
 
@@ -1075,7 +1111,9 @@ mod tests {
         let scan = f.d.scan();
         assert_eq!(scan.tmux, "gone");
         assert_eq!(scan.find(&format!("lost-pane:{}", a.to_uppercase())).map(|x| x.class), Some(Class::Confirm));
-        assert_eq!(scan.find(&format!("dead-gone:{}", b.to_uppercase())).map(|x| x.class), Some(Class::Safe), "no session to resume");
+        assert_eq!(scan.find(&format!("dead-gone:{}", b.to_uppercase())).map(|x| x.class), Some(Class::Confirm), "no pane file at all: a person decides");
+        f.pane_file(&b, &ws, "", "idle");
+        assert_eq!(f.d.scan().find(&format!("dead-gone:{}", b.to_uppercase())).map(|x| x.class), Some(Class::Safe), "a file with no session is safe to forget");
         assert!(scan.findings.iter().all(|x| x.kind != "empty-workspace"), "a workspace with a pane to restart is not empty");
         // With only the pane that can never restart left, it is empty now.
         // (The forget's locked read moves both to gone first.)
@@ -1291,5 +1329,31 @@ mod tests {
         assert!(ids(&f.d.scan(), "orphan-session").is_empty());
         // Reclaim is the wizard's, never done here.
         assert!(f.d.apply(&Finding { kind: "merged-live", ..f.d.scan().findings[0].clone() }, "reclaim").unwrap_err().contains("reclaim wizard"));
+    }
+
+    #[test]
+    fn of_two_records_the_one_with_a_pane_to_restart_is_kept() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fx::new("dupgone");
+        let t = &f.d.tmux;
+        let wt = f.wt("d");
+        // The older record is empty; the newer one's pane is lost with its
+        // server and could restart.
+        let (old, _) = t.open_workspace(&wt, "sleep 600").unwrap();
+        t.close_pane(&t.panes(Some(&old)).unwrap()[0].id).unwrap();
+        let (new, _) = t.open_workspace(&wt, "sleep 600").unwrap();
+        let pane = t.panes(Some(&new)).unwrap()[0].id.clone();
+        let sid = "eeeeeeee-2222-4333-8444-555555555555";
+        f.pane_file(&pane, &new, sid, "idle");
+        f.transcript(&wt, sid);
+        tmux::tmux(&t.socket(), &["kill-server"]).unwrap();
+        // A server again (another workspace), the pane now in gone[].
+        t.open_workspace(&f.wt("other"), "sleep 600").unwrap();
+        let scan = f.d.scan();
+        assert!(scan.find(&format!("lost-pane:{}", pane.to_uppercase())).is_some(), "{:?}", scan.findings);
+        assert!(scan.find(&format!("duplicate-workspace:{}", new.to_uppercase())).is_none(), "the record with a pane to restart stays");
+        assert!(scan.find(&format!("duplicate-workspace:{}", old.to_uppercase())).is_some(), "the empty one is the duplicate");
     }
 }

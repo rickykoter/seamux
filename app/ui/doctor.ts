@@ -202,8 +202,9 @@ export class DoctorView {
       }
       if (how === "confirm" && this.arming !== key) {
         this.arming = key;
-        // Only this one turns to Confirm: one armed elsewhere goes back.
-        for (const o of this.body.querySelectorAll<HTMLButtonElement>("button.doc-danger")) {
+        // Only this one turns to Confirm: one armed anywhere in the tab
+        // (a finding or a workspace row) goes back.
+        for (const o of this.root.querySelectorAll<HTMLButtonElement>("button.doc-danger")) {
           o.textContent = o.dataset.label ?? o.textContent;
           o.classList.remove("doc-danger");
         }
@@ -355,7 +356,7 @@ export class DoctorView {
     const key = `row ${r.cwd} ${verb}`;
     const b = button(label, "", () => {
       if (confirm && this.arming !== key) {
-        for (const o of this.rowsEl.querySelectorAll<HTMLButtonElement>("button.doc-danger")) {
+        for (const o of this.root.querySelectorAll<HTMLButtonElement>("button.doc-danger")) {
           o.textContent = o.dataset.label ?? o.textContent;
           o.classList.remove("doc-danger");
         }

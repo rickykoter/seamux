@@ -307,7 +307,9 @@ pub fn app_rows() -> Value {
 
 /// Resume `cwd`'s latest session in a new workspace on this process's
 /// backend, for the app: what happened, or why not.
-pub fn resume_latest(cwd: &str) -> Result<String, String> {
+/// `kind` is the backend the caller already runs on (the app keeps its pick
+/// for its life), so the session opens where the caller shows it.
+pub fn resume_latest(cwd: &str, kind: crew_core::backend::Kind) -> Result<String, String> {
     let (sessions, _) = w::build_index(false);
     let rows = build_rows(&sessions, &[], &Map::new(), &|p| Path::new(p).is_dir());
     let r = rows.iter().find(|r| r.cwd == cwd).ok_or_else(|| format!("no Claude session recorded at {cwd}"))?;
@@ -317,7 +319,7 @@ pub fn resume_latest(cwd: &str) -> Result<String, String> {
     }
     let id = s.get("id").map(py_str).unwrap_or_default();
     let line = crew_core::native::claude_line(Some(&id))?;
-    match open_resumed(cwd, &line) {
+    match open_resumed_on(kind, crew_core::backend::open(kind), cwd, &line) {
         0 => Ok(format!("resumed {} in a new workspace", head(&id, 8))),
         _ => Err(format!("could not open a workspace at {cwd}")),
     }
@@ -564,6 +566,11 @@ fn resume(mode: &str, s: &Value) -> i32 {
 /// a pane in the seamux app's tmux otherwise, which the app then shows.
 pub fn open_resumed(cwd: &str, cmd: &str) -> i32 {
     let (kind, b) = crew_core::backend::pick();
+    open_resumed_on(kind, b, cwd, cmd)
+}
+
+/// `open_resumed` on a backend already picked.
+pub fn open_resumed_on(kind: crew_core::backend::Kind, b: Result<Box<dyn crew_core::backend::Backend>, String>, cwd: &str, cmd: &str) -> i32 {
     if kind == crew_core::backend::Kind::Cmux {
         return match crew_core::native::open_workspace(Path::new(cwd), cmd) {
             Ok((wref, id, how)) => {
