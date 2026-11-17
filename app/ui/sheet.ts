@@ -718,6 +718,17 @@ export class Sheet {
     window.addEventListener("blur", () => this.closeGroupMenu());
     this.tabsEl.addEventListener("scroll", () => this.closeGroupMenu(), { passive: true });
     this.tabsEl.addEventListener("keydown", (e) => this.stripKey(e));
+    // A page framed here asks for its GitHub links to open (lookout's
+    // review page: the webview opens no windows). Only from a frame of this
+    // sheet, at the intent server's origin, and only a github.com link.
+    window.addEventListener("message", (e) => {
+      const d = e.data as { lookout?: unknown; url?: unknown } | null;
+      if (!d || typeof d !== "object" || d.lookout !== "open" || typeof d.url !== "string") return;
+      if (!/^https:\/\/github\.com\//.test(d.url)) return;
+      const f = [...this.stack.querySelectorAll("iframe")].find((x) => x.contentWindow === e.source);
+      if (!f || e.origin !== new URL(f.src, location.href).origin) return;
+      void invoke("open_url", { url: d.url }).catch((err) => (this.say.textContent = String(err)));
+    });
     this.noteEl.className = "sheet-tabs-note";
     this.noteEl.setAttribute("role", "status");
     this.pageEl.append(this.tabsEl, this.stack, this.groupMenu);

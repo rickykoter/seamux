@@ -63,6 +63,9 @@ const tabs = [t(WAKE, WAKE), t("/ask/1", "ask", true), t("/review/a", "review"),
   const makers = ["dock.ts", "main.ts", "wake.ts", "panelinks.ts", "palette.ts", "review.ts", "sheet.ts"].filter((f) => /new Sheet\(/.test(ui(f)));
   ok("one sheet: only the Dock makes one, and nothing makes an overlay", JSON.stringify(makers) === '["dock.ts"]' && !/export function (sheet|openPage)\(/.test(sheet), JSON.stringify(makers));
   ok("one sheet: the Wake opens through the sheet it is a tab of", /constructor\(readonly root: HTMLElement, private host: Sheet\)/.test(ui("wake.ts")) && !/\bsheet\(\)/.test(ui("wake.ts")));
+  ok("one sheet: a lookout page framed beside the terminal opens its GitHub links in the browser, from its own frame and origin only",
+    /d\.lookout !== "open"/.test(sheet) && /\^https:\\\/\\\/github\\\.com\\\//.test(sheet) &&
+    /x\.contentWindow === e\.source/.test(sheet) && /e\.origin !== new URL\(f\.src, location\.href\)\.origin/.test(sheet));
   ok("one sheet: a pane's link goes to the Dock's column, bringing the Dock forward", /seamux:show-dock/.test(sheet) && /seamux:show-dock/.test(ui("main.ts")));
   ok("order: every tab opened here goes through addTab, so ⌘] steps in the strip's order", !/this\.tabs\.push\(/.test(sheet) && /this\.tabs = ordered\(/.test(sheet));
   // Another workspace starts its Wake without the last one's preview.
