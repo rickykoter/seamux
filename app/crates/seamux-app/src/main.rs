@@ -16,6 +16,7 @@ mod migrate_app;
 mod pane_app;
 mod pr_watch;
 mod pty_app;
+mod radar_app;
 mod reclaim_app;
 mod resume;
 mod resume_app;
@@ -289,6 +290,7 @@ fn main() {
             pty_app::pty_reset,
             pty_app::native_session,
             views_app::views_frame,
+            radar_app::radar_frame,
             shell::open_in_cmux,
             wake_app::wake_data,
             wake_app::wake_prs,

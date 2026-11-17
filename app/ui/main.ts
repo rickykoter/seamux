@@ -11,6 +11,8 @@ import "./wake.css";
 import "./panechips.css";
 import { ReviewView } from "./review";
 import "./review.css";
+import { RadarView } from "./radar";
+import "./radar.css";
 import { Palette } from "./palette";
 import { appearanceButton } from "./appearance";
 
@@ -57,6 +59,8 @@ const dockEl = document.getElementById("dock")!;
 const dockView = new DockView(dockEl);
 const reviewEl = document.getElementById("review")!;
 const reviewView = new ReviewView(reviewEl);
+const radarEl = document.getElementById("radar")!;
+const radarView = new RadarView(radarEl);
 
 const tabs = new Tabs(
   document.getElementById("strip")!,
@@ -64,17 +68,23 @@ const tabs = new Tabs(
   new Map([
     ["dock", dockEl],
     ["review", reviewEl],
+    ["radar", radarEl],
   ]),
 );
 tabs.onSelect = (id) => {
   if (id === "dock") dockView.shown();
   reviewView.setShown(id === "review");
+  radarView.setShown(id === "radar");
 };
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
 // at the end of the strip. Choosing a session shows it in the Dock.
 const palette = new Palette();
 document.getElementById("strip")!.append(palette.chip);
 palette.onJump = (ws, pane) => {
+  tabs.select("dock");
+  dockView.jump(ws, pane);
+};
+radarView.onJump = (ws, pane) => {
   tabs.select("dock");
   dockView.jump(ws, pane);
 };
@@ -132,7 +142,7 @@ document.addEventListener("keydown", (e) => {
   // a second Esc in a row (native.ts, so Claude's Rewind does not open) and
   // only blurs, but xterm lets the key it declined go on up to here.
   if (e.key === "Escape" && !e.defaultPrevented) hide();
-  // ⌘1 and ⌘2 pick the views, while focus is in the shell rather than a framed page.
+  // ⌘1…⌘3 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {
     tabs.selectIndex(Number(e.key) - 1);
     e.preventDefault();

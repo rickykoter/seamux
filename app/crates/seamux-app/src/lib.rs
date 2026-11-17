@@ -4,9 +4,11 @@
 pub mod actions;
 pub mod build_stamp;
 pub mod backend;
+pub mod codeowners;
 pub mod ghostty;
 pub mod pane;
 pub mod pty;
+pub mod radar;
 pub mod reclaim;
 pub mod review;
 pub mod sessions;
