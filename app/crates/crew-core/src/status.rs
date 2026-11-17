@@ -423,11 +423,44 @@ pub fn write(dir: &Path, p: &Pane) {
     }
 }
 
+/// The folder pane files live in: where crew's hooks write them
+/// (`${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew`). Every reader takes it from
+/// here, so a set XDG_CACHE_HOME never splits writers from readers.
+pub fn pane_dir() -> PathBuf {
+    crate::home::xdg_cache()
+}
+
 /// A pane is gone (its surface closed): its files go.
 pub fn remove(dir: &Path, key: &str) {
     let _ = fs::remove_file(path(dir, key));
     let _ = fs::remove_file(hold_path(dir, key));
     let _ = fs::remove_file(bgonly_path(dir, key));
+}
+
+/// Mark a pane file `ended` whose Claude is gone without a SessionEnd (it
+/// crashed, or was killed), under the status lock, when it still is the
+/// write `seen_at` and not ended: a hook that wrote since wins. The session
+/// id stays, so the pane can still be resumed. True when it wrote.
+pub fn end_stale(dir: &Path, key: &str, seen_at: u64) -> bool {
+    let _l = lock(dir);
+    end_stale_locked(dir, key, seen_at)
+}
+
+/// `end_stale` for a caller that already holds `lock(dir)` (crew-sync's
+/// prune): a second flock from the same process would wait on itself.
+pub fn end_stale_locked(dir: &Path, key: &str, seen_at: u64) -> bool {
+    let Some(mut p) = read(dir, key) else { return false };
+    if p.at != seen_at || p.state == "ended" {
+        return false;
+    }
+    p.state = "ended".into();
+    p.question = None;
+    p.asked = None;
+    p.review = false;
+    p.limited = None;
+    p.bg_only = false;
+    write(dir, &p);
+    true
 }
 
 /// Every pane file in `dir`, whichever workspace.
@@ -1214,5 +1247,21 @@ mod tests {
         let bare = Pane::new("W", "P").to_json();
         assert!(bare.get("progress").is_none(), "an old reader sees the file it always did");
         assert_eq!(Pane::from_json(&bare).unwrap().progress, None);
+    }
+
+    #[test]
+    fn a_stale_working_pane_is_ended_keeping_its_session() {
+        let d = tmp("endstale");
+        let p = Pane { session: "S1".into(), question: Some(json!({})), ..pane("a", "needs_input", 7) };
+        write(&d, &p);
+        assert!(hold_path(&d, "a").exists());
+        assert!(!end_stale(&d, "a", 6), "a newer write than the one seen is left alone");
+        assert!(end_stale(&d, "a", 7));
+        let got = read(&d, "a").unwrap();
+        assert_eq!((got.state.as_str(), got.session.as_str(), got.question.is_none()), ("ended", "S1", true));
+        assert!(!hold_path(&d, "a").exists(), "an ended pane holds nothing");
+        assert!(!end_stale(&d, "a", 7), "already ended");
+        assert!(!end_stale(&d, "nope", 7), "no file");
+        let _ = fs::remove_dir_all(&d);
     }
 }

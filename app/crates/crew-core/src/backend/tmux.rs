@@ -29,6 +29,8 @@ pub struct TmuxBackend {
     dir: PathBuf,
     /// The login shell a pane runs in; None is $SHELL, else /bin/zsh.
     shell: Option<String>,
+    /// Where crew's pane files are; None is status::pane_dir().
+    pane_files: Option<PathBuf>,
 }
 
 /// `$XDG_STATE_HOME/seamux`, else `~/.local/state/seamux`.
@@ -79,6 +81,26 @@ pub fn pane_tty(t: &Target) -> Option<String> {
 pub fn server_gone(err: &str) -> bool {
     err.contains("no server running")
         || (err.contains("error connecting") && (err.contains("(No such file or directory)") || err.contains("(Connection refused)")))
+}
+
+/// What a tmux server says when asked for its sessions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Server {
+    /// It answered.
+    Up,
+    /// It said plainly that it is not there (server_gone).
+    Gone,
+    /// tmux would not run, or failed some other way: could not tell.
+    Unknown,
+}
+
+/// Ask the server on `socket` for its sessions.
+pub fn server_says(socket: &str) -> Server {
+    match tmux(socket, &["list-sessions"]) {
+        Ok(o) if o.status.success() => Server::Up,
+        Ok(o) if server_gone(&String::from_utf8_lossy(&o.stderr)) => Server::Gone,
+        _ => Server::Unknown,
+    }
 }
 
 /// The target for a command on `t`'s pane: `=name:`, the session by its exact
@@ -174,7 +196,27 @@ fn tmux_ok(sock: &str, args: &[&str]) -> Result<String, String> {
 impl TmuxBackend {
     /// The backend whose socket and registry live in `dir`.
     pub fn at(dir: PathBuf) -> TmuxBackend {
-        TmuxBackend { dir, shell: None }
+        TmuxBackend { dir, shell: None, pane_files: None }
+    }
+
+    /// The same backend reading and cleaning crew's pane files in `dir`
+    /// instead of status::pane_dir(). Tests use it.
+    pub fn with_pane_files(mut self, dir: &Path) -> TmuxBackend {
+        self.pane_files = Some(dir.to_path_buf());
+        self
+    }
+
+    /// The folder crew's pane files for these panes live in.
+    pub fn pane_files(&self) -> PathBuf {
+        self.pane_files.clone().unwrap_or_else(crate::status::pane_dir)
+    }
+
+    /// A closed pane's crew files: its pane file, hold and bgonly markers,
+    /// and a held command. Nothing is left to pin its workspace or offer it.
+    fn forget_files(&self, pane: &str) {
+        let dir = self.pane_files();
+        crate::status::remove(&dir, pane);
+        crate::held::remove(&dir, pane);
     }
 
     /// The same backend with its panes in `shell` instead of $SHELL. Tests
@@ -274,21 +316,34 @@ impl TmuxBackend {
     /// Drop panes whose session has gone. One lost with its whole tmux
     /// server (a reboot, a kill-server) moves to `gone`, where the app offers
     /// to restart it; one that ended while its server ran (its shell exited)
-    /// is simply dropped.
+    /// is simply dropped. A pane whose server could not be asked at all (tmux
+    /// would not run, or failed some other way) stays as it is: that is no
+    /// proof it is gone, and a read must not move every pane to `gone`.
     fn prune(&self, reg: &mut Value) {
-        let (live, dead): (Vec<Value>, Vec<Value>) = list(reg, "panes").into_iter().partition(|p| self.alive(&self.pane_target(p)));
-        if dead.is_empty() {
+        let panes = list(reg, "panes");
+        if panes.iter().all(|p| self.alive(&self.pane_target(p))) {
             return;
         }
+        // In the registry's order: a kept pane stays where it was.
+        let mut kept = Vec::new();
         let mut gone = list(reg, "gone");
-        for p in dead {
-            let sock = self.pane_target(&p).socket;
-            let server_up = tmux(&sock, &["list-sessions"]).map(|o| o.status.success()).unwrap_or(false);
-            if !server_up && !gone.iter().any(|g| s(g, "id").eq_ignore_ascii_case(&s(&p, "id"))) {
-                gone.push(p);
+        for p in panes {
+            let t = self.pane_target(&p);
+            if self.alive(&t) {
+                kept.push(p);
+                continue;
+            }
+            match server_says(&t.socket) {
+                Server::Up => {}
+                Server::Gone => {
+                    if !gone.iter().any(|g| s(g, "id").eq_ignore_ascii_case(&s(&p, "id"))) {
+                        gone.push(p);
+                    }
+                }
+                Server::Unknown => kept.push(p),
             }
         }
-        reg["panes"] = Value::Array(live);
+        reg["panes"] = Value::Array(kept);
         reg["gone"] = Value::Array(gone);
     }
 
@@ -301,11 +356,26 @@ impl TmuxBackend {
 
     /// Start a gone pane again, running `claude` in a new session that keeps
     /// the pane's id (so its pane file and SEAMUX ids carry on).
+    /// Refused when the gone pane's Claude session already runs in a live
+    /// pane: two panes resuming one transcript would write over each other.
     pub fn restart(&self, pane: &str, claude: &str) -> Result<(), String> {
         let mut made = None;
+        let files = self.pane_files();
         self.update(|reg| {
             let gone = list(reg, "gone");
             let p = gone.iter().find(|g| s(g, "id").eq_ignore_ascii_case(pane)).ok_or_else(|| format!("no gone pane {pane:?}"))?.clone();
+            if let Some(sid) = crate::status::read(&files, &s(&p, "id")).map(|f| f.session).filter(|x| !x.is_empty()) {
+                // A file still saying so is not enough (a Claude that crashed
+                // leaves it working): a claude process on that pane's terminal
+                // is, and so is one tmux or ps would not say about.
+                let running = list(reg, "panes").into_iter().find(|q| {
+                    crate::status::read(&files, &s(q, "id")).is_some_and(|f| f.session == sid && f.state != "ended")
+                        && claude_on(&self.pane_target(q)) != Some(false)
+                });
+                if let Some(q) = running {
+                    return Err(format!("session {sid} already runs in pane {}", s(&q, "id")));
+                }
+            }
             self.start_as(reg, &s(&p, "ws"), &s(&p, "cwd"), claude, &s(&p, "id"), &mut made)?;
             reg["gone"] = Value::Array(gone.into_iter().filter(|g| !s(g, "id").eq_ignore_ascii_case(pane)).collect());
             Ok(())
@@ -343,6 +413,10 @@ impl TmuxBackend {
             for p in &mine {
                 let t = self.pane_target(p);
                 let _ = tmux(&t.socket, &["kill-session", "-t", &format!("={}", t.session)]);
+                self.forget_files(&s(p, "id"));
+            }
+            for g in list(reg, "gone").iter().filter(|g| s(g, "ws").eq_ignore_ascii_case(ws)) {
+                self.forget_files(&s(g, "id"));
             }
             reg["panes"] = Value::Array(rest);
             reg["gone"] = Value::Array(list(reg, "gone").into_iter().filter(|p| !s(p, "ws").eq_ignore_ascii_case(ws)).collect());
@@ -361,9 +435,13 @@ impl TmuxBackend {
         })
     }
 
-    /// Forget a gone pane: its restart was declined.
+    /// Forget a gone pane: its restart was declined. Its crew files go with
+    /// it, as a closed pane's do.
     pub fn forget(&self, pane: &str) -> Result<(), String> {
         self.update(|reg| {
+            if list(reg, "gone").iter().any(|g| s(g, "id").eq_ignore_ascii_case(pane)) {
+                self.forget_files(pane);
+            }
             let gone = list(reg, "gone");
             reg["gone"] = Value::Array(gone.into_iter().filter(|g| !s(g, "id").eq_ignore_ascii_case(pane)).collect());
             Ok(())
@@ -581,6 +659,7 @@ impl Backend for TmuxBackend {
             // record the next read drops anyway.
             let t = self.pane_target(p);
             let _ = tmux(&t.socket, &["kill-session", "-t", &format!("={}", t.session)]);
+            self.forget_files(pane);
             reg["panes"] = Value::Array(panes.iter().filter(|q| !s(q, "id").eq_ignore_ascii_case(pane)).cloned().collect());
             Ok(())
         })
@@ -618,7 +697,10 @@ mod tests {
             let sh = dir.join("login-sh");
             fs::write(&sh, "#!/bin/sh\nif [ \"$1\" = -lc ]; then exec /bin/sh -c \"$2\"; fi\nexec /bin/sh -i\n").unwrap();
             fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-            Fixture(TmuxBackend::at(dir.clone()).with_shell(&sh.to_string_lossy()), dir)
+            // Crew's pane files in the fixture too: a close cleans them, and
+            // a test never touches the person's own (lessons L8).
+            let files = dir.join("cache");
+            Fixture(TmuxBackend::at(dir.clone()).with_shell(&sh.to_string_lossy()).with_pane_files(&files), dir)
         }
     }
     impl Drop for Fixture {
@@ -922,5 +1004,111 @@ mod tests {
         assert!(!server_gone("error connecting to /tmp/x (Permission denied)"));
         assert!(!server_gone("error connecting to /tmp/x (Socket operation on non-socket)"));
         assert!(!server_gone("protocol version mismatch"));
+    }
+
+    /// A pane file for `pane` in the fixture's cache, running `session`.
+    fn pane_file(b: &TmuxBackend, pane: &str, ws: &str, session: &str, state: &str) {
+        let p = crate::status::Pane { session: session.into(), state: state.into(), at: 1, ..crate::status::Pane::new(ws, pane) };
+        crate::status::write(&b.pane_files(), &p);
+    }
+
+    #[test]
+    fn a_server_that_cannot_be_asked_leaves_its_panes_alone() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("noask");
+        let b = &f.0;
+        let (ws, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let cwd = f.1.to_string_lossy().into_owned();
+        // A socket under a plain file: tmux fails with "Not a directory",
+        // which says nothing about whether the pane's server is there.
+        fs::write(f.1.join("plain"), "").unwrap();
+        let odd = f.1.join("plain/sock").to_string_lossy().into_owned();
+        assert_eq!(server_says(&odd), Server::Unknown);
+        b.adopt(&ws, "t", &cwd, &new_id(), &odd, "seamux-elsewhere").unwrap();
+        assert_eq!(b.panes(None).unwrap().len(), 2, "kept: could not tell it is gone");
+        assert!(b.gone().unwrap().is_empty(), "and not moved to gone");
+        assert_eq!(server_says(&b.socket()), Server::Up);
+        tmux(&b.socket(), &["kill-server"]).unwrap();
+        assert_eq!(server_says(&b.socket()), Server::Gone);
+    }
+
+    #[test]
+    fn closing_a_pane_or_a_workspace_deletes_its_crew_files() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("files");
+        let b = &f.0;
+        let cwd = f.1.to_string_lossy().into_owned();
+        let (ws, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let p1 = b.panes(Some(&ws)).unwrap()[0].id.clone();
+        let p2 = b.start_session(&ws, &cwd, "sleep 600").unwrap();
+        let dir = b.pane_files();
+        for p in [&p1, &p2] {
+            // needs_input holds, so the hold marker is written too.
+            pane_file(b, p, &ws, &new_id(), "needs_input");
+            fs::write(crate::held::path(&dir, p), "{}").unwrap();
+            assert!(crate::status::hold_path(&dir, p).exists());
+        }
+        b.close_pane(&p1).unwrap();
+        assert!(crate::status::read(&dir, &p1).is_none(), "pane file gone");
+        assert!(!crate::status::hold_path(&dir, &p1).exists(), "hold marker gone");
+        assert!(!crate::held::path(&dir, &p1).exists(), "held record gone");
+        assert!(crate::status::read(&dir, &p2).is_some(), "the other pane's file stays");
+        b.close_workspace(&ws).unwrap();
+        assert!(crate::status::read(&dir, &p2).is_none());
+        assert!(!crate::held::path(&dir, &p2).exists());
+    }
+
+    #[test]
+    fn a_restart_is_refused_while_its_session_runs_in_another_pane() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("dup");
+        let b = &f.0;
+        let cwd = f.1.to_string_lossy().into_owned();
+        let (ws, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let gone = b.panes(Some(&ws)).unwrap()[0].id.clone();
+        tmux(&b.socket(), &["kill-server"]).unwrap();
+        assert_eq!(b.gone().unwrap().len(), 1);
+        let sid = new_id();
+        pane_file(b, &gone, &ws, &sid, "idle");
+        // The same session, resumed meanwhile in a new pane: a process
+        // named claude runs on its terminal. macOS kills a copy of a system
+        // binary and names a script by its interpreter, so it is built.
+        let fake = f.1.join("claude");
+        fs::write(f.1.join("c.c"), "#include <unistd.h>\nint main(void){sleep(600);return 0;}\n").unwrap();
+        let built = Command::new("cc").arg("-o").arg(&fake).arg(f.1.join("c.c")).status().is_ok_and(|s| s.success());
+        if !built {
+            eprintln!("skipped: no C compiler for a fake claude");
+            return;
+        }
+        let other = b.start_session(&ws, &cwd, &format!("{} 600", fake.display())).unwrap();
+        pane_file(b, &other, &ws, &sid, "working");
+        let t = b.target(&other).unwrap().unwrap();
+        for _ in 0..50 {
+            if runs_claude(&t) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let e = b.restart(&gone, "sleep 600").unwrap_err();
+        assert!(e.contains("already runs") && e.contains(&other), "{e}");
+        assert_eq!(b.gone().unwrap().len(), 1, "still gone, nothing started");
+        // A file that only says working, with no claude behind it, is no bar.
+        let shell = b.start_session(&ws, &cwd, "sleep 600").unwrap();
+        pane_file(b, &other, &ws, &sid, "ended");
+        pane_file(b, &shell, &ws, &sid, "working");
+        b.restart(&gone, "sleep 600").unwrap();
+        assert!(b.gone().unwrap().is_empty());
+        // Forgetting a gone pane takes its crew files too.
+        tmux(&b.socket(), &["kill-server"]).unwrap();
+        let lost = b.gone().unwrap()[0].0.clone();
+        pane_file(b, &lost, &ws, &sid, "working");
+        b.forget(&lost).unwrap();
+        assert!(crate::status::read(&b.pane_files(), &lost).is_none(), "its pane file went with it");
     }
 }

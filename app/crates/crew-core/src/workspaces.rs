@@ -176,7 +176,7 @@ pub fn agent_sessions() -> Option<Vec<Value>> {
 fn tmux_sessions() -> Option<Vec<Value>> {
     use crate::backend::Backend;
     let t = crate::backend::tmux::in_play()?;
-    let dir = crate::home::home_cache();
+    let dir = crate::status::pane_dir();
     let mut out = Vec::new();
     let mut asked = false;
     for p in t.panes(None).ok()? {

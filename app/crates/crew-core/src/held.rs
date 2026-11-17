@@ -107,6 +107,13 @@ pub fn path(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("held-{key}.json"))
 }
 
+/// Delete pane `key`'s held record, whatever it holds: its pane closed.
+pub fn remove(dir: &Path, key: &str) {
+    if key_ok(key) {
+        let _ = fs::remove_file(path(dir, key));
+    }
+}
+
 /// The pane's held record, if it has one that reads. Bytes are read lossily:
 /// bash-guard's plain-shell fallback can cut a character in two.
 pub fn read(dir: &Path, key: &str) -> Option<Held> {

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crew_core::backend::migrate::{self, Move, Offer};
+use crew_core::backend::migrate::{self, Offer};
 use crew_core::backend::tmux::TmuxBackend;
 use crew_core::backend::{Backend, Kind};
 use serde_json::Value;
@@ -20,7 +20,7 @@ fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 's
 /// Every offer for the backend this app picked.
 fn offers() -> Vec<Offer> {
     let t = TmuxBackend::default();
-    let state = crew_core::home::home_cache();
+    let state = crew_core::status::pane_dir();
     let pane = |id: &str| crew_core::status::read(&state, id);
     let titles: HashMap<String, String> = t.workspaces().unwrap_or_default().into_iter().map(|w| (w.id.to_ascii_uppercase(), w.title)).collect();
     let title = |ws: &str| titles.get(&ws.to_ascii_uppercase()).cloned().unwrap_or_default();
@@ -70,15 +70,19 @@ pub async fn migrate_apply(kind: String, pane: String) -> Result<String, String>
     .await
 }
 
-/// Decline a restart: the gone pane is forgotten and not offered again.
+/// Forget a gone pane, offered or not: the banner's decline, or the doctor
+/// dropping one that can never restart. It is not offered again.
 /// A declined move needs nothing: the session stays where it runs.
 #[tauri::command]
 pub async fn migrate_forget(pane: String) -> Result<(), String> {
     blocking(move || {
-        if !offers().iter().any(|o| o.kind == Move::Restart && o.pane.eq_ignore_ascii_case(&pane)) {
+        // Any gone pane, offered or not: one with no session to resume is
+        // never offered, and would otherwise wait in gone[] for good.
+        let t = TmuxBackend::default();
+        if !t.gone()?.iter().any(|(id, _, _)| id.eq_ignore_ascii_case(&pane)) {
             return Err("that pane is not waiting for a restart".into());
         }
-        TmuxBackend::default().forget(&pane)
+        t.forget(&pane)
     })
     .await
 }

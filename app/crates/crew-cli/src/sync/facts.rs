@@ -201,8 +201,15 @@ pub fn tmux_sessions_of(records: &[Value]) -> HashMap<String, Vec<(String, Value
                          "agentLifecycle": r.get("agent_lifecycle").cloned().unwrap_or(Value::Null),
                          "live": r.get("stored_pid_exists") == Some(&Value::Bool(true))});
         let list = out.entry(ws).or_default();
-        if !list.iter().any(|(s, _)| *s == sid) {
-            list.push((sid, rec));
+        match list.iter_mut().find(|(s, _)| *s == sid) {
+            // Two panes on one session: it is live while either one runs it,
+            // so a dead pane listed first never hides a live one.
+            Some((_, have)) => {
+                if rec["live"] == Value::Bool(true) {
+                    *have = rec;
+                }
+            }
+            None => list.push((sid, rec)),
         }
     }
     out
@@ -1321,6 +1328,16 @@ mod tests {
         assert_eq!(w[0].1["agentLifecycle"], "running");
         assert!(live(&w[0].1));
         assert!(!live(&w[1].1));
+    }
+
+    #[test]
+    fn a_session_two_panes_share_is_live_while_either_runs_it() {
+        let rec = |live: bool| json!({"source": "tmux", "workspace_id": "W", "session_id": "s", "agent_lifecycle": if live { "idle" } else { "ended" }, "stored_pid_exists": live});
+        for recs in [vec![rec(false), rec(true)], vec![rec(true), rec(false)]] {
+            let m = tmux_sessions_of(&recs);
+            assert_eq!(m["W"].len(), 1);
+            assert!(live(&m["W"][0].1), "the dead pane listed first does not hide the live one");
+        }
     }
 
     #[test]
