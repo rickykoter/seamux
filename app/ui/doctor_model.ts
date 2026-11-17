@@ -122,3 +122,65 @@ export function headline(t: Triage): string {
   if (t.needs.length === 0) return "Nothing needs you; only leftovers to clean.";
   return `${t.needs.length} workspace${t.needs.length === 1 ? " needs" : "s need"} you`;
 }
+
+// --- All workspaces: crew-resume's rows (crew_cli::resume::app_rows).
+
+export type RowState = "live" | "archived" | "past" | "gone";
+export const STATES: RowState[] = ["live", "archived", "past", "gone"];
+
+/** One workspace directory, as app_rows writes it. */
+export type Row = {
+  cwd: string;
+  state: RowState;
+  title: string;
+  latest: string;
+  branch: string;
+  /** Seconds since the epoch, or 0. */
+  when: number;
+  exists: boolean;
+  ws: string;
+  sessions: string[];
+  transcript: string;
+};
+
+/** What each state's rows offer, in the order of their buttons. */
+export const ACTIONS: Record<RowState, { verb: "archive" | "restore" | "forget" | "resume"; label: string; confirm: boolean }[]> = {
+  live: [{ verb: "archive", label: "Archive", confirm: true }],
+  archived: [
+    { verb: "restore", label: "Restore", confirm: false },
+    { verb: "forget", label: "Forget", confirm: true },
+  ],
+  past: [{ verb: "resume", label: "Resume", confirm: false }],
+  gone: [],
+};
+
+/** How many rows are in each state. */
+export function counts(rows: Row[]): Record<RowState, number> {
+  const c: Record<RowState, number> = { live: 0, archived: 0, past: 0, gone: 0 };
+  for (const r of rows) c[r.state]++;
+  return c;
+}
+
+/** The rows in `state` ("all" for every one) that match every word of
+ *  `query` in their title, folder, branch or latest prompt; newest first. */
+export function filterRows(rows: Row[], state: RowState | "all", query: string): Row[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return rows
+    .filter((r) => state === "all" || r.state === state)
+    .filter((r) => {
+      const hay = `${r.title} ${r.cwd} ${r.branch} ${r.latest}`.toLowerCase();
+      return words.every((w) => hay.includes(w));
+    })
+    .sort((a, b) => b.when - a.when || a.cwd.localeCompare(b.cwd));
+}
+
+/** How long ago, as crew-resume says it: 5m, 3h, 2d, then a date. */
+export function ago(when: number, now: number): string {
+  if (!when) return "";
+  const d = Math.max(0, now - when);
+  if (d < 3600) return `${Math.floor(d / 60)}m`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h`;
+  if (d < 86400 * 14) return `${Math.floor(d / 86400)}d`;
+  const t = new Date(when * 1000);
+  return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][t.getMonth()]} ${t.getDate()}`;
+}

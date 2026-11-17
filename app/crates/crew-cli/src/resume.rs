@@ -287,6 +287,42 @@ fn rows_json(rows: &[Row], query: &str, scope_root: &str, live_known: bool) -> V
     })
 }
 
+/// Every row, as the finder would order them with no query and no scope,
+/// for the app's Doctor tab: the same rows crew-resume shows, so the two
+/// never disagree. A row's transcript path is its latest session's.
+pub fn app_rows() -> Value {
+    let (sessions, _) = w::build_index(false);
+    let live = w::live_workspaces();
+    let rows = build_rows(&sessions, live.as_deref().unwrap_or(&[]), &w::load_archive(), &|p| Path::new(p).is_dir());
+    let mut out = rows_json(&rows, "", "", live.is_some());
+    if let Some(list) = out.get_mut("rows").and_then(Value::as_array_mut) {
+        for j in list.iter_mut() {
+            let cwd = j["cwd"].as_str().unwrap_or("").to_string();
+            let path = rows.iter().find(|r| r.cwd == cwd).and_then(|r| r.sessions.first()).and_then(|s| s.get("path")).map(py_str).unwrap_or_default();
+            j["transcript"] = json!(path);
+        }
+    }
+    out
+}
+
+/// Resume `cwd`'s latest session in a new workspace on this process's
+/// backend, for the app: what happened, or why not.
+pub fn resume_latest(cwd: &str) -> Result<String, String> {
+    let (sessions, _) = w::build_index(false);
+    let rows = build_rows(&sessions, &[], &Map::new(), &|p| Path::new(p).is_dir());
+    let r = rows.iter().find(|r| r.cwd == cwd).ok_or_else(|| format!("no Claude session recorded at {cwd}"))?;
+    let s = r.sessions.first().ok_or_else(|| format!("no Claude session recorded at {cwd}"))?;
+    if !Path::new(cwd).is_dir() {
+        return Err(format!("{cwd} no longer exists"));
+    }
+    let id = s.get("id").map(py_str).unwrap_or_default();
+    let line = crew_core::native::claude_line(Some(&id))?;
+    match open_resumed(cwd, &line) {
+        0 => Ok(format!("resumed {} in a new workspace", head(&id, 8))),
+        _ => Err(format!("could not open a workspace at {cwd}")),
+    }
+}
+
 /// The repo family a directory belongs to: a worktree scopes to its siblings
 /// and the primary checkout.
 fn scope_of(cwd: &str) -> String {
@@ -526,7 +562,7 @@ fn resume(mode: &str, s: &Value) -> i32 {
 /// `cmd` (claude --resume) in a new workspace at `cwd`, on this process's
 /// backend: a native session on cmux, as every new session starts there;
 /// a pane in the seamux app's tmux otherwise, which the app then shows.
-fn open_resumed(cwd: &str, cmd: &str) -> i32 {
+pub fn open_resumed(cwd: &str, cmd: &str) -> i32 {
     let (kind, b) = crew_core::backend::pick();
     if kind == crew_core::backend::Kind::Cmux {
         return match crew_core::native::open_workspace(Path::new(cwd), cmd) {

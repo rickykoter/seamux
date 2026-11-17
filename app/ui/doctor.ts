@@ -4,7 +4,10 @@
 // Fix all safe runs only fixes that touch files and records nothing runs
 // from; every other fix asks first, and reclaim opens its wizard.
 import { invoke } from "@tauri-apps/api/core";
-import { asks, headline, leftoversSaid, safeIds, triage, type Finding, type Fix, type Group, type Scan } from "./doctor_model";
+import {
+  ACTIONS, ago, asks, counts, filterRows, headline, leftoversSaid, safeIds, STATES, triage,
+  type Finding, type Fix, type Group, type Row, type RowState, type Scan,
+} from "./doctor_model";
 import { ReclaimWizard } from "./reclaim";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
@@ -63,13 +66,22 @@ export class DoctorView {
   /** The fix waiting on its confirm click: `${id} ${verb}`. */
   private arming = "";
   private home = "";
+  /** All workspaces (crew-resume's rows), below the triage list. */
+  private rowsEl = el("section", "doc-all");
+  private rows: Row[] = [];
+  private rowsSeq = 0;
+  private rowsNote = "Loading…";
+  private filter: RowState | "all" = "all";
+  private query = "";
+  /** How many rows show before "Show all". */
+  private limit = 60;
 
   constructor(private root: HTMLElement) {
     root.classList.add("doctor");
     const title = el("b", "doc-title", "Doctor");
     const grow = el("span", "doc-grow");
     this.head.append(title, this.line, grow, this.rescan, this.safe);
-    root.append(this.head, this.log, this.body);
+    root.append(this.head, this.log, this.body, this.rowsEl);
     this.reclaim.onReclaimed = () => void this.scan();
     void invoke<string>("home_dir").then((h) => (this.home = h), () => {});
   }
@@ -77,6 +89,7 @@ export class DoctorView {
   /** The tab was selected: look again. */
   shown(): void {
     void this.scan();
+    void this.loadRows();
   }
 
   private tidy(p: string): string {
@@ -237,6 +250,7 @@ export class DoctorView {
     }
     this.busy = false;
     await this.scan(true);
+    void this.loadRows();
   }
 
   private async fixSafe(): Promise<void> {
@@ -253,5 +267,123 @@ export class DoctorView {
     }
     this.busy = false;
     await this.scan(true);
+  }
+
+  // --- All workspaces ------------------------------------------------------
+
+  private async loadRows(): Promise<void> {
+    const seq = ++this.rowsSeq;
+    if (!this.rows.length) {
+      this.rowsNote = "Loading every workspace…";
+      this.drawRows();
+    }
+    try {
+      const r = await invoke<{ rows: Row[]; live_known: boolean }>("doctor_rows");
+      if (seq !== this.rowsSeq) return;
+      this.rows = r.rows;
+      this.rowsNote = r.live_known ? "" : "The backend did not list its open workspaces: open ones show as past or archived.";
+    } catch (e) {
+      if (seq !== this.rowsSeq) return;
+      this.rowsNote = `Couldn't list the workspaces: ${e}`;
+    }
+    this.drawRows();
+  }
+
+  private drawRows(): void {
+    const head = el("div", "doc-all-head");
+    head.append(el("h3", "", "All workspaces"));
+    const chips = el("div", "doc-chips");
+    const c = counts(this.rows);
+    const chip = (id: RowState | "all", text: string) => {
+      const b = button(text, `doc-chip ${this.filter === id ? "on" : ""}`, () => {
+        this.filter = id;
+        this.limit = 60;
+        this.drawRows();
+      });
+      b.setAttribute("aria-pressed", String(this.filter === id));
+      return b;
+    };
+    chips.append(chip("all", `All ${this.rows.length}`), ...STATES.map((st) => chip(st, `${st} ${c[st]}`)));
+    const search = el("input", "doc-search");
+    search.type = "search";
+    search.placeholder = "Search folders, branches, prompts";
+    search.value = this.query;
+    search.addEventListener("input", () => {
+      this.query = search.value;
+      this.limit = 60;
+      this.drawList(list);
+    });
+    head.append(chips, search);
+    const list = el("div", "doc-list");
+    const parts: HTMLElement[] = [head];
+    if (this.rowsNote) parts.push(el("p", "doc-note", this.rowsNote));
+    parts.push(list);
+    this.rowsEl.replaceChildren(...parts);
+    this.drawList(list);
+  }
+
+  private drawList(list: HTMLElement): void {
+    const shown = filterRows(this.rows, this.filter, this.query);
+    const now = Date.now() / 1000;
+    const items = shown.slice(0, this.limit).map((r) => this.rowItem(r, now));
+    if (shown.length > this.limit) {
+      items.push(button(`Show all ${shown.length}`, "doc-more-rows", () => {
+        this.limit = Infinity;
+        this.drawList(list);
+      }));
+    }
+    if (!shown.length && this.rows.length) items.push(el("p", "doc-note", "No workspace matches."));
+    list.replaceChildren(...items);
+  }
+
+  private rowItem(r: Row, now: number): HTMLElement {
+    const it = el("div", `doc-ws ${r.state}`);
+    const dot = el("span", `doc-dot ${r.state}`);
+    dot.title = r.state;
+    const name = el("div", "doc-name");
+    name.append(el("b", "", r.title));
+    name.append(el("span", "doc-cwd", this.tidy(r.cwd) + (r.branch ? `  ·  ${r.branch}` : "")));
+    const latest = el("span", "doc-latest", r.state === "gone" ? (r.transcript ? `transcript: ${this.tidy(r.transcript)}` : "its folder is gone") : r.latest);
+    const when = el("span", "doc-when", ago(r.when, now));
+    const acts = el("div", "doc-acts");
+    for (const a of ACTIONS[r.state]) acts.append(this.rowButton(r, a.verb, a.label, a.confirm));
+    it.append(dot, name, latest, when, acts);
+    return it;
+  }
+
+  private rowButton(r: Row, verb: "archive" | "restore" | "forget" | "resume", label: string, confirm: boolean): HTMLButtonElement {
+    const key = `row ${r.cwd} ${verb}`;
+    const b = button(label, "", () => {
+      if (confirm && this.arming !== key) {
+        for (const o of this.rowsEl.querySelectorAll<HTMLButtonElement>("button.doc-danger")) {
+          o.textContent = o.dataset.label ?? o.textContent;
+          o.classList.remove("doc-danger");
+        }
+        this.arming = key;
+        b.textContent = `Confirm: ${label}`;
+        b.classList.add("doc-danger");
+        b.focus();
+        return;
+      }
+      void this.rowAct(r, verb, label);
+    });
+    b.dataset.label = label;
+    b.disabled = this.busy;
+    return b;
+  }
+
+  private async rowAct(r: Row, verb: string, label: string): Promise<void> {
+    this.busy = true;
+    this.arming = "";
+    this.line.textContent = `${label} ${r.title}…`;
+    try {
+      const said = await invoke<string>(`doctor_${verb}`, { cwd: r.cwd });
+      this.said = [{ ok: true, text: said }];
+    } catch (e) {
+      this.said = [{ ok: false, text: `${r.title}: ${e}` }];
+    }
+    this.busy = false;
+    await this.scan(true);
+    await this.loadRows();
   }
 }

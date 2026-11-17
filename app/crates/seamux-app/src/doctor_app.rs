@@ -34,3 +34,67 @@ pub async fn doctor_fix(id: String, verb: String) -> Result<String, String> {
 pub async fn doctor_fix_safe() -> Result<Vec<Value>, String> {
     blocking(|| Ok(Doctor::default().fix_safe(false)?.iter().map(Done::to_json).collect())).await
 }
+
+// --- All workspaces: crew-resume's rows, and archive, restore, forget,
+// resume. Each acts only on a row the rows read again still hold, in the
+// state the page drew it in.
+
+/// The row at `cwd` now, if it is in `state`.
+fn row_in(cwd: &str, state: &str) -> Result<Value, String> {
+    let rows = crew_cli::resume::app_rows();
+    rows["rows"]
+        .as_array()
+        .and_then(|a| a.iter().find(|r| r["cwd"] == cwd).cloned())
+        .filter(|r| r["state"] == state)
+        .ok_or_else(|| format!("{cwd} is no longer {state}: look again"))
+}
+
+/// Every workspace directory, live, archived, past or gone.
+#[tauri::command]
+pub async fn doctor_rows() -> Result<Value, String> {
+    blocking(|| Ok(crew_cli::resume::app_rows())).await
+}
+
+/// Archive the live workspace at `cwd`: closed and remembered. deep-plan's
+/// guard is asked and not overridden; a mid-turn Claude is refused.
+#[tauri::command]
+pub async fn doctor_archive(cwd: String) -> Result<String, String> {
+    blocking(move || {
+        let row = row_in(&cwd, "live")?;
+        let ws = row["ws"].as_str().unwrap_or("").to_string();
+        let (ok, msg) = crew_core::workspaces::archive_with(&ws, None, None, crew_core::workspaces::Guard::Ask { family_ok: false });
+        if ok { Ok(msg) } else { Err(msg) }
+    })
+    .await
+}
+
+/// Reopen the archived workspace at `cwd`, resuming its Claude.
+#[tauri::command]
+pub async fn doctor_restore(cwd: String) -> Result<String, String> {
+    blocking(move || {
+        row_in(&cwd, "archived")?;
+        let (ok, msg) = crew_core::workspaces::restore(&cwd);
+        if ok { Ok(msg) } else { Err(msg) }
+    })
+    .await
+}
+
+/// Drop the archive record at `cwd`.
+#[tauri::command]
+pub async fn doctor_forget(cwd: String) -> Result<String, String> {
+    blocking(move || {
+        row_in(&cwd, "archived")?;
+        if crew_core::workspaces::forget(&cwd) { Ok(format!("forgot {cwd}")) } else { Err(format!("nothing archived at {cwd}")) }
+    })
+    .await
+}
+
+/// Resume the past workspace at `cwd`'s latest session in a new workspace.
+#[tauri::command]
+pub async fn doctor_resume(cwd: String) -> Result<String, String> {
+    blocking(move || {
+        row_in(&cwd, "past")?;
+        crew_cli::resume::resume_latest(&cwd)
+    })
+    .await
+}
