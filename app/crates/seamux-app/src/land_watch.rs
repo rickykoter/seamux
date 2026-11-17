@@ -283,9 +283,13 @@ fn run_path() -> String {
     static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
         let shell = crew_core::py::env_or("SHELL").unwrap_or_else(|| "/bin/zsh".into());
-        // An interactive login shell, since asdf and nvm hook in from .zshrc;
-        // the last line, since a shell may print a banner before it.
-        let login = crew_core::py::run(&shell, &["-ilc", "printf '%s' \"$PATH\""], Duration::from_secs(5))
+        // A login shell, not an interactive one: .zshenv and .zprofile set
+        // cargo's and Homebrew's folders, and answer in milliseconds, where
+        // an interactive shell's .zshrc took 13s on 2026-11-17, past the cap,
+        // and the landing ran without cargo. node, which asdf and nvm put on
+        // PATH from .zshrc, is in the app's PATH already (adopt_login_path).
+        // The last line, since a shell may print a banner before it.
+        let login = crew_core::py::run(&shell, &["-lc", "printf '%s' \"$PATH\""], Duration::from_secs(5))
             .filter(|(code, _, _)| *code == 0)
             .and_then(|(_, out, _)| out.lines().last().map(|l| l.trim().to_string()))
             .unwrap_or_default();

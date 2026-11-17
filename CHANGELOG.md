@@ -10,7 +10,9 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   running app with pgrep, and macOS pgrep leaves out its own ancestors. A
   landing's install runs under the app, so the app read as not running,
   install.sh never restarted it, and the live stage waited until it gave
-  up. It now passes -a.
+  up. It now passes -a. A landing also asks a login shell for its PATH
+  rather than an interactive one, whose .zshrc can take longer than the
+  five seconds allowed: #238's landing ran without cargo for that reason.
 - **The Dock shows a landing's move at once.** The board now rebuilds when
   a landing's index or state file changes, so a stage moving or a Retry
   shows on the card within a moment. Before, it waited for the board's
