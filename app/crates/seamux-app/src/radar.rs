@@ -132,16 +132,27 @@ pub fn assemble(seats: &[Seat], trees: &BTreeMap<String, Tree>, plans: &[Plan]) 
         .into_iter()
         .map(|(common, mut contacts)| {
             contacts.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-            // A planned directory ("app/ui/") meets every file another workspace edits under it:
-            // it stands for those files, and stays as itself when nobody edits there.
-            let edits: Vec<(usize, Vec<String>)> = contacts.iter().enumerate().map(|(i, c)| (i, c.editing.clone())).collect();
+            // A planned directory ("app/ui/") meets whatever another workspace has under it: files it
+            // edits, files it plans, and directories it plans inside this one ("app/" meets a
+            // planned "app/ui/" there). It stands for those paths, and stays as itself when nothing
+            // of anyone else's is under it, so two plans of the same directory still meet on it.
+            let others: Vec<(usize, Vec<String>)> = contacts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (i, c.editing.iter().cloned().chain(c.planned.iter().map(|p| p.path.clone())).collect()))
+                .collect();
             for (i, c) in contacts.iter_mut().enumerate() {
                 let mut grown = Vec::new();
                 c.planned.retain(|p| {
                     if !p.path.ends_with('/') {
                         return true;
                     }
-                    let under: Vec<&String> = edits.iter().filter(|(j, _)| *j != i).flat_map(|(_, e)| e.iter()).filter(|e| e.starts_with(&p.path)).collect();
+                    let under: BTreeSet<&String> = others
+                        .iter()
+                        .filter(|(j, _)| *j != i)
+                        .flat_map(|(_, e)| e.iter())
+                        .filter(|e| e.len() > p.path.len() && e.starts_with(&p.path))
+                        .collect();
                     grown.extend(under.iter().map(|e| Planned { path: (*e).clone(), ..p.clone() }));
                     under.is_empty()
                 });
@@ -182,7 +193,11 @@ pub fn read_plans(state_dir: &Path, keys_dir: &Path, root_of: impl Fn(&str) -> S
         }
         let Some(st) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
         let spec = std::fs::read_to_string(keys_dir.join(format!("{slug}.spec.json"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
-        if let Some(p) = plan_of(slug, &st, spec.as_ref(), &root_of) {
+        if let Some(mut p) = plan_of(slug, &st, spec.as_ref(), &root_of) {
+            // A spec may name a directory without its trailing "/": the worktree says which it is.
+            for f in &mut p.planned {
+                f.path = dir_slash(Path::new(&p.root), &f.path);
+            }
             out.push(p);
         }
     }
@@ -219,6 +234,16 @@ fn git(dir: &str, args: &[&str]) -> Option<String> {
     let mut a = vec!["-C", dir];
     a.extend_from_slice(args);
     crew_core::py::run("git", &a, Duration::from_secs(5)).filter(|(code, _, _)| *code == 0).map(|(_, out, _)| out)
+}
+
+/// `path` with a trailing "/" when it names a directory under `root`, so it is matched as one.
+pub fn dir_slash(root: &Path, path: &str) -> String {
+    let clean = norm(path);
+    if !clean.is_empty() && !clean.ends_with('/') && root.join(&clean).is_dir() {
+        format!("{clean}/")
+    } else {
+        clean
+    }
 }
 
 /// A repo-relative path as git prints it: no "./" or leading "/".
@@ -321,6 +346,36 @@ mod tests {
         assert_eq!(r.collisions, vec!["app/ui/tabs.ts".to_string()]);
         let c = r.contacts.iter().find(|c| c.ws == "C").unwrap();
         assert_eq!(c.planned[0].path, "lib/", "a directory nobody edits under stays as itself");
+    }
+
+    #[test]
+    fn radar_planned_directory_meets_planned_files_and_directories() {
+        let mut trees = BTreeMap::new();
+        for r in ["/a", "/b", "/c", "/d"] {
+            trees.insert(r.into(), tree("/r/.git", &[], None));
+        }
+        let seats = [seat("A", "/a"), seat("B", "/b"), seat("C", "/c"), seat("D", "/d")];
+        // A plans a folder, B plans a file in it: they meet on the file.
+        let f = assemble(&seats[..2], &trees, &[plan("/a", &["app/ui/"]), plan("/b", &["app/ui/tabs.ts"])]);
+        assert_eq!(f.repos[0].collisions, vec!["app/ui/tabs.ts".to_string()]);
+        // C plans app/ and D plans app/ui/: they meet on the narrower folder.
+        let f = assemble(&seats[2..], &trees, &[plan("/c", &["app/"]), plan("/d", &["app/ui/"])]);
+        assert_eq!(f.repos[0].collisions, vec!["app/ui/".to_string()]);
+        // Two plans of the same folder meet on it.
+        let f = assemble(&seats[..2], &trees, &[plan("/a", &["lib/"]), plan("/b", &["lib/"])]);
+        assert_eq!(f.repos[0].collisions, vec!["lib/".to_string()]);
+    }
+
+    #[test]
+    fn radar_dir_slash_marks_real_directories() {
+        let d = std::env::temp_dir().join(format!("seamux-radar-dirs-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("app/ui")).unwrap();
+        std::fs::write(d.join("app/ui/tabs.ts"), "").unwrap();
+        assert_eq!(dir_slash(&d, "app/ui"), "app/ui/");
+        assert_eq!(dir_slash(&d, "./app/ui/"), "app/ui/");
+        assert_eq!(dir_slash(&d, "app/ui/tabs.ts"), "app/ui/tabs.ts");
+        assert_eq!(dir_slash(&d, "not/there"), "not/there");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
