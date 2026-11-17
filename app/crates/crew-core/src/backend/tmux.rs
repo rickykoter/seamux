@@ -227,6 +227,27 @@ impl TmuxBackend {
         self
     }
 
+    /// The folder the registry, its lock and the socket live in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The registry as on disk, read without the lock and without pruning:
+    /// what the doctor looks at must not change because it looked.
+    pub fn registry(&self) -> Result<Value, String> {
+        self.read()
+    }
+
+    /// Where the pane record `p` (a registry `panes` entry) runs.
+    pub fn target_of(&self, p: &Value) -> Target {
+        self.pane_target(p)
+    }
+
+    /// Whether the session behind `t` exists (false when tmux cannot say).
+    pub fn has_session(&self, t: &Target) -> bool {
+        self.alive(t)
+    }
+
     pub fn socket(&self) -> String {
         self.dir.join("tmux.sock").to_string_lossy().into_owned()
     }

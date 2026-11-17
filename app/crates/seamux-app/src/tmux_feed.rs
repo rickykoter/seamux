@@ -64,12 +64,9 @@ impl Source for TmuxSource {
     }
 }
 
-/// Claude Code's folder for a working directory's transcripts:
-/// `~/.claude/projects/<cwd, every character but a letter or digit a dash>`.
-pub fn project_dir(home: &Path, cwd: &str) -> PathBuf {
-    let slug: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    home.join(".claude/projects").join(slug)
-}
+/// Claude Code's folder for a working directory's transcripts (crew-core
+/// owns it: the doctor looks there too).
+pub use crew_core::home::project_dir;
 
 /// The session picker's records for a workspace on the tmux backend: every
 /// conversation Claude stored for its folder, in the shape of cmux's session

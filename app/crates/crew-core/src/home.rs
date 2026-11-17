@@ -5,7 +5,7 @@
 //! every port: CREW_HOME, else the live tree at ~/.config/cmux/crew. The
 //! probes set CREW_HOME to the checkout's crew/ (crew_impl.env does it).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::py::{env_or, home};
 
@@ -28,4 +28,11 @@ pub fn home_cache() -> PathBuf {
 /// $XDG_CACHE_HOME/cmux-crew, as the retired workspaces.py spelled it.
 pub fn xdg_cache() -> PathBuf {
     env_or("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("cmux-crew")
+}
+
+/// Claude Code's folder for a working directory's transcripts:
+/// `~/.claude/projects/<cwd, every character but a letter or digit a dash>`.
+pub fn project_dir(home: &Path, cwd: &str) -> PathBuf {
+    let slug: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    home.join(".claude/projects").join(slug)
 }
