@@ -33,7 +33,7 @@ export class DockView {
   /** Each workspace's priority from the turn-end judgments (views:frame). */
   private priority: Record<string, number> = {};
   private note = document.createElement("p");
-  private sheet = new Sheet(true);
+  private sheet = new Sheet();
   private origin: string | null = null;
   /** The workspace shown; "" until one is picked or a default is found. */
   private ws = "";

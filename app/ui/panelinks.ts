@@ -31,6 +31,7 @@ export async function openFile(path: string, at: { line?: number; col?: number }
   const shown = await invoke<Shown>("link_file", { path }).catch(() => null);
   if (!shown) return void (await editor());
   const to = linkSheet({ workspace: await placeOf(id) });
+  if (!to) return void (await editor());
   to.sheet.show(shown, editor, to.place);
 }
 
@@ -228,6 +229,7 @@ export async function follow(uri: string, id: number | null, e?: MouseEvent): Pr
   // ⌘-click or Shift-click: the browser, always.
   if (how !== "browser" && !e?.shiftKey && !e?.metaKey) {
     const to = linkSheet({ workspace: await placeOf(id) });
+    if (!to) return void (await invoke("open_url", { url: uri }).catch(() => {}));
     if (how === "page") {
       const u = new URL(uri);
       await to.sheet.open({ path: u.pathname + u.search, title: decodeURIComponent(u.pathname.split("/")[2] ?? ""), ...to.place });

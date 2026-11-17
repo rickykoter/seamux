@@ -13,9 +13,3 @@
 .dock-empty { margin: 18vh auto 0; max-width: 360px; text-align: center; color: var(--muted); }
 .dock-empty[hidden] { display: none; }
 
-/* The sheet embedded as the view's columns, not the overlay over the stage. */
-.sheet.embedded { position: static; inset: auto; z-index: auto; display: flex; height: 100%; }
-.sheet.embedded[hidden] { display: none; }
-.sheet.embedded .sheet-card > header { padding-left: 12px; min-height: 0; }
-.sheet.embedded .sheet-card > header[hidden] { display: none; }
-.sheet.embedded .sheet-card > header .sheet-btn.icon[hidden] { display: none; }

@@ -7,7 +7,6 @@ import "./dock.css";
 import "./tray.css";
 import "./newws.css";
 import "./reclaim.css";
-import { Wake } from "./wake";
 import "./wake.css";
 import "./panechips.css";
 import { ReviewView } from "./review";
@@ -55,9 +54,7 @@ function show(s: Status): void {
 }
 
 const dockEl = document.getElementById("dock")!;
-const wakeEl = document.getElementById("wake")!;
 const dockView = new DockView(dockEl);
-const wakeView = new Wake(wakeEl);
 const reviewEl = document.getElementById("review")!;
 const reviewView = new ReviewView(reviewEl);
 
@@ -66,13 +63,11 @@ const tabs = new Tabs(
   document.getElementById("stage")!,
   new Map([
     ["dock", dockEl],
-    ["wake", wakeEl],
     ["review", reviewEl],
   ]),
 );
 tabs.onSelect = (id) => {
   if (id === "dock") dockView.shown();
-  if (id === "wake") wakeView.shown();
   reviewView.setShown(id === "review");
 };
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
@@ -110,6 +105,10 @@ void listen<{ review: string; item: string }>("notify:review", (e) => {
   void reviewView.focus(e.payload.review, e.payload.item);
 });
 
+// A pane's link opens its page in the Dock's side column, and only there
+// (sheet.ts linkSheet): with another view up, the Dock comes forward first.
+window.addEventListener("seamux:show-dock", () => tabs.select("dock"));
+
 // A landing's log (a Dock card's chip): the change in the Lookout tab, at its
 // Land stage.
 window.addEventListener("seamux:land-open", (e) => {
@@ -133,7 +132,7 @@ document.addEventListener("keydown", (e) => {
   // a second Esc in a row (native.ts, so Claude's Rewind does not open) and
   // only blurs, but xterm lets the key it declined go on up to here.
   if (e.key === "Escape" && !e.defaultPrevented) hide();
-  // ⌘1…⌘3 pick the views, while focus is in the shell rather than a framed page.
+  // ⌘1 and ⌘2 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {
     tabs.selectIndex(Number(e.key) - 1);
     e.preventDefault();
@@ -149,6 +148,5 @@ void refreshStatus();
 setInterval(() => void refreshStatus(), 10_000);
 void listen("app:summoned", () => void refreshStatus());
 dockView.start().catch((e) => console.error("dock", e));
-wakeView.start().catch((e) => console.error("wake", e));
 reviewView.begin().catch((e) => console.error("review", e));
 palette.start().catch((e) => console.error("palette", e));

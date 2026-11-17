@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { sheet, type Sheet, type Shown } from "./sheet";
+import type { Sheet, Shown } from "./sheet";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, Viewer } from "./wakeview";
 import { age, badgeOf, bar, byUrl, countsSaid, doneSaid, GROUP_SAID, grouped, type Group, type Pr } from "./prs";
@@ -131,7 +131,6 @@ function tooSoon(b: HTMLElement): boolean {
 }
 
 export class Wake {
-  private title = el("h1", "w-title");
   private stats = el("span", "w-stats");
   private keepAllBtn = button("", "w-act keepall");
   private picker = el("select", "w-ws");
@@ -188,19 +187,13 @@ export class Wake {
    *  the store's realpath'd spelling once read, so a focus matches either. */
   private askedDir = "";
 
-  /** Embedded: the copy in the chat sheet, which has the keys while the sheet is open. */
-  private embedded: boolean;
-  /** The sheet this Wake is a tab of: what it opens goes there, beside it,
-   *  for the workspace shown (the Dock view stays). Else the app's sheet. */
-  private host: Sheet | null;
-
-  constructor(readonly root: HTMLElement, opts: { embedded?: boolean; host?: Sheet } = {}) {
-    this.embedded = !!opts.embedded;
-    this.host = opts.host ?? null;
+  /** The Wake is a tab of a sheet, `host`, and has no page of its own:
+   *  what it opens goes there, beside it, for the workspace shown. */
+  constructor(readonly root: HTMLElement, private host: Sheet) {
     root.classList.add("wake");
-    if (this.embedded) root.classList.add("embedded");
     this.picker.setAttribute("aria-label", "workspace");
     this.picker.addEventListener("change", () => {
+      this.clearPreview();
       this.ws = this.picker.value;
       this.also = [];
       this.picked = true;
@@ -240,6 +233,10 @@ export class Wake {
         ["K", "keep an at-risk file"],
         ["c", "copy the path"],
         ["r", "copy the resume command"],
+        ["⌘E", "the Wake, and again back to the page you were on"],
+        ["⌘⇧P ⌘⇧L ⌘⇧A ⌘⇧O", "the plan, review, ask or other pages; again for the next"],
+        ["⌘[ ⌘]", "the previous · next page beside the terminal"],
+        ["⌘⇧E", "hide or show the column beside the terminal"],
       ].map(([k, v]) => {
         const p = el("p");
         p.append(el("b", "", k), document.createTextNode(`  ${v}`));
@@ -252,9 +249,8 @@ export class Wake {
     const ttl = el("div", "w-ttl");
     const sub = el("div", "w-sub");
     sub.append(this.stats, this.keepAllBtn);
-    // In the Dock the sheet already names the workspace.
-    if (this.embedded) ttl.append(sub);
-    else ttl.append(this.title, sub);
+    // The sheet already names the workspace.
+    ttl.append(sub);
     head.append(ttl, this.picker);
     const bar = el("div", "w-bar");
     bar.append(this.q, keys);
@@ -308,11 +304,6 @@ export class Wake {
     return this.root.offsetParent !== null;
   }
 
-  /** Called when the tab is shown: fresh rows. */
-  shown(): void {
-    void this.load(true);
-  }
-
   /** Show the Wake of the worktree at `dir` (the sheet's workspace), fresh,
    *  with the rows filed under `also` too: the roots of the plans, reviews
    *  and asks that workspace has open, which may sit outside `dir`. */
@@ -321,6 +312,7 @@ export class Wake {
     this.askedDir = dir;
     this.also = [...new Set(also.filter((d) => d && d !== dir))];
     if (dir && dir !== this.ws) {
+      this.clearPreview();
       this.ws = dir;
       this.kinds.clear();
       this.sel = -1;
@@ -328,6 +320,13 @@ export class Wake {
       this.query = "";
       void this.load();
     } else void this.load(true);
+  }
+
+  /** Another workspace: the preview of the last one's file goes (a video
+   *  stops), and full-size with it. Where it opens (beside or under the
+   *  list) is a choice kept across workspaces. */
+  clearPreview(): void {
+    this.viewer.close();
   }
 
   /** The sheet's workspace opened or closed a page: read its roots too,
@@ -433,8 +432,6 @@ export class Wake {
       opts.unshift(o);
     }
     this.picker.replaceChildren(...opts);
-    // The picker beside it names the workspace.
-    this.title.replaceChildren(document.createTextNode("the wake"));
 
     // Chips: all, then each kind with its count.
     const rows = this.data.rows;
@@ -957,15 +954,14 @@ export class Wake {
           const shown: Shown = mediaOf(r.path) === "video"
             ? { kind: "video", title: r.path.split("/").pop() || r.title, data: fileUrl(r) }
             : await invoke<Shown>("wake_file", { id: r.id });
-          return this.host ? this.host.show(shown, toCmux, this.host.here()) : sheet().show(shown, toCmux, { dir: r.ws });
+          return this.host.show(shown, toCmux, this.host.here());
         } catch (err) {
           this.toast(`${String(err)} · opening it in cmux`, true);
           return await toCmux();
         }
       }
       const o = await invoke<{ sheet: string | null; detail: string }>("wake_open", { id: r.id, sub, here: true });
-      if (o.sheet && this.host) await this.host.open({ path: o.sheet, title: r.title || r.locator, toCmux, ...this.host.here() });
-      else if (o.sheet) await sheet().open({ path: o.sheet, title: r.title || r.locator, toCmux, dir: r.ws });
+      if (o.sheet) await this.host.open({ path: o.sheet, title: r.title || r.locator, toCmux, ...this.host.here() });
       else if (o.detail) this.toast(o.detail);
     } catch (err) {
       this.toast(String(err), true);
@@ -1056,11 +1052,6 @@ export class Wake {
 
   private key(e: KeyboardEvent): void {
     if (!this.visible() || e.ctrlKey || e.altKey) return;
-    // The Wake tab yields to the sheet; the sheet's own Wake has the keys there.
-    // Only an overlay sheet counts: the Dock's own sheet is always there,
-    // hidden or not by its view, and visible() already covers that.
-    const overlay = document.querySelector(".sheet:not(.embedded):not([hidden])");
-    if (overlay ? !overlay.contains(this.root) : false) return;
     // Only keys meant for the Wake: focus in it, or nowhere in particular.
     // The Dock's terminal (a textarea), a framed page or any other control
     // keeps its own keys, so Space and j/k typed there stay there.
