@@ -86,15 +86,29 @@ export const VIEWS = {
     await page.locator(".reclaim .rc-foot button + button").waitFor();
     await settle(page, 600);
   },
+  // The Wake has no view of its own: it is the Dock's side column (⌘E,
+  // here the app's own sheet:key event, as the shortcut sends it).
   async wake(page) {
-    await tab(page, "Wake");
-    await page.locator("#wake .w-list li").first().waitFor();
+    await VIEWS.dock(page);
+    // ⌘E only while the Wake is not up already (a press there goes back).
+    if (!(await page.locator(".dockview .sheet .sheet-wake .w-list li").first().isVisible().catch(() => false))) {
+      await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "sheet:key", payload: "wake" }));
+    }
+    await page.locator(".dockview .sheet .sheet-wake .w-list li").first().waitFor();
     await settle(page);
   },
   async wakeview(page) {
-    await VIEWS.wake(page);
-    await page.locator("#wake .w-row", { hasText: "checkout-after.png" }).click();
-    await page.locator("#wake .wv-img").waitFor();
+    // The picture is coupons-api's: its board row, then its Wake.
+    await VIEWS.dock(page);
+    await page.frameLocator(".dock-board iframe").locator(`.row[data-id="${byKey.api.id}"]`).first().click({ position: { x: 40, y: 12 } });
+    await settle(page);
+    // ⌘E only while the Wake is not up already (a press there goes back).
+    if (!(await page.locator(".dockview .sheet .sheet-wake .w-list li").first().isVisible().catch(() => false))) {
+      await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "sheet:key", payload: "wake" }));
+    }
+    await page.locator(".dockview .sheet .sheet-wake .w-list li").first().waitFor();
+    await page.locator(".dockview .sheet .sheet-wake .w-row", { hasText: "checkout-after.png" }).click();
+    await page.locator(".dockview .sheet .sheet-wake .wv-img").waitFor();
     await settle(page);
   },
   async lookout(page) {

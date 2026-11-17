@@ -6,6 +6,7 @@ import { Wake } from "./wake";
 import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
+import { face, GROUPS, groupOf, jump, ordered, round, WAKE, type GroupId } from "./sheetgroups";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -574,8 +575,6 @@ type Tab = {
   toCmux?: (() => Promise<unknown>) | null;
 };
 
-const WAKE = "wake";
-
 /** Whether the Dock shows the Wake beside the terminal when no page is up.
  *  Off by default, so the terminal gets the width; ⌘E (or the header's Wake
  *  button) opens it, and the choice is remembered on this machine. */
@@ -588,14 +587,17 @@ function wakeOpenPref(): boolean {
   }
 }
 
-/** A sheet over the current view: the page beside its agent's live chat.
- *  The page side has tabs: the workspace's Wake, then its open plan, lookout
- *  reviews and asks, then anything else opened here. ⌘E shows the Wake and
- *  goes back; ⌘] and ⌘[ step through the tabs; 1–9 pick one. Escape closes. */
+/** The Dock's columns: a workspace's live terminal, and beside it its
+ *  Wake and open pages. There is one, the Dock's: no page opens over the
+ *  stage, so a link in a pane always lands beside that pane.
+ *  The page side has tabs, grouped by kind: the workspace's Wake, then one
+ *  chip each for its plan, reviews, asks, and anything else opened
+ *  here; a chip holding several lists them. ⌘E shows the Wake and goes
+ *  back; ⌘⇧P, ⌘⇧L, ⌘⇧A and ⌘⇧O jump to a group (again: its next tab);
+ *  ⌘] and ⌘[ step through every tab; ⌘⇧E hides the side column. */
 export class Sheet {
   el = document.createElement("div");
   private card = document.createElement("div");
-  private titleEl = document.createElement("span");
   private body = document.createElement("div");
   private pageEl = document.createElement("div");
   private divider = document.createElement("div");
@@ -618,6 +620,20 @@ export class Sheet {
   private wakeRoots: string[] = [];
   /** The tab before the Wake, for ⌘E to go back to. */
   private back = "";
+  /** Each group's tab last shown: its chip stands for it, and its key goes back to it. */
+  private lastIn = new Map<GroupId, string>();
+  /** A group's list of its tabs, open under its chip. */
+  private groupMenu = document.createElement("div");
+  /** What opened the list, for Escape to give focus back to. */
+  private menuFrom: HTMLElement | null = null;
+  /** The list last closed, and when: a click on its own count closes it by
+   *  taking focus first, and must not open it again straight after. */
+  private menuShut = { group: "", at: 0 };
+  /** The strip's own word after a key that found nothing (flash). */
+  private noteEl = document.createElement("span");
+  /** The tab shown when the strip was last drawn (drawTabs's focus). */
+  private drawnActive = "";
+  private sayTimer = 0;
   /** The active tab was picked by the person (a click, a key, a page they
    *  opened), not by the sheet itself: a new page never comes forward over it. */
   private byHand = false;
@@ -638,67 +654,68 @@ export class Sheet {
   /** The workspace changed here (a family chip): the Dock view follows. */
   onPlace: (ws: string) => void = () => {};
 
-  /** `embedded`: a view's own columns (the Dock view's terminal and pages),
-   *  always there, rather than the overlay over the stage that closes. */
-  constructor(private embedded = false) {
-    this.el.className = embedded ? "sheet embedded" : "sheet";
+  constructor() {
+    this.el.className = "sheet";
     this.kin.className = "sheet-kin";
     this.kin.hidden = true;
-    this.el.hidden = !embedded;
     this.card.className = "sheet-card";
-    if (!embedded) {
-      this.card.setAttribute("role", "dialog");
-      this.card.setAttribute("aria-modal", "true");
-    }
-    const head = document.createElement("header");
-    if (!embedded) head.setAttribute("data-tauri-drag-region", "");
-    this.titleEl.className = "sheet-title";
     this.say.className = "sheet-say";
-    const cmux = document.createElement("button");
-    cmux.type = "button";
-    cmux.className = "sheet-btn cmux-only";
-    cmux.title = "Open beside its terminal in cmux (⌘-click does this too)";
-    cmux.append(document.createTextNode("Open in cmux "), mark("M3 7 7 3M4 3h3v3"));
-    cmux.addEventListener("click", () => void this.toCmux());
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "sheet-btn icon";
-    close.setAttribute("aria-label", "Close");
-    close.append(mark("M2.5 2.5l5 5M7.5 2.5l-5 5"));
-    close.addEventListener("click", () => this.close());
-    close.hidden = embedded;
     // The Dock folds the Wake away until asked: this brings it back.
     this.wakeBtn.type = "button";
     this.wakeBtn.className = "sheet-btn sheet-wake-btn";
-    this.wakeBtn.title = "Show or hide the side column beside the terminal (⌘E)";
+    this.wakeBtn.title = "Show or hide the side column beside the terminal (⌘⇧E)";
     // An icon (a column beside a pane): what it shows or hides is in its tooltip.
     this.wakeBtn.classList.add("icon");
     this.wakeBtn.append(mark("M1.5 2h7v6h-7zM5.5 2v6"));
     this.wakeBtn.hidden = true;
     this.wakeBtn.addEventListener("click", () => this.toggleSide());
-    head.append(this.titleEl, this.say, this.wakeBtn, cmux, close);
-    // The Dock: no header row of its own. Its tools join the terminal's tab
-    // row, and its cmux button opens the page when one is up, else the pane.
-    if (embedded) {
-      head.hidden = true;
-      // Icons, not words, so the row stays short: VS Code (the chat's own),
-      // the side column (⌘E), and one way to cmux (the page beside its
-      // terminal, or this pane; hidden on the tmux backend).
-      const toCmux = document.createElement("button");
-      toCmux.type = "button";
-      toCmux.className = "sheet-btn icon cmux-only";
-      toCmux.title = "Open in cmux: the page beside its terminal, or this pane";
-      toCmux.setAttribute("aria-label", toCmux.title);
-      toCmux.append(mark("M3 7 7 3M4 3h3v3"));
-      toCmux.addEventListener("click", () => void this.toCmux());
-      this.chat.adopt([this.say, this.wakeBtn, toCmux]);
-    }
+    // No header row of its own: its tools join the terminal's tab row, as
+    // icons so the row stays short: VS Code (the chat's own), the side
+    // column (⌘⇧E), and one way to cmux (the page beside its terminal, or
+    // this pane; hidden on the tmux backend).
+    const toCmux = document.createElement("button");
+    toCmux.type = "button";
+    toCmux.className = "sheet-btn icon cmux-only";
+    toCmux.title = "Open in cmux: the page beside its terminal, or this pane";
+    toCmux.setAttribute("aria-label", toCmux.title);
+    toCmux.append(mark("M3 7 7 3M4 3h3v3"));
+    toCmux.addEventListener("click", () => void this.toCmux());
+    this.chat.adopt([this.say, this.wakeBtn, toCmux]);
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
     this.tabsEl.className = "sheet-tabs";
     this.tabsEl.setAttribute("role", "tablist");
     this.stack.className = "sheet-stack";
-    this.pageEl.append(this.tabsEl, this.stack);
+    this.groupMenu.className = "sheet-tabmenu";
+    this.groupMenu.setAttribute("role", "menu");
+    this.groupMenu.hidden = true;
+    this.groupMenu.addEventListener("click", (e) => e.stopPropagation());
+    this.groupMenu.addEventListener("keydown", (e) => {
+      const its = [...this.groupMenu.querySelectorAll<HTMLButtonElement>("button")];
+      const i = its.indexOf(document.activeElement as HTMLButtonElement);
+      if (e.key === "Escape") {
+        this.closeGroupMenu(true);
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && its.length) {
+        e.preventDefault();
+        its[(i + (e.key === "ArrowDown" ? 1 : -1) + its.length) % its.length].focus();
+      } else if ((e.key === "Home" || e.key === "End") && its.length) {
+        e.preventDefault();
+        its[e.key === "Home" ? 0 : its.length - 1].focus();
+      }
+    });
+    // Away on a click elsewhere, focus leaving it (Tab, a framed page), or the window going.
+    document.addEventListener("click", () => this.closeGroupMenu());
+    this.groupMenu.addEventListener("focusout", (e) => {
+      if (!this.groupMenu.contains(e.relatedTarget as Node | null)) this.closeGroupMenu();
+    });
+    window.addEventListener("blur", () => this.closeGroupMenu());
+    this.tabsEl.addEventListener("scroll", () => this.closeGroupMenu(), { passive: true });
+    this.tabsEl.addEventListener("keydown", (e) => this.stripKey(e));
+    this.noteEl.className = "sheet-tabs-note";
+    this.noteEl.setAttribute("role", "status");
+    this.pageEl.append(this.tabsEl, this.stack, this.groupMenu);
     this.divider.className = "sheet-divider";
     this.chat.onPick = (surface) => {
       this.picked = surface;
@@ -721,34 +738,13 @@ export class Sheet {
       apply: (v) => this.body.style.setProperty("--chat", String(v)),
       label: "Resize the chat",
     });
-    this.card.append(head, this.kin, this.body);
+    this.card.append(this.kin, this.body);
     this.el.append(this.card);
-    if (embedded) return;
-    // A click on the dimmed backdrop closes; one inside the card does not.
-    this.el.addEventListener("click", (e) => e.target === this.el && this.close());
-    // Capture, so the window's own Escape (hide) waits for the sheet.
-    document.addEventListener(
-      "keydown",
-      (e) => {
-        if (e.key === "Escape" && !this.el.hidden && !(document.activeElement as HTMLElement | null)?.closest(".term")) {
-          this.close();
-          e.stopImmediatePropagation();
-          e.preventDefault();
-        }
-      },
-      true,
-    );
   }
 
-  get isOpen(): boolean {
-    return !this.el.hidden;
-  }
-
-  /** Keys are this sheet's: the overlay while it is open; an embedded one
-   *  while its view is on screen and no overlay is open over it. */
+  /** Keys are this sheet's while the Dock is on screen. */
   private keysHere(): boolean {
-    if (!this.embedded) return !this.el.hidden;
-    return this.el.getClientRects().length > 0 && !document.querySelector(".sheet:not(.embedded):not([hidden])");
+    return this.el.getClientRects().length > 0;
   }
 
   /** Show a workspace: its terminal, and the Wake unless a page is up. */
@@ -811,23 +807,12 @@ export class Sheet {
     // shell.rs's keys: they work with focus in a framed page too.
     await listen<string>("sheet:key", (e) => {
       if (!this.keysHere()) return;
-      // The Dock: ⌘E shows or hides the side column, whatever it holds. The
-      // overlay sheet: ⌘E goes to the Wake and back.
-      if (e.payload === "wake") this.embedded ? this.toggleSide() : this.toggleWake();
+      // ⌘E goes to the Wake and back (in the Dock, bringing a hidden column
+      // back too); ⌘⇧E hides the Dock's column; ⌘⇧ and a letter, a group.
+      if (e.payload === "wake") this.wakeKey();
+      else if (e.payload === "hide") this.toggleSide();
       else if (e.payload === "next" || e.payload === "prev") this.step(e.payload === "next" ? 1 : -1);
-    });
-    // 1–9 pick a page tab while focus is in the shell (a framed page keeps its own keys).
-    document.addEventListener("keydown", (e) => {
-      if (!this.keysHere() || e.metaKey || e.ctrlKey || e.altKey || !(e.key >= "1" && e.key <= "9")) return;
-      const at = document.activeElement;
-      if (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement || at instanceof HTMLSelectElement) return;
-      const t = this.tabs.filter((x) => x.key !== WAKE)[Number(e.key) - 1];
-      if (t) {
-        // Picking a page by key means to see it: a hidden column comes back.
-        this.pageHidden = false;
-        this.select(t.key, true);
-        e.preventDefault();
-      }
+      else if (e.payload.startsWith("group:")) this.jumpTo(e.payload.slice("group:".length) as GroupId);
     });
     // Frames go out only on change: start from the latest one.
     const [f, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ pages?: NowPage[]; families?: FamilyBrief[] } | null>("views_frame")]);
@@ -1007,6 +992,10 @@ export class Sheet {
     this.tabs = this.tabs.filter((t) => t.key === WAKE);
     this.active = "";
     this.back = "";
+    this.lastIn.clear();
+    this.closeGroupMenu();
+    // Another workspace: its Wake starts without the last one's preview.
+    this.wake?.clearPreview();
     this.byHand = false;
     this.picked = "";
     this.pageHidden = false;
@@ -1028,61 +1017,250 @@ export class Sheet {
     // A page that left the list (answered, closed) keeps its tab while it is shown.
     const rest = this.tabs.filter((t) => t.key !== WAKE && !live.some((l) => l.key === t.key) && (!t.now || t.key === this.active));
     for (const t of this.tabs) if (t.key !== WAKE && !live.some((l) => l.key === t.key) && !rest.includes(t)) t.el?.remove();
-    this.tabs = [wake, ...live, ...rest.map((t) => ({ ...t, waiting: false }))];
+    this.tabs = ordered([wake, ...live, ...rest.map((t) => ({ ...t, waiting: false }))]);
     this.drawTabs();
   }
 
+  /** The strip: the Wake, then one chip per group that has a tab. A chip
+   *  at rest names only its kind (with a count, and a dot when one of its
+   *  pages waits on you), so every kind fits; the chip shown also names its
+   *  page. A kind with several lists them from its count. */
   private drawTabs(): void {
-    let n = 0;
-    this.tabsEl.replaceChildren(
-      ...this.tabs.map((t) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "sheet-tab" + (t.key === this.active ? " on" : "") + (t.waiting ? " waiting" : "");
-        b.setAttribute("role", "tab");
-        b.setAttribute("aria-selected", String(t.key === this.active));
-        const key = document.createElement("kbd");
-        // In the Dock ⌘E shows or hides the column, so the Wake tab carries no key there.
-        key.textContent = t.key === WAKE ? (this.embedded ? "" : "⌘E") : ++n <= 9 ? String(n) : "";
-        b.append(key);
-        if (t.key !== WAKE) {
-          const kind = document.createElement("span");
-          kind.className = "sheet-tab-kind";
-          kind.textContent = t.kind === "review" ? "lookout" : t.kind;
-          b.append(kind);
-        }
-        const name = document.createElement("span");
-        name.className = "sheet-tab-name";
-        name.textContent = t.label;
-        b.append(name);
-        if (t.state) {
-          const st = document.createElement("span");
-          st.className = "sheet-tab-state";
-          st.textContent = t.state;
-          b.append(st);
-        }
-        if (t.waiting) {
-          const dot = document.createElement("i");
-          dot.className = "sheet-tab-dot";
-          dot.setAttribute("aria-label", "needs you");
-          b.append(dot);
-        }
-        b.title = t.key === WAKE ? "This workspace's Wake (⌘E)" : `${t.label}${t.state ? " · " + t.state : ""}`;
-        b.addEventListener("click", () => this.select(t.key, true));
-        return b;
-      }),
-    );
-    // Many tabs scroll rather than crush; the current one stays in view.
+    const chips: HTMLElement[] = [];
+    const wake = this.tabs.find((t) => t.key === WAKE);
+    if (wake) chips.push(this.chip(wake, "Wake", [wake], "⌘E", "This workspace's Wake (⌘E, and again to go back)"));
+    for (const g of GROUPS) {
+      const its = round(this.tabs.filter((t) => groupOf(t.kind) === g.id));
+      if (!its.length) continue;
+      const k = face(this.tabs, g.id, this.active, this.lastIn.get(g.id) ?? "");
+      const t = its.find((x) => x.key === k) ?? its[0];
+      const waits = its.filter((x) => x.waiting).length;
+      const tip = [
+        `${g.label}: ${t.label}${t.state ? " · " + t.state : ""}`,
+        waits ? `${waits} waiting on you` : "",
+        `⌘⇧${g.key}${its.length > 1 ? `, again for the next of ${its.length}` : ""}`,
+      ].filter(Boolean).join(" · ");
+      chips.push(this.chip(t, g.label, its, `⌘⇧${g.key}`, tip, g.id));
+    }
+    // Roving focus, as in the pane row: one Tab stop, arrows between chips.
+    const on = chips.find((c) => c.classList.contains("on")) ?? chips[0];
+    for (const c of chips) c.querySelector<HTMLButtonElement>(".sheet-tab")!.tabIndex = c === on ? 0 : -1;
+    // A redraw (a page's state moved on) keeps the chip that had focus.
+    // If the page shown changed meanwhile (a key), focus follows it, so a
+    // ring never marks a chip that is not the one shown.
+    const had = (document.activeElement as HTMLElement | null)?.closest?.(".sheet-grp") as HTMLElement | null;
+    const hadKind = had && this.tabsEl.contains(had) ? (this.drawnActive === this.active ? had.dataset.kind : on.dataset.kind) : undefined;
+    this.drawnActive = this.active;
+    this.tabsEl.replaceChildren(...chips, this.noteEl);
+    if (hadKind) {
+      const b = chips.find((c) => c.dataset.kind === hadKind)?.querySelector<HTMLButtonElement>(".sheet-tab");
+      if (b) {
+        for (const c of chips) c.querySelector<HTMLButtonElement>(".sheet-tab")!.tabIndex = -1;
+        b.tabIndex = 0;
+        b.focus();
+      }
+    }
     this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
 
-  /** ⌘E in the overlay sheet: the Wake, or back to the tab before it. (The
-   *  Dock's ⌘E is toggleSide.) */
-  private toggleWake(): void {
-    if (this.active === WAKE) {
-      const back = this.tabs.find((t) => t.key === this.back) ?? this.tabs.find((t) => t.key !== WAKE);
-      if (back) this.select(back.key, true);
-    } else this.select(WAKE, true);
+  /** One chip: a button for tab `t`, and for a group of several, a count
+   *  that lists them. A click on the chip of the group shown lists them too. */
+  private chip(t: Tab, kind: string, its: Tab[], key: string, tip: string, group?: GroupId): HTMLElement {
+    const on = its.some((x) => x.key === this.active);
+    const waiting = its.some((x) => x.waiting);
+    const wrap = document.createElement("span");
+    wrap.className = "sheet-grp" + (on ? " on" : "") + (waiting ? " waiting" : "") + (t.key === WAKE ? " wake" : "");
+    wrap.dataset.kind = group ?? WAKE;
+    wrap.setAttribute("role", "presentation");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sheet-tab" + (on ? " on" : "");
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(on));
+    // A kind's key: its letter, with ⌘⇧ before it where the column has room.
+    const k = document.createElement("kbd");
+    if (key.startsWith("⌘⇧")) {
+      const mod = document.createElement("span");
+      mod.className = "mod";
+      mod.textContent = "⌘⇧";
+      k.append(mod, key.slice(2));
+    } else k.textContent = key;
+    const kindEl = document.createElement("span");
+    kindEl.className = "sheet-tab-kind";
+    kindEl.textContent = kind;
+    b.append(k, kindEl);
+    // The dot sits by the kind it belongs to, before any name that may clip.
+    if (waiting) b.append(needsYou(its.filter((x) => x.waiting).length));
+    // Only the chip shown names its page; the Wake's name is the workspace's, above.
+    if (on && t.key !== WAKE) b.append(...tabWords(t));
+    b.title = tip;
+    b.setAttribute("aria-label", tip);
+    const many = !!group && its.length > 1;
+    b.addEventListener("click", (e) => {
+      if (on && many) {
+        e.stopPropagation();
+        this.toggleGroupMenu(wrap, its, b);
+      } else {
+        this.pageHidden = false;
+        this.select(t.key, true);
+      }
+    });
+    if (many) {
+      // ↓ on a chip lists its pages, as its count does.
+      b.addEventListener("keydown", (e) => {
+        if (e.key !== "ArrowDown") return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleGroupMenu(wrap, its, b);
+      });
+    }
+    wrap.append(b);
+    if (many) {
+      wrap.dataset.group = group;
+      const more = document.createElement("button");
+      more.type = "button";
+      more.tabIndex = -1;
+      more.className = "sheet-tab-more";
+      more.setAttribute("aria-haspopup", "menu");
+      more.setAttribute("aria-expanded", "false");
+      more.title = `All ${its.length} ${kind.toLowerCase()} pages`;
+      more.setAttribute("aria-label", more.title);
+      // On the chip shown, where it is in the round: "2/3".
+      // Beside a badge of how many wait, a second bare number would read as
+      // one; there the count is the caret alone, and its tooltip says it.
+      const at = its.findIndex((x) => x.key === this.active);
+      const badge = its.filter((x) => x.waiting).length > 1;
+      const n = document.createElement("span");
+      n.textContent = at >= 0 ? `${at + 1}/${its.length}` : badge ? "" : String(its.length);
+      more.append(n, mark("M3 4.5 5 6.5 7 4.5"));
+      more.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.toggleGroupMenu(wrap, its, b);
+      });
+      wrap.append(more);
+    }
+    return wrap;
+  }
+
+  /** ← → Home End move between the chips; Enter or Space picks one. */
+  private stripKey(e: KeyboardEvent): void {
+    const tabs = [...this.tabsEl.querySelectorAll<HTMLButtonElement>(".sheet-tab")];
+    const i = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (i < 0) return;
+    const to = e.key === "ArrowRight" ? (i + 1) % tabs.length : e.key === "ArrowLeft" ? (i - 1 + tabs.length) % tabs.length
+      : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    for (const t of tabs) t.tabIndex = -1;
+    tabs[to].tabIndex = 0;
+    tabs[to].focus();
+  }
+
+  /** The list of a group's tabs under its chip, the one shown marked; or
+   *  away, when it is already open for that chip. `from`: what opened it,
+   *  where Escape puts focus back. */
+  private toggleGroupMenu(chip: HTMLElement, its: Tab[], from: HTMLElement): void {
+    const g = chip.dataset.group ?? "";
+    if (!this.groupMenu.hidden && this.groupMenu.dataset.for === g) return this.closeGroupMenu();
+    if (this.menuShut.group === g && Date.now() - this.menuShut.at < 300) return;
+    this.closeGroupMenu();
+    this.menuFrom = from;
+    this.groupMenu.dataset.for = g;
+    this.groupMenu.replaceChildren(
+      ...its.map((t) => {
+        const i = document.createElement("button");
+        i.type = "button";
+        i.className = "sheet-tabmenu-item" + (t.key === this.active ? " on" : "");
+        i.setAttribute("role", "menuitemradio");
+        i.setAttribute("aria-checked", String(t.key === this.active));
+        if (t.waiting) i.append(needsYou());
+        i.append(...tabWords(t));
+        i.title = `${t.label}${t.state ? " · " + t.state : ""}${t.waiting ? " · waiting on you" : ""}`;
+        i.addEventListener("click", () => {
+          this.closeGroupMenu();
+          this.pageHidden = false;
+          this.select(t.key, true);
+        });
+        return i;
+      }),
+    );
+    // Fixed, under the chip: the strip scrolls sideways and would clip it.
+    const r = chip.getBoundingClientRect();
+    this.groupMenu.hidden = false;
+    const w = this.groupMenu.offsetWidth;
+    this.groupMenu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
+    this.groupMenu.style.top = `${r.bottom + 4}px`;
+    chip.querySelector(".sheet-tab-more")?.setAttribute("aria-expanded", "true");
+    (this.groupMenu.querySelector<HTMLButtonElement>(".on") ?? this.groupMenu.querySelector<HTMLButtonElement>("button"))?.focus();
+  }
+
+  private closeGroupMenu(refocus = false): void {
+    if (this.groupMenu.hidden) return;
+    const g = this.groupMenu.dataset.for ?? "";
+    this.groupMenu.hidden = true;
+    this.groupMenu.dataset.for = "";
+    this.menuShut = { group: g, at: Date.now() };
+    [...this.tabsEl.querySelectorAll<HTMLElement>(".sheet-grp")]
+      .find((x) => x.dataset.group === g)
+      ?.querySelector(".sheet-tab-more")
+      ?.setAttribute("aria-expanded", "false");
+    const from = this.menuFrom;
+    this.menuFrom = null;
+    if (refocus && from?.isConnected) from.focus();
+  }
+
+  /** ⌘⇧ and a group's letter: that group's tab, or its next one when it is
+   *  shown already (sheetgroups.ts's jump). Picking by key means to see it,
+   *  so a hidden column comes back. */
+  private jumpTo(group: GroupId): void {
+    const g = GROUPS.find((x) => x.id === group);
+    if (!g) return;
+    this.closeGroupMenu();
+    const key = jump(this.tabs, group, this.active, this.lastIn.get(group) ?? "");
+    if (!key) return this.flash(group === "other" ? "nothing else open here" : `no ${g.label.toLowerCase()} open here`);
+    this.pageHidden = false;
+    this.select(key, true);
+  }
+
+  /** A quiet word at the end of the strip, where the eye is after a key,
+   *  that goes again after a moment. With the column hidden, the strip is
+   *  too: it goes in the terminal's row instead. */
+  private flash(text: string): void {
+    const at = this.isFolded() ? this.say : this.noteEl;
+    at.textContent = text;
+    at.classList.add("quiet");
+    clearTimeout(this.sayTimer);
+    this.sayTimer = window.setTimeout(() => {
+      if (at.textContent === text) at.textContent = "";
+      at.classList.remove("quiet");
+    }, 2500);
+  }
+
+  /** ⌘E in the Dock: the Wake, with the column brought back if it was
+   *  hidden; on the Wake already, back to the page before it. (⌘⇧E hides
+   *  the column.) */
+  private wakeKey(): void {
+    if (this.active === WAKE && !this.isFolded()) {
+      // The page before the Wake; if it has closed, the first page open.
+      const back = this.tabs.find((t) => t.key === this.back && t.key !== WAKE) ?? this.tabs.find((t) => t.key !== WAKE);
+      if (back) {
+        this.pageHidden = false;
+        this.select(back.key, true);
+      } else this.flash("no page to go back to");
+      return;
+    }
+    this.pageHidden = false;
+    // Asked for by key: the Wake stays open beside the terminal from now on.
+    if (this.body.classList.contains("with-chat") && !this.wakeOpen) {
+      this.wakeOpen = true;
+      try {
+        localStorage.setItem(WAKE_OPEN_KEY, "1");
+      } catch {
+        // A private window: the choice lasts this session.
+      }
+    }
+    this.select(WAKE, true);
   }
 
   private setWakeOpen(on: boolean): void {
@@ -1100,7 +1278,7 @@ export class Sheet {
    *  review, an ask) while it is hidden by hand. */
   private isFolded(): boolean {
     // With no terminal to widen (a workspace before its first pane), the column stays.
-    if (!this.embedded || !this.body.classList.contains("with-chat")) return false;
+    if (!this.body.classList.contains("with-chat")) return false;
     return this.active === WAKE ? !this.wakeOpen : this.pageHidden;
   }
 
@@ -1110,17 +1288,21 @@ export class Sheet {
     // One button, always there in the Dock: it says what it brings back, or hides.
     const t = this.tabs.find((x) => x.key === this.active);
     const what = this.active === WAKE || !t ? "Wake" : t.kind === "page" ? "page" : t.kind;
-    this.wakeBtn.title = folded ? `Show the ${what} beside the terminal (⌘E)` : "Hide the side column (⌘E)";
+    this.wakeBtn.title = folded ? `Show the ${what} beside the terminal${this.active === WAKE ? " (⌘E)" : ""}` : "Hide the side column (⌘⇧E)";
+    // Hidden, the column cannot show a page that waits on you: its button does.
+    const waits = folded ? this.tabs.filter((x) => x.waiting).length : 0;
+    if (waits) this.wakeBtn.title += ` · ${waits} waiting on you`;
+    this.wakeBtn.classList.toggle("waiting", waits > 0);
     this.wakeBtn.setAttribute("aria-label", this.wakeBtn.title);
     this.wakeBtn.classList.toggle("on", !folded);
-    this.wakeBtn.hidden = !this.embedded || !this.body.classList.contains("with-chat");
+    this.wakeBtn.hidden = !this.body.classList.contains("with-chat");
   }
 
-  /** ⌘E in the Dock: the side column away, or back, whatever it holds. */
+  /** ⌘⇧E in the Dock (and its column button): the side column away, or back, whatever it holds. */
   private toggleSide(): void {
     // No terminal to widen (a workspace before its first pane): nothing folds,
     // so nothing to change or remember.
-    if (!this.embedded || !this.body.classList.contains("with-chat")) return;
+    if (!this.body.classList.contains("with-chat")) return;
     const show = this.isFolded();
     if (this.active === WAKE) this.setWakeOpen(show);
     else {
@@ -1142,11 +1324,13 @@ export class Sheet {
     const t = this.tabs.find((x) => x.key === key);
     if (!t) return;
     if (key === WAKE && this.active && this.active !== WAKE) this.back = this.active;
+    const g = groupOf(t.kind);
+    if (g !== WAKE) this.lastIn.set(g, key);
+    this.closeGroupMenu();
     this.active = key;
     this.byHand = hand;
     this.page = t.page ?? null;
     this.toCmuxFn = t.toCmux ?? null;
-    this.titleEl.textContent = t.key === WAKE ? this.dir().split("/").pop() ?? "" : t.label;
     this.say.textContent = "";
     // A page that could not load (the server was down) tries again.
     if (t.el?.dataset.failed) {
@@ -1180,7 +1364,6 @@ export class Sheet {
     }
     this.wakeDir = d;
     this.wakeRoots = roots;
-    this.titleEl.textContent = d.split("/").pop() ?? "";
     this.wake.showDir(d, roots);
   }
 
@@ -1203,7 +1386,7 @@ export class Sheet {
     if (!this.wake) {
       const root = document.createElement("div");
       root.className = "sheet-wake";
-      this.wake = new Wake(root, { embedded: true, host: this });
+      this.wake = new Wake(root, this);
       void this.wake.start();
       this.stack.append(root);
     }
@@ -1310,27 +1493,39 @@ export class Sheet {
     }, (e) => down(String(e)));
   }
 
-  close(): void {
-    this.el.hidden = true;
-    this.chat.stopTerm();
-    this.page = null;
-    this.toCmuxFn = null;
-    this.reset();
-    this.place = {};
-  }
-
   private async toCmux(): Promise<void> {
     // The Dock with no page up: the pane itself.
-    if (this.embedded && this.body.classList.contains("page-folded")) return this.chat.jumpToPane();
+    if (this.body.classList.contains("page-folded")) return this.chat.jumpToPane();
     if (!this.page && !this.toCmuxFn) return;
     try {
       if (this.toCmuxFn) await this.toCmuxFn();
       else if (this.page) await openInCmux(this.page);
-      if (!this.embedded) this.close();
     } catch (e) {
       this.say.textContent = String(e);
     }
   }
+}
+
+/** A tab's name and state, as its chip and its group's list show them. */
+function tabWords(t: { label: string; state: string }): HTMLElement[] {
+  const name = document.createElement("span");
+  name.className = "sheet-tab-name";
+  name.textContent = t.label;
+  if (!t.state) return [name];
+  const st = document.createElement("span");
+  st.className = "sheet-tab-state";
+  st.textContent = t.state;
+  return [name, st];
+}
+
+/** The dot on a tab that waits on you (an ask); with several waiting, a
+ *  badge with their number, so it is not said by colour alone. */
+function needsYou(n = 1): HTMLElement {
+  const dot = document.createElement("i");
+  dot.className = "sheet-tab-dot" + (n > 1 ? " count" : "");
+  if (n > 1) dot.textContent = String(n);
+  dot.setAttribute("aria-label", n > 1 ? `${n} waiting on you` : "waiting on you");
+  return dot;
 }
 
 function kindOf(path: string): string {
@@ -1354,7 +1549,6 @@ export function openInCmux(p: Page): Promise<void> {
   return invoke("open_in_cmux", { path: p.path, workspace: p.workspace ?? null });
 }
 
-let shared: Sheet | null = null;
 /** The Dock's own sheet, its side column, once the Dock has made it. */
 let docked: Sheet | null = null;
 
@@ -1364,33 +1558,11 @@ export function setDockSheet(s: Sheet): void {
 }
 
 /** Where a pane's link opens a page: the Dock's side column, beside the
- *  terminal and in the workspace it shows, while the Dock is on screen;
- *  else the app's sheet over the stage, in `place`. */
-export function linkSheet(place: { workspace?: string; dir?: string }): { sheet: Sheet; place: { workspace?: string; dir?: string } } {
-  if (docked && !docked.el.hidden && docked.el.getClientRects().length > 0) return { sheet: docked, place: docked.here() };
-  return { sheet: sheet(), place };
-}
-
-/** The app's one sheet, made on first use and put over the stage. */
-export function sheet(): Sheet {
-  if (!shared) {
-    shared = new Sheet();
-    document.body.append(shared.el);
-    void shared.start();
-  }
-  return shared;
-}
-
-/** Open a page: in the sheet, or in cmux on a ⌘-click. Returns an error to show, if any. */
-export async function openPage(p: Page, e?: MouseEvent | KeyboardEvent): Promise<string | null> {
-  if (e?.metaKey) {
-    try {
-      await openInCmux(p);
-      return null;
-    } catch (err) {
-      return String(err);
-    }
-  }
-  await sheet().open(p);
-  return null;
+ *  terminal and in the workspace it shows. With another view up (Lookout)
+ *  the Dock comes forward first (main.ts): a page never opens anywhere else. */
+export function linkSheet(place: { workspace?: string; dir?: string }): { sheet: Sheet; place: { workspace?: string; dir?: string } } | null {
+  if (!docked) return null;
+  if (docked.el.getClientRects().length === 0) window.dispatchEvent(new CustomEvent("seamux:show-dock"));
+  const here = docked.here();
+  return { sheet: docked, place: here.workspace || here.dir ? here : place };
 }

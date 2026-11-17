@@ -145,9 +145,10 @@ code. Each row names the shot that covers it: a screenshot in
 | ⌥Space overlay over any app, tray icon, no Dock icon | README, shell.rs | V6 (card) |
 | Header: `cmux · N workspaces` pill, ⋯ menu | app/ui/main.ts | S-app-dock |
 | Dock tab: board, the selected agent's terminal, Wake and open pages, splitters; Move to native for a pane it cannot draw | dock.ts, sheet.ts | S-app-dock, V6.1 |
+| Side column strip: ⌘E Wake, then Plan / Review / Ask / Other chips, ⌘⇧P L A O to jump, ⌘⇧E to hide | sheet.ts, sheetgroups.ts | S-app-wake |
 | New workspace form (⌘N): repo, branch, first prompt, live steps | newws.ts | S-app-newws, V6.2 |
 | Reclaim wizard: guard checks, what goes, Reclaim | reclaim.ts | S-app-reclaim |
-| Wake tab | wake.ts | S-app-wake |
+| The Wake (⌘E in the Dock; a picker for any workspace's) | wake.ts | S-app-wake |
 | Lookout tab: review jobs with live steps, findings | review.ts | S-app-lookout |
 | Search chip, ⌘K palette, undo toast | palette.ts, tuck.ts | S-app-palette |
 | Pane chips `[plan]` / `[outside]`; links open in VS Code, Dock, PR hover cards | panechips.ts, panelinks.ts | S-app-dock (card) |
