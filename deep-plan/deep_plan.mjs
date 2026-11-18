@@ -38,9 +38,14 @@ import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
-import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
+import { goPolicy, humanStop, goProblems, autoNext, policyProblems } from "./lib/autogo.mjs";
+import * as POL from "./lib/policy.mjs";
+import * as PACK from "./lib/pack.mjs";
 import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
+import * as CI from "./lib/ci.mjs";
+import * as SCN from "./lib/scenarios.mjs";
+import { JUDGE_TIMEOUT_S } from "./lib/judge.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
@@ -308,12 +313,21 @@ function validate(spec, force) {
           errs.push(`${label}: a ci check waits on the branch's PR checks through gh; it names no recipe or command`);
         if (c.timeout !== undefined && !(Number.isInteger(c.timeout) && c.timeout > 0))
           errs.push(`${label}: timeout is the seconds to wait for CI, a whole number`);
+      } else if (c.kind === "scenarios") {
+        if (c.recipe || c.run)
+          errs.push(`${label}: a scenarios check runs the judge on the plan's sealed scenarios; it names no recipe or command`);
+        if (c.threshold !== undefined && !(typeof c.threshold === "number" && c.threshold >= 0 && c.threshold <= 1))
+          errs.push(`${label}: threshold is the score every scenario must meet, a number from 0 to 1`);
+        if (c.timeout !== undefined && !(Number.isInteger(c.timeout) && c.timeout > 0))
+          errs.push(`${label}: timeout is the seconds the judge may take, a whole number`);
       } else if (!(c.name || c.recipe)) errs.push(`${label}: needs a name, or the recipe it runs`);
       if (c.id !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(String(c.id)))
         errs.push(`${label}: id must be letters, digits, dot, dash or underscore`);
     }
     if ((d.checks || []).filter(c => c.kind === "ci").length > 1)
       errs.push(`deliverable ${i + 1}: one ci check per increment (it waits on the branch's one PR)`);
+    if ((d.checks || []).filter(c => c.kind === "scenarios").length > 1)
+      errs.push(`deliverable ${i + 1}: one scenarios check per increment (it judges the plan's one set)`);
     if ((d.checks || []).filter(c => c.kind === "review").length > 1)
       errs.push(`deliverable ${i + 1}: one review check per increment (it gates on that increment's one review)`);
     if (d.waiver !== undefined && !(typeof d.waiver === "string" && d.waiver.trim()))
@@ -459,6 +473,23 @@ function ciCheck(c) {
     hash: crypto.createHash("sha256").update("ci\0" + shown).digest("hex").slice(0, 12),
     // The runner's own limit sits past the wait's, so the wait says why it ended.
     exec: { tier: "expensive", cwd: ".", timeout: t + 180, steps: [{ kind: "run", command: shown }] } };
+}
+// A scenarios check runs the judge (lib/judge.mjs, ADR 0107) on the plan's
+// sealed scenarios. Synthesized like ci: the shown command is hashed, the
+// real one is built at run time. Expensive, so it runs detached.
+const SCENARIOS_RECIPE = "deep-plan:scenarios";
+function scenariosCheck(c, slug) {
+  const t = c.timeout || JUDGE_TIMEOUT_S;
+  const shown = `deep-plan scenarios judge ${slug}${c.threshold !== undefined ? ` --threshold ${c.threshold}` : ""}`;
+  return { ...c, recipe: SCENARIOS_RECIPE, synth: "scenarios", source: "deep-plan (scenarios check)",
+    hash: crypto.createHash("sha256").update("scenarios\0" + shown).digest("hex").slice(0, 12),
+    exec: { tier: "expensive", cwd: ".", timeout: t + 600, steps: [{ kind: "run", command: shown }] } };
+}
+function scenariosExec(cur, slug) {
+  const t = cur.timeout || JUDGE_TIMEOUT_S;
+  const command = `${shq(process.execPath)} ${shq(path.join(HERE, "lib", "judge.mjs"))} run ${shq(slug)} --timeout ${Number(t)}` +
+    (typeof cur.threshold === "number" ? ` --threshold ${Number(cur.threshold)}` : "");
+  return { ...cur.exec, steps: [{ kind: "run", command }] };
 }
 function ciExec(cur) {
   const t = cur.timeout || CI_TIMEOUT_S;
@@ -880,6 +911,7 @@ function resolvePlanChecks(spec, root) {
     for (const c of specChecks(d)) {
       if (c.kind === "review") { out.push(reviewCheck(c, spec.slug, i + 1)); continue; }
       if (c.kind === "ci") { out.push(ciCheck(c)); continue; }
+      if (c.kind === "scenarios") { out.push(scenariosCheck(c, spec.slug)); continue; }
       if (!c.recipe) { out.push(c); continue; }
       const hits = [...nameable.values()].filter(r => r.key === c.recipe || r.id === c.recipe);
       if (hits.length === 1) out.push(bind(c, hits[0]));
@@ -1512,6 +1544,7 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:var(--fs-3) v
 .dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:var(--fs-2);padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
+.dp-level{font-size:var(--fs-2);color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:0 6px;margin-left:6px}
 .st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--accent-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-checks-st{list-style:none;padding-left:0;margin-bottom:4px}
@@ -2800,7 +2833,7 @@ function workingHtml(spec, st, b64) {
     const oos = (inc.outOfScope || []).length
       ? `<p class="dim">edited outside this increment's files: ${inc.outOfScope.map(f => `<code>${esc(f)}</code>`).join(", ")}</p>` : "";
     return `<div class="inc" id="inc-${inc.n}" data-status="${esc(inc.status)}"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
-<b>${inc.n}. ${esc(inc.title)}</b>
+<b>${inc.n}. ${esc(inc.title)}</b>${inc.level ? ` <span class="dp-level" title="the repo policy's level for this increment's files (${esc(inc.levelBy || "")})">${esc(inc.level)}</span>` : ""}
 <p>${esc(d.body || "")}</p>
 ${files}
 ${oos}
@@ -2982,6 +3015,25 @@ async function render(specPath, opts) {
       violations.push(...unread);
     }
   }
+  // The repo's policy, from the base branch (lib/policy.mjs, ADR 0108): each
+  // increment's level from its files, stored for status and the plan page.
+  // An auto go above an increment's ceiling, or a plan ship would act on
+  // alone without the scenarios check the policy asks for, is refused; not
+  // even --force passes it, since the policy is the base branch's, not the
+  // plan's. The person changes the policy on the base, or stops the
+  // increment for a person.
+  // Always fetched: no environment switch reads a local ref instead, since
+  // whoever runs deep-plan could point that ref anywhere.
+  const policy = POL.readPolicy(planRoot, { fetch: true });
+  const levels = (spec.deliverables || []).map(d => POL.changeLevel(policy, planPaths(d)));
+  {
+    const perrs = policyProblems(spec, levels, { requiredAt: POL.scenariosRequiredAt(policy), why: policy.why });
+    if (perrs.length) {
+      console.error("deep-plan: spec refused — the repo's policy:");
+      for (const e of perrs) console.error("  ✗ " + e);
+      process.exit(1);
+    }
+  }
   // Checks: resolved against the repo's recipe files, and refused where an
   // increment has none and no waiver, or names a recipe that is not there.
   const { lists: checkLists, errs: checkErrs } = resolvePlanChecks(spec, planRoot);
@@ -3142,8 +3194,11 @@ async function render(specPath, opts) {
       // `obs` is the pre-checks verdict; reconcileChecks carries it over.
       checks: reconcileChecks(prev, checkLists[i]), obs: undefined,
       // The increment's own files, so the gate can flag an edit outside them.
-      files: planPaths(d) };
+      files: planPaths(d),
+      // The policy's level for its files, as the base branch had it at render.
+      level: levels[i].level, levelBy: levels[i].file ? `${levels[i].file}: ${levels[i].by}` : levels[i].by };
   });
+  st.policy = { source: policy.source, ref: policy.ref, why: policy.why, at: Date.now() };
   // The ADR folder render resolved, which stays open between increments.
   st.adrDir = resolveAdrDir(planRoot, loadAdrConfig(planRoot), (spec.deliverables || []).flatMap(planPaths)).dir;
   // Keep what apply recorded (applied path) for unchanged entries; a spec
@@ -5151,6 +5206,414 @@ function pageCmd(slug, flags) {
   if (host === "terminal" && flags.review) say(`  or the text quiz: cat ${quiz}`);
 }
 
+// ---------------------------------------------------------------- ship
+
+// `deep-plan ship` (ADR 0108): after deliver, open or merge the plan's PR as
+// far as the repo's policy lets work go alone, or say what it waits on.
+//   supervised, auto-go  nothing: a person opens the PR and merges it
+//   auto-pr              open the PR, or mark the draft ready; a person merges
+//   auto-merge           also merge it, once the plan is delivered, every
+//                        scenarios check passed, the branch is pushed, the PR
+//                        does not touch the policy, and its checks are green
+// The level is the lowest of the branch's files' on the base branch's
+// policy, so a branch cannot raise its own; one that changes the policy file
+// is never merged by ship. With checks still running, ship merges when they
+// go green: by GitHub's auto-merge when the repo allows it and the base
+// requires checks, else by a detached wait of its own (`ship --wait`). It
+// never approves a land write: those stay a person's at every level.
+const SHIP_WAIT_S = () => Number(process.env.DEEP_PLAN_SHIP_WAIT_S) || 7200;
+const SHIP_INTERVAL_S = () => process.env.DEEP_PLAN_SHIP_INTERVAL_S !== undefined ? Number(process.env.DEEP_PLAN_SHIP_INTERVAL_S) : 60;
+const shipFile = slug => path.join(PLANS_DIR, `${slug}.ship.json`);
+function readShip(slug) { try { return JSON.parse(fs.readFileSync(shipFile(slug), "utf8")); } catch { return null; } }
+function writeShip(slug, rec) {
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(shipFile(slug), JSON.stringify({ ...rec, at: new Date().toISOString() }, null, 2) + "\n");
+}
+
+// The verdict, gate by gate, and the one act it allows: none (a person's),
+// wait, open, ready, merge, or merge-when-green.
+function shipVerdict({ st, root, fetch = true }) {
+  const git = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8", timeout: 20000 });
+  const pol = POL.readPolicy(root, { fetch });
+  const head = (git("rev-parse", "HEAD").stdout || "").trim();
+  const branch = (git("rev-parse", "--abbrev-ref", "HEAD").stdout || "").trim();
+  const ref = pol.ref || POL.baseOf(root) || "";
+  const files = ref ? POL.branchFiles(root, ref) : null;
+  const lv = files ? POL.changeLevel(pol, files)
+    : { level: POL.FALLBACK_LEVEL, file: "", by: `the branch's files against ${ref || "its base"} could not be read` };
+  let level = lv.level, capped = "";
+  // A branch that changes what the gates mean (the policy, the check
+  // recipes, the scenarios harness: anything under .seamux/) is a person's
+  // to merge, whatever the policy says of those paths.
+  const gateFiles = (files || []).filter(f => f === POL.POLICY_REL || f.startsWith(".seamux/"));
+  if (gateFiles.length && POL.rank(level) > POL.rank("auto-pr")) {
+    level = "auto-pr";
+    capped = `the branch changes ${gateFiles.includes(POL.POLICY_REL) ? POL.POLICY_REL : gateFiles[0]}, which the gates read, so a person merges it`;
+  }
+  const v = { plan: st ? st.slug : null, root, branch, head, base: ref,
+    policy: { source: pol.source, ref: pol.ref, why: pol.why }, level, levelBy: lv.file ? `${lv.file}: ${lv.by}` : lv.by,
+    capped, files: files ? files.length : null, gates: [], pr: null, action: "none", waits: [], method: POL.mergeMethod(pol) };
+  const gate = (name, ok, why) => { v.gates.push({ gate: name, ok: !!ok, why }); if (!ok) v.waits.push(why); };
+  if (st) gate("delivered", st.phase === "done", st.phase === "done" ? "the plan is delivered" : `the plan is ${st.phase}: every increment done and deep-plan deliver first`);
+  else gate("plan", false, "no deep-plan plan is at this worktree");
+  const scen = st ? (st.increments || []).flatMap(i => Object.values(checksOf(i)).filter(c => c.kind === "scenarios" && !c.retired)) : [];
+  const req = POL.scenariosRequiredAt(pol);
+  if (scen.length || (req && POL.atLeast(level, req)))
+    gate("scenarios", scen.length && scen.every(c => c.status === "pass"),
+      !scen.length ? `the policy needs a scenarios check at ${req} and above, and the plan has none`
+        : scen.every(c => c.status === "pass") ? "every scenarios check passed" : "a scenarios check has not passed");
+  if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
+  if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
+  const remote = branch ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
+  gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: push it`) : `origin has no ${branch}: push it`);
+  const pv = CI.prView(root);
+  if (pv.error) gate("pr", false, pv.error);
+  const pr = pv.pr || null;
+  if (pr) v.pr = { number: pr.number, url: pr.url, state: pr.state, draft: !!pr.isDraft, head: pr.headRefOid, mergeable: pr.mergeable || "" };
+  if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
+  // The level was read from this base's policy and diffed against it: a PR
+  // into another branch was never judged.
+  const baseBranch = ref.replace(/^origin\//, "");
+  if (pr && pr.baseRefName && pr.baseRefName !== baseBranch)
+    gate("pr base", false, `PR #${pr.number} targets ${pr.baseRefName}, not ${baseBranch}, whose policy set the level: a person merges it`);
+  const blocked = () => v.gates.some(x => !x.ok);
+  if (blocked()) { v.action = "wait"; return v; }
+  if (!pr) { v.action = "open"; return v; }
+  if (pr.headRefOid !== head) { gate("pr head", false, `PR #${pr.number}'s head is ${String(pr.headRefOid).slice(0, 8)}, not HEAD`); v.action = "wait"; return v; }
+  if (pr.isDraft) { v.action = "ready"; return v; }
+  if (level !== "auto-merge") { v.action = "none"; v.say = capped || `at auto-pr, PR #${pr.number} is open for a person to merge`; return v; }
+  if (pr.mergeable === "CONFLICTING") { gate("mergeable", false, `PR #${pr.number} has conflicts with its base`); v.action = "wait"; return v; }
+  const c = CI.checksNow(root);
+  if (c.error) { gate("ci", false, c.error); v.action = "wait"; return v; }
+  if (c.failed.length) { gate("ci", false, `${c.failed.length} PR check(s) failed: ${c.failed.map(f => f.name).join(", ")}`); v.action = "wait"; return v; }
+  if (c.pending.length || !c.total) { v.gates.push({ gate: "ci", ok: false, why: c.total ? `${c.pending.length} PR check(s) still running` : "no PR checks reported yet" }); v.action = "merge-when-green"; return v; }
+  v.gates.push({ gate: "ci", ok: true, why: `all ${c.passed.length} PR check(s) passed` });
+  v.action = "merge";
+  return v;
+}
+
+function shipLines(v) {
+  const out = [`ship ${v.plan || v.root}: ${v.level} (${v.levelBy}; policy: ${v.policy.why})${v.capped ? ` — ${v.capped}` : ""}`];
+  for (const g of v.gates) out.push(`  ${g.ok ? "✓" : "·"} ${g.gate}: ${g.why}`);
+  if (v.pr) out.push(`  PR #${v.pr.number}${v.pr.draft ? " (draft)" : ""} ${v.pr.url}`);
+  const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
+    merge: `merges PR #${v.pr && v.pr.number} (${v.method})`, "merge-when-green": `merges PR #${v.pr && v.pr.number} (${v.method}) once its checks are green` }[v.action];
+  out.push(`  → ${what}`);
+  return out;
+}
+
+function shipCmd(args, flags) {
+  const waitMode = args.includes("--wait");
+  const hi = args.indexOf("--head");
+  const pos = args.filter((a, i) => a !== "--wait" && a !== "--head" && !(hi >= 0 && i === hi + 1));
+  let st = pos[0] ? readState(pos[0]) : planFor(path.resolve(flags.at || process.cwd()));
+  if (pos[0] && !st) die(`no plan ${pos[0]}`);
+  const root = st ? st.root : (gitRoot(path.resolve(flags.at || process.cwd())) || die("ship: not in a git repo"));
+  if (waitMode) return shipWait(st, root);
+  const v = shipVerdict({ st, root, fetch: true });
+  if (flags.dry) {
+    if (flags.json) process.stdout.write(JSON.stringify({ ...v, dryRun: true, last: st ? readShip(st.slug) : null }) + "\n");
+    else for (const l of shipLines(v)) say(l);
+    // --json is read (the app's Merge stage): the action says it, the exit
+    // code does not.
+    process.exitCode = v.action === "wait" && !flags.json ? 3 : 0;
+    return;
+  }
+  if (!st) { for (const l of shipLines(v)) say(l); die("ship acts on a deep-plan plan; this worktree has none"); }
+  const done = shipAct(st, root, v);
+  if (flags.json) process.stdout.write(JSON.stringify({ ...v, result: done }) + "\n");
+  else { for (const l of shipLines(v)) say(l); say(done.note); }
+  process.exitCode = done.ok ? (v.action === "wait" ? 3 : 0) : 1;
+}
+
+// Do the verdict's one act; {ok, note}.
+function shipAct(st, root, v) {
+  const slug = st.slug;
+  const log = note => { const s = readState(slug); if (s) { log1(s, `ship: ${note}`); writeState(s); } };
+  if (v.action === "none" || v.action === "wait") return { ok: true, note: v.action === "wait" ? "ship waits; run it again once those are met" : "" };
+  const n = v.pr && String(v.pr.number);
+  if (v.action === "open") {
+    const spec = planSpec(slug);
+    const body = `${spec.title || slug}\n\nOpened by deep-plan ship at the policy's ${v.level} level (${v.levelBy}).` +
+      (v.level === "auto-merge" ? " Ship merges it once its checks are green." : " A person merges it.");
+    const r = CI.ghAct(["pr", "create", "--base", v.base.replace(/^origin\//, ""), "--head", v.branch, "--title", spec.title || slug, "--body", body], root);
+    if (!r.ok) return { ok: false, note: `gh pr create failed: ${r.out}` };
+    log(`opened ${r.out.split("\n").pop()} at ${v.level}`);
+    writeShip(slug, { status: "opened", level: v.level, head: v.head, note: r.out.split("\n").pop() });
+    return { ok: true, note: `opened ${r.out.split("\n").pop()}; ship again${v.level === "auto-merge" ? " to merge it once its checks run" : ""}` };
+  }
+  if (v.action === "ready") {
+    const r = CI.ghAct(["pr", "ready", n], root);
+    if (!r.ok) return { ok: false, note: `gh pr ready failed: ${r.out}` };
+    log(`marked PR #${n} ready at ${v.level}`);
+    writeShip(slug, { status: "ready", level: v.level, head: v.head, pr: Number(n) });
+    return { ok: true, note: `PR #${n} is ready for review${v.level === "auto-merge" ? "; ship again to merge it" : ""}` };
+  }
+  if (v.action === "merge") {
+    const r = CI.ghAct(["pr", "merge", n, `--${v.method}`, "--match-head-commit", v.head], root);
+    if (!r.ok) { writeShip(slug, { status: "failed", pr: Number(n), head: v.head, note: r.out }); return { ok: false, note: `gh pr merge failed: ${r.out}` }; }
+    log(`merged PR #${n} (${v.method}) at auto-merge, every gate passed`);
+    writeShip(slug, { status: "merged", pr: Number(n), head: v.head, level: v.level });
+    return { ok: true, note: `merged PR #${n}; its landing runs from the app` };
+  }
+  // merge-when-green
+  if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""), (CI.checksNow(root).names || []))) {
+    const r = CI.ghAct(["pr", "merge", n, "--auto", `--${v.method}`, "--match-head-commit", v.head], root);
+    if (r.ok) {
+      log(`asked GitHub to merge PR #${n} once its required checks pass`);
+      writeShip(slug, { status: "auto-merge", pr: Number(n), head: v.head, level: v.level, by: "github" });
+      return { ok: true, note: `GitHub merges PR #${n} once its required checks pass` };
+    }
+  }
+  const prior = readShip(slug);
+  if (prior && prior.status === "waiting" && prior.pid && alivePid(prior.pid) && prior.head === v.head)
+    return { ok: true, note: `ship's own wait (pid ${prior.pid}) already watches PR #${n}` };
+  const runs = path.join(PLANS_DIR, `${slug}.runs`);
+  fs.mkdirSync(runs, { recursive: true });
+  const logFile = path.join(runs, "ship.log");
+  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: 0, by: "ship", log: logFile });
+  const fd = fs.openSync(logFile, "a");
+  const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "ship", slug, "--wait", "--head", v.head],
+    { detached: true, stdio: ["ignore", fd, fd], cwd: root, env: process.env });
+  child.unref();
+  fs.closeSync(fd);
+  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: child.pid, by: "ship", log: logFile });
+  log(`waits for PR #${n}'s checks, then merges (pid ${child.pid})`);
+  return { ok: true, note: `ship waits for PR #${n}'s checks and merges when they are green (pid ${child.pid}, log ${logFile})` };
+}
+// A live pid that is still ship's wait: its command line says so, since a
+// pid the system reused for something else would otherwise pass.
+function alivePid(pid) {
+  try { process.kill(pid, 0); } catch (e) { if (e.code !== "EPERM") return false; }
+  const ps = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  return ps.status === 0 && /deep_plan\.mjs ship \S+ --wait/.test(ps.stdout || "");
+}
+
+// ship's own wait: every gate again on each look, so a push, a red check, a
+// policy change on the base or a reopened plan stops it rather than merging.
+async function shipWait(st, root) {
+  if (!st) die("ship --wait needs a plan");
+  const slug = st.slug, end = Date.now() + SHIP_WAIT_S() * 1000;
+  const hi = process.argv.indexOf("--head");
+  const started = { head: hi > 0 ? process.argv[hi + 1] : (readShip(slug) || {}).head };
+  // Every gate on every look, but the base is fetched only every tenth one
+  // (and always before a merge): a long CI run is not a fetch a minute.
+  for (let look = 0; ; look++) {
+    let v = shipVerdict({ st: readState(slug) || st, root, fetch: look % 10 === 0 });
+    if (v.action === "merge" && look % 10 !== 0) v = shipVerdict({ st: readState(slug) || st, root, fetch: true });
+    console.log(`${new Date().toISOString()} ${v.action}: ${v.gates.map(g => `${g.gate} ${g.ok ? "ok" : "no"}`).join(", ")}`);
+    if (started.head && v.head !== started.head) return shipStop(slug, `HEAD moved from ${started.head.slice(0, 8)} to ${v.head.slice(0, 8)}; ship again`);
+    if (v.action === "merge") {
+      const r = shipAct(readState(slug) || st, root, v);
+      return shipStop(slug, r.note, r.ok ? "merged" : "failed", !r.ok);
+    }
+    if (v.action !== "merge-when-green") return shipStop(slug, `stopped: ${v.waits.join("; ") || v.say || v.action}`);
+    if (Date.now() > end) return shipStop(slug, `the checks did not finish within ${SHIP_WAIT_S()}s`);
+    await new Promise(r => setTimeout(r, SHIP_INTERVAL_S() * 1000));
+  }
+}
+function shipStop(slug, note, status = "stopped", bad = true) {
+  const cur = readShip(slug) || {};
+  if (status !== "merged") writeShip(slug, { ...cur, status, note, pid: 0 });
+  const s = readState(slug);
+  if (s && status !== "merged") { log1(s, `ship: ${note}`); writeState(s); }
+  console.log(note);
+  process.exitCode = bad ? 1 : 0;
+}
+
+// `deep-plan pack` (lib/pack.mjs, ADR 0109): set a repo up for a stack from a
+// pack folder, and keep track of what it merged.
+function packCmd(args, flags) {
+  const PK = PACK;
+  const [sub, name] = args;
+  const root = flags.root || gitRoot(path.resolve(flags.at || process.cwd())) || die("pack: not in a git repo");
+  const usage = "pack list | show <pack> | add <pack|dir|git-url> | check [pack] | update <pack> | remove <pack>  [--root DIR] [--json]";
+  const out = r => { for (const l of r.lines || []) say(l); if (r.errors && r.errors.length) { for (const e of r.errors) console.error("  ✗ " + e); process.exit(1); } };
+  if (sub === "list") {
+    const l = PK.listPacks(root), stamp = PK.readStamp(root);
+    if (flags.json) { process.stdout.write(JSON.stringify(l.map(p => ({ ...p, added: stamp.packs[p.name] ? stamp.packs[p.name].version : "" }))) + "\n"); return; }
+    for (const p of l) say(`${p.name}@${p.version}${stamp.packs[p.name] ? "  (added)" : p.detected ? "  (looks like this repo)" : ""}  — ${p.describes}`);
+    for (const [n, s] of Object.entries(stamp.packs)) if (!l.some(p => p.name === n)) say(`${n}@${s.version}  (added from ${s.source})`);
+    return;
+  }
+  if (sub === "show") {
+    const L = PK.loadPack(name || die(usage));
+    if (L.error) die(L.error);
+    const p = L.pack;
+    if (flags.json) { process.stdout.write(JSON.stringify({ ...p, source: L.source, errors: L.errors }) + "\n"); return; }
+    say(`${p.pack}@${p.version} (${L.source}): ${p.describes}`);
+    if ((p.recipes || []).length) say(`  recipes: ${p.recipes.map(r => `${r.id} [${r.kind || "test"}]`).join(", ")}`);
+    if ((p.land || []).length) say(`  land:    ${p.land.map(r => r.id).join(", ")}`);
+    if (p.scenarios) say(`  scenarios: ${Object.keys(p.scenarios).join(", ")}`);
+    if (p.policy) say(`  policy draft: default ${p.policy.default}${(p.policy.paths || []).map(e => `; ${[].concat(e.match).join(",")} ${e.level}`).join("")}`);
+    if (p.mcp) say(`  mcp: ${Object.keys(p.mcp).join(", ")}`);
+    if ((p.skills || []).length) say(`  skills: ${p.skills.join(", ")}`);
+    const miss = PK.missingTools(p);
+    if (miss.length) say(`  needs ${miss.join(", ")}, not on PATH here`);
+    for (const e of L.errors) console.error("  ✗ " + e);
+    if (L.errors.length) process.exitCode = 1;
+    return;
+  }
+  if (sub === "add") return out(PK.addPack(root, name || die(usage)));
+  if (sub === "update") return out(PK.updatePack(root, name || die(usage)));
+  if (sub === "remove") return out(PK.removePack(root, name || die(usage)));
+  if (sub === "check") {
+    const rows = PK.checkPacks(root, name);
+    if (flags.json) { process.stdout.write(JSON.stringify(rows) + "\n"); }
+    else if (!rows.length) say("no packs added here");
+    else {
+      const bad = rows.filter(r => r.state !== "ok");
+      const by = [...new Set(rows.map(r => r.pack))];
+      for (const n of by) {
+        const mine = rows.filter(r => r.pack === n), off = mine.filter(r => r.state !== "ok");
+        say(`${n}: ${off.length ? `${off.length} of ${mine.length} item(s) drifted` : `${mine.length} item(s), no drift`}`);
+        for (const r of off) say(`  ${r.state.padEnd(11)} ${r.key}${r.why ? ` (${r.why})` : ""}`);
+      }
+      if (bad.some(r => r.state === "edited")) say("edited items stay as they are; pack update re-merges the rest");
+    }
+    process.exitCode = rows.some(r => r.state !== "ok") ? 1 : 0;
+    return;
+  }
+  die(usage);
+}
+
+// `deep-plan policy show [--at DIR] [--json] [file...]`: the base branch's
+// policy and each named file's level. `policy check` validates the worktree's
+// own copy, which takes effect once it is on the base.
+function policyCmd(args, flags) {
+  const [sub, ...files] = args;
+  const root = gitRoot(path.resolve(flags.at || process.cwd())) || die("policy: not in a git repo");
+  if (sub === "show") {
+    const pol = POL.readPolicy(root, { fetch: true });
+    if (flags.json) {
+      process.stdout.write(JSON.stringify({ source: pol.source, ref: pol.ref, why: pol.why, policy: pol.policy,
+        files: files.map(f => ({ file: f, ...POL.levelOf(pol, f) })) }) + "\n");
+      return;
+    }
+    for (const l of POL.describe(pol, files)) say(l);
+    return;
+  }
+  if (sub === "check") {
+    const f = path.join(root, POL.POLICY_REL);
+    if (!fs.existsSync(f)) { say(`no ${POL.POLICY_REL} in this worktree`); return; }
+    let p; try { p = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { die(`${POL.POLICY_REL} is not JSON: ${e.message}`); }
+    const errs = POL.validatePolicy(p);
+    if (errs.length) { for (const e of errs) console.error("  ✗ " + e); process.exit(1); }
+    say(`${POL.POLICY_REL} is valid; it takes effect once it is on the base branch`);
+    return;
+  }
+  die("policy show [--at DIR] [--json] [file...] | policy check [--at DIR]");
+}
+
+// `deep-plan scenarios` (lib/scenarios.mjs, ADR 0106): the plan's sealed
+// acceptance scenarios. write drafts them with a fresh headless writer after
+// the grade; list and access are what a session may see (titles, scores, the
+// count of refused reads); show and edit are the person's (the gate refuses
+// them from a session, and so does this); judge runs the judge as a
+// scenarios check would.
+function scenariosCmd(args, flags) {
+  const usage = "scenarios write|list|access|judge|show|edit <slug> [--model M] [--threshold T] [--json]";
+  const [sub, slug, ...more] = args;
+  if (!sub || !slug) die(usage);
+  if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(slug)) die(`not a plan slug: ${slug}`);
+  const opt = k => { const i = more.indexOf(k); return i >= 0 ? more[i + 1] : undefined; };
+  const st = readState(slug);
+  const inSession = !!process.env.CLAUDECODE && !process.env.DEEP_PLAN_FROM_SERVE;
+  const theirs = what => die(`scenarios ${what} opens the sealed scenarios, which the building session does not read: ` +
+    `the person runs it in their own shell`);
+  if (sub === "write") {
+    if (!st) die(`no plan ${slug}`);
+    const had = SCN.readScenarios(slug);
+    const edited = had && (had.edits || []).length;
+    if (had && !flags.force) die(`${slug} already has ${had.scenarios.length} scenario(s); --force writes them again` +
+      (edited ? `, dropping the person's ${edited} edit(s)` : ""));
+    if (edited && inSession) die(`the person edited ${slug}'s scenarios, so writing them again is theirs: deep-plan scenarios write ${slug} --force, in their own shell`);
+    const cfg = SCN.scenariosConfig(st.root);
+    const model = opt("--model") || cfg.writer || SCN.WRITER_MODEL;
+    console.error(`deep-plan: writing ${slug}'s scenarios with ${model} (a headless run, with its own tokens)…`);
+    const r = SCN.writeScenarios(slug, { root: st.root, model });
+    if (r.error) die(r.error);
+    const fresh = readState(slug);
+    if (fresh) { log1(fresh, `scenarios: ${r.doc.scenarios.length} written by ${model}`); writeState(fresh); }
+    say(`sealed ${r.doc.scenarios.length} scenario(s) for ${slug}; the building session sees their titles only:`);
+    for (const t of r.doc.scenarios) say(`  ${t.id}  ${t.title}`);
+    say(`the person reads and edits them (and allows hints): deep-plan scenarios show ${slug}, in their own shell`);
+    return;
+  }
+  if (sub === "list") {
+    const t = SCN.titles(slug);
+    const v = SCN.lastVerdict(slug);
+    const access = SCN.readAccess(slug).length;
+    const scores = v ? (v.scores || []).map(s => ({ id: s.id, title: s.title, score: s.score })) : [];
+    if (flags.json) {
+      process.stdout.write(JSON.stringify({ slug, count: t ? t.count : 0, titles: t ? t.titles : [], writtenAt: t ? t.writtenAt : "",
+        edited: t ? t.edited : 0, last: v ? { at: v.at, head: v.head, threshold: v.threshold, pass: v.pass, scores } : null, access }) + "\n");
+      return;
+    }
+    if (!t) { say(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug} (after the grade)`); return; }
+    say(`${t.count} scenario(s) for ${slug}, written ${t.writtenAt.slice(0, 16).replace("T", " ")}${t.edited ? `, edited ${t.edited} time(s)` : ""}:`);
+    for (const x of t.titles) {
+      const s = scores.find(y => y.id === x.id);
+      say(`  ${s ? s.score.toFixed(2) : "  - "}  ${x.id}  ${x.title}`);
+    }
+    if (v) say(`last judged ${String(v.at).slice(0, 16).replace("T", " ")} on ${String(v.head || "").slice(0, 8)}: ${v.pass ? "passed" : "not passed"} at ${v.threshold}`);
+    if (access) say(`the access log holds ${access} refused attempt(s) to read them`);
+    return;
+  }
+  if (sub === "access") {
+    const a = SCN.readAccess(slug);
+    if (flags.json) { process.stdout.write(JSON.stringify(a) + "\n"); return; }
+    if (!a.length) { say(`no refused attempt to read ${slug}'s scenarios`); return; }
+    for (const e of a) say(`${String(e.at).slice(0, 19).replace("T", " ")}  ${e.via || e.tool}  ${e.what}`);
+    return;
+  }
+  if (sub === "judge") {
+    if (!st) die(`no plan ${slug}`);
+    const t = opt("--threshold");
+    if (t !== undefined && !(Number(t) >= 0 && Number(t) <= 1)) die(`--threshold is a number from 0 to 1 (got ${t})`);
+    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "judge.mjs"), "run", slug,
+      ...(t !== undefined ? ["--threshold", t] : []), ...(opt("--model") ? ["--model", opt("--model")] : [])],
+      { cwd: st.root, stdio: "inherit", env: { ...process.env, DEEP_PLAN_ROOT: st.root } });
+    process.exitCode = r.status === null ? 1 : r.status;
+    return;
+  }
+  if (sub === "show") {
+    if (inSession) theirs("show");
+    if (!SCN.readScenarios(slug)) die(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug}`);
+    const key = SCN.pageKey(slug);
+    const url = servedUrl(`/scenarios/${slug}?k=${key}`);
+    if (!url) die(`deep-plan serve did not start (see ${SERVE.LOG_FILE})`);
+    const { host } = detectHost();
+    let opened = false;
+    if (process.env.DEEP_PLAN_OPENER) opened = spawnSync(process.env.DEEP_PLAN_OPENER, [url], { stdio: "ignore", timeout: 10000 }).status === 0;
+    else if (host === "cmux" && process.env.CMUX_WORKSPACE_ID)
+      opened = spawnSync("cmux", ["open", url, "--workspace", process.env.CMUX_WORKSPACE_ID], { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 }).status === 0;
+    else if (process.platform === "darwin")
+      opened = spawnSync("open", [url], { timeout: 10000 }).status === 0;
+    // The keyed URL only to a terminal: printed into a session, it is the key.
+    if (process.stdout.isTTY) say(`${opened ? "opened" : "open"} ${url}`);
+    else say(opened ? `opened ${slug}'s scenarios page` : `run this from a terminal to see the page's address`);
+    return;
+  }
+  if (sub === "edit") {
+    if (inSession) theirs("edit");
+    const doc = SCN.readScenarios(slug);
+    if (!doc) die(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug}`);
+    const f = SCN.writeSealed(slug, "edit.json", { scenarios: doc.scenarios });
+    const ed = process.env.VISUAL || process.env.EDITOR || "vi";
+    const r = spawnSync("sh", ["-c", `${ed} "$1"`, "sh", f], { stdio: "inherit" });
+    try {
+      if (r.status !== 0) die(`${ed} exited ${r.status}; nothing saved`);
+      let next;
+      try { next = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { die(`not JSON: ${e.message}; nothing saved`); }
+      const saved = SCN.saveScenarios(slug, { ...doc, scenarios: next.scenarios }, { by: "person", what: "edited in an editor" });
+      say(`saved ${saved.scenarios.length} scenario(s) for ${slug}`);
+    } finally { fs.rmSync(f, { force: true }); }
+    return;
+  }
+  die(usage);
+}
+
 // A patch of everything since the increment started — committed, uncommitted
 // and untracked. Always written; only OPENED when the human asked for a diff.
 //
@@ -5239,8 +5702,12 @@ function statusRows() {
     // Every increment's own row, for a reader that draws the whole plan (the
     // seamux-mods pane) rather than the board's one-line summary. `obs` is the
     // checks folded to one word, for a pane built before checks.
+    // Where the repo policy came from at the last render (lib/policy.mjs).
+    ...(st.policy ? { policy: st.policy } : {}),
     increments: (st.increments || []).map(i => ({
       n: i.n, title: i.title, status: i.status, obs: checksAggregate(i), by: i.by || "",
+      // The policy's level for the increment's files, from the last render.
+      ...(i.level ? { level: i.level } : {}),
       checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => {
         const status = shownStatus(v) || "pending";
         return {
@@ -5337,6 +5804,7 @@ function checkList(slug, n) {
     say(`\n  ${CHECK_MARK[stale.has(id) ? "stale" : v.status] || "·"} ${id}  [${v.kind}${v.system ? " · " + v.system : ""}] ${s}`);
     say(`    ${v.name}`);
     if (v.recipe) say(`    recipe: ${v.recipe}  (its verdict comes from running it; a hand pass needs --force)`);
+    if (v.synth === "scenarios") say(`    judges: the plan's sealed scenarios in a throwaway worktree at HEAD (commit first), every one to ${v.threshold ?? SCN.DEFAULT_THRESHOLD}; it prints titles and scores (deep-plan scenarios list ${slug} names them)`);
     if (v.synth === "ci") say(`    waits:  on the branch's PR checks through gh, up to ${v.timeout || CI_TIMEOUT_S}s; push first, then check run (it runs detached; check wait follows it)`);
     const browserStep = ((v.exec && v.exec.steps) || []).find(x => x.kind === "browser");
     if (browserStep) say(`    script: ${browserStep.command}`);
@@ -5707,7 +6175,8 @@ function checkRun(slug, n, ids, opts) {
     // The scoped tree before the run, to tell a recipe's new outputs (part of
     // what passed) from an edit to a file the check covers made while it ran.
     const before = treeOf(st.root, scopeOf(cur));
-    const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.synth === "ci" ? ciExec(cur) : cur.exec;
+    const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.synth === "ci" ? ciExec(cur)
+      : cur.synth === "scenarios" ? scenariosExec(cur, slug) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
       env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
              DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" },
@@ -5763,7 +6232,10 @@ function checkRun(slug, n, ids, opts) {
     // not a failed attempt, and a manual fail is a person's, not a retry.
     // A ci run that found no CI verdict (exit 3: no PR, not pushed, timed
     // out) is not a red run either.
-    const counted = res.status === "fail" && cur.synth !== "review" && !(cur.synth === "ci" && res.ran && res.ran.code === 3);
+    // A scenarios run with no verdict (exit 3: no scenarios yet, a bad
+    // harness file, a judge that did not answer) is not a red run either.
+    const counted = res.status === "fail" && cur.synth !== "review" &&
+      !((cur.synth === "ci" || cur.synth === "scenarios") && res.ran && res.ran.code === 3);
     const fails = res.status === "pass" ? 0 : counted ? (failsBefore || 0) + 1 : (failsBefore || 0);
     const cap = retryMax(planSpec(slug));
     // Only an open increment blocks: a re-run on a done one is a look, not work.
@@ -6483,7 +6955,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes",
+  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes", "scenarios", "ship", "policy", "pack", "ci",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -6507,7 +6979,7 @@ const flags = {};
 const args = [];
 // Only these commands have a dry run. Anywhere else --dry-run is refused, so it
 // never quietly does the real thing (render archived a plan with it).
-const DRY_RUN_OK = new Set(["redraw"]);
+const DRY_RUN_OK = new Set(["redraw", "ship"]);
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--force") flags.force = true;
   // Resolved here: state outlives this cwd, and the gate reads a relative root
@@ -6814,6 +7286,18 @@ switch (cmd) {
   case "notes": notesCmd(args, flags); break;
   case "lesson": lessonCmd(args, flags); break;
   case "intake": intakeCmd(args, flags); break;
+  case "scenarios": scenariosCmd(args, flags); break;
+  case "ship": await shipCmd(args, flags); break;
+  case "policy": policyCmd(args, flags); break;
+  case "pack": packCmd(args, flags); break;
+  case "ci": {
+    // The ci check's wait as a verb, so a recipe (the github-actions pack's)
+    // can run it: deep-plan ci wait [--timeout s].
+    if (args[0] !== "wait") die("ci wait [--timeout <seconds>]");
+    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "ci.mjs"), "wait", "--timeout", String(flags.timeout || CI_TIMEOUT_S)], { stdio: "inherit" });
+    process.exitCode = r.status === null ? 1 : r.status;
+    break;
+  }
   case "handoff": await handoffCmd(args[0] || die("handoff <slug> [--post KEY [--yes]]"), flags); break;
   case "retro": retroCmd(args, flags); break;
   case "await-go": {
@@ -7088,6 +7572,25 @@ switch (cmd) {
              [--plan <slug>]                  (--plan: the plan whose file holds it)
   notes [--all] [--plan <slug>] [--json]      open notes of every plan in this repo
                                               (--all adds closed ones)
+  ship <slug> [--dry-run] [--json]            after deliver: open the PR (auto-pr) or merge it
+                                              (auto-merge) as the base branch's policy allows,
+                                              or say what it waits on (--at DIR for a worktree)
+  policy show [--at DIR] [--json] [file...]   the base branch's .seamux/policy.json and each
+                                              file's level; policy check validates the worktree's
+  pack list | show <pack> [--json]            the packs deep-plan can add (deep-plan/packs,
+                                              ~/.claude/deep-plan/packs), and what one holds
+  pack add <pack|dir|git-url> [--root DIR]    merge a pack's recipes, scenarios harness, policy
+                                              draft, MCP servers and skills into the repo
+  pack check [pack] | update <pack> | remove <pack>  drift since it was merged; re-merge
+                                              or take out only what nobody edited
+  ci wait [--timeout s]                       wait on the branch's PR checks (the ci check's run)
+  scenarios write <slug> [--model M] [--force] a fresh headless writer drafts the plan's
+                                              scenarios from the approved plan, sealed
+                                              outside the repo (after the grade)
+  scenarios list|access <slug> [--json]       their titles and last scores, and the refused
+                                              attempts to read them
+  scenarios judge <slug> [--threshold T]      run the judge as a scenarios check does
+  scenarios show|edit <slug>                  the person's: open the keyed page, or an editor
   intake <link> [--json]                      gather an issue, PR, failed Actions run or Jira
                                               key into a seed file to plan a bug from
   lesson "<text>" [--plan <slug>] [--inc <n>] file a lesson candidate after a correction

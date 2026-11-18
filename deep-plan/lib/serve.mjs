@@ -17,7 +17,8 @@ import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { STATE_DIR, PLANS_DIR } from "./state.mjs";
+import { STATE_DIR, PLANS_DIR, SEALED_DIR } from "./state.mjs";
+import * as SCN from "./scenarios.mjs";
 import { mermaidPath } from "./validate.mjs";
 import { cmuxBin } from "./browser.mjs";
 import { alive, sleep } from "./runner.mjs";
@@ -460,6 +461,31 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
         }
         log(`OK   check ${verb} ${one("slug")} ${one("n")} ${one("id")}`);
         return reply(res, 200, { ok: true, detail: lastLine(r.out, 200) });
+      }
+      // A plan's sealed scenarios (lib/scenarios.mjs): behind the plan's own
+      // page key, not this server's token, since serve.json is readable to
+      // the building agent and the key is in the folder the gate refuses it.
+      // A request without the key is refused and written to the access log.
+      if (p.startsWith("/scenarios/") || p.startsWith("/scenarios-edit/")) {
+        const edit = p.startsWith("/scenarios-edit/");
+        const slug = unquote(p.slice(edit ? "/scenarios-edit/".length : "/scenarios/".length)).trim();
+        if (!SLUG_OK.test(slug) || !SCN.readScenarios(slug) && !fs.existsSync(path.join(SEALED_DIR, slug)))
+          return reply(res, 404, '{"error":"no such plan"}');
+        if (!SCN.keyOk(slug, one("k"))) {
+          SCN.logAccess([slug], { via: "serve", what: `GET ${p} without the page key` });
+          log(`DENY scenarios ${slug}: no key`);
+          return reply(res, 403, '{"error":"the scenarios page needs its key: deep-plan scenarios show <slug>, in your own shell"}');
+        }
+        if (!edit) return send(res, 200, "text/html; charset=utf-8", SCN.scenariosPage(slug, one("k")));
+        const op = one("op"), id = one("id");
+        try {
+          const fields = op === "delete" ? { delete: true }
+            : Object.fromEntries(["title", "body", "expect", "hint", "hintApproved"].filter(k => u.searchParams.has(k)).map(k => [k, one(k)]));
+          if (!["save", "delete", "add"].includes(op)) return reply(res, 400, { ok: false, detail: "op is save, delete or add" });
+          SCN.editScenario(slug, op === "add" ? "new" : id, fields, "person");
+          log(`OK   scenarios ${op} ${slug} ${id}`);
+          return reply(res, 200, { ok: true });
+        } catch (e) { return reply(res, 400, { ok: false, detail: e.message }); }
       }
       if (p.startsWith("/plan/")) {
         const seg = unquote(p.slice("/plan/".length)).trim();

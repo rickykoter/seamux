@@ -1,9 +1,9 @@
 {
-  "description": "deep-plan: the per-increment edit gate, family news at the next prompt, the engine pointer out-of-session callers read, and a pull of shared plan state at session start",
+  "description": "deep-plan: the per-increment edit gate (and the sealed scenarios' read guard), family news at the next prompt, the engine pointer out-of-session callers read, and a pull of shared plan state at session start",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|Read|Grep|Glob",
         "hooks": [
           {
             "type": "command",

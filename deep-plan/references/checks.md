@@ -13,6 +13,7 @@ Read this while deciding how each increment is proven (discipline step 4) and be
 - [PR proof](#pr-proof)
 - [Review checks and the delivery review](#review-checks-and-the-delivery-review)
 - [CI checks](#ci-checks)
+- [Scenarios checks](#scenarios-checks)
 - [Proving an increment before done](#proving-an-increment-before-done)
 
 ## Choosing checks
@@ -281,6 +282,22 @@ without counting, since no CI run went red. A hand pass needs `--force`.
 It runs detached (`check wait` follows it), so put it on an increment the
 branch is pushed for: on an auto plan, one whose between step is
 `draft-pr`, or the last increment after its push.
+
+## Scenarios checks
+
+A `scenarios` check takes no recipe or command (`name` defaults to
+"scenarios"; one per deliverable; `threshold` from 0 to 1, default 0.8):
+deep-plan runs its judge on the plan's sealed scenarios. They are written
+after the grade by `deep-plan scenarios write <slug>`, and the building
+session sees only their titles. The run makes a throwaway worktree at HEAD
+(commit first), points HOME and the crew and cache stores at a temp
+folder, starts the repo's harness from `.seamux/scenarios.json`, and has a
+different model score each scenario from 0 to 1. It passes when every one
+meets the threshold, and prints titles, scores and the hints the person
+allowed; the reasons stay sealed. It runs detached (`check wait` follows
+it). No scenarios yet, a bad harness file or a judge that did not answer is
+exit 3: it fails without counting toward the retry cap. A hand pass needs
+`--force`. Both the writer and the judge spend real tokens.
 
 ## Proving an increment before done
 

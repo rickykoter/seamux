@@ -105,3 +105,31 @@ export function autoNext(spec, st, doneN, { forced = false, owner = null, waits 
   if (waits.length) return stop("it waits on its family's parent");
   return { go: next.n };
 }
+
+// The repo policy's word on an auto plan (lib/policy.mjs, ADR 0108). `levels`
+// is each increment's level, [{ level, file, by }], from its files on the
+// base branch's policy; `requiredAt` the lowest level that needs a scenarios
+// check (or null); `why` where the policy came from. An increment after the
+// first that would auto-go is refused when its files are supervised, unless
+// it stops for a person. A plan whose files all sit at or above requiredAt
+// (ship would open or merge it alone) needs a scenarios check somewhere.
+export function policyProblems(spec, levels, { requiredAt = null, why = "" } = {}) {
+  const errs = [];
+  const pol = goPolicy(spec);
+  const ds = spec.deliverables || [];
+  if (pol.auto) ds.forEach((d, i) => {
+    const l = levels[i];
+    if (i === 0 || !l || l.level !== "supervised" || humanStop(spec, i + 1)) return;
+    errs.push(`deliverable ${i + 1}: go auto, but the policy holds ${l.file || "its files"} supervised (${l.by}; ${why}). ` +
+      `Stop it for a person with go: { "human": "<why>" }, or make the plan's go a person's`);
+  });
+  if (requiredAt && levels.length) {
+    const rankOf = l => ["supervised", "auto-go", "auto-pr", "auto-merge"].indexOf(l);
+    const planLevel = levels.reduce((a, b) => (rankOf(b.level) < rankOf(a.level) ? b : a));
+    const has = ds.some(d => (d.checks || []).some(c => c && c.kind === "scenarios"));
+    if (rankOf(planLevel.level) >= rankOf(requiredAt) && !has)
+      errs.push(`the plan's files are at ${planLevel.level}, and the policy needs a scenarios check at ${requiredAt} and above (${why}): ` +
+        `add { "kind": "scenarios" } to an increment's checks (deep-plan scenarios write drafts them after the grade)`);
+  }
+  return errs;
+}

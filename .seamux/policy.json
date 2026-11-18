@@ -1,0 +1,15 @@
+{
+  "default": "auto-go",
+  "paths": [
+    {
+      "match": [
+        "docs/**",
+        "*.md"
+      ],
+      "level": "auto-pr"
+    }
+  ],
+  "merge": {
+    "method": "squash"
+  }
+}

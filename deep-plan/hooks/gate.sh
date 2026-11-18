@@ -1,5 +1,6 @@
 #!/bin/bash
-# deep-plan gate — PreToolUse on Edit|Write|MultiEdit|NotebookEdit|Bash.
+# deep-plan gate — PreToolUse on Edit|Write|MultiEdit|NotebookEdit|Bash, and
+# on Read|Grep|Glob for the sealed scenarios alone (lib/scenarios.mjs).
 # Exit 2 + stderr blocks the call; anything else allows. The stderr of a
 # denial opens `deep-plan gate [<slug>]: ` (written by decide.mjs), which the
 # seamux-mods band matches on; probe.mjs holds that shape.
@@ -35,10 +36,29 @@ DATA="$(seamux_data_root)" || DATA="$HOME/.claude"
 STATE_DIR="${DEEP_PLAN_STATE_DIR:-$DATA/deep-plan/state}"
 set -- "$STATE_DIR"/*.json
 [ -e "$1" ] || exit 0
+# A plan is tracked: the payload is read once (cat reads a pipe in blocks,
+# where the read builtin takes it a byte at a time). A read is only the
+# sealed folder's business, and one whose input names nothing near it (no
+# "sealed", no .claude, no .seamux) is allowed here without node. Only the
+# text after "tool_input" is looked at, since every payload's transcript_path
+# names ~/.claude; a payload ordered otherwise only costs the node path.
+PAYLOAD=$(cat)
+case "$PAYLOAD" in
+  *'"tool_name":"Read"'*|*'"tool_name":"Grep"'*|*'"tool_name":"Glob"'*|*'"tool_name": "Read"'*|*'"tool_name": "Grep"'*|*'"tool_name": "Glob"'*)
+    INPUT=${PAYLOAD#*\"tool_input\"}
+    NEAR=no
+    case "$INPUT$PWD" in *sealed*|*.claude*|*.seamux*) NEAR=yes ;; esac
+    # A glob (~/.cla*/…, .cl{a,b}ude, [s]ealed) can name the folder without
+    # any of those words. The input's own opening brace is cut off first, so
+    # only a brace inside a value counts.
+    case "${INPUT#*\{}" in *'*'*|*'?'*|*'{'*|*'['*) NEAR=yes ;; esac
+    if [ -n "${DEEP_PLAN_SEALED_DIR:-}" ]; then case "$INPUT" in *"${DEEP_PLAN_SEALED_DIR##*/}"*) NEAR=yes ;; esac; fi
+    [ "$NEAR" = yes ] || exit 0 ;;
+esac
 # decide.mjs sits beside this file wherever the plugin is installed; hooks.json
 # calls it by absolute path, so no dirname subprocess is needed. The override is
 # for the probe and for extensions that want another copy's decision.
 if [ -n "${DEEP_PLAN_SKILL_DIR:-}" ]; then HOOKS="$DEEP_PLAN_SKILL_DIR/hooks"
 else case $0 in */*) HOOKS=${0%/*} ;; *) HOOKS=. ;; esac
 fi
-exec node "$HOOKS/decide.mjs"
+exec node "$HOOKS/decide.mjs" <<<"$PAYLOAD"

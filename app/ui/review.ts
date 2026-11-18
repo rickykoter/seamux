@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { chipFor, landPanel, mergePanel, prPanel, railEl, readLandings, stageFor, stagesOf, type Landing, type PrRow, type Stage } from "./release";
+import { chipFor, landPanel, mergePanel, prPanel, railEl, readLandings, stageFor, stagesOf, type Landing, type PrRow, type ShipView, type Stage } from "./release";
 
 // A job as review_app.rs serves it.
 /** What review_app's orphan() refusal says: an agent from the last session still runs there. */
@@ -279,6 +279,10 @@ export class ReviewView {
    *  by its merge commit (landing_get), for the rail (release.ts). */
   private prs: PrRow[] = [];
   private lands = new Map<string, Landing | null>();
+  /** deep-plan ship's dry-run verdict per worktree, for the Merge stage:
+   *  asked when the stage is drawn, again after five minutes (each ask is a
+   *  fetch and a few gh calls); a failed ask keeps the last good one. */
+  private ships = new Map<string, { at: number; v: ShipView | null; asking: boolean }>();
   /** The stage each change was last shown at, by its list key. */
   private stageSel = new Map<string, Stage>();
   private stageBox = el("div", "r-stage");
@@ -481,6 +485,20 @@ export class ReviewView {
     }
     await readLandings(this.prs, this.lands, getLanding);
     this.render();
+  }
+
+  /** Ship's verdict for an open PR's worktree, from the cache; asks for a
+   *  fresh one when there is none or it is a minute old, and redraws then. */
+  private shipFor(pr: PrRow): ShipView | null {
+    if (pr.state === "merged" || pr.state === "closed" || !pr.cwd) return null;
+    const c = this.ships.get(pr.cwd);
+    if (!c || (!c.asking && Date.now() - c.at > 300_000)) {
+      this.ships.set(pr.cwd, { at: c?.at ?? 0, v: c?.v ?? null, asking: true });
+      void invoke<ShipView>("ship_view", { cwd: pr.cwd }).then(
+        (v) => { this.ships.set(pr.cwd, { at: Date.now(), v, asking: false }); this.render(true); },
+        () => { this.ships.set(pr.cwd, { at: Date.now(), v: this.ships.get(pr.cwd)?.v ?? null, asking: false }); });
+    }
+    return c?.v ?? null;
   }
 
   private async loadLanding(pr: PrRow, draw: boolean): Promise<void> {
@@ -915,7 +933,7 @@ export class ReviewView {
     }, can));
     const open = (url: string) => void invoke("open_url", { url }).catch((err) => (this.err.textContent = String(err)));
     const panel = stage === "pr" ? prPanel(pr, open)
-      : stage === "merge" ? mergePanel(pr, open)
+      : stage === "merge" ? mergePanel(pr, open, this.shipFor(pr))
       : stage === "land" ? landPanel(land, pr.state === "merged", {
           open,
           act: (recipe, what) => void invoke<string>("land_act", { cwd: pr.cwd, merge: pr.merge?.sha ?? "", recipe, act: what }).then(

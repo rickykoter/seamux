@@ -55,7 +55,41 @@ export function checksNow(cwd) {
   const rows = parse(c.out);
   if (!Array.isArray(rows)) return { error: `gh pr checks: ${c.errText.split("\n").pop() || "no JSON"}` };
   const by = b => rows.filter(r => r.bucket === b).map(r => ({ name: r.workflow ? `${r.workflow} / ${r.name}` : r.name, link: r.link || "" }));
-  return { pending: by("pending"), failed: [...by("fail"), ...by("cancel")], passed: [...by("pass"), ...by("skipping")], total: rows.length };
+  return { pending: by("pending"), failed: [...by("fail"), ...by("cancel")], passed: [...by("pass"), ...by("skipping")], total: rows.length,
+    names: rows.map(r => r.name) };
+}
+
+// For deep-plan ship (ADR 0108): the branch's PR with what a merge needs to
+// know, whether or not its head is local HEAD. {pr} or {error}; a branch with
+// no PR is {pr: null}.
+export function prView(cwd) {
+  const v = gh(["pr", "view", "--json", "number,url,headRefOid,isDraft,state,baseRefName,headRefName,mergeable"], cwd);
+  if (v.err) return { error: v.err };
+  if (v.status !== 0) return /no pull requests found|no open pull requests/i.test(v.errText) ? { pr: null }
+    : { error: `gh pr view exited ${v.status}: ${v.errText.split("\n").pop() || "no message"}` };
+  const pr = parse(v.out);
+  return pr ? { pr } : { error: "gh pr view: no JSON" };
+}
+
+// Whether GitHub's own auto-merge can be used: the repo allows it, the base
+// branch requires status checks (with none required, GitHub merges at once,
+// which is not waiting for green), and every check on the PR is a required
+// one (GitHub would merge past a failing check that is not).
+export function githubAutoMerge(cwd, base, names = []) {
+  const r = gh(["repo", "view", "--json", "autoMergeAllowed"], cwd);
+  const allowed = !r.err && r.status === 0 && (parse(r.out) || {}).autoMergeAllowed === true;
+  if (!allowed) return false;
+  const p = gh(["api", `repos/{owner}/{repo}/branches/${base}/protection/required_status_checks`], cwd);
+  const req = !p.err && p.status === 0 && parse(p.out);
+  const need = req ? [...(req.contexts || []), ...((req.checks || []).map(c => c && c.context).filter(Boolean))] : [];
+  return need.length > 0 && names.length > 0 && names.every(n => need.includes(n));
+}
+
+// One gh call for ship's acts (pr create, ready, merge): {ok, out}.
+export function ghAct(args, cwd) {
+  const r = gh(args, cwd);
+  if (r.err) return { ok: false, out: r.err };
+  return { ok: r.status === 0, out: (r.out || "").trim() || r.errText };
 }
 
 // The tail of a failed Actions job's log, when the link is one.
