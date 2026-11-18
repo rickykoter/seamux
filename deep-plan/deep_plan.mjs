@@ -5245,6 +5245,7 @@ function scenariosCmd(args, flags) {
   if (sub === "judge") {
     if (!st) die(`no plan ${slug}`);
     const t = opt("--threshold");
+    if (t !== undefined && !(Number(t) >= 0 && Number(t) <= 1)) die(`--threshold is a number from 0 to 1 (got ${t})`);
     const r = spawnSync(process.execPath, [path.join(HERE, "lib", "judge.mjs"), "run", slug,
       ...(t !== undefined ? ["--threshold", t] : []), ...(opt("--model") ? ["--model", opt("--model")] : [])],
       { cwd: st.root, stdio: "inherit", env: { ...process.env, DEEP_PLAN_ROOT: st.root } });

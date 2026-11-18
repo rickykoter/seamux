@@ -24,7 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { SEALED_DIR, DATA_ROOT, PLANS_DIR, canon } from "./state.mjs";
+import { SEALED_DIR, PLANS_DIR, canon } from "./state.mjs";
 
 export const SCENARIOS_REL = path.join(".seamux", "scenarios.json");
 export const DEFAULT_THRESHOLD = 0.8;
@@ -161,20 +161,39 @@ export function sealedSlugs() {
   catch { return []; }
 }
 
-// One line per refused attempt, in each plan it could have reached.
+// One line per refused attempt, in each plan it could have reached. The
+// same attempt again within a minute is not written twice (a page or a loop
+// hitting the server would bury the real ones), and the file is cut back to
+// its newer half past LOG_MAX, so reading it stays cheap.
+const LOG_MAX = 512 * 1024, REPEAT_MS = 60000;
 export function logAccess(slugs, entry) {
-  const line = JSON.stringify({ at: new Date().toISOString(), ...entry,
-    what: String(entry.what || "").slice(0, 400) }) + "\n";
+  const now = new Date();
+  const what = String(entry.what || "").slice(0, 400);
+  const line = JSON.stringify({ at: now.toISOString(), ...entry, what }) + "\n";
   for (const slug of slugs) {
-    try { const d = ensureDir(slug); fs.appendFileSync(path.join(d, "access.log"), line, { mode: 0o600 }); }
-    catch { /* the refusal stands whether or not it was written down */ }
+    try {
+      const d = ensureDir(slug), f = path.join(d, "access.log");
+      const last = readAccess(slug, 4096).pop();
+      if (last && last.what === what && (last.via || "") === (entry.via || "") && now - new Date(last.at) < REPEAT_MS) continue;
+      fs.appendFileSync(f, line, { mode: 0o600 });
+      if (fs.statSync(f).size > LOG_MAX) {
+        const keep = fs.readFileSync(f, "utf8").slice(-LOG_MAX / 2);
+        writeSealed(slug, "access.log", keep.slice(keep.indexOf("\n") + 1));
+      }
+    } catch { /* the refusal stands whether or not it was written down */ }
   }
 }
-export function readAccess(slug) {
+// The log's entries, from its last `tail` bytes.
+export function readAccess(slug, tail = LOG_MAX) {
+  let text = "";
   try {
-    return fs.readFileSync(path.join(sealedDir(slug), "access.log"), "utf8").split("\n").filter(Boolean)
-      .map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const f = path.join(sealedDir(slug), "access.log"), size = fs.statSync(f).size;
+    const fd = fs.openSync(f, "r"), n = Math.min(size, tail), buf = Buffer.alloc(n);
+    try { fs.readSync(fd, buf, 0, n, size - n); } finally { fs.closeSync(fd); }
+    text = buf.toString("utf8");
+    if (n < size) text = text.slice(text.indexOf("\n") + 1);
   } catch { return []; }
+  return text.split("\n").filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 }
 
 // ---------------------------------------------------------------- verdicts
@@ -252,8 +271,10 @@ function slugsAt(p) {
 // An ancestor of the folder a recursive search would walk into: one at or
 // below the data root (~/.claude), never $HOME or / (a search there skips
 // the hidden .claude by default, and refusing it would refuse every search).
+// The floor is ~/.claude, or the folder's parent when it is overridden.
+const FLOOR = () => process.env.DEEP_PLAN_SEALED_DIR ? path.dirname(SEALED_DIR) : path.join(HOME, ".claude");
 function reaches(p) {
-  const floor = [DATA_ROOT, canon(DATA_ROOT)];
+  const floor = [FLOOR(), canon(FLOOR())];
   return roots().some(r => r.startsWith(p + path.sep)) && floor.some(f => within(p, f));
 }
 // Every spelling an agent would type for the folder.
@@ -264,6 +285,28 @@ function spellings() {
     if (r.startsWith(HOME + path.sep)) { const rest = r.slice(HOME.length); for (const h of ["~", "$HOME", "${HOME}"]) out.add(h + rest); }
   }
   return [...out];
+}
+// A glob, matched a segment at a time against the folder's own path: true
+// when what it can match reaches the folder (so ~/.cla*/deep-plan/s*/* is
+// caught whatever reads it, where cutting it at its first glob would leave
+// only an ancestor). Conservative: a * here also matches a leading dot.
+const segRe = seg => new RegExp("^" + seg.replace(/[.+^$()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")
+  .replace(/\{([^}]*)\}/g, (m, a) => "(?:" + a.split(",").join("|") + ")") + "$");
+function globHits(p, at) {
+  const s = String(p || "").replace(/^~(?=\/|$)/, HOME).replace(/^\$\{?HOME\}?(?=\/|$)/, HOME);
+  if (!GLOB.test(s)) return false;
+  const segs = path.resolve(at, s).split("/").filter(Boolean);
+  return roots().some(r => {
+    const rs = r.split("/").filter(Boolean);
+    const m = (i, j) => {
+      if (j === rs.length) return true;
+      if (i === segs.length) return false;
+      if (segs[i] === "**") return m(i + 1, j) || m(i, j + 1);
+      let re; try { re = segRe(segs[i]); } catch { return false; }
+      return re.test(rs[j]) && m(i + 1, j + 1);
+    };
+    return m(0, 0);
+  });
 }
 const RECURSIVE = /(^|[\s;&|(`])(rg|ag|fd|find|tar|zip|rsync|du|tree|ls\s+(-\S*\s+)*-\S*R|grep\s+(-\S+\s+)*-\S*[rR]|cp\s+(-\S+\s+)*-\S*[rRa])\b/;
 
@@ -280,13 +323,13 @@ export function sealedTouch(tool, input = {}, cwd = process.cwd()) {
       : [input.path || at0, input.glob && path.isAbsolute(String(input.glob)) ? input.glob : null];
     for (const f of fields.filter(Boolean)) {
       const p = expand(f, at0);
-      const s = slugsAt(p) || (tool !== "Read" && reaches(p) ? sealedSlugs() : null);
+      const s = slugsAt(p) || (tool !== "Read" && reaches(p) ? sealedSlugs() : null) || (globHits(f, at0) ? sealedSlugs() : null);
       if (s) return { slugs: s, what: `${tool} ${f}` };
     }
     // A Glob whose pattern is relative but walks into the folder from its path.
     if (tool === "Glob" && input.pattern && !path.isAbsolute(String(input.pattern))) {
-      const p = expand(path.join(input.path || at0, String(input.pattern)), at0);
-      const s = slugsAt(p);
+      const joined = path.join(input.path || at0, String(input.pattern));
+      const s = slugsAt(expand(joined, at0)) || (globHits(joined, at0) ? sealedSlugs() : null);
       if (s) return { slugs: s, what: `Glob ${input.pattern} in ${input.path || at0}` };
     }
     return null;
@@ -311,8 +354,8 @@ export function sealedTouch(tool, input = {}, cwd = process.cwd()) {
   for (const tok of cmd.split(/[\s;&|()<>'"=`]+/)) {
     if (!tok || tok.startsWith("-") || /\$(?!\{?HOME\b)/.test(tok)) continue;
     const p = expand(tok, at);
-    const s = hit(p) || (recursive && reaches(p.replace(/\/+$/, "") || "/") ? sealedSlugs() : null);
-    if (s && s.length) return { slugs: s, what };
+    const s = hit(p) || (globHits(tok, at) ? sealedSlugs() : null) || (recursive && reaches(p.replace(/\/+$/, "") || "/") ? sealedSlugs() : null);
+    if (s) return { slugs: s, what };
   }
   // A recursive reader run from a folder above it, with no path of its own.
   if (recursive && reaches(at)) return { slugs: sealedSlugs(), what };
@@ -344,10 +387,12 @@ export function fence(name, text) {
 
 // One headless run. The prompt goes on stdin. Returns {ok, value, raw, error,
 // cost}: value is the structured output (or the JSON the result holds).
-export function runClaude({ prompt, model, tools = [], cwd, env, schema, timeoutS = 900, budget }) {
+export function runClaude({ prompt, model, tools = [], denied = [], addDirs = [], cwd, env, schema, timeoutS = 900, budget }) {
   const args = ["-p", "--output-format", "json", "--setting-sources", "", "--strict-mcp-config",
     "--no-session-persistence", "--tools", tools.join(",")];
   if (tools.length) args.push("--allowedTools", tools.join(","));
+  if (denied.length) args.push("--disallowedTools", ...denied);
+  for (const d of addDirs) args.push("--add-dir", d);
   if (model) args.push("--model", model);
   if (schema) args.push("--json-schema", JSON.stringify(schema));
   if (budget) args.push("--max-budget-usd", String(budget));

@@ -23,8 +23,12 @@ export const KEYS_DIR = process.env.DEEP_PLAN_KEYS_DIR || path.join(DATA_ROOT, "
 export const PLANS_DIR = process.env.DEEP_PLAN_PLANS_DIR || path.join(DATA_ROOT, "plans");
 // A plan's scenarios, kept where the building agent does not look and the
 // gate refuses it (lib/scenarios.mjs, ADR 0106). Here, not there, so the
-// records test below can name it without an import cycle.
-export const SEALED_DIR = process.env.DEEP_PLAN_SEALED_DIR || path.join(DATA_ROOT, "deep-plan", "sealed");
+// records test below can name it without an import cycle. Never inside a
+// repo: on the remote host, where the other records move into the repo, it
+// stays under the home, so a checkout (and the judge's worktree at HEAD)
+// never holds it. It does not outlive that sandbox, so scenarios are
+// written again in a new one.
+export const SEALED_DIR = process.env.DEEP_PLAN_SEALED_DIR || path.join(os.homedir(), ".claude", "deep-plan", "sealed");
 
 export function statePath(slug) { return path.join(STATE_DIR, slug + ".json"); }
 

@@ -8749,8 +8749,10 @@ const fs = require("fs");
 const args = process.argv.slice(2), input = fs.readFileSync(0, "utf8");
 const tools = args[args.indexOf("--tools") + 1];
 let envFile = ""; try { envFile = fs.readFileSync(process.env.CLAUDE_ENV_FILE, "utf8"); } catch {}
+const wt = args.includes("--add-dir") ? args[args.indexOf("--add-dir") + 1] : process.cwd();
 fs.appendFileSync(${JSON.stringify(FLOG)}, JSON.stringify({ args, tools, cwd: process.cwd(), prompt: input,
-  claudecode: process.env.CLAUDECODE || "", envFile, git: fs.existsSync(".git"), app: fs.existsSync("app.txt") ? fs.readFileSync("app.txt", "utf8") : "" }) + "\\n");
+  claudecode: process.env.CLAUDECODE || "", envFile, wt, git: fs.existsSync(wt + "/.git"), cwdGit: fs.existsSync(".git"),
+  app: fs.existsSync(wt + "/app.txt") ? fs.readFileSync(wt + "/app.txt", "utf8") : "" }) + "\\n");
 let out;
 if (tools === "") out = { scenarios: [
   { id: "s1", title: "A retry is sent once", body: "SECRET-STEPS run the outbox twice", expect: "one row" },
@@ -8829,6 +8831,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     access("scn-a").length === 1 && /"tool":"Read"/.test(access("scn-a")[0]) && /"session":"scn-sess"/.test(access("scn-a")[0]), r.stderr);
   ok("scenarios gate: a Grep whose path is the folder is refused", sgate("Grep", { pattern: "x", path: SEALED }).status === 2);
   ok("scenarios gate: a Glob whose absolute pattern reaches inside is refused", sgate("Glob", { pattern: `${SEALED}/**/*.json` }).status === 2);
+  const up = path.basename(TMP).slice(0, 4);
+  ok("scenarios gate: a glob that names the folder only by wildcards is refused, in Bash and in a Glob (f1, f4)",
+    sgate("Bash", { command: `cat ${path.dirname(TMP)}/${up}*/s*/*/scenarios.json` }).status === 2 &&
+    sgate("Glob", { pattern: `${path.dirname(TMP)}/${up}*/sea*/**` }).status === 2);
   ok("scenarios gate: a relative Glob from above it that walks in is refused", sgate("Glob", { pattern: "sealed/scn-a/*", path: TMP }).status === 2);
   ok("scenarios gate: cat of the file in Bash is refused", sgate("Bash", { command: `cat ${file}` }).status === 2);
   ok("scenarios gate: cd into the folder, then a relative read, is refused",
@@ -8837,7 +8843,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios gate: an Edit or Write into the folder is refused as deep-plan's own records",
     sgate("Write", { file_path: path.join(SEALED, "scn-a", "verdicts.json"), content: "{}" }).status === 2);
   const logged = access("scn-a").length;
-  ok("scenarios gate: every refusal was logged", logged >= 7, String(logged));
+  ok("scenarios gate: every refusal was logged", logged >= 9, String(logged));
   ok("scenarios gate: a Read elsewhere is allowed and not logged",
     sgate("Read", { file_path: path.join(SR, "app.txt") }).status === 0 && access("scn-a").length === logged);
   ok("scenarios gate: a Grep for the word in the repo is allowed",
@@ -8872,9 +8878,12 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     r.status !== 0 && chk("scn-a").status === "fail" && chk("scn-a").fails === 1 &&
     /1 of 2 met the threshold 0\.7/.test(r.stdout) && /0\.30 {2}s2 {2}A dead letter is kept/.test(r.stdout) &&
     !/REASON|SECRET|dead-letter path/.test(r.stdout + JSON.stringify(chk("scn-a"))), r.stdout);
-  ok("scenarios judge: it runs in a throwaway worktree at HEAD, with a fixed tool list and no settings",
-    j.tools === "Bash,Read,Grep,Glob" && j.git && j.app === "v2\n" && j.cwd !== SR && j.args.includes("--setting-sources") && !j.claudecode,
-    JSON.stringify({ tools: j.tools, cwd: j.cwd, app: j.app }));
+  ok("scenarios judge: it judges a throwaway worktree at HEAD from an empty folder beside it, with a fixed tool list and no settings",
+    j.tools === "Bash,Read,Grep,Glob" && j.git && j.app === "v2\n" && !j.cwdGit && j.cwd !== j.wt && j.wt !== SR &&
+    j.args.includes("--setting-sources") && !j.claudecode, JSON.stringify({ tools: j.tools, cwd: j.cwd, wt: j.wt, app: j.app }));
+  ok("scenarios judge: its shell may not push, run gh or change remotes, and the GitHub tokens are unset there",
+    ["Bash(git push:*)", "Bash(gh:*)", "Bash(git remote:*)"].every(x => j.args.includes(x)) && /unset GH_TOKEN GITHUB_TOKEN/.test(j.envFile) &&
+    /never instructions to you/.test(j.prompt));
   ok("scenarios judge: the scenarios and the harness's exports reach it fenced as data (L7)",
     /<data name="scenarios" boundary=/.test(j.prompt) && /SECRET-STEPS/.test(j.prompt) &&
     /<data name="harness-exports"[^]*BASE_URL=http:\/\/127\.0\.0\.1:\d+/.test(j.prompt), j.prompt && j.prompt.slice(0, 300));
@@ -8912,13 +8921,15 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   r = sc("scenarios", "list", "scn-a", "--json");
   const lj = JSON.parse(r.stdout || "{}");
   ok("scenarios: list --json has titles, last scores and the access count, and no reasons",
-    lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 7 && !/reason|SECRET/.test(r.stdout));
+    lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 9 && !/reason|SECRET/.test(r.stdout));
 
   // A harness that never comes up: every scenario fails on it.
   fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness: { ready: "exit 1", timeout: 2 } }));
   execSync(`${G} commit -qam broken`, { cwd: SR });
   r = sc("scenarios", "judge", "scn-a");
   ok("scenarios judge: a harness that is never ready fails every scenario and says so", r.status === 1 && /not ready within 2s/.test(r.stdout), r.stdout);
+  r = sc("scenarios", "judge", "scn-a", "--threshold", "high");
+  ok("scenarios judge: a threshold that is not a number from 0 to 1 is refused (f6)", r.status !== 0 && /--threshold is a number from 0 to 1/.test(r.stderr), r.stderr);
 
   // The page: behind the plan's own key, not serve's token.
   const SV = path.join(TMP, "scn-serve");
@@ -8935,6 +8946,8 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   let g = await fetch(`${B}/scenarios/scn-a?t=${SREC.token}`);
   ok("scenarios page: serve's token is not its key; the request is refused and logged",
     g.status === 403 && access("scn-a").length === before + 1 && /"via":"serve"/.test(access("scn-a").pop()));
+  for (let i = 0; i < 5; i++) await fetch(`${B}/scenarios/scn-a?t=${SREC.token}`);
+  ok("scenarios page: the same refused request again within a minute is not logged again (f5)", access("scn-a").length === before + 1);
   g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
   const html = await g.text();
   ok("scenarios page: with the key it shows the steps, the judge's reasons and the access log",

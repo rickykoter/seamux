@@ -48,6 +48,8 @@ case "$PAYLOAD" in
     INPUT=${PAYLOAD#*\"tool_input\"}
     NEAR=no
     case "$INPUT$PWD" in *sealed*|*.claude*|*.seamux*) NEAR=yes ;; esac
+    # A glob (~/.cla*/…) can name the folder without any of those words.
+    case "$INPUT" in *'*'*|*'?'*) NEAR=yes ;; esac
     if [ -n "${DEEP_PLAN_SEALED_DIR:-}" ]; then case "$INPUT" in *"${DEEP_PLAN_SEALED_DIR##*/}"*) NEAR=yes ;; esac; fi
     [ "$NEAR" = yes ] || exit 0 ;;
 esac
