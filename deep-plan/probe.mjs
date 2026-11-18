@@ -8848,6 +8848,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios gate: braces holding a slash, and a [!x] class, are expanded as the shell would (f8)",
     sgate("Bash", { command: `cat ${dn}/{${bn}/sealed,zz}/*/*` }).status === 2 &&
     sgate("Bash", { command: `cat ${TMP}/[!x]ealed/scn-a/scenarios.json` }).status === 2 &&
+    // f9: the other class spellings.
+    sgate("Bash", { command: `cat ${TMP}/[^x]ealed/scn-a/scenarios.json` }).status === 2 &&
+    sgate("Bash", { command: `cat ${TMP}/[[:lower:]]ealed/scn-a/scenarios.json` }).status === 2 &&
+    sgate("Read", { file_path: `${TMP}/[a-z]ealed/scn-a/scenarios.json` }).status === 2 &&
     sgate("Bash", { command: `ls ${dn}/{${bn},zz}/*.json` }).status === 0);
   const logged = access("scn-a").length;
   ok("scenarios gate: every refusal was logged", logged >= 12, String(logged));

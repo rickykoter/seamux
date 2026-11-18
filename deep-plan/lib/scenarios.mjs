@@ -291,9 +291,28 @@ function spellings() {
 // caught whatever reads it, where cutting it at its first glob would leave
 // only an ancestor). Conservative: a * here also matches a leading dot.
 // Braces are expanded first, as the shell does, since one can hold a slash
-// ({deep-plan/sealed,x}); a [!x] class is the shell's negation.
-const segRe = seg => new RegExp("^" + seg.replace(/[.+^$()|\\]/g, "\\$&").replace(/\[!/g, "[^")
-  .replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]") + "$");
+// ({deep-plan/sealed,x}). A bracket class of any kind ([a-z], [!x], [^x],
+// [[:lower:]]) is read as one character of any kind: only ever more
+// refusals, and no class syntax to get wrong.
+function segRe(seg) {
+  let out = "";
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (c === "*") { out += "[^/]*"; continue; }
+    if (c === "?") { out += "[^/]"; continue; }
+    if (c === "[") {
+      let k = i + 1;
+      if (seg[k] === "!" || seg[k] === "^") k++;
+      if (seg[k] === "]") k++;
+      for (; k < seg.length && seg[k] !== "]"; k++) {
+        if (seg[k] === "[" && seg[k + 1] === ":") { const e = seg.indexOf(":]", k + 2); if (e > 0) k = e + 1; }
+      }
+      if (k < seg.length) { out += "[^/]"; i = k; continue; }
+    }
+    out += c.replace(/[.+^$()|\\[\]{}]/g, "\\$&");
+  }
+  return new RegExp("^" + out + "$");
+}
 const BRACE_CAP = 64;
 // Every spelling a brace pattern stands for; null past BRACE_CAP (so many
 // that the caller treats it as a hit). A brace with no comma ({x}, {1..9})
