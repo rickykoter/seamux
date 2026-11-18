@@ -1,0 +1,164 @@
+{
+  "pack": "node-web",
+  "version": "1.0.0",
+  "describes": "A Node web app with npm scripts: unit tests and a build on every change, Playwright e2e, a landing that waits for the production deployment GitHub reports for the merge, a scenarios harness that starts the dev server, and a policy draft.",
+  "detect": [
+    "package.json"
+  ],
+  "needs": [
+    "node",
+    "npm",
+    "npx",
+    "curl",
+    "gh"
+  ],
+  "recipes": [
+    {
+      "id": "unit",
+      "kind": "test",
+      "name": "unit tests",
+      "run": "npm test --silent",
+      "match": [
+        "src/**",
+        "test/**",
+        "tests/**",
+        "lib/**",
+        "package.json",
+        "package-lock.json"
+      ],
+      "default": true,
+      "note": "npm test; point it at your runner (vitest, jest, node --test) in package.json"
+    },
+    {
+      "id": "build",
+      "kind": "test",
+      "name": "the build",
+      "run": "npm run build --if-present",
+      "match": [
+        "src/**",
+        "public/**",
+        "package.json",
+        "package-lock.json",
+        "*.config.*",
+        "tsconfig.json"
+      ],
+      "default": true,
+      "note": "npm run build, so a type error or a broken import fails the check"
+    },
+    {
+      "id": "e2e",
+      "kind": "e2e",
+      "name": "Playwright end to end",
+      "tier": "expensive",
+      "timeout": 1800,
+      "run": "npx playwright test",
+      "match": [
+        "src/**",
+        "e2e/**",
+        "tests/e2e/**",
+        "playwright.config.*"
+      ],
+      "note": "npx playwright test; playwright.config webServer starts the app, as the scenarios harness does"
+    }
+  ],
+  "land": [
+    {
+      "id": "deploy",
+      "kind": "land",
+      "name": "the merge, deployed to production and live",
+      "match": [],
+      "timeout": 600,
+      "steps": [
+        {
+          "stage": "deploy",
+          "wait": "s=$(gh api \"repos/{owner}/{repo}/deployments?sha=$MERGE_SHA&environment=production&per_page=1\" --jq '.[0].statuses_url // empty' 2>/dev/null) && [ -n \"$s\" ] && gh api \"$s\" --jq '[.[] | select(.state==\"success\")][0].environment_url // empty' 2>/dev/null",
+          "export": "URL",
+          "timeout": 3600,
+          "interval": 30,
+          "note": "prints nothing until a production deployment of the merge reports success; stderr is discarded so an auth error is never read as a URL"
+        },
+        {
+          "stage": "live",
+          "wait": "curl -fsS \"$URL/version\" 2>/dev/null | grep -o \"$MERGE_SHA\" | head -1",
+          "export": "LIVE",
+          "timeout": 900,
+          "interval": 20,
+          "note": "prints the merge commit once the service says it runs it; replace with however yours reports its commit"
+        },
+        {
+          "stage": "smoke",
+          "run": "curl -fsS -o /dev/null \"$URL/\""
+        }
+      ],
+      "outputs": {
+        "version": {
+          "expect": "$MERGE_SHA",
+          "live": "$LIVE"
+        },
+        "links": [
+          {
+            "label": "Deployment",
+            "url": "$URL"
+          }
+        ]
+      }
+    }
+  ],
+  "scenarios": {
+    "harness": {
+      "setup": "npm ci --silent",
+      "start": "npm run dev -- --port $PORT",
+      "ready": "curl -fsS -o /dev/null http://127.0.0.1:$PORT/",
+      "export": {
+        "BASE_URL": "http://127.0.0.1:$PORT"
+      },
+      "timeout": 180
+    },
+    "style": "Write each scenario as a visit or a request against $BASE_URL: the page or endpoint, what a person does there, and what they see. Prefer what a user notices (a page, a form, a response code and body) over internals."
+  },
+  "policy": {
+    "default": "auto-go",
+    "paths": [
+      {
+        "match": [
+          "docs/**",
+          "*.md"
+        ],
+        "level": "auto-merge"
+      },
+      {
+        "match": [
+          "src/**",
+          "public/**",
+          "tests/**",
+          "e2e/**"
+        ],
+        "level": "auto-pr"
+      },
+      {
+        "match": [
+          ".github/**",
+          "package.json",
+          "package-lock.json"
+        ],
+        "level": "supervised"
+      }
+    ],
+    "scenarios": {
+      "require": "auto-pr",
+      "threshold": 0.8
+    },
+    "merge": {
+      "method": "squash"
+    }
+  },
+  "mcp": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    }
+  }
+}

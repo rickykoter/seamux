@@ -9139,6 +9139,106 @@ if (want("policy and ship: levels from the base branch")) {
   ok("ship: a plan not yet delivered waits on deliver", /deliver first/.test(pc("ship", "pol-open", "--dry-run").stdout));
 }
 
+// Packs (ADR 0109): merged into a repo item by item, stamped, checked for
+// drift, updated and removed without touching what a person edited.
+if (want("packs: add, check, update, remove")) {
+  const UP = path.join(TMP, "user-packs"), CACHE = path.join(TMP, "pack-cache");
+  const KENV = { ...ENV, DEEP_PLAN_PACKS_DIR: UP, DEEP_PLAN_PACK_CACHE: CACHE };
+  const pk = (root, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "pack", ...a], { encoding: "utf8", env: KENV, cwd: root });
+  const mkRepo = (name, files = {}) => {
+    const d = path.join(TMP, name);
+    fs.mkdirSync(d, { recursive: true });
+    for (const [f, c] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(d, f)), { recursive: true }); fs.writeFileSync(path.join(d, f), c); }
+    execSync("git init -q", { cwd: d });
+    return d;
+  };
+  const J = (d, f) => JSON.parse(fs.readFileSync(path.join(d, f), "utf8"));
+  const userPack = (name, p, extra = {}) => {
+    const d = path.join(UP, name); fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, "pack.json"), JSON.stringify({ pack: name, version: "1.0.0", describes: `the ${name} pack`, ...p }));
+    for (const [f, c] of Object.entries(extra)) { fs.mkdirSync(path.dirname(path.join(d, f)), { recursive: true }); fs.writeFileSync(path.join(d, f), c); }
+    return d;
+  };
+
+  const A = mkRepo("pk-a", { "package.json": "{}\n" });
+  let r = pk(A, "list");
+  ok("pack list: the three deep-plan ships, and the one this repo looks like",
+    /^node-web@1\.0\.0 {2}\(looks like this repo\)/m.test(r.stdout) && /^github-actions@/m.test(r.stdout) && /^seamux@/m.test(r.stdout), r.stdout);
+  r = pk(A, "add", "node-web");
+  ok("pack add node-web: merged, and says what to review", r.status === 0 && /added node-web@1\.0\.0 from deep-plan:node-web/.test(r.stdout) && /review and commit/.test(r.stdout), r.stdout + r.stderr);
+  const v = J(A, ".seamux/verify.json");
+  ok("pack add: its recipes and land recipe are in verify.json, each marked with the pack",
+    ["unit", "build", "e2e", "deploy"].every(id => v.recipes.some(x => x.id === id && x.pack === "node-web@1.0.0")));
+  ok("pack add: the scenarios harness, the policy draft whole, the MCP server and the stamp",
+    J(A, ".seamux/scenarios.json").harness.export.BASE_URL === "http://127.0.0.1:$PORT" && J(A, ".seamux/policy.json").default === "auto-go" &&
+    J(A, ".mcp.json").mcpServers.playwright.command === "npx" && Object.keys(J(A, ".seamux/packs.json").packs["node-web"].items).length >= 8);
+  ok("pack add: the merged verify.json loads with no warning about the pack field",
+    !/unknown field "pack"/.test(spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "verify", "resolve", "src/a.js"], { encoding: "utf8", env: KENV, cwd: A }).stderr));
+  r = pk(A, "check");
+  ok("pack check: no drift right after add", r.status === 0 && /node-web: \d+ item\(s\), no drift/.test(r.stdout), r.stdout);
+  ok("pack add: a pack added twice is refused, naming update", /already added .*pack update node-web/.test(pk(A, "add", "node-web").stderr));
+  // A person edits one recipe.
+  const vv = J(A, ".seamux/verify.json"); vv.recipes.find(x => x.id === "unit").run = "npx vitest run";
+  fs.writeFileSync(path.join(A, ".seamux/verify.json"), JSON.stringify(vv, null, 2));
+  r = pk(A, "check");
+  ok("pack check: a hand edit is drift, named by item", r.status !== 0 && /edited\s+recipe:unit/.test(r.stdout), r.stdout);
+  r = pk(A, "update", "node-web");
+  ok("pack update: the edited item is kept and named", /kept {4}recipe:unit: edited by hand/.test(r.stdout) && J(A, ".seamux/verify.json").recipes.find(x => x.id === "unit").run === "npx vitest run", r.stdout);
+  r = pk(A, "remove", "node-web");
+  ok("pack remove: takes out what nobody edited, keeps and names the rest",
+    /kept {4}recipe:unit/.test(r.stdout) && J(A, ".seamux/verify.json").recipes.map(x => x.id).join() === "unit" &&
+    !fs.existsSync(path.join(A, ".seamux/policy.json")) && !J(A, ".mcp.json").mcpServers.playwright && !J(A, ".seamux/packs.json").packs["node-web"], r.stdout);
+
+  // A hand-written policy: the draft adds only what it does not cover, capped.
+  const B = mkRepo("pk-b", {
+    ".seamux/policy.json": JSON.stringify({ default: "auto-pr", paths: [{ match: "src/**", level: "supervised" }] }, null, 4),
+    ".seamux/verify.json": '{ "recipes": [\n  { "id": "mine", "kind": "test",\n    "run": "make test" },\n  { "id": "unit", "kind": "test", "run": "make unit" }\n] }\n' });
+  userPack("webby", { recipes: [{ id: "unit", kind: "test", run: "npm test" }, { id: "lint", kind: "test", run: "npm run lint" }],
+    policy: { default: "auto-merge", paths: [{ match: "src/**", level: "auto-merge" }, { match: "docs/**", level: "auto-merge" }] } });
+  r = pk(B, "add", "webby");
+  const pb = J(B, ".seamux/policy.json");
+  ok("pack add: under a hand-written policy, docs/** is added capped at its default, and src/** stays the person's",
+    pb.paths.length === 2 && pb.paths[0].level === "supervised" && pb.paths[1].match === "docs/**" && pb.paths[1].level === "auto-pr" && pb.default === "auto-pr" &&
+    /added {3}policy:path:docs\/\*\* \(at auto-pr, your default; the pack asks auto-merge\)/.test(r.stdout) && /kept {4}policy:path:src\/\*\*: your policy already covers it/.test(r.stdout) &&
+    /kept {4}policy default: yours \("auto-pr"\) stays/.test(r.stdout), r.stdout + r.stderr);
+  const vb = fs.readFileSync(path.join(B, ".seamux/verify.json"), "utf8");
+  ok("pack add: a recipe the repo has differently is kept and not stamped; the file's own layout stays",
+    /kept {4}recipe:unit: yours differs/.test(r.stdout) && vb.startsWith('{ "recipes": [\n  { "id": "mine", "kind": "test",\n    "run": "make test" },') &&
+    /"lint"/.test(vb) && !("recipe:unit" in J(B, ".seamux/packs.json").packs.webby.items), vb);
+  // The pack changes: a new version.
+  userPack("webby", { version: "1.1.0", recipes: [{ id: "unit", kind: "test", run: "npm test" }, { id: "lint", kind: "test", run: "npm run lint -- --max-warnings 0" }],
+    policy: { default: "auto-merge", paths: [{ match: "src/**", level: "auto-merge" }, { match: "docs/**", level: "auto-merge" }] } });
+  r = pk(B, "check");
+  ok("pack check: a pack that changed since is outdated", r.status !== 0 && /outdated\s+recipe:lint/.test(r.stdout), r.stdout);
+  r = pk(B, "update", "webby");
+  ok("pack update: an unedited item takes the pack's new version",
+    /updated recipe:lint/.test(r.stdout) && J(B, ".seamux/verify.json").recipes.find(x => x.id === "lint").run === "npm run lint -- --max-warnings 0" &&
+    J(B, ".seamux/packs.json").packs.webby.version === "1.1.0" && pk(B, "check").status === 0, r.stdout + pk(B, "check").stdout);
+
+  // A bad pack, a skill, and a pack from a git URL.
+  userPack("broken", { recipes: [{ id: "x", kind: "nope", run: "true" }], policy: { default: "dark" } });
+  r = pk(B, "add", "broken");
+  ok("pack add: a pack that does not validate is refused, naming each problem",
+    r.status !== 0 && /kind must be one of/.test(r.stderr) && /policy: default: one of/.test(r.stderr), r.stderr);
+  const G = path.join(TMP, "pk-git");
+  fs.mkdirSync(path.join(G, "skills", "tidy"), { recursive: true });
+  fs.writeFileSync(path.join(G, "skills", "tidy", "SKILL.md"), "---\nname: tidy\ndescription: tidy up\n---\nTidy.\n");
+  fs.writeFileSync(path.join(G, "pack.json"), JSON.stringify({ pack: "gitty", version: "0.1.0", describes: "from git", skills: ["skills/tidy"],
+    mcp: { notes: { command: "notes-mcp" } } }));
+  execSync(`git init -q -b main && git add -A && git -c user.email=p@p -c user.name=p commit -q -m pack`, { cwd: G });
+  const C = mkRepo("pk-c");
+  r = pk(C, "add", `file://${G}`);
+  ok("pack add: from a git URL, cloned to the cache; its skill lands in .claude/skills and its MCP server in .mcp.json",
+    r.status === 0 && fs.existsSync(path.join(C, ".claude", "skills", "tidy", "SKILL.md")) && J(C, ".mcp.json").mcpServers.notes.command === "notes-mcp" &&
+    fs.readdirSync(CACHE).length === 1 && pk(C, "check").status === 0, r.stdout + r.stderr);
+  fs.appendFileSync(path.join(C, ".claude", "skills", "tidy", "SKILL.md"), "mine\n");
+  ok("pack check: a skill edited by hand is drift", /edited\s+skill:tidy/.test(pk(C, "check").stdout));
+
+  // This repo's own pack: no drift against its verify.json and policy.
+  r = pk(path.join(HERE, ".."), "check", "seamux");
+  ok("pack check: the seamux pack shows no drift on this repo", r.status === 0 && /seamux: \d+ item\(s\), no drift/.test(r.stdout), r.stdout);
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

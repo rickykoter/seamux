@@ -1,0 +1,57 @@
+{
+  "pack": "github-actions",
+  "version": "1.0.0",
+  "describes": "A repo whose CI runs on GitHub Actions and deploys through GitHub Deployments: a recipe that waits on the PR checks, and a landing that waits for the deployment status of the merge.",
+  "detect": [
+    ".github/workflows"
+  ],
+  "needs": [
+    "gh"
+  ],
+  "recipes": [
+    {
+      "id": "ci",
+      "kind": "test",
+      "name": "the PR checks on GitHub Actions",
+      "tier": "expensive",
+      "timeout": 2000,
+      "run": "deep-plan ci wait --timeout 1800",
+      "match": [
+        ".github/workflows/**"
+      ],
+      "note": "waits on the branch PR checks through gh; push first. For every increment, a spec check of kind ci does the same"
+    }
+  ],
+  "land": [
+    {
+      "id": "deployment-status",
+      "kind": "land",
+      "name": "the merge deployment reported successful",
+      "match": [],
+      "timeout": 600,
+      "steps": [
+        {
+          "stage": "deploy",
+          "wait": "s=$(gh api \"repos/{owner}/{repo}/deployments?sha=$MERGE_SHA&environment=production&per_page=1\" --jq '.[0].statuses_url // empty' 2>/dev/null) && [ -n \"$s\" ] && gh api \"$s\" --jq '[.[] | select(.state==\"success\")][0].environment_url // empty' 2>/dev/null",
+          "export": "URL",
+          "timeout": 3600,
+          "interval": 30,
+          "note": "prints nothing until a production deployment of the merge reports success; stderr is discarded so an auth error is never read as a URL"
+        },
+        {
+          "stage": "smoke",
+          "run": "curl -fsS -o /dev/null \"$URL\"",
+          "note": "the deployment answers at its URL"
+        }
+      ],
+      "outputs": {
+        "links": [
+          {
+            "label": "Deployment",
+            "url": "$URL"
+          }
+        ]
+      }
+    }
+  ]
+}

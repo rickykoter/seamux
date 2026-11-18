@@ -60,7 +60,11 @@ export const USE_MODES = ["exclusive", "shared"];
 // field from a newer engine is named rather than dropped without a word.
 // Keys starting with $ are comments.
 export const RECIPE_FIELDS = ["id", "kind", "name", "tier", "match", "default", "cwd", "timeout", "run", "steps",
-  "note", "brief", "scripts", "uses", "env", "prereqs", "sideEffects", "noFix", "evidence", "outputs"];
+  "note", "brief", "scripts", "uses", "env", "prereqs", "sideEffects", "noFix", "evidence", "outputs", "pack"];
+// `pack` is "<name>@<version>": the pack that merged the recipe in
+// (lib/pack.mjs). It says where a recipe came from and changes nothing that
+// runs, so it is never normalized into the recipe or hashed.
+const PACK_RE = /^[a-z0-9][a-z0-9._-]*@[0-9A-Za-z][0-9A-Za-z.+-]*$/;
 // ${worktree} and ${slot}, expanded by check run before the steps start.
 export const ENV_TOKENS = ["worktree", "slot"];
 export const DEFAULT_WAIT = { timeout: 1200, interval: 15 };
@@ -188,6 +192,7 @@ function validateRecipe(r, i) {
   if (!r.steps.length) errs.push(`${label}: nothing to run — give run or steps`);
   if (r.match.some(g => typeof g !== "string" || !g.trim())) errs.push(`${label}: match must be glob strings`);
   if (raw.default !== undefined && typeof raw.default !== "boolean") errs.push(`${label}: default must be true or false`);
+  if (raw.pack !== undefined && !(typeof raw.pack === "string" && PACK_RE.test(raw.pack))) errs.push(`${label}: pack is "<name>@<version>", the pack that added it`);
   if (typeof r.cwd !== "string" || path.isAbsolute(r.cwd) || posix(path.normalize(r.cwd)).startsWith(".."))
     errs.push(`${label}: cwd must be a path inside the project`);
   if (!(typeof r.timeout === "number" && r.timeout > 0)) errs.push(`${label}: timeout must be a positive number of seconds`);

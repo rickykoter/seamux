@@ -40,6 +40,7 @@ import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import { goPolicy, humanStop, goProblems, autoNext, policyProblems } from "./lib/autogo.mjs";
 import * as POL from "./lib/policy.mjs";
+import * as PACK from "./lib/pack.mjs";
 import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
 import * as CI from "./lib/ci.mjs";
@@ -5420,6 +5421,62 @@ function shipStop(slug, note, status = "stopped", bad = true) {
   process.exitCode = bad ? 1 : 0;
 }
 
+// `deep-plan pack` (lib/pack.mjs, ADR 0109): set a repo up for a stack from a
+// pack folder, and keep track of what it merged.
+function packCmd(args, flags) {
+  const PK = PACK;
+  const [sub, name] = args;
+  const root = flags.root || gitRoot(path.resolve(flags.at || process.cwd())) || die("pack: not in a git repo");
+  const usage = "pack list | show <pack> | add <pack|dir|git-url> | check [pack] | update <pack> | remove <pack>  [--root DIR] [--json]";
+  const out = r => { for (const l of r.lines || []) say(l); if (r.errors && r.errors.length) { for (const e of r.errors) console.error("  ✗ " + e); process.exit(1); } };
+  if (sub === "list") {
+    const l = PK.listPacks(root), stamp = PK.readStamp(root);
+    if (flags.json) { process.stdout.write(JSON.stringify(l.map(p => ({ ...p, added: stamp.packs[p.name] ? stamp.packs[p.name].version : "" }))) + "\n"); return; }
+    for (const p of l) say(`${p.name}@${p.version}${stamp.packs[p.name] ? "  (added)" : p.detected ? "  (looks like this repo)" : ""}  — ${p.describes}`);
+    for (const [n, s] of Object.entries(stamp.packs)) if (!l.some(p => p.name === n)) say(`${n}@${s.version}  (added from ${s.source})`);
+    return;
+  }
+  if (sub === "show") {
+    const L = PK.loadPack(name || die(usage));
+    if (L.error) die(L.error);
+    const p = L.pack;
+    if (flags.json) { process.stdout.write(JSON.stringify({ ...p, source: L.source, errors: L.errors }) + "\n"); return; }
+    say(`${p.pack}@${p.version} (${L.source}): ${p.describes}`);
+    if ((p.recipes || []).length) say(`  recipes: ${p.recipes.map(r => `${r.id} [${r.kind || "test"}]`).join(", ")}`);
+    if ((p.land || []).length) say(`  land:    ${p.land.map(r => r.id).join(", ")}`);
+    if (p.scenarios) say(`  scenarios: ${Object.keys(p.scenarios).join(", ")}`);
+    if (p.policy) say(`  policy draft: default ${p.policy.default}${(p.policy.paths || []).map(e => `; ${[].concat(e.match).join(",")} ${e.level}`).join("")}`);
+    if (p.mcp) say(`  mcp: ${Object.keys(p.mcp).join(", ")}`);
+    if ((p.skills || []).length) say(`  skills: ${p.skills.join(", ")}`);
+    const miss = PK.missingTools(p);
+    if (miss.length) say(`  needs ${miss.join(", ")}, not on PATH here`);
+    for (const e of L.errors) console.error("  ✗ " + e);
+    if (L.errors.length) process.exitCode = 1;
+    return;
+  }
+  if (sub === "add") return out(PK.addPack(root, name || die(usage)));
+  if (sub === "update") return out(PK.updatePack(root, name || die(usage)));
+  if (sub === "remove") return out(PK.removePack(root, name || die(usage)));
+  if (sub === "check") {
+    const rows = PK.checkPacks(root, name);
+    if (flags.json) { process.stdout.write(JSON.stringify(rows) + "\n"); }
+    else if (!rows.length) say("no packs added here");
+    else {
+      const bad = rows.filter(r => r.state !== "ok");
+      const by = [...new Set(rows.map(r => r.pack))];
+      for (const n of by) {
+        const mine = rows.filter(r => r.pack === n), off = mine.filter(r => r.state !== "ok");
+        say(`${n}: ${off.length ? `${off.length} of ${mine.length} item(s) drifted` : `${mine.length} item(s), no drift`}`);
+        for (const r of off) say(`  ${r.state.padEnd(11)} ${r.key}${r.why ? ` (${r.why})` : ""}`);
+      }
+      if (bad.some(r => r.state === "edited")) say("edited items stay as they are; pack update re-merges the rest");
+    }
+    process.exitCode = rows.some(r => r.state !== "ok") ? 1 : 0;
+    return;
+  }
+  die(usage);
+}
+
 // `deep-plan policy show [--at DIR] [--json] [file...]`: the base branch's
 // policy and each named file's level. `policy check` validates the worktree's
 // own copy, which takes effect once it is on the base.
@@ -6898,7 +6955,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes", "scenarios", "ship", "policy",
+  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes", "scenarios", "ship", "policy", "pack", "ci",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -7232,6 +7289,15 @@ switch (cmd) {
   case "scenarios": scenariosCmd(args, flags); break;
   case "ship": await shipCmd(args, flags); break;
   case "policy": policyCmd(args, flags); break;
+  case "pack": packCmd(args, flags); break;
+  case "ci": {
+    // The ci check's wait as a verb, so a recipe (the github-actions pack's)
+    // can run it: deep-plan ci wait [--timeout s].
+    if (args[0] !== "wait") die("ci wait [--timeout <seconds>]");
+    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "ci.mjs"), "wait", "--timeout", String(flags.timeout || CI_TIMEOUT_S)], { stdio: "inherit" });
+    process.exitCode = r.status === null ? 1 : r.status;
+    break;
+  }
   case "handoff": await handoffCmd(args[0] || die("handoff <slug> [--post KEY [--yes]]"), flags); break;
   case "retro": retroCmd(args, flags); break;
   case "await-go": {
@@ -7511,6 +7577,13 @@ switch (cmd) {
                                               or say what it waits on (--at DIR for a worktree)
   policy show [--at DIR] [--json] [file...]   the base branch's .seamux/policy.json and each
                                               file's level; policy check validates the worktree's
+  pack list | show <pack> [--json]            the packs deep-plan can add (deep-plan/packs,
+                                              ~/.claude/deep-plan/packs), and what one holds
+  pack add <pack|dir|git-url> [--root DIR]    merge a pack's recipes, scenarios harness, policy
+                                              draft, MCP servers and skills into the repo
+  pack check [pack] | update <pack> | remove <pack>  drift since it was merged; re-merge
+                                              or take out only what nobody edited
+  ci wait [--timeout s]                       wait on the branch's PR checks (the ci check's run)
   scenarios write <slug> [--model M] [--force] a fresh headless writer drafts the plan's
                                               scenarios from the approved plan, sealed
                                               outside the repo (after the grade)
