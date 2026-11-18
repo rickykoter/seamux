@@ -3021,7 +3021,9 @@ async function render(specPath, opts) {
   // even --force passes it, since the policy is the base branch's, not the
   // plan's. The person changes the policy on the base, or stops the
   // increment for a person.
-  const policy = POL.readPolicy(planRoot, { fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+  // Always fetched: no environment switch reads a local ref instead, since
+  // whoever runs deep-plan could point that ref anywhere.
+  const policy = POL.readPolicy(planRoot, { fetch: true });
   const levels = (spec.deliverables || []).map(d => POL.changeLevel(policy, planPaths(d)));
   {
     const perrs = policyProblems(spec, levels, { requiredAt: POL.scenariosRequiredAt(policy), why: policy.why });
@@ -5219,7 +5221,7 @@ function pageCmd(slug, flags) {
 // requires checks, else by a detached wait of its own (`ship --wait`). It
 // never approves a land write: those stay a person's at every level.
 const SHIP_WAIT_S = () => Number(process.env.DEEP_PLAN_SHIP_WAIT_S) || 7200;
-const SHIP_INTERVAL_S = () => process.env.DEEP_PLAN_SHIP_INTERVAL_S !== undefined ? Number(process.env.DEEP_PLAN_SHIP_INTERVAL_S) : 30;
+const SHIP_INTERVAL_S = () => process.env.DEEP_PLAN_SHIP_INTERVAL_S !== undefined ? Number(process.env.DEEP_PLAN_SHIP_INTERVAL_S) : 60;
 const shipFile = slug => path.join(PLANS_DIR, `${slug}.ship.json`);
 function readShip(slug) { try { return JSON.parse(fs.readFileSync(shipFile(slug), "utf8")); } catch { return null; } }
 function writeShip(slug, rec) {
@@ -5239,9 +5241,13 @@ function shipVerdict({ st, root, fetch = true }) {
   const lv = files ? POL.changeLevel(pol, files)
     : { level: POL.FALLBACK_LEVEL, file: "", by: `the branch's files against ${ref || "its base"} could not be read` };
   let level = lv.level, capped = "";
-  if (files && files.includes(POL.POLICY_REL) && POL.rank(level) > POL.rank("auto-pr")) {
+  // A branch that changes what the gates mean (the policy, the check
+  // recipes, the scenarios harness: anything under .seamux/) is a person's
+  // to merge, whatever the policy says of those paths.
+  const gateFiles = (files || []).filter(f => f === POL.POLICY_REL || f.startsWith(".seamux/"));
+  if (gateFiles.length && POL.rank(level) > POL.rank("auto-pr")) {
     level = "auto-pr";
-    capped = `the branch changes ${POL.POLICY_REL}, so a person merges it`;
+    capped = `the branch changes ${gateFiles.includes(POL.POLICY_REL) ? POL.POLICY_REL : gateFiles[0]}, which the gates read, so a person merges it`;
   }
   const v = { plan: st ? st.slug : null, root, branch, head, base: ref,
     policy: { source: pol.source, ref: pol.ref, why: pol.why }, level, levelBy: lv.file ? `${lv.file}: ${lv.by}` : lv.by,
@@ -5257,13 +5263,18 @@ function shipVerdict({ st, root, fetch = true }) {
         : scen.every(c => c.status === "pass") ? "every scenarios check passed" : "a scenarios check has not passed");
   if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
-  const remote = branch ? (git("ls-remote", "--heads", "origin", branch).stdout || "").split(/\s/)[0] : "";
+  const remote = branch ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
   gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: push it`) : `origin has no ${branch}: push it`);
   const pv = CI.prView(root);
   if (pv.error) gate("pr", false, pv.error);
   const pr = pv.pr || null;
   if (pr) v.pr = { number: pr.number, url: pr.url, state: pr.state, draft: !!pr.isDraft, head: pr.headRefOid, mergeable: pr.mergeable || "" };
   if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
+  // The level was read from this base's policy and diffed against it: a PR
+  // into another branch was never judged.
+  const baseBranch = ref.replace(/^origin\//, "");
+  if (pr && pr.baseRefName && pr.baseRefName !== baseBranch)
+    gate("pr base", false, `PR #${pr.number} targets ${pr.baseRefName}, not ${baseBranch}, whose policy set the level: a person merges it`);
   const blocked = () => v.gates.some(x => !x.ok);
   if (blocked()) { v.action = "wait"; return v; }
   if (!pr) { v.action = "open"; return v; }
@@ -5292,12 +5303,13 @@ function shipLines(v) {
 
 function shipCmd(args, flags) {
   const waitMode = args.includes("--wait");
-  const pos = args.filter(a => a !== "--wait");
+  const hi = args.indexOf("--head");
+  const pos = args.filter((a, i) => a !== "--wait" && a !== "--head" && !(hi >= 0 && i === hi + 1));
   let st = pos[0] ? readState(pos[0]) : planFor(path.resolve(flags.at || process.cwd()));
   if (pos[0] && !st) die(`no plan ${pos[0]}`);
   const root = st ? st.root : (gitRoot(path.resolve(flags.at || process.cwd())) || die("ship: not in a git repo"));
   if (waitMode) return shipWait(st, root);
-  const v = shipVerdict({ st, root, fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+  const v = shipVerdict({ st, root, fetch: true });
   if (flags.dry) {
     if (flags.json) process.stdout.write(JSON.stringify({ ...v, dryRun: true, last: st ? readShip(st.slug) : null }) + "\n");
     else for (const l of shipLines(v)) say(l);
@@ -5344,7 +5356,7 @@ function shipAct(st, root, v) {
     return { ok: true, note: `merged PR #${n}; its landing runs from the app` };
   }
   // merge-when-green
-  if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""))) {
+  if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""), (CI.checksNow(root).names || []))) {
     const r = CI.ghAct(["pr", "merge", n, "--auto", `--${v.method}`, "--match-head-commit", v.head], root);
     if (r.ok) {
       log(`asked GitHub to merge PR #${n} once its required checks pass`);
@@ -5358,8 +5370,9 @@ function shipAct(st, root, v) {
   const runs = path.join(PLANS_DIR, `${slug}.runs`);
   fs.mkdirSync(runs, { recursive: true });
   const logFile = path.join(runs, "ship.log");
+  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: 0, by: "ship", log: logFile });
   const fd = fs.openSync(logFile, "a");
-  const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "ship", slug, "--wait"],
+  const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "ship", slug, "--wait", "--head", v.head],
     { detached: true, stdio: ["ignore", fd, fd], cwd: root, env: process.env });
   child.unref();
   fs.closeSync(fd);
@@ -5367,16 +5380,26 @@ function shipAct(st, root, v) {
   log(`waits for PR #${n}'s checks, then merges (pid ${child.pid})`);
   return { ok: true, note: `ship waits for PR #${n}'s checks and merges when they are green (pid ${child.pid}, log ${logFile})` };
 }
-function alivePid(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } }
+// A live pid that is still ship's wait: its command line says so, since a
+// pid the system reused for something else would otherwise pass.
+function alivePid(pid) {
+  try { process.kill(pid, 0); } catch (e) { if (e.code !== "EPERM") return false; }
+  const ps = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  return ps.status === 0 && /deep_plan\.mjs ship \S+ --wait/.test(ps.stdout || "");
+}
 
 // ship's own wait: every gate again on each look, so a push, a red check, a
 // policy change on the base or a reopened plan stops it rather than merging.
 async function shipWait(st, root) {
   if (!st) die("ship --wait needs a plan");
   const slug = st.slug, end = Date.now() + SHIP_WAIT_S() * 1000;
-  const started = readShip(slug) || {};
-  for (;;) {
-    const v = shipVerdict({ st: readState(slug) || st, root, fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+  const hi = process.argv.indexOf("--head");
+  const started = { head: hi > 0 ? process.argv[hi + 1] : (readShip(slug) || {}).head };
+  // Every gate on every look, but the base is fetched only every tenth one
+  // (and always before a merge): a long CI run is not a fetch a minute.
+  for (let look = 0; ; look++) {
+    let v = shipVerdict({ st: readState(slug) || st, root, fetch: look % 10 === 0 });
+    if (v.action === "merge" && look % 10 !== 0) v = shipVerdict({ st: readState(slug) || st, root, fetch: true });
     console.log(`${new Date().toISOString()} ${v.action}: ${v.gates.map(g => `${g.gate} ${g.ok ? "ok" : "no"}`).join(", ")}`);
     if (started.head && v.head !== started.head) return shipStop(slug, `HEAD moved from ${started.head.slice(0, 8)} to ${v.head.slice(0, 8)}; ship again`);
     if (v.action === "merge") {
@@ -5404,7 +5427,7 @@ function policyCmd(args, flags) {
   const [sub, ...files] = args;
   const root = gitRoot(path.resolve(flags.at || process.cwd())) || die("policy: not in a git repo");
   if (sub === "show") {
-    const pol = POL.readPolicy(root, { fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+    const pol = POL.readPolicy(root, { fetch: true });
     if (flags.json) {
       process.stdout.write(JSON.stringify({ source: pol.source, ref: pol.ref, why: pol.why, policy: pol.policy,
         files: files.map(f => ({ file: f, ...POL.levelOf(pol, f) })) }) + "\n");

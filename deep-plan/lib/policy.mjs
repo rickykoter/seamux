@@ -153,7 +153,9 @@ export const mergeMethod = pol => (pol && pol.source === "base" && pol.policy.me
 export function branchFiles(root, ref) {
   const mb = git(root, "merge-base", "HEAD", ref);
   if (mb.status !== 0) return null;
-  const d = git(root, "diff", "--name-only", mb.stdout.trim(), "HEAD");
+  // --no-renames: a file moved out of a supervised path is its old path too
+  // (a delete there), not only its new one.
+  const d = git(root, "diff", "--no-renames", "--name-only", mb.stdout.trim(), "HEAD");
   return d.status === 0 ? d.stdout.split("\n").map(s => s.trim()).filter(Boolean) : null;
 }
 

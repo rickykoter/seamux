@@ -280,7 +280,8 @@ export class ReviewView {
   private prs: PrRow[] = [];
   private lands = new Map<string, Landing | null>();
   /** deep-plan ship's dry-run verdict per worktree, for the Merge stage:
-   *  asked when the stage is drawn, again after a minute. */
+   *  asked when the stage is drawn, again after five minutes (each ask is a
+   *  fetch and a few gh calls); a failed ask keeps the last good one. */
   private ships = new Map<string, { at: number; v: ShipView | null; asking: boolean }>();
   /** The stage each change was last shown at, by its list key. */
   private stageSel = new Map<string, Stage>();
@@ -491,11 +492,11 @@ export class ReviewView {
   private shipFor(pr: PrRow): ShipView | null {
     if (pr.state === "merged" || pr.state === "closed" || !pr.cwd) return null;
     const c = this.ships.get(pr.cwd);
-    if (!c || (!c.asking && Date.now() - c.at > 60_000)) {
+    if (!c || (!c.asking && Date.now() - c.at > 300_000)) {
       this.ships.set(pr.cwd, { at: c?.at ?? 0, v: c?.v ?? null, asking: true });
       void invoke<ShipView>("ship_view", { cwd: pr.cwd }).then(
         (v) => { this.ships.set(pr.cwd, { at: Date.now(), v, asking: false }); this.render(true); },
-        () => { this.ships.set(pr.cwd, { at: Date.now(), v: null, asking: false }); });
+        () => { this.ships.set(pr.cwd, { at: Date.now(), v: this.ships.get(pr.cwd)?.v ?? null, asking: false }); });
     }
     return c?.v ?? null;
   }

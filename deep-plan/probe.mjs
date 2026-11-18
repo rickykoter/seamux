@@ -8981,6 +8981,7 @@ if (want("policy and ship: levels from the base branch")) {
   fs.mkdirSync(path.join(SEED, ".seamux"), { recursive: true });
   fs.writeFileSync(path.join(SEED, ".seamux", "verify.json"), JSON.stringify({ recipes: [] }));
   fs.writeFileSync(path.join(SEED, "README.md"), "seed\n");
+  fs.mkdirSync(path.join(SEED, "vault"), { recursive: true }); fs.writeFileSync(path.join(SEED, "vault", "key.txt"), "k\n");
   execSync(`git init -q -b main && git add -A && ${G} commit -q -m seed && git remote add origin ${ORIGIN} && git push -q origin main`, { cwd: SEED });
   const setPolicy = (p, msg = "policy") => {
     if (p === null) fs.rmSync(path.join(SEED, ".seamux", "policy.json"), { force: true });
@@ -9002,7 +9003,8 @@ if (want("policy and ship: levels from the base branch")) {
     return s;
   };
   const render = s => pc("render", tmpSpec(s), "--root", PR_);
-  const POLICY = { default: "auto-go", paths: [{ match: "docs/**", level: "auto-merge" }, { match: "secret/**", level: "supervised", fix: "diagnose" }],
+  const POLICY = { default: "auto-go", paths: [{ match: "docs/**", level: "auto-merge" }, { match: "secret/**", level: "supervised", fix: "diagnose" },
+    { match: "vault/**", level: "supervised" }],
     scenarios: { require: "auto-pr", threshold: 0.8 }, merge: { method: "squash" } };
 
   // No policy: today's behavior.
@@ -9081,6 +9083,13 @@ if (want("policy and ship: levels from the base branch")) {
   ghMap({ [PRV]: pv({ isDraft: true }), "pr ready 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: a draft PR is marked ready", r.status === 0 && ghCalls().includes("pr ready 12"), r.stdout);
+  ghMap({ [PRV]: pv({ baseRefName: "release" }), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a PR into another base than the policy's is never merged (f11)",
+    r.status === 3 && /targets release, not main, whose policy set the level/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  ghMap({ [PRV]: { status: 1, stderr: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a gh failure with no message is an error, not 'no PR' (f6)", r.status === 3 && /gh pr view exited 1/.test(r.stdout) && !ghCalls().some(c => /^pr create/.test(c)), r.stdout);
   ghMap({ [PRV]: pv(), [CHK]: { status: 1, stdout: [[{ name: "probes", workflow: "CI", bucket: "fail", link: "" }]] } });
   r = pc("ship", "pol-ship");
   ok("ship: a red check waits and never merges", r.status === 3 && /1 PR check\(s\) failed: CI \/ probes/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
@@ -9111,7 +9120,7 @@ if (want("policy and ship: levels from the base branch")) {
   ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: a branch that changes the policy file is capped at auto-pr and left for a person to merge",
-    r.status === 0 && /changes \.seamux\/policy\.json, so a person merges it/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+    r.status === 0 && /changes \.seamux\/policy\.json, which the gates read, so a person merges it/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
   setPolicy(POLICY);
   // A supervised file in the branch: a person's, whatever else it holds.
   fs.rmSync(path.join(PR_, ".seamux", "policy.json"));
@@ -9122,6 +9131,11 @@ if (want("policy and ship: levels from the base branch")) {
     r.status === 0 && /ship pol-ship: supervised \(secret\/k\.txt/.test(r.stdout) && /a person opens the PR and merges it/.test(r.stdout), r.stdout + r.stderr);
   const undelivered = mk("pol-open", [["docs/x.md"], ["docs/y.md"]]); undelivered.go = "human"; undelivered.deliverables[1].checks.push({ kind: "scenarios" });
   render(undelivered);
+  // A file moved out of a supervised path counts its old path too (f1).
+  execSync(`git rm -q -r secret && git mv vault/key.txt docs/key.txt && ${G} commit -q -m move-key && git push -q origin dev/docs`, { cwd: PR_ });
+  r = pc("ship", "pol-ship", "--dry-run");
+  ok("ship: a file moved out of a supervised path counts its old path, so the branch is supervised (f1)",
+    /ship pol-ship: supervised \(vault\/key\.txt/.test(r.stdout), r.stdout);
   ok("ship: a plan not yet delivered waits on deliver", /deliver first/.test(pc("ship", "pol-open", "--dry-run").stdout));
 }
 

@@ -166,6 +166,7 @@ export type ShipView = {
 export function shipSummary(v: ShipView): { level: string; next: string } {
   const from = v.policy.source === "none" ? "no repo policy, so as before" : v.policy.source === "unreadable" ? `the policy could not be read: ${v.policy.why}` : v.levelBy;
   const level = `Policy level: ${v.level} (${from}).`;
+  if (!v.plan) return { level, next: "No deep-plan plan is at this worktree, so ship does not act on it: a person opens and merges the PR." };
   if (v.level !== "auto-merge" || v.capped) {
     const who = v.level === "auto-pr" ? "ship opens the PR; a person merges it" : "a person opens the PR and merges it";
     return { level, next: v.capped ? `${v.capped[0].toUpperCase()}${v.capped.slice(1)}.` : `At this level ${who}.` };

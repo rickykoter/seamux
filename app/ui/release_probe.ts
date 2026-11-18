@@ -58,6 +58,7 @@ ok("open: a merged PR with no landing opens at Merge", stageFor(true, merged(), 
   ok("ship: auto-pr is a person's merge", shipSummary(v({ level: "auto-pr", action: "none" })).next === "At this level ship opens the PR; a person merges it.");
   ok("ship: a policy change in the branch is capped and says so",
     shipSummary(v({ level: "auto-pr", capped: "the branch changes .seamux/policy.json, so a person merges it" })).next === "The branch changes .seamux/policy.json, so a person merges it.");
+  ok("ship: a worktree with no plan promises no ship merge", /ship does not act on it/.test(shipSummary(v({ plan: null, action: "wait" })).next));
   ok("ship: no policy reads as before", /no repo policy, so as before/.test(shipSummary(v({ level: "auto-go", policy: { source: "none", ref: "", why: "" } })).level));
 }
 
