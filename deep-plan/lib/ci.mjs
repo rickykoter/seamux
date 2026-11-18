@@ -58,6 +58,36 @@ export function checksNow(cwd) {
   return { pending: by("pending"), failed: [...by("fail"), ...by("cancel")], passed: [...by("pass"), ...by("skipping")], total: rows.length };
 }
 
+// For deep-plan ship (ADR 0108): the branch's PR with what a merge needs to
+// know, whether or not its head is local HEAD. {pr} or {error}; a branch with
+// no PR is {pr: null}.
+export function prView(cwd) {
+  const v = gh(["pr", "view", "--json", "number,url,headRefOid,isDraft,state,baseRefName,headRefName,mergeable"], cwd);
+  if (v.err) return { error: v.err };
+  if (v.status !== 0) return /no pull requests found|no open pull requests/i.test(v.errText) || !v.errText ? { pr: null } : { error: `gh pr view: ${v.errText.split("\n").pop()}` };
+  const pr = parse(v.out);
+  return pr ? { pr } : { error: "gh pr view: no JSON" };
+}
+
+// Whether GitHub's own auto-merge can be used: the repo allows it, and the
+// base branch requires status checks (with none required, GitHub merges at
+// once, which is not waiting for green).
+export function githubAutoMerge(cwd, base) {
+  const r = gh(["repo", "view", "--json", "autoMergeAllowed"], cwd);
+  const allowed = !r.err && r.status === 0 && (parse(r.out) || {}).autoMergeAllowed === true;
+  if (!allowed) return false;
+  const p = gh(["api", `repos/{owner}/{repo}/branches/${base}/protection/required_status_checks`], cwd);
+  const req = !p.err && p.status === 0 && parse(p.out);
+  return !!(req && Array.isArray(req.contexts || req.checks) && (req.contexts || req.checks).length);
+}
+
+// One gh call for ship's acts (pr create, ready, merge): {ok, out}.
+export function ghAct(args, cwd) {
+  const r = gh(args, cwd);
+  if (r.err) return { ok: false, out: r.err };
+  return { ok: r.status === 0, out: (r.out || "").trim() || r.errText };
+}
+
 // The tail of a failed Actions job's log, when the link is one.
 function jobTail(link, cwd) {
   const m = /\/actions\/runs\/(\d+)\/job\/(\d+)/.exec(link || "");

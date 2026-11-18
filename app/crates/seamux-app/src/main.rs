@@ -263,6 +263,7 @@ fn main() {
             land_watch::land_act,
             land_watch::landing_prs,
             land_watch::landing_log,
+            land_watch::ship_view,
             links_app::link_file,
             pane_app::open_in_vscode,
             pane_app::term_look,

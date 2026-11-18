@@ -8971,6 +8971,160 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--stop"], { env: VENV });
 }
 
+// The repo policy (ADR 0108): read from the base branch, levels per path,
+// render's ceiling, and ship. origin is a bare repo under TMP and gh is the
+// fake, so nothing reaches GitHub.
+if (want("policy and ship: levels from the base branch")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const ORIGIN = path.join(TMP, "pol-origin.git"), SEED = path.join(TMP, "pol-seed"), PR_ = path.join(TMP, "pol-root");
+  execSync(`git init -q --bare -b main ${ORIGIN}`);
+  fs.mkdirSync(path.join(SEED, ".seamux"), { recursive: true });
+  fs.writeFileSync(path.join(SEED, ".seamux", "verify.json"), JSON.stringify({ recipes: [] }));
+  fs.writeFileSync(path.join(SEED, "README.md"), "seed\n");
+  execSync(`git init -q -b main && git add -A && ${G} commit -q -m seed && git remote add origin ${ORIGIN} && git push -q origin main`, { cwd: SEED });
+  const setPolicy = (p, msg = "policy") => {
+    if (p === null) fs.rmSync(path.join(SEED, ".seamux", "policy.json"), { force: true });
+    else fs.writeFileSync(path.join(SEED, ".seamux", "policy.json"), typeof p === "string" ? p : JSON.stringify(p));
+    execSync(`git add -A && ${G} commit -q --allow-empty -m '${msg}' && git push -q origin main`, { cwd: SEED });
+  };
+  execSync(`git clone -q ${ORIGIN} ${PR_} && git -C ${PR_} checkout -q -b dev/docs`);
+  const MAP = path.join(TMP, "pol-gh.json"), GLOG = path.join(TMP, "pol-gh-log.jsonl");
+  const PENV = { ...ENV, DEEP_PLAN_GH: path.join(HERE, "tools", "fake-gh"), FAKE_GH_MAP: MAP, FAKE_GH_LOG: GLOG,
+    DEEP_PLAN_SHIP_INTERVAL_S: "0", DEEP_PLAN_CI_INTERVAL_S: "0" };
+  const pc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: PENV, cwd: PR_ });
+  const ghMap = m => { for (const f of fs.readdirSync(TMP)) if (f.startsWith("pol-gh.json.count.")) fs.rmSync(path.join(TMP, f)); fs.writeFileSync(MAP, JSON.stringify(m)); fs.rmSync(GLOG, { force: true }); };
+  const ghCalls = () => fs.existsSync(GLOG) ? fs.readFileSync(GLOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l).argv.join(" ")) : [];
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const mk = (slug, files, extra = {}) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    Object.assign(s, { slug, review: { increments: "none", delivery: false }, go: "auto" }, extra);
+    s.deliverables.forEach((d, i) => { d.checks = [{ kind: "manual", name: "looked" }]; d.files = files[i] || []; delete d.go; });
+    return s;
+  };
+  const render = s => pc("render", tmpSpec(s), "--root", PR_);
+  const POLICY = { default: "auto-go", paths: [{ match: "docs/**", level: "auto-merge" }, { match: "secret/**", level: "supervised", fix: "diagnose" }],
+    scenarios: { require: "auto-pr", threshold: 0.8 }, merge: { method: "squash" } };
+
+  // No policy: today's behavior.
+  let r = render(mk("pol-none", [["src/a.js"], ["secret/b.js"]]));
+  ok("policy: a repo with no policy renders an auto plan as before, every increment auto-go",
+    r.status === 0 && stOf("pol-none").increments.every(i => i.level === "auto-go") && stOf("pol-none").policy.source === "none", r.stderr);
+  ok("policy: status --json carries each increment's level",
+    JSON.parse(pc("status", "--json").stdout).find(p => p.slug === "pol-none").increments[1].level === "auto-go");
+  ok("policy: the plan page shows the level", /class="dp-level"[^>]*>auto-go</.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-none.working.html"), "utf8")));
+
+  setPolicy(POLICY);
+  r = render(mk("pol-sup", [["src/a.js"], ["secret/b.js"]]));
+  ok("policy: an auto plan whose later increment touches a supervised path is refused, naming the file",
+    r.status !== 0 && /deliverable 2: go auto, but the policy holds secret\/b\.js supervised/.test(r.stderr), r.stderr);
+  const stopped = mk("pol-sup2", [["src/a.js"], ["secret/b.js"]]); stopped.deliverables[1].go = { human: "a person looks at secret" };
+  r = render(stopped);
+  ok("policy: stopping that increment for a person renders, and records its level",
+    r.status === 0 && stOf("pol-sup2").increments[1].level === "supervised" && /secret\/b\.js/.test(stOf("pol-sup2").increments[1].levelBy), r.stderr);
+  r = render(mk("pol-docs", [["docs/a.md"], ["docs/b.md"]]));
+  ok("policy: a plan ship would act on alone, without the scenarios check the policy requires, is refused",
+    r.status !== 0 && /needs a scenarios check at auto-pr and above/.test(r.stderr), r.stderr);
+  const withScn = mk("pol-docs2", [["docs/a.md"], ["docs/b.md"]]); withScn.deliverables[1].checks.push({ kind: "scenarios" });
+  ok("policy: with a scenarios check it renders at auto-merge", render(withScn).status === 0 && stOf("pol-docs2").increments[0].level === "auto-merge");
+  // The worktree's own copy raising secret/** changes nothing.
+  fs.mkdirSync(path.join(PR_, ".seamux"), { recursive: true });
+  fs.writeFileSync(path.join(PR_, ".seamux", "policy.json"), JSON.stringify({ ...POLICY, paths: [{ match: "**", level: "auto-merge" }] }));
+  r = render(mk("pol-sup3", [["src/a.js"], ["secret/b.js"]]));
+  ok("policy: a branch's own policy.json does not raise its level; the base branch's is read", r.status !== 0 && /supervised/.test(r.stderr), r.stderr);
+  ok("policy: policy check validates the worktree's copy and says when it takes effect", /takes effect once it is on the base branch/.test(pc("policy", "check").stdout));
+  fs.rmSync(path.join(PR_, ".seamux", "policy.json"));
+  r = pc("policy", "show", "secret/x.js", "docs/y.md", "src/z.js");
+  ok("policy show: the base's policy, with each file's level and the fix key shown as not acted on",
+    /policy from origin\/main: default auto-go/.test(r.stdout) && /fix: diagnose, not acted on/.test(r.stdout) &&
+    /secret\/x\.js: supervised/.test(r.stdout) && /docs\/y\.md: auto-merge/.test(r.stdout) && /src\/z\.js: auto-go \(default\)/.test(r.stdout), r.stdout);
+
+  setPolicy("{ not json");
+  r = render(mk("pol-bad", [["src/a.js"], ["src/b.js"]]));
+  ok("policy: a policy that is not JSON falls to supervised, never higher", r.status !== 0 && /not JSON/.test(r.stderr) && /supervised/.test(r.stderr), r.stderr);
+  setPolicy({ default: "dark" });
+  ok("policy: an unknown level does not validate, and falls to supervised", /unreadable: .*default: one of supervised, auto-go, auto-pr, auto-merge/.test(pc("policy", "show").stdout));
+  setPolicy(POLICY);
+  execSync(`git remote set-url origin ${path.join(TMP, "no-such-origin.git")}`, { cwd: PR_ });
+  r = pc("policy", "show");
+  ok("policy: a base that cannot be fetched is unreadable, so supervised", /unreadable: could not fetch origin\/main/.test(r.stdout), r.stdout);
+  execSync(`git remote set-url origin ${ORIGIN}`, { cwd: PR_ });
+
+  // ship. The plan: docs only, delivered.
+  const shipPlan = (slug, files) => {
+    const s = mk(slug, files); s.go = "human"; s.deliverables[1].checks.push({ kind: "scenarios" });
+    const rr = render(s);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    pc("grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    for (const n of [1, 2]) { pc("go", slug, String(n)); passAll(slug, n, pc); pc("done", slug, String(n)); }
+    return rr;
+  };
+  const head = () => execSync("git rev-parse HEAD", { cwd: PR_, encoding: "utf8" }).trim();
+  shipPlan("pol-ship", [["docs/guide.md"], ["docs/guide.md"]]);
+  fs.mkdirSync(path.join(PR_, "docs"), { recursive: true }); fs.writeFileSync(path.join(PR_, "docs", "guide.md"), "guide\n");
+  execSync(`git add -A && ${G} commit -q -m docs`, { cwd: PR_ });
+  ok("ship: the plan under test is delivered", stOf("pol-ship").phase === "done", stOf("pol-ship").phase);
+  const PRV = "pr view --json number,url,headRefOid,isDraft,state,baseRefName,headRefName,mergeable";
+  const pv = (o = {}) => ({ stdout: { number: 12, url: "https://github.com/o/r/pull/12", headRefOid: head(), isDraft: false, state: "OPEN", baseRefName: "main", headRefName: "dev/docs", mergeable: "MERGEABLE", ...o } });
+  const CHK = "pr checks --json name,bucket,link,workflow";
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: an unpushed branch waits, saying to push, and acts on nothing",
+    r.status === 3 && /auto-merge \(docs\/guide\.md: docs\/\*\*/.test(r.stdout) && /push it/.test(r.stdout) && !ghCalls().some(c => /^pr (create|merge|ready)/.test(c)), r.stdout + r.stderr);
+  execSync("git push -q -u origin dev/docs", { cwd: PR_ });
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" }, "pr create": { stdout: "https://github.com/o/r/pull/12\n" } });
+  r = pc("ship", "pol-ship", "--dry-run", "--json");
+  const dj = JSON.parse(r.stdout || "{}");
+  ok("ship --dry-run --json: the verdict gate by gate, and it opens nothing",
+    dj.level === "auto-merge" && dj.action === "open" && dj.gates.every(g => g.ok) && !ghCalls().some(c => /^pr create/.test(c)), r.stdout + r.stderr);
+  r = pc("ship", "pol-ship");
+  ok("ship: with no PR it opens one against the base", r.status === 0 && ghCalls().some(c => /^pr create --base main --head dev\/docs --title /.test(c)), r.stdout + r.stderr);
+  ghMap({ [PRV]: pv({ isDraft: true }), "pr ready 12": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a draft PR is marked ready", r.status === 0 && ghCalls().includes("pr ready 12"), r.stdout);
+  ghMap({ [PRV]: pv(), [CHK]: { status: 1, stdout: [[{ name: "probes", workflow: "CI", bucket: "fail", link: "" }]] } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a red check waits and never merges", r.status === 3 && /1 PR check\(s\) failed: CI \/ probes/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: green checks at auto-merge merge it, pinned to HEAD",
+    r.status === 0 && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`) && /merged PR #12/.test(r.stdout), r.stdout + r.stderr);
+  ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }], [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
+    "repo view --json autoMergeAllowed": { stdout: { autoMergeAllowed: false } }, "pr merge 12": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  const shipRec = () => { try { return JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), "utf8")); } catch { return {}; } };
+  let waited = false;
+  for (let i = 0; i < 100 && !waited; i++) { if (shipRec().status === "merged") waited = true; else await new Promise(res => setTimeout(res, 100)); }
+  ok("ship: checks still running, with GitHub's auto-merge off, its own detached wait merges once they are green",
+    /ship waits for PR #12's checks/.test(r.stdout) && waited && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`), r.stdout + JSON.stringify(shipRec()));
+  ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] },
+    "repo view --json autoMergeAllowed": { stdout: { autoMergeAllowed: true } },
+    "api repos/{owner}/{repo}/branches/main/protection/required_status_checks": { stdout: { contexts: ["probes"] } }, "pr merge 12 --auto": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: where the repo allows it and the base requires checks, GitHub's auto-merge is asked instead",
+    r.status === 0 && ghCalls().includes(`pr merge 12 --auto --squash --match-head-commit ${head()}`), r.stdout);
+  // A branch that also changes the policy is never merged by ship, even
+  // where the base puts the policy file itself at auto-merge.
+  setPolicy({ ...POLICY, default: "auto-merge" });
+  fs.mkdirSync(path.join(PR_, ".seamux"), { recursive: true });
+  fs.writeFileSync(path.join(PR_, ".seamux", "policy.json"), JSON.stringify({ ...POLICY, paths: [{ match: "**", level: "auto-merge" }] }));
+  execSync(`git add -A && ${G} commit -q -m raise && git push -q origin dev/docs`, { cwd: PR_ });
+  ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a branch that changes the policy file is capped at auto-pr and left for a person to merge",
+    r.status === 0 && /changes \.seamux\/policy\.json, so a person merges it/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  setPolicy(POLICY);
+  // A supervised file in the branch: a person's, whatever else it holds.
+  fs.rmSync(path.join(PR_, ".seamux", "policy.json"));
+  fs.mkdirSync(path.join(PR_, "secret"), { recursive: true }); fs.writeFileSync(path.join(PR_, "secret", "k.txt"), "k\n");
+  execSync(`git add -A && ${G} commit -q -m secret && git push -q origin dev/docs`, { cwd: PR_ });
+  r = pc("ship", "pol-ship", "--dry-run");
+  ok("ship: one supervised file makes the whole branch a person's to open and merge",
+    r.status === 0 && /ship pol-ship: supervised \(secret\/k\.txt/.test(r.stdout) && /a person opens the PR and merges it/.test(r.stdout), r.stdout + r.stderr);
+  const undelivered = mk("pol-open", [["docs/x.md"], ["docs/y.md"]]); undelivered.go = "human"; undelivered.deliverables[1].checks.push({ kind: "scenarios" });
+  render(undelivered);
+  ok("ship: a plan not yet delivered waits on deliver", /deliver first/.test(pc("ship", "pol-open", "--dry-run").stdout));
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

@@ -1,7 +1,7 @@
 // node app/ui/release_probe.ts — the Lookout tab's rail from review to
 // release (release.ts): each stage's state, where a change opens, and a
 // list row's chip, with no DOM. Node runs this file as TypeScript.
-import { chipFor, stageFor, stagesOf, took, type Landing, type PrRow } from "./release.ts";
+import { chipFor, shipSummary, stageFor, stagesOf, took, type Landing, type PrRow, type ShipView } from "./release.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
@@ -45,6 +45,20 @@ ok("open: a merged PR with no landing opens at Merge", stageFor(true, merged(), 
     t(merged(), land("stopped")) === "landing stopped");
   ok("chip: live only when the version matched", t(merged(), land("done", "", true)) === "live ✓" && t(merged(), land("done", "", false)) === "landed");
   ok("chip: its class says how it reads", chipFor(merged(), land("awaiting"))?.cls === "needs" && chipFor(merged(), land("failed"))?.cls === "failed");
+}
+
+// ---- the Merge stage's word from deep-plan ship ----------------------------------
+{
+  const v = (o: Partial<ShipView> = {}): ShipView => ({ plan: "p", level: "auto-merge", levelBy: "docs/a.md: docs/**",
+    policy: { source: "base", ref: "origin/main", why: "origin/main:.seamux/policy.json" }, gates: [], action: "merge-when-green", waits: [], ...o });
+  ok("ship: the level and the path that set it", shipSummary(v()).level === "Policy level: auto-merge (docs/a.md: docs/**).");
+  ok("ship: at auto-merge with checks running, ship merges once green", /merges it once its checks are green/.test(shipSummary(v()).next));
+  ok("ship: waiting names what it waits on", shipSummary(v({ action: "wait", waits: ["push it", "a scenarios check has not passed"] })).next ===
+    "deep-plan ship merges it once these are met: push it; a scenarios check has not passed.");
+  ok("ship: auto-pr is a person's merge", shipSummary(v({ level: "auto-pr", action: "none" })).next === "At this level ship opens the PR; a person merges it.");
+  ok("ship: a policy change in the branch is capped and says so",
+    shipSummary(v({ level: "auto-pr", capped: "the branch changes .seamux/policy.json, so a person merges it" })).next === "The branch changes .seamux/policy.json, so a person merges it.");
+  ok("ship: no policy reads as before", /no repo policy, so as before/.test(shipSummary(v({ level: "auto-go", policy: { source: "none", ref: "", why: "" } })).level));
 }
 
 // ---- a stage's time -------------------------------------------------------------

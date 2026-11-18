@@ -38,9 +38,11 @@ import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
-import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
+import { goPolicy, humanStop, goProblems, autoNext, policyProblems } from "./lib/autogo.mjs";
+import * as POL from "./lib/policy.mjs";
 import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
+import * as CI from "./lib/ci.mjs";
 import * as SCN from "./lib/scenarios.mjs";
 import { JUDGE_TIMEOUT_S } from "./lib/judge.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
@@ -1541,6 +1543,7 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:var(--fs-3) v
 .dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:var(--fs-2);padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
+.dp-level{font-size:var(--fs-2);color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:0 6px;margin-left:6px}
 .st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--accent-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-checks-st{list-style:none;padding-left:0;margin-bottom:4px}
@@ -2829,7 +2832,7 @@ function workingHtml(spec, st, b64) {
     const oos = (inc.outOfScope || []).length
       ? `<p class="dim">edited outside this increment's files: ${inc.outOfScope.map(f => `<code>${esc(f)}</code>`).join(", ")}</p>` : "";
     return `<div class="inc" id="inc-${inc.n}" data-status="${esc(inc.status)}"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
-<b>${inc.n}. ${esc(inc.title)}</b>
+<b>${inc.n}. ${esc(inc.title)}</b>${inc.level ? ` <span class="dp-level" title="the repo policy's level for this increment's files (${esc(inc.levelBy || "")})">${esc(inc.level)}</span>` : ""}
 <p>${esc(d.body || "")}</p>
 ${files}
 ${oos}
@@ -3011,6 +3014,23 @@ async function render(specPath, opts) {
       violations.push(...unread);
     }
   }
+  // The repo's policy, from the base branch (lib/policy.mjs, ADR 0108): each
+  // increment's level from its files, stored for status and the plan page.
+  // An auto go above an increment's ceiling, or a plan ship would act on
+  // alone without the scenarios check the policy asks for, is refused; not
+  // even --force passes it, since the policy is the base branch's, not the
+  // plan's. The person changes the policy on the base, or stops the
+  // increment for a person.
+  const policy = POL.readPolicy(planRoot, { fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+  const levels = (spec.deliverables || []).map(d => POL.changeLevel(policy, planPaths(d)));
+  {
+    const perrs = policyProblems(spec, levels, { requiredAt: POL.scenariosRequiredAt(policy), why: policy.why });
+    if (perrs.length) {
+      console.error("deep-plan: spec refused — the repo's policy:");
+      for (const e of perrs) console.error("  ✗ " + e);
+      process.exit(1);
+    }
+  }
   // Checks: resolved against the repo's recipe files, and refused where an
   // increment has none and no waiver, or names a recipe that is not there.
   const { lists: checkLists, errs: checkErrs } = resolvePlanChecks(spec, planRoot);
@@ -3171,8 +3191,11 @@ async function render(specPath, opts) {
       // `obs` is the pre-checks verdict; reconcileChecks carries it over.
       checks: reconcileChecks(prev, checkLists[i]), obs: undefined,
       // The increment's own files, so the gate can flag an edit outside them.
-      files: planPaths(d) };
+      files: planPaths(d),
+      // The policy's level for its files, as the base branch had it at render.
+      level: levels[i].level, levelBy: levels[i].file ? `${levels[i].file}: ${levels[i].by}` : levels[i].by };
   });
+  st.policy = { source: policy.source, ref: policy.ref, why: policy.why, at: Date.now() };
   // The ADR folder render resolved, which stays open between increments.
   st.adrDir = resolveAdrDir(planRoot, loadAdrConfig(planRoot), (spec.deliverables || []).flatMap(planPaths)).dir;
   // Keep what apply recorded (applied path) for unchanged entries; a spec
@@ -5180,6 +5203,228 @@ function pageCmd(slug, flags) {
   if (host === "terminal" && flags.review) say(`  or the text quiz: cat ${quiz}`);
 }
 
+// ---------------------------------------------------------------- ship
+
+// `deep-plan ship` (ADR 0108): after deliver, open or merge the plan's PR as
+// far as the repo's policy lets work go alone, or say what it waits on.
+//   supervised, auto-go  nothing: a person opens the PR and merges it
+//   auto-pr              open the PR, or mark the draft ready; a person merges
+//   auto-merge           also merge it, once the plan is delivered, every
+//                        scenarios check passed, the branch is pushed, the PR
+//                        does not touch the policy, and its checks are green
+// The level is the lowest of the branch's files' on the base branch's
+// policy, so a branch cannot raise its own; one that changes the policy file
+// is never merged by ship. With checks still running, ship merges when they
+// go green: by GitHub's auto-merge when the repo allows it and the base
+// requires checks, else by a detached wait of its own (`ship --wait`). It
+// never approves a land write: those stay a person's at every level.
+const SHIP_WAIT_S = () => Number(process.env.DEEP_PLAN_SHIP_WAIT_S) || 7200;
+const SHIP_INTERVAL_S = () => process.env.DEEP_PLAN_SHIP_INTERVAL_S !== undefined ? Number(process.env.DEEP_PLAN_SHIP_INTERVAL_S) : 30;
+const shipFile = slug => path.join(PLANS_DIR, `${slug}.ship.json`);
+function readShip(slug) { try { return JSON.parse(fs.readFileSync(shipFile(slug), "utf8")); } catch { return null; } }
+function writeShip(slug, rec) {
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(shipFile(slug), JSON.stringify({ ...rec, at: new Date().toISOString() }, null, 2) + "\n");
+}
+
+// The verdict, gate by gate, and the one act it allows: none (a person's),
+// wait, open, ready, merge, or merge-when-green.
+function shipVerdict({ st, root, fetch = true }) {
+  const git = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8", timeout: 20000 });
+  const pol = POL.readPolicy(root, { fetch });
+  const head = (git("rev-parse", "HEAD").stdout || "").trim();
+  const branch = (git("rev-parse", "--abbrev-ref", "HEAD").stdout || "").trim();
+  const ref = pol.ref || POL.baseOf(root) || "";
+  const files = ref ? POL.branchFiles(root, ref) : null;
+  const lv = files ? POL.changeLevel(pol, files)
+    : { level: POL.FALLBACK_LEVEL, file: "", by: `the branch's files against ${ref || "its base"} could not be read` };
+  let level = lv.level, capped = "";
+  if (files && files.includes(POL.POLICY_REL) && POL.rank(level) > POL.rank("auto-pr")) {
+    level = "auto-pr";
+    capped = `the branch changes ${POL.POLICY_REL}, so a person merges it`;
+  }
+  const v = { plan: st ? st.slug : null, root, branch, head, base: ref,
+    policy: { source: pol.source, ref: pol.ref, why: pol.why }, level, levelBy: lv.file ? `${lv.file}: ${lv.by}` : lv.by,
+    capped, files: files ? files.length : null, gates: [], pr: null, action: "none", waits: [], method: POL.mergeMethod(pol) };
+  const gate = (name, ok, why) => { v.gates.push({ gate: name, ok: !!ok, why }); if (!ok) v.waits.push(why); };
+  if (st) gate("delivered", st.phase === "done", st.phase === "done" ? "the plan is delivered" : `the plan is ${st.phase}: every increment done and deep-plan deliver first`);
+  else gate("plan", false, "no deep-plan plan is at this worktree");
+  const scen = st ? (st.increments || []).flatMap(i => Object.values(checksOf(i)).filter(c => c.kind === "scenarios" && !c.retired)) : [];
+  const req = POL.scenariosRequiredAt(pol);
+  if (scen.length || (req && POL.atLeast(level, req)))
+    gate("scenarios", scen.length && scen.every(c => c.status === "pass"),
+      !scen.length ? `the policy needs a scenarios check at ${req} and above, and the plan has none`
+        : scen.every(c => c.status === "pass") ? "every scenarios check passed" : "a scenarios check has not passed");
+  if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
+  if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
+  const remote = branch ? (git("ls-remote", "--heads", "origin", branch).stdout || "").split(/\s/)[0] : "";
+  gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: push it`) : `origin has no ${branch}: push it`);
+  const pv = CI.prView(root);
+  if (pv.error) gate("pr", false, pv.error);
+  const pr = pv.pr || null;
+  if (pr) v.pr = { number: pr.number, url: pr.url, state: pr.state, draft: !!pr.isDraft, head: pr.headRefOid, mergeable: pr.mergeable || "" };
+  if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
+  const blocked = () => v.gates.some(x => !x.ok);
+  if (blocked()) { v.action = "wait"; return v; }
+  if (!pr) { v.action = "open"; return v; }
+  if (pr.headRefOid !== head) { gate("pr head", false, `PR #${pr.number}'s head is ${String(pr.headRefOid).slice(0, 8)}, not HEAD`); v.action = "wait"; return v; }
+  if (pr.isDraft) { v.action = "ready"; return v; }
+  if (level !== "auto-merge") { v.action = "none"; v.say = capped || `at auto-pr, PR #${pr.number} is open for a person to merge`; return v; }
+  if (pr.mergeable === "CONFLICTING") { gate("mergeable", false, `PR #${pr.number} has conflicts with its base`); v.action = "wait"; return v; }
+  const c = CI.checksNow(root);
+  if (c.error) { gate("ci", false, c.error); v.action = "wait"; return v; }
+  if (c.failed.length) { gate("ci", false, `${c.failed.length} PR check(s) failed: ${c.failed.map(f => f.name).join(", ")}`); v.action = "wait"; return v; }
+  if (c.pending.length || !c.total) { v.gates.push({ gate: "ci", ok: false, why: c.total ? `${c.pending.length} PR check(s) still running` : "no PR checks reported yet" }); v.action = "merge-when-green"; return v; }
+  v.gates.push({ gate: "ci", ok: true, why: `all ${c.passed.length} PR check(s) passed` });
+  v.action = "merge";
+  return v;
+}
+
+function shipLines(v) {
+  const out = [`ship ${v.plan || v.root}: ${v.level} (${v.levelBy}; policy: ${v.policy.why})${v.capped ? ` — ${v.capped}` : ""}`];
+  for (const g of v.gates) out.push(`  ${g.ok ? "✓" : "·"} ${g.gate}: ${g.why}`);
+  if (v.pr) out.push(`  PR #${v.pr.number}${v.pr.draft ? " (draft)" : ""} ${v.pr.url}`);
+  const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
+    merge: `merges PR #${v.pr && v.pr.number} (${v.method})`, "merge-when-green": `merges PR #${v.pr && v.pr.number} (${v.method}) once its checks are green` }[v.action];
+  out.push(`  → ${what}`);
+  return out;
+}
+
+function shipCmd(args, flags) {
+  const waitMode = args.includes("--wait");
+  const pos = args.filter(a => a !== "--wait");
+  let st = pos[0] ? readState(pos[0]) : planFor(path.resolve(flags.at || process.cwd()));
+  if (pos[0] && !st) die(`no plan ${pos[0]}`);
+  const root = st ? st.root : (gitRoot(path.resolve(flags.at || process.cwd())) || die("ship: not in a git repo"));
+  if (waitMode) return shipWait(st, root);
+  const v = shipVerdict({ st, root, fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+  if (flags.dry) {
+    if (flags.json) process.stdout.write(JSON.stringify({ ...v, dryRun: true, last: st ? readShip(st.slug) : null }) + "\n");
+    else for (const l of shipLines(v)) say(l);
+    // --json is read (the app's Merge stage): the action says it, the exit
+    // code does not.
+    process.exitCode = v.action === "wait" && !flags.json ? 3 : 0;
+    return;
+  }
+  if (!st) { for (const l of shipLines(v)) say(l); die("ship acts on a deep-plan plan; this worktree has none"); }
+  const done = shipAct(st, root, v);
+  if (flags.json) process.stdout.write(JSON.stringify({ ...v, result: done }) + "\n");
+  else { for (const l of shipLines(v)) say(l); say(done.note); }
+  process.exitCode = done.ok ? (v.action === "wait" ? 3 : 0) : 1;
+}
+
+// Do the verdict's one act; {ok, note}.
+function shipAct(st, root, v) {
+  const slug = st.slug;
+  const log = note => { const s = readState(slug); if (s) { log1(s, `ship: ${note}`); writeState(s); } };
+  if (v.action === "none" || v.action === "wait") return { ok: true, note: v.action === "wait" ? "ship waits; run it again once those are met" : "" };
+  const n = v.pr && String(v.pr.number);
+  if (v.action === "open") {
+    const spec = planSpec(slug);
+    const body = `${spec.title || slug}\n\nOpened by deep-plan ship at the policy's ${v.level} level (${v.levelBy}).` +
+      (v.level === "auto-merge" ? " Ship merges it once its checks are green." : " A person merges it.");
+    const r = CI.ghAct(["pr", "create", "--base", v.base.replace(/^origin\//, ""), "--head", v.branch, "--title", spec.title || slug, "--body", body], root);
+    if (!r.ok) return { ok: false, note: `gh pr create failed: ${r.out}` };
+    log(`opened ${r.out.split("\n").pop()} at ${v.level}`);
+    writeShip(slug, { status: "opened", level: v.level, head: v.head, note: r.out.split("\n").pop() });
+    return { ok: true, note: `opened ${r.out.split("\n").pop()}; ship again${v.level === "auto-merge" ? " to merge it once its checks run" : ""}` };
+  }
+  if (v.action === "ready") {
+    const r = CI.ghAct(["pr", "ready", n], root);
+    if (!r.ok) return { ok: false, note: `gh pr ready failed: ${r.out}` };
+    log(`marked PR #${n} ready at ${v.level}`);
+    writeShip(slug, { status: "ready", level: v.level, head: v.head, pr: Number(n) });
+    return { ok: true, note: `PR #${n} is ready for review${v.level === "auto-merge" ? "; ship again to merge it" : ""}` };
+  }
+  if (v.action === "merge") {
+    const r = CI.ghAct(["pr", "merge", n, `--${v.method}`, "--match-head-commit", v.head], root);
+    if (!r.ok) { writeShip(slug, { status: "failed", pr: Number(n), head: v.head, note: r.out }); return { ok: false, note: `gh pr merge failed: ${r.out}` }; }
+    log(`merged PR #${n} (${v.method}) at auto-merge, every gate passed`);
+    writeShip(slug, { status: "merged", pr: Number(n), head: v.head, level: v.level });
+    return { ok: true, note: `merged PR #${n}; its landing runs from the app` };
+  }
+  // merge-when-green
+  if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""))) {
+    const r = CI.ghAct(["pr", "merge", n, "--auto", `--${v.method}`, "--match-head-commit", v.head], root);
+    if (r.ok) {
+      log(`asked GitHub to merge PR #${n} once its required checks pass`);
+      writeShip(slug, { status: "auto-merge", pr: Number(n), head: v.head, level: v.level, by: "github" });
+      return { ok: true, note: `GitHub merges PR #${n} once its required checks pass` };
+    }
+  }
+  const prior = readShip(slug);
+  if (prior && prior.status === "waiting" && prior.pid && alivePid(prior.pid) && prior.head === v.head)
+    return { ok: true, note: `ship's own wait (pid ${prior.pid}) already watches PR #${n}` };
+  const runs = path.join(PLANS_DIR, `${slug}.runs`);
+  fs.mkdirSync(runs, { recursive: true });
+  const logFile = path.join(runs, "ship.log");
+  const fd = fs.openSync(logFile, "a");
+  const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "ship", slug, "--wait"],
+    { detached: true, stdio: ["ignore", fd, fd], cwd: root, env: process.env });
+  child.unref();
+  fs.closeSync(fd);
+  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: child.pid, by: "ship", log: logFile });
+  log(`waits for PR #${n}'s checks, then merges (pid ${child.pid})`);
+  return { ok: true, note: `ship waits for PR #${n}'s checks and merges when they are green (pid ${child.pid}, log ${logFile})` };
+}
+function alivePid(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } }
+
+// ship's own wait: every gate again on each look, so a push, a red check, a
+// policy change on the base or a reopened plan stops it rather than merging.
+async function shipWait(st, root) {
+  if (!st) die("ship --wait needs a plan");
+  const slug = st.slug, end = Date.now() + SHIP_WAIT_S() * 1000;
+  const started = readShip(slug) || {};
+  for (;;) {
+    const v = shipVerdict({ st: readState(slug) || st, root, fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+    console.log(`${new Date().toISOString()} ${v.action}: ${v.gates.map(g => `${g.gate} ${g.ok ? "ok" : "no"}`).join(", ")}`);
+    if (started.head && v.head !== started.head) return shipStop(slug, `HEAD moved from ${started.head.slice(0, 8)} to ${v.head.slice(0, 8)}; ship again`);
+    if (v.action === "merge") {
+      const r = shipAct(readState(slug) || st, root, v);
+      return shipStop(slug, r.note, r.ok ? "merged" : "failed", !r.ok);
+    }
+    if (v.action !== "merge-when-green") return shipStop(slug, `stopped: ${v.waits.join("; ") || v.say || v.action}`);
+    if (Date.now() > end) return shipStop(slug, `the checks did not finish within ${SHIP_WAIT_S()}s`);
+    await new Promise(r => setTimeout(r, SHIP_INTERVAL_S() * 1000));
+  }
+}
+function shipStop(slug, note, status = "stopped", bad = true) {
+  const cur = readShip(slug) || {};
+  if (status !== "merged") writeShip(slug, { ...cur, status, note, pid: 0 });
+  const s = readState(slug);
+  if (s && status !== "merged") { log1(s, `ship: ${note}`); writeState(s); }
+  console.log(note);
+  process.exitCode = bad ? 1 : 0;
+}
+
+// `deep-plan policy show [--at DIR] [--json] [file...]`: the base branch's
+// policy and each named file's level. `policy check` validates the worktree's
+// own copy, which takes effect once it is on the base.
+function policyCmd(args, flags) {
+  const [sub, ...files] = args;
+  const root = gitRoot(path.resolve(flags.at || process.cwd())) || die("policy: not in a git repo");
+  if (sub === "show") {
+    const pol = POL.readPolicy(root, { fetch: !process.env.DEEP_PLAN_POLICY_NO_FETCH });
+    if (flags.json) {
+      process.stdout.write(JSON.stringify({ source: pol.source, ref: pol.ref, why: pol.why, policy: pol.policy,
+        files: files.map(f => ({ file: f, ...POL.levelOf(pol, f) })) }) + "\n");
+      return;
+    }
+    for (const l of POL.describe(pol, files)) say(l);
+    return;
+  }
+  if (sub === "check") {
+    const f = path.join(root, POL.POLICY_REL);
+    if (!fs.existsSync(f)) { say(`no ${POL.POLICY_REL} in this worktree`); return; }
+    let p; try { p = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { die(`${POL.POLICY_REL} is not JSON: ${e.message}`); }
+    const errs = POL.validatePolicy(p);
+    if (errs.length) { for (const e of errs) console.error("  ✗ " + e); process.exit(1); }
+    say(`${POL.POLICY_REL} is valid; it takes effect once it is on the base branch`);
+    return;
+  }
+  die("policy show [--at DIR] [--json] [file...] | policy check [--at DIR]");
+}
+
 // `deep-plan scenarios` (lib/scenarios.mjs, ADR 0106): the plan's sealed
 // acceptance scenarios. write drafts them with a fresh headless writer after
 // the grade; list and access are what a session may see (titles, scores, the
@@ -5377,8 +5622,12 @@ function statusRows() {
     // Every increment's own row, for a reader that draws the whole plan (the
     // seamux-mods pane) rather than the board's one-line summary. `obs` is the
     // checks folded to one word, for a pane built before checks.
+    // Where the repo policy came from at the last render (lib/policy.mjs).
+    ...(st.policy ? { policy: st.policy } : {}),
     increments: (st.increments || []).map(i => ({
       n: i.n, title: i.title, status: i.status, obs: checksAggregate(i), by: i.by || "",
+      // The policy's level for the increment's files, from the last render.
+      ...(i.level ? { level: i.level } : {}),
       checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => {
         const status = shownStatus(v) || "pending";
         return {
@@ -6626,7 +6875,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes", "scenarios",
+  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes", "scenarios", "ship", "policy",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -6650,7 +6899,7 @@ const flags = {};
 const args = [];
 // Only these commands have a dry run. Anywhere else --dry-run is refused, so it
 // never quietly does the real thing (render archived a plan with it).
-const DRY_RUN_OK = new Set(["redraw"]);
+const DRY_RUN_OK = new Set(["redraw", "ship"]);
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--force") flags.force = true;
   // Resolved here: state outlives this cwd, and the gate reads a relative root
@@ -6958,6 +7207,8 @@ switch (cmd) {
   case "lesson": lessonCmd(args, flags); break;
   case "intake": intakeCmd(args, flags); break;
   case "scenarios": scenariosCmd(args, flags); break;
+  case "ship": await shipCmd(args, flags); break;
+  case "policy": policyCmd(args, flags); break;
   case "handoff": await handoffCmd(args[0] || die("handoff <slug> [--post KEY [--yes]]"), flags); break;
   case "retro": retroCmd(args, flags); break;
   case "await-go": {
@@ -7232,6 +7483,11 @@ switch (cmd) {
              [--plan <slug>]                  (--plan: the plan whose file holds it)
   notes [--all] [--plan <slug>] [--json]      open notes of every plan in this repo
                                               (--all adds closed ones)
+  ship <slug> [--dry-run] [--json]            after deliver: open the PR (auto-pr) or merge it
+                                              (auto-merge) as the base branch's policy allows,
+                                              or say what it waits on (--at DIR for a worktree)
+  policy show [--at DIR] [--json] [file...]   the base branch's .seamux/policy.json and each
+                                              file's level; policy check validates the worktree's
   scenarios write <slug> [--model M] [--force] a fresh headless writer drafts the plan's
                                               scenarios from the approved plan, sealed
                                               outside the repo (after the grade)

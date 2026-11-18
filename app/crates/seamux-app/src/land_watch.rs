@@ -635,6 +635,26 @@ pub async fn landing_get(cwd: String, merge: String) -> Result<Option<Value>, St
     tauri::async_runtime::spawn_blocking(move || landing_of(&cwd, &merge)).await.map_err(|e| e.to_string())
 }
 
+/// What `deep-plan ship` would do for the worktree at `cwd`: the change's
+/// level on the repo policy (read from the base branch) and the gates ship
+/// waits on, for the Merge stage. A dry run: it opens, readies and merges
+/// nothing. Run as the person, with their login PATH, since it asks gh.
+fn ship_of(cwd: &str) -> Result<Value, String> {
+    let path = format!("PATH={}", run_path());
+    let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
+    let args = ["-u", "CLAUDECODE", path.as_str(), "node", script.as_str(), "ship", "--at", cwd, "--dry-run", "--json"];
+    let (code, out, err) = crew_core::py::run("env", &args, Duration::from_secs(45)).ok_or("deep-plan did not run (no node, or it timed out)")?;
+    if code != 0 {
+        return Err(err.trim().lines().last().unwrap_or("deep-plan ship failed").to_string());
+    }
+    serde_json::from_str(out.trim()).map_err(|e| format!("deep-plan ship's verdict was not JSON: {e}"))
+}
+
+#[tauri::command]
+pub async fn ship_view(cwd: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || ship_of(&cwd)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn land_act(cwd: String, merge: String, recipe: String, act: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || self::act(&cwd, &merge, &recipe, &act)).await.map_err(|e| e.to_string())?
