@@ -8725,11 +8725,238 @@ if (want("refactor loops expand at render")) {
     r.status === 0 && !arch("lp-e").deliverables.slice(0, 3).some(d => d.go) && arch("lp-e").deliverables[3].go.human === "the migration", r.stderr);
 }
 
+// Scenarios (ADR 0106, 0107): a fake writer and judge stand in for the model
+// (DEEP_PLAN_CLAUDE), the sealed folder lives under TMP, and nothing here
+// spends a token or reaches a real store.
+if (want("scenarios: sealed, judged, refused to the builder")) {
+  const SR = path.join(TMP, "scn-root");
+  fs.mkdirSync(path.join(SR, ".seamux"), { recursive: true });
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.writeFileSync(path.join(SR, ".seamux", "verify.json"), JSON.stringify({ recipes: [] }));
+  fs.writeFileSync(path.join(SR, "app.txt"), "v1\n");
+  const SEALED = path.join(TMP, "sealed");
+  const FLOG = path.join(TMP, "fake-claude.jsonl"), FSCORES = path.join(TMP, "fake-scores.json");
+  const HSEEN = path.join(TMP, "harness-env.txt");
+  const srv = "require('http').createServer((q,r)=>r.end('ok')).listen(process.env.PORT,'127.0.0.1')";
+  const rdy = "require('http').get('http://127.0.0.1:'+process.env.PORT,r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))";
+  const harness = { setup: `printf '%s|%s|%s|%s' "$HOME" "$XDG_CACHE_HOME" "$CREW_DURABLE_DIR" "\${DEEP_PLAN_STATE_DIR:-none}" > '${HSEEN}'`,
+    start: `node -e "${srv}"`, ready: `node -e "${rdy}"`, export: { BASE_URL: "http://127.0.0.1:$PORT" }, timeout: 20 };
+  fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness, style: "Name the CLI verb a scenario drives." }));
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: SR });
+  const FAKE = path.join(TMP, "fake-claude");
+  fs.writeFileSync(FAKE, `#!/usr/bin/env node
+const fs = require("fs");
+const args = process.argv.slice(2), input = fs.readFileSync(0, "utf8");
+const tools = args[args.indexOf("--tools") + 1];
+let envFile = ""; try { envFile = fs.readFileSync(process.env.CLAUDE_ENV_FILE, "utf8"); } catch {}
+fs.appendFileSync(${JSON.stringify(FLOG)}, JSON.stringify({ args, tools, cwd: process.cwd(), prompt: input,
+  claudecode: process.env.CLAUDECODE || "", envFile, git: fs.existsSync(".git"), app: fs.existsSync("app.txt") ? fs.readFileSync("app.txt", "utf8") : "" }) + "\\n");
+let out;
+if (tools === "") out = { scenarios: [
+  { id: "s1", title: "A retry is sent once", body: "SECRET-STEPS run the outbox twice", expect: "one row" },
+  { id: "s2", title: "A dead letter is kept", body: "SECRET-STEPS kill the worker", expect: "kept", hint: "look at the dead-letter path" }] };
+else {
+  const s = JSON.parse(fs.readFileSync(${JSON.stringify(FSCORES)}, "utf8"));
+  if (s === "garbage") { console.log("not json"); process.exit(1); }
+  out = { scores: s };
+}
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: JSON.stringify(out), structured_output: out, total_cost_usd: 0.01 }));
+`, { mode: 0o755 });
+  const SENV = { ...ENV, DEEP_PLAN_SEALED_DIR: SEALED, DEEP_PLAN_CLAUDE: FAKE };
+  delete SENV.CLAUDECODE;
+  const sc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: SENV, cwd: SR });
+  const sgate = (tool, input, cwd = SR, env = SENV) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], {
+    encoding: "utf8", env, input: JSON.stringify({ tool_name: tool, tool_input: input, cwd, session_id: "scn-sess" }) });
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const scores = s => fs.writeFileSync(FSCORES, JSON.stringify(s));
+  const calls = () => fs.existsSync(FLOG) ? fs.readFileSync(FLOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
+  const access = slug => { try { return fs.readFileSync(path.join(SEALED, slug, "access.log"), "utf8").trim().split("\n").filter(Boolean); } catch { return []; } };
+  const mk = (slug, check = { kind: "scenarios", threshold: 0.7 }) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    Object.assign(s, { slug, review: { increments: "none", delivery: false } });
+    for (const d of s.deliverables) { d.checks = [check]; d.files = []; }
+    return s;
+  };
+  const arm = (slug, grade = true) => {
+    const r = sc("render", tmpSpec(mk(slug)), "--root", SR);
+    if (!grade) return r;
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    sc("grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    sc("go", slug, "1");
+    return r;
+  };
+  const chk = slug => stOf(slug).increments[0].checks["scenarios-scenarios"];
+
+  ok("scenarios: a scenarios check that names a recipe is refused",
+    /a scenarios check runs the judge/.test(sc("render", tmpSpec(mk("scn-bad", { kind: "scenarios", recipe: "x" })), "--root", SR).stderr));
+  ok("scenarios: a threshold outside 0..1 is refused",
+    /threshold is the score every scenario must meet/.test(sc("render", tmpSpec(mk("scn-bad2", { kind: "scenarios", threshold: 2 })), "--root", SR).stderr));
+  const two = mk("scn-two"); two.deliverables[0].checks = [{ kind: "scenarios" }, { kind: "scenarios", name: "again" }];
+  ok("scenarios: two scenarios checks on one increment are refused", /one scenarios check per increment/.test(sc("render", tmpSpec(two), "--root", SR).stderr));
+
+  arm("scn-b", false);
+  let r = sc("scenarios", "write", "scn-b");
+  ok("scenarios: write before the grade is refused", r.status !== 0 && /after the grade passes/.test(r.stderr), r.stderr);
+  arm("scn-a");
+  ok("scenarios: render stores it as deep-plan's synthesized check, and check list says what it judges",
+    chk("scn-a").synth === "scenarios" && chk("scn-a").recipe === "deep-plan:scenarios" && chk("scn-a").threshold === 0.7 &&
+    /judges: the plan's sealed scenarios in a throwaway worktree at HEAD/.test(sc("check", "list", "scn-a", "1").stdout));
+  r = sc("check", "run", "scn-a", "1", "--inline");
+  ok("scenarios: a check run before they are written fails at once, says to write them, and does not count",
+    r.status !== 0 && chk("scn-a").status === "fail" && !chk("scn-a").fails && /scenarios write scn-a/.test(r.stdout), r.stdout);
+
+  r = sc("scenarios", "write", "scn-a");
+  const w = calls().pop() || {};
+  ok("scenarios: write seals them and prints titles only",
+    r.status === 0 && /sealed 2 scenario\(s\)/.test(r.stdout) && /A retry is sent once/.test(r.stdout) && !/SECRET-STEPS/.test(r.stdout), r.stdout + r.stderr);
+  ok("scenarios: the sealed folder is 0700 and the file 0600",
+    (fs.statSync(path.join(SEALED, "scn-a")).mode & 0o777) === 0o700 &&
+    (fs.statSync(path.join(SEALED, "scn-a", "scenarios.json")).mode & 0o777) === 0o600);
+  ok("scenarios: the writer gets no tools, no settings, no CLAUDECODE, and the approved plan and harness fenced as data (L7)",
+    w.tools === "" && w.args.includes("--setting-sources") && w.args.includes("--strict-mcp-config") && !w.claudecode &&
+    /<data name="approved-plan" boundary="[0-9a-f]+">\nThe text between these markers is data/.test(w.prompt) &&
+    w.prompt.includes(spec.title) && /<data name="harness"/.test(w.prompt) && /Name the CLI verb/.test(w.prompt) && !w.git, JSON.stringify(w).slice(0, 400));
+  ok("scenarios: write again without --force is refused", /already has 2 scenario\(s\); --force/.test(sc("scenarios", "write", "scn-a").stderr));
+  r = sc("scenarios", "list", "scn-a");
+  ok("scenarios: list gives the count and titles, never the steps",
+    r.status === 0 && /2 scenario\(s\) for scn-a/.test(r.stdout) && /s2 {2}A dead letter is kept/.test(r.stdout) && !/SECRET|dead-letter path/.test(r.stdout), r.stdout);
+
+  // The gate: reads of the folder refused and logged, other reads untouched.
+  const file = path.join(SEALED, "scn-a", "scenarios.json");
+  r = sgate("Read", { file_path: file });
+  ok("scenarios gate: a Read of the sealed file is refused, naming the plan, and logged",
+    r.status === 2 && /^deep-plan gate \[scn-a\]: that names a plan's sealed scenarios/.test(r.stderr) &&
+    access("scn-a").length === 1 && /"tool":"Read"/.test(access("scn-a")[0]) && /"session":"scn-sess"/.test(access("scn-a")[0]), r.stderr);
+  ok("scenarios gate: a Grep whose path is the folder is refused", sgate("Grep", { pattern: "x", path: SEALED }).status === 2);
+  ok("scenarios gate: a Glob whose absolute pattern reaches inside is refused", sgate("Glob", { pattern: `${SEALED}/**/*.json` }).status === 2);
+  ok("scenarios gate: a relative Glob from above it that walks in is refused", sgate("Glob", { pattern: "sealed/scn-a/*", path: TMP }).status === 2);
+  ok("scenarios gate: cat of the file in Bash is refused", sgate("Bash", { command: `cat ${file}` }).status === 2);
+  ok("scenarios gate: cd into the folder, then a relative read, is refused",
+    sgate("Bash", { command: `cd ${TMP} && cat sealed/scn-a/scenarios.json` }).status === 2);
+  ok("scenarios gate: a Bash run from inside the folder is refused", sgate("Bash", { command: "ls" }, path.join(SEALED, "scn-a")).status === 2);
+  ok("scenarios gate: an Edit or Write into the folder is refused as deep-plan's own records",
+    sgate("Write", { file_path: path.join(SEALED, "scn-a", "verdicts.json"), content: "{}" }).status === 2);
+  const logged = access("scn-a").length;
+  ok("scenarios gate: every refusal was logged", logged >= 7, String(logged));
+  ok("scenarios gate: a Read elsewhere is allowed and not logged",
+    sgate("Read", { file_path: path.join(SR, "app.txt") }).status === 0 && access("scn-a").length === logged);
+  ok("scenarios gate: a Grep for the word in the repo is allowed",
+    sgate("Bash", { command: "grep -rn sealed . && grep -n deep-plan/sealed app.txt" }).status === 0 &&
+    sgate("Grep", { pattern: "deep-plan/sealed", path: SR }).status === 0);
+  ok("scenarios gate: show and edit are the person's levers, refused from a session",
+    /scenarios show` and `scenarios edit` open the sealed scenarios/.test(sgate("Bash", { command: "deep-plan scenarios show scn-a" }).stderr) &&
+    sgate("Bash", { command: "deep-plan scenarios edit scn-a" }).status === 2 && sgate("Bash", { command: "deep-plan scenarios list scn-a" }).status === 0);
+  ok("scenarios: show and edit refuse from a session in the CLI too",
+    /the person runs it in their own shell/.test(spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "scenarios", "show", "scn-a"],
+      { encoding: "utf8", env: { ...SENV, CLAUDECODE: "1" }, cwd: SR }).stderr));
+  // gate.sh decides a read with nothing near the folder without node: a
+  // decide.mjs that leaves a mark shows whether node ran.
+  const SK = path.join(TMP, "skill-mark");
+  fs.mkdirSync(path.join(SK, "hooks"), { recursive: true });
+  const MARK = path.join(TMP, "decide-ran");
+  fs.writeFileSync(path.join(SK, "hooks", "decide.mjs"), `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(MARK)}, "1");`);
+  const MENV = { ...SENV, DEEP_PLAN_SKILL_DIR: SK };
+  sgate("Read", { file_path: path.join(SR, "app.txt") }, SR, MENV);
+  const skipped = !fs.existsSync(MARK);
+  sgate("Read", { file_path: path.join(SEALED, "x") }, SR, MENV);
+  ok("scenarios gate: gate.sh lets a read that names nothing near the folder through without node, and sends one that does to it",
+    skipped && fs.existsSync(MARK));
+
+  // The judge.
+  fs.writeFileSync(path.join(SR, "app.txt"), "v2\n");
+  execSync(`${G} commit -qam v2`, { cwd: SR });
+  scores([{ id: "s1", score: 1, reason: "REASON-ONE fine" }, { id: "s2", score: 0.3, reason: "REASON-TWO nothing kept" }]);
+  r = sc("check", "run", "scn-a", "1", "--inline");
+  const j = calls().pop() || {};
+  ok("scenarios judge: a scenario under the threshold fails the check, counted, printing titles and scores only",
+    r.status !== 0 && chk("scn-a").status === "fail" && chk("scn-a").fails === 1 &&
+    /1 of 2 met the threshold 0\.7/.test(r.stdout) && /0\.30 {2}s2 {2}A dead letter is kept/.test(r.stdout) &&
+    !/REASON|SECRET|dead-letter path/.test(r.stdout + JSON.stringify(chk("scn-a"))), r.stdout);
+  ok("scenarios judge: it runs in a throwaway worktree at HEAD, with a fixed tool list and no settings",
+    j.tools === "Bash,Read,Grep,Glob" && j.git && j.app === "v2\n" && j.cwd !== SR && j.args.includes("--setting-sources") && !j.claudecode,
+    JSON.stringify({ tools: j.tools, cwd: j.cwd, app: j.app }));
+  ok("scenarios judge: the scenarios and the harness's exports reach it fenced as data (L7)",
+    /<data name="scenarios" boundary=/.test(j.prompt) && /SECRET-STEPS/.test(j.prompt) &&
+    /<data name="harness-exports"[^]*BASE_URL=http:\/\/127\.0\.0\.1:\d+/.test(j.prompt), j.prompt && j.prompt.slice(0, 300));
+  const seen = fs.existsSync(HSEEN) ? fs.readFileSync(HSEEN, "utf8").split("|") : [];
+  ok("scenarios judge: the harness and the judge's shell get a temp HOME, cache and crew store, and no deep-plan store override (L8)",
+    seen.length === 4 && seen[0].includes("dp-judge-") && seen[1].includes("dp-judge-") && seen[2].includes("dp-judge-") && seen[3] === "none" &&
+    /export HOME='[^']*dp-judge-[^']*\/home'/.test(j.envFile) && /export BASE_URL=/.test(j.envFile), seen.join("|") + "\n" + j.envFile);
+  ok("scenarios judge: the worktree is removed afterwards",
+    execSync("git worktree list", { cwd: SR, encoding: "utf8" }).trim().split("\n").length === 1);
+  const vd = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8"));
+  ok("scenarios judge: the reasons and transcript stay in the sealed folder",
+    vd.last.scores[1].reason === "REASON-TWO nothing kept" && fs.readdirSync(path.join(SEALED, "scn-a")).some(f => /^judge-\d+\.json$/.test(f)));
+  ok("scenarios judge: the refused attempts are counted in the verdict the builder sees", /access log holds \d+ refused attempt/.test(r.stdout));
+
+  // A person allows s2's hint (their editor, outside a session); the next
+  // fail shows it.
+  const ED = path.join(TMP, "approve-hint.mjs");
+  fs.writeFileSync(ED, `import fs from "node:fs"; const f = process.argv[2]; const d = JSON.parse(fs.readFileSync(f, "utf8"));
+d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JSON.stringify(d));`);
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "scenarios", "edit", "scn-a"], { encoding: "utf8", env: { ...SENV, EDITOR: `node ${ED}` }, cwd: SR });
+  ok("scenarios: the person's edit saves, and leaves no copy behind", r.status === 0 && /saved 2 scenario/.test(r.stdout) &&
+    !fs.existsSync(path.join(SEALED, "scn-a", "edit.json")), r.stdout + r.stderr);
+  r = sc("check", "run", "scn-a", "1", "--inline");
+  ok("scenarios judge: a hint the person approved is shown under its failing scenario", /0\.30 {2}s2[^\n]*\n\s+hint: look at the dead-letter path/.test(r.stdout), r.stdout);
+  ok("scenarios: write --force from a session is refused once the person has edited them",
+    /writing them again is theirs/.test(spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "scenarios", "write", "scn-a", "--force"],
+      { encoding: "utf8", env: { ...SENV, CLAUDECODE: "1" }, cwd: SR }).stderr));
+  scores("garbage");
+  r = sc("check", "run", "scn-a", "1", "--inline");
+  ok("scenarios judge: a judge that does not answer is no verdict, not a counted fail",
+    r.status !== 0 && /the judge did not answer/.test(r.stdout) && chk("scn-a").fails === 2, r.stdout);
+  scores([{ id: "s1", score: 0.9, reason: "ok" }, { id: "s2", score: 0.75, reason: "ok" }]);
+  r = sc("check", "run", "scn-a", "1", "--inline");
+  ok("scenarios judge: every scenario at or over the threshold passes", r.status === 0 && chk("scn-a").status === "pass", r.stdout);
+  r = sc("scenarios", "list", "scn-a", "--json");
+  const lj = JSON.parse(r.stdout || "{}");
+  ok("scenarios: list --json has titles, last scores and the access count, and no reasons",
+    lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 7 && !/reason|SECRET/.test(r.stdout));
+
+  // A harness that never comes up: every scenario fails on it.
+  fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness: { ready: "exit 1", timeout: 2 } }));
+  execSync(`${G} commit -qam broken`, { cwd: SR });
+  r = sc("scenarios", "judge", "scn-a");
+  ok("scenarios judge: a harness that is never ready fails every scenario and says so", r.status === 1 && /not ready within 2s/.test(r.stdout), r.stdout);
+
+  // The page: behind the plan's own key, not serve's token.
+  const SV = path.join(TMP, "scn-serve");
+  fs.mkdirSync(SV, { recursive: true });
+  const VENV = { ...SENV, DEEP_PLAN_SERVE_FILE: path.join(SV, "serve.json"), DEEP_PLAN_SERVE_IDLE_MS: "4000",
+    LOOKOUT_ENGINE_FILE: path.join(SV, "no-lookout.json"), LOOKOUT_SERVE_FILE: path.join(SV, "lk.json"), DEEP_PLAN_OPENER: "true" };
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "scenarios", "show", "scn-a"], { encoding: "utf8", env: VENV, cwd: SR });
+  ok("scenarios show: opens the keyed page and, off a terminal, never prints the key",
+    r.status === 0 && /opened scn-a's scenarios page/.test(r.stdout) && !/k=[0-9a-f]/.test(r.stdout), r.stdout + r.stderr);
+  const SREC = JSON.parse(fs.readFileSync(VENV.DEEP_PLAN_SERVE_FILE, "utf8"));
+  const KEY = fs.readFileSync(path.join(SEALED, "scn-a", "page.key"), "utf8").trim();
+  const B = `http://127.0.0.1:${SREC.port}`;
+  const before = access("scn-a").length;
+  let g = await fetch(`${B}/scenarios/scn-a?t=${SREC.token}`);
+  ok("scenarios page: serve's token is not its key; the request is refused and logged",
+    g.status === 403 && access("scn-a").length === before + 1 && /"via":"serve"/.test(access("scn-a").pop()));
+  g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
+  const html = await g.text();
+  ok("scenarios page: with the key it shows the steps, the judge's reasons and the access log",
+    g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log") && /prefers-color-scheme: dark/.test(html));
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);
+  ok("scenarios page: an edit with the key saves",
+    g.status === 200 && /exactly once/.test(sc("scenarios", "list", "scn-a").stdout));
+  g = await fetch(`${B}/scenarios-edit/scn-a?op=delete&id=s1`);
+  ok("scenarios page: an edit without the key is refused", g.status === 403 && /2 scenario/.test(sc("scenarios", "list", "scn-a").stdout));
+  spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--stop"], { env: VENV });
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
   const ms = Number(process.hrtime.bigint() - t0) / 20e6;
   console.log(`\n  hot path (state files present, path untracked): ${ms.toFixed(1)} ms/call over 20`);
+  // A Read is the gate's only for the sealed scenarios; gate.sh answers one
+  // that names nothing near them without node.
+  const t1 = process.hrtime.bigint();
+  for (let i = 0; i < 20; i++) gate("Read", { file_path: "/tmp/x" }, TMP);
+  console.log(`  hot path (a Read, state files present): ${(Number(process.hrtime.bigint() - t1) / 20e6).toFixed(1)} ms/call over 20`);
 }
 
 // deep-plan/workflows/scout.js, run here against stub agents: the prompts by

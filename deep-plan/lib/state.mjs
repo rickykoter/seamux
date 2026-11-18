@@ -21,6 +21,10 @@ export const DATA_ROOT = REMOTE_DIR || path.join(os.homedir(), ".claude");
 export const STATE_DIR = process.env.DEEP_PLAN_STATE_DIR || path.join(DATA_ROOT, "deep-plan", "state");
 export const KEYS_DIR = process.env.DEEP_PLAN_KEYS_DIR || path.join(DATA_ROOT, "deep-plan", "keys");
 export const PLANS_DIR = process.env.DEEP_PLAN_PLANS_DIR || path.join(DATA_ROOT, "plans");
+// A plan's scenarios, kept where the building agent does not look and the
+// gate refuses it (lib/scenarios.mjs, ADR 0106). Here, not there, so the
+// records test below can name it without an import cycle.
+export const SEALED_DIR = process.env.DEEP_PLAN_SEALED_DIR || path.join(DATA_ROOT, "deep-plan", "sealed");
 
 export function statePath(slug) { return path.join(STATE_DIR, slug + ".json"); }
 
@@ -269,7 +273,9 @@ export function log1(st, what) {
 // (lib/browser.mjs); its verdict is the exit code like any recipe's, and its
 // run leaves evidence (frames, trace, replay) the surfaces show.
 // `ci` is synthesized too: the branch's PR checks through gh (lib/ci.mjs).
-export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review", "browser", "ci"];
+// `scenarios` is the judge's verdict on the plan's sealed scenarios
+// (lib/judge.mjs): synthesized, with an optional threshold from 0 to 1.
+export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review", "browser", "ci", "scenarios"];
 // needs-value: a claim step asks a person for a value and has nothing to poll.
 export const CHECK_STATUSES = ["pending", "running", "needs-variant", "needs-value", "pass", "fail"];
 // What a verdict is, as opposed to what the spec says the check is. Only these
@@ -311,12 +317,13 @@ export function specChecks(d) {
   if (!d) return [];
   const out = [], seen = new Set();
   const add = (c, legacy) => {
-    const name = String(c.name || c.system || c.recipe || c.run || (c.kind === "review" ? "code review" : c.kind === "ci" ? "pr checks" : "")).trim();
+    const name = String(c.name || c.system || c.recipe || c.run || (c.kind === "review" ? "code review" : c.kind === "ci" ? "pr checks" : c.kind === "scenarios" ? "scenarios" : "")).trim();
     let id = c.id ? String(c.id) : checkSlug(c.kind, name);
     if (!c.id) for (let k = 2, base = id; seen.has(id); k++) id = `${base}-${k}`;
     seen.add(id);
     const o = { id, kind: c.kind, name };
     for (const f of ["recipe", "run", "system", "query", "expect", "timeout"]) if (c[f]) o[f] = c[f];
+    if (typeof c.threshold === "number") o.threshold = c.threshold;
     // The spec's `note` describes the check; the verdict's `note` is what was
     // seen. Kept apart so recording a verdict never overwrites the brief.
     if (c.note) o.hint = c.note;
@@ -1400,6 +1407,10 @@ export function humanLever(calls) {
   for (const c of calls) {
     if (c.verb === "open-gate") return "`deep-plan open-gate` lifts the gate; it is the human's lever";
     if (c.verb === "import-state" && c.words.includes("--force")) return "`deep-plan import-state --force` replaces a plan's state from a file; it is the human's to do";
+    // The scenarios' text and their page key: what the building session must
+    // never see. The person reads and edits them; a session gets titles.
+    if (c.verb === "scenarios" && ["show", "edit"].includes(c.words.find(w => !w.startsWith("-"))))
+      return "`deep-plan scenarios show` and `scenarios edit` open the sealed scenarios; they are the person's to read";
   }
   return "";
 }
@@ -1527,8 +1538,10 @@ export function deniedThisTurn(session) {
 // Edit or Write there is how a gate gets opened by hand-editing its JSON.
 // Extension verbs (EXT_DIR) run with the state dirs in hand, so they are
 // deep-plan's own too: an agent's file there would be a verb that writes state.
+// The sealed folder is the engine's too: an agent's file there would be a
+// forged verdict or a scenario of its own choosing.
 export function ownRecords(target) {
-  return [STATE_DIR, KEYS_DIR, EXT_DIR].some(d => inside(target, d));
+  return [STATE_DIR, KEYS_DIR, EXT_DIR, SEALED_DIR].some(d => inside(target, d));
 }
 
 // The same for Bash: a command that writes (the write test, or an interpreter
@@ -1556,7 +1569,7 @@ export function bashTouchesRecords(cmd, cwd) {
   }
   const home = os.homedir();
   const names = new Set();
-  for (const d of [STATE_DIR, KEYS_DIR, EXT_DIR]) for (const p of [d, canon(d)]) {
+  for (const d of [STATE_DIR, KEYS_DIR, EXT_DIR, SEALED_DIR]) for (const p of [d, canon(d)]) {
     names.add(p);
     if (p.startsWith(home + path.sep)) { const rest = p.slice(home.length); names.add("~" + rest); names.add("$HOME" + rest); names.add("${HOME}" + rest); }
   }
@@ -1565,7 +1578,7 @@ export function bashTouchesRecords(cmd, cwd) {
   // mv ~/.claude x, or `rm -rf deep-plan` after a cd into ~/.claude). Only
   // ancestors at or below the data root (or a dir's own parent, for an
   // override) count, so a write at the repo root or $HOME is not caught up in it.
-  const dirs = [STATE_DIR, KEYS_DIR, EXT_DIR].flatMap(d => [d, canon(d)]);
+  const dirs = [STATE_DIR, KEYS_DIR, EXT_DIR, SEALED_DIR].flatMap(d => [d, canon(d)]);
   const floor = [DATA_ROOT, canon(DATA_ROOT), ...dirs.map(d => path.dirname(d))];
   const holds = p => dirs.some(d => d.startsWith(p + path.sep)) &&
     floor.some(f => p === f || p.startsWith(f + path.sep));

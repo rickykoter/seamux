@@ -41,6 +41,8 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
 import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
+import * as SCN from "./lib/scenarios.mjs";
+import { JUDGE_TIMEOUT_S } from "./lib/judge.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
@@ -308,12 +310,21 @@ function validate(spec, force) {
           errs.push(`${label}: a ci check waits on the branch's PR checks through gh; it names no recipe or command`);
         if (c.timeout !== undefined && !(Number.isInteger(c.timeout) && c.timeout > 0))
           errs.push(`${label}: timeout is the seconds to wait for CI, a whole number`);
+      } else if (c.kind === "scenarios") {
+        if (c.recipe || c.run)
+          errs.push(`${label}: a scenarios check runs the judge on the plan's sealed scenarios; it names no recipe or command`);
+        if (c.threshold !== undefined && !(typeof c.threshold === "number" && c.threshold >= 0 && c.threshold <= 1))
+          errs.push(`${label}: threshold is the score every scenario must meet, a number from 0 to 1`);
+        if (c.timeout !== undefined && !(Number.isInteger(c.timeout) && c.timeout > 0))
+          errs.push(`${label}: timeout is the seconds the judge may take, a whole number`);
       } else if (!(c.name || c.recipe)) errs.push(`${label}: needs a name, or the recipe it runs`);
       if (c.id !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(String(c.id)))
         errs.push(`${label}: id must be letters, digits, dot, dash or underscore`);
     }
     if ((d.checks || []).filter(c => c.kind === "ci").length > 1)
       errs.push(`deliverable ${i + 1}: one ci check per increment (it waits on the branch's one PR)`);
+    if ((d.checks || []).filter(c => c.kind === "scenarios").length > 1)
+      errs.push(`deliverable ${i + 1}: one scenarios check per increment (it judges the plan's one set)`);
     if ((d.checks || []).filter(c => c.kind === "review").length > 1)
       errs.push(`deliverable ${i + 1}: one review check per increment (it gates on that increment's one review)`);
     if (d.waiver !== undefined && !(typeof d.waiver === "string" && d.waiver.trim()))
@@ -459,6 +470,23 @@ function ciCheck(c) {
     hash: crypto.createHash("sha256").update("ci\0" + shown).digest("hex").slice(0, 12),
     // The runner's own limit sits past the wait's, so the wait says why it ended.
     exec: { tier: "expensive", cwd: ".", timeout: t + 180, steps: [{ kind: "run", command: shown }] } };
+}
+// A scenarios check runs the judge (lib/judge.mjs, ADR 0107) on the plan's
+// sealed scenarios. Synthesized like ci: the shown command is hashed, the
+// real one is built at run time. Expensive, so it runs detached.
+const SCENARIOS_RECIPE = "deep-plan:scenarios";
+function scenariosCheck(c, slug) {
+  const t = c.timeout || JUDGE_TIMEOUT_S;
+  const shown = `deep-plan scenarios judge ${slug}${c.threshold !== undefined ? ` --threshold ${c.threshold}` : ""}`;
+  return { ...c, recipe: SCENARIOS_RECIPE, synth: "scenarios", source: "deep-plan (scenarios check)",
+    hash: crypto.createHash("sha256").update("scenarios\0" + shown).digest("hex").slice(0, 12),
+    exec: { tier: "expensive", cwd: ".", timeout: t + 600, steps: [{ kind: "run", command: shown }] } };
+}
+function scenariosExec(cur, slug) {
+  const t = cur.timeout || JUDGE_TIMEOUT_S;
+  const command = `${shq(process.execPath)} ${shq(path.join(HERE, "lib", "judge.mjs"))} run ${shq(slug)} --timeout ${Number(t)}` +
+    (typeof cur.threshold === "number" ? ` --threshold ${Number(cur.threshold)}` : "");
+  return { ...cur.exec, steps: [{ kind: "run", command }] };
 }
 function ciExec(cur) {
   const t = cur.timeout || CI_TIMEOUT_S;
@@ -880,6 +908,7 @@ function resolvePlanChecks(spec, root) {
     for (const c of specChecks(d)) {
       if (c.kind === "review") { out.push(reviewCheck(c, spec.slug, i + 1)); continue; }
       if (c.kind === "ci") { out.push(ciCheck(c)); continue; }
+      if (c.kind === "scenarios") { out.push(scenariosCheck(c, spec.slug)); continue; }
       if (!c.recipe) { out.push(c); continue; }
       const hits = [...nameable.values()].filter(r => r.key === c.recipe || r.id === c.recipe);
       if (hits.length === 1) out.push(bind(c, hits[0]));
@@ -5151,6 +5180,114 @@ function pageCmd(slug, flags) {
   if (host === "terminal" && flags.review) say(`  or the text quiz: cat ${quiz}`);
 }
 
+// `deep-plan scenarios` (lib/scenarios.mjs, ADR 0106): the plan's sealed
+// acceptance scenarios. write drafts them with a fresh headless writer after
+// the grade; list and access are what a session may see (titles, scores, the
+// count of refused reads); show and edit are the person's (the gate refuses
+// them from a session, and so does this); judge runs the judge as a
+// scenarios check would.
+function scenariosCmd(args, flags) {
+  const usage = "scenarios write|list|access|judge|show|edit <slug> [--model M] [--threshold T] [--json]";
+  const [sub, slug, ...more] = args;
+  if (!sub || !slug) die(usage);
+  if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(slug)) die(`not a plan slug: ${slug}`);
+  const opt = k => { const i = more.indexOf(k); return i >= 0 ? more[i + 1] : undefined; };
+  const st = readState(slug);
+  const inSession = !!process.env.CLAUDECODE && !process.env.DEEP_PLAN_FROM_SERVE;
+  const theirs = what => die(`scenarios ${what} opens the sealed scenarios, which the building session does not read: ` +
+    `the person runs it in their own shell`);
+  if (sub === "write") {
+    if (!st) die(`no plan ${slug}`);
+    const had = SCN.readScenarios(slug);
+    const edited = had && (had.edits || []).length;
+    if (had && !flags.force) die(`${slug} already has ${had.scenarios.length} scenario(s); --force writes them again` +
+      (edited ? `, dropping the person's ${edited} edit(s)` : ""));
+    if (edited && inSession) die(`the person edited ${slug}'s scenarios, so writing them again is theirs: deep-plan scenarios write ${slug} --force, in their own shell`);
+    const cfg = SCN.scenariosConfig(st.root);
+    const model = opt("--model") || cfg.writer || SCN.WRITER_MODEL;
+    console.error(`deep-plan: writing ${slug}'s scenarios with ${model} (a headless run, with its own tokens)…`);
+    const r = SCN.writeScenarios(slug, { root: st.root, model });
+    if (r.error) die(r.error);
+    const fresh = readState(slug);
+    if (fresh) { log1(fresh, `scenarios: ${r.doc.scenarios.length} written by ${model}`); writeState(fresh); }
+    say(`sealed ${r.doc.scenarios.length} scenario(s) for ${slug}; the building session sees their titles only:`);
+    for (const t of r.doc.scenarios) say(`  ${t.id}  ${t.title}`);
+    say(`the person reads and edits them (and allows hints): deep-plan scenarios show ${slug}, in their own shell`);
+    return;
+  }
+  if (sub === "list") {
+    const t = SCN.titles(slug);
+    const v = SCN.lastVerdict(slug);
+    const access = SCN.readAccess(slug).length;
+    const scores = v ? (v.scores || []).map(s => ({ id: s.id, title: s.title, score: s.score })) : [];
+    if (flags.json) {
+      process.stdout.write(JSON.stringify({ slug, count: t ? t.count : 0, titles: t ? t.titles : [], writtenAt: t ? t.writtenAt : "",
+        edited: t ? t.edited : 0, last: v ? { at: v.at, head: v.head, threshold: v.threshold, pass: v.pass, scores } : null, access }) + "\n");
+      return;
+    }
+    if (!t) { say(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug} (after the grade)`); return; }
+    say(`${t.count} scenario(s) for ${slug}, written ${t.writtenAt.slice(0, 16).replace("T", " ")}${t.edited ? `, edited ${t.edited} time(s)` : ""}:`);
+    for (const x of t.titles) {
+      const s = scores.find(y => y.id === x.id);
+      say(`  ${s ? s.score.toFixed(2) : "  - "}  ${x.id}  ${x.title}`);
+    }
+    if (v) say(`last judged ${String(v.at).slice(0, 16).replace("T", " ")} on ${String(v.head || "").slice(0, 8)}: ${v.pass ? "passed" : "not passed"} at ${v.threshold}`);
+    if (access) say(`the access log holds ${access} refused attempt(s) to read them`);
+    return;
+  }
+  if (sub === "access") {
+    const a = SCN.readAccess(slug);
+    if (flags.json) { process.stdout.write(JSON.stringify(a) + "\n"); return; }
+    if (!a.length) { say(`no refused attempt to read ${slug}'s scenarios`); return; }
+    for (const e of a) say(`${String(e.at).slice(0, 19).replace("T", " ")}  ${e.via || e.tool}  ${e.what}`);
+    return;
+  }
+  if (sub === "judge") {
+    if (!st) die(`no plan ${slug}`);
+    const t = opt("--threshold");
+    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "judge.mjs"), "run", slug,
+      ...(t !== undefined ? ["--threshold", t] : []), ...(opt("--model") ? ["--model", opt("--model")] : [])],
+      { cwd: st.root, stdio: "inherit", env: { ...process.env, DEEP_PLAN_ROOT: st.root } });
+    process.exitCode = r.status === null ? 1 : r.status;
+    return;
+  }
+  if (sub === "show") {
+    if (inSession) theirs("show");
+    if (!SCN.readScenarios(slug)) die(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug}`);
+    const key = SCN.pageKey(slug);
+    const url = servedUrl(`/scenarios/${slug}?k=${key}`);
+    if (!url) die(`deep-plan serve did not start (see ${SERVE.LOG_FILE})`);
+    const { host } = detectHost();
+    let opened = false;
+    if (process.env.DEEP_PLAN_OPENER) opened = spawnSync(process.env.DEEP_PLAN_OPENER, [url], { stdio: "ignore", timeout: 10000 }).status === 0;
+    else if (host === "cmux" && process.env.CMUX_WORKSPACE_ID)
+      opened = spawnSync("cmux", ["open", url, "--workspace", process.env.CMUX_WORKSPACE_ID], { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 }).status === 0;
+    else if (process.platform === "darwin")
+      opened = spawnSync("open", [url], { timeout: 10000 }).status === 0;
+    // The keyed URL only to a terminal: printed into a session, it is the key.
+    if (process.stdout.isTTY) say(`${opened ? "opened" : "open"} ${url}`);
+    else say(opened ? `opened ${slug}'s scenarios page` : `run this from a terminal to see the page's address`);
+    return;
+  }
+  if (sub === "edit") {
+    if (inSession) theirs("edit");
+    const doc = SCN.readScenarios(slug);
+    if (!doc) die(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug}`);
+    const f = SCN.writeSealed(slug, "edit.json", { scenarios: doc.scenarios });
+    const ed = process.env.VISUAL || process.env.EDITOR || "vi";
+    const r = spawnSync("sh", ["-c", `${ed} "$1"`, "sh", f], { stdio: "inherit" });
+    try {
+      if (r.status !== 0) die(`${ed} exited ${r.status}; nothing saved`);
+      let next;
+      try { next = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { die(`not JSON: ${e.message}; nothing saved`); }
+      const saved = SCN.saveScenarios(slug, { ...doc, scenarios: next.scenarios }, { by: "person", what: "edited in an editor" });
+      say(`saved ${saved.scenarios.length} scenario(s) for ${slug}`);
+    } finally { fs.rmSync(f, { force: true }); }
+    return;
+  }
+  die(usage);
+}
+
 // A patch of everything since the increment started — committed, uncommitted
 // and untracked. Always written; only OPENED when the human asked for a diff.
 //
@@ -5337,6 +5474,7 @@ function checkList(slug, n) {
     say(`\n  ${CHECK_MARK[stale.has(id) ? "stale" : v.status] || "·"} ${id}  [${v.kind}${v.system ? " · " + v.system : ""}] ${s}`);
     say(`    ${v.name}`);
     if (v.recipe) say(`    recipe: ${v.recipe}  (its verdict comes from running it; a hand pass needs --force)`);
+    if (v.synth === "scenarios") say(`    judges: the plan's sealed scenarios in a throwaway worktree at HEAD (commit first), every one to ${v.threshold ?? SCN.DEFAULT_THRESHOLD}; it prints titles and scores (deep-plan scenarios list ${slug} names them)`);
     if (v.synth === "ci") say(`    waits:  on the branch's PR checks through gh, up to ${v.timeout || CI_TIMEOUT_S}s; push first, then check run (it runs detached; check wait follows it)`);
     const browserStep = ((v.exec && v.exec.steps) || []).find(x => x.kind === "browser");
     if (browserStep) say(`    script: ${browserStep.command}`);
@@ -5707,7 +5845,8 @@ function checkRun(slug, n, ids, opts) {
     // The scoped tree before the run, to tell a recipe's new outputs (part of
     // what passed) from an edit to a file the check covers made while it ran.
     const before = treeOf(st.root, scopeOf(cur));
-    const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.synth === "ci" ? ciExec(cur) : cur.exec;
+    const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.synth === "ci" ? ciExec(cur)
+      : cur.synth === "scenarios" ? scenariosExec(cur, slug) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
       env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
              DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" },
@@ -5763,7 +5902,10 @@ function checkRun(slug, n, ids, opts) {
     // not a failed attempt, and a manual fail is a person's, not a retry.
     // A ci run that found no CI verdict (exit 3: no PR, not pushed, timed
     // out) is not a red run either.
-    const counted = res.status === "fail" && cur.synth !== "review" && !(cur.synth === "ci" && res.ran && res.ran.code === 3);
+    // A scenarios run with no verdict (exit 3: no scenarios yet, a bad
+    // harness file, a judge that did not answer) is not a red run either.
+    const counted = res.status === "fail" && cur.synth !== "review" &&
+      !((cur.synth === "ci" || cur.synth === "scenarios") && res.ran && res.ran.code === 3);
     const fails = res.status === "pass" ? 0 : counted ? (failsBefore || 0) + 1 : (failsBefore || 0);
     const cap = retryMax(planSpec(slug));
     // Only an open increment blocks: a re-run on a done one is a look, not work.
@@ -6483,7 +6625,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes",
+  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes", "scenarios",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -6814,6 +6956,7 @@ switch (cmd) {
   case "notes": notesCmd(args, flags); break;
   case "lesson": lessonCmd(args, flags); break;
   case "intake": intakeCmd(args, flags); break;
+  case "scenarios": scenariosCmd(args, flags); break;
   case "handoff": await handoffCmd(args[0] || die("handoff <slug> [--post KEY [--yes]]"), flags); break;
   case "retro": retroCmd(args, flags); break;
   case "await-go": {
@@ -7088,6 +7231,13 @@ switch (cmd) {
              [--plan <slug>]                  (--plan: the plan whose file holds it)
   notes [--all] [--plan <slug>] [--json]      open notes of every plan in this repo
                                               (--all adds closed ones)
+  scenarios write <slug> [--model M] [--force] a fresh headless writer drafts the plan's
+                                              scenarios from the approved plan, sealed
+                                              outside the repo (after the grade)
+  scenarios list|access <slug> [--json]       their titles and last scores, and the refused
+                                              attempts to read them
+  scenarios judge <slug> [--threshold T]      run the judge as a scenarios check does
+  scenarios show|edit <slug>                  the person's: open the keyed page, or an editor
   intake <link> [--json]                      gather an issue, PR, failed Actions run or Jira
                                               key into a seed file to plan a bug from
   lesson "<text>" [--plan <slug>] [--inc <n>] file a lesson candidate after a correction

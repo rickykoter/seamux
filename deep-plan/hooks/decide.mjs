@@ -15,6 +15,7 @@ import { matchesGlob } from "../lib/verify.mjs";
 import path from "node:path";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 import { sessionIds } from "../lib/host.mjs";
+import { sealedTouch, logAccess } from "../lib/scenarios.mjs";
 
 let raw = "";
 try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
@@ -33,6 +34,25 @@ const who = {
   session: payload.session_id || process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "",
   workspace: ids.workspace,
 };
+
+// The sealed scenarios (lib/scenarios.mjs, ADR 0106): a Read, Grep, Glob or
+// Bash that names the folder is refused, and the attempt goes in each plan's
+// access log it could have reached. A read that names nothing there is not
+// the gate's business at all. A failure to decide lets a read through (it
+// must never break every read) and leaves Bash to the rules below.
+if (tool === "Read" || tool === "Grep" || tool === "Glob" || tool === "Bash") {
+  let t = null;
+  try { t = sealedTouch(tool, input, cwd); } catch { /* fail open: the access log is the backstop */ }
+  if (t) {
+    logAccess(t.slugs, { tool, via: "gate", what: t.what, session: who.session, cwd });
+    const slug = t.slugs.length === 1 ? t.slugs[0] : "?";
+    process.stderr.write(`deep-plan gate [${slug}]: that names a plan's sealed scenarios, which the building session does not read. ` +
+      `It is refused, and the attempt is in the plan's access log. deep-plan scenarios list ${slug === "?" ? "<slug>" : slug} gives their titles; ` +
+      `a check of kind scenarios runs the judge on them.\n`);
+    process.exit(2);
+  }
+  if (tool !== "Bash") process.exit(0);
+}
 
 // The go is the human's (ADR 0029). This hook runs only for a Claude Code
 // session's own tool calls, so whatever it refuses here stays open to the
