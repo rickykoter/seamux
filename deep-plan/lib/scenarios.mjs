@@ -290,11 +290,35 @@ function spellings() {
 // when what it can match reaches the folder (so ~/.cla*/deep-plan/s*/* is
 // caught whatever reads it, where cutting it at its first glob would leave
 // only an ancestor). Conservative: a * here also matches a leading dot.
-const segRe = seg => new RegExp("^" + seg.replace(/[.+^$()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")
-  .replace(/\{([^}]*)\}/g, (m, a) => "(?:" + a.split(",").join("|") + ")") + "$");
+// Braces are expanded first, as the shell does, since one can hold a slash
+// ({deep-plan/sealed,x}); a [!x] class is the shell's negation.
+const segRe = seg => new RegExp("^" + seg.replace(/[.+^$()|\\]/g, "\\$&").replace(/\[!/g, "[^")
+  .replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]") + "$");
+const BRACE_CAP = 64;
+// Every spelling a brace pattern stands for; null past BRACE_CAP (so many
+// that the caller treats it as a hit). A brace with no comma ({x}, {1..9})
+// is read as *.
+function expandBraces(s) {
+  const out = [];
+  const walk = t => {
+    if (out.length > BRACE_CAP) return;
+    const m = t.match(/\{([^{}]*)\}/);
+    if (!m) { out.push(t); return; }
+    const head = t.slice(0, m.index), tail = t.slice(m.index + m[0].length);
+    if (!m[1].includes(",")) return walk(head + "*" + tail);
+    for (const a of m[1].split(",")) walk(head + a + tail);
+  };
+  walk(s);
+  return out.length > BRACE_CAP ? null : out;
+}
 function globHits(p, at) {
-  const s = String(p || "").replace(/^~(?=\/|$)/, HOME).replace(/^\$\{?HOME\}?(?=\/|$)/, HOME);
-  if (!GLOB.test(s)) return false;
+  const raw = String(p || "");
+  if (!GLOB.test(raw)) return false;
+  const all = expandBraces(raw);
+  if (!all) return true;
+  return all.some(one => segHits(one.replace(/^~(?=\/|$)/, HOME).replace(/^\$\{?HOME\}?(?=\/|$)/, HOME), at));
+}
+function segHits(s, at) {
   const segs = path.resolve(at, s).split("/").filter(Boolean);
   return roots().some(r => {
     const rs = r.split("/").filter(Boolean);

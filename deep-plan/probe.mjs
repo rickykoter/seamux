@@ -8842,8 +8842,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios gate: a Bash run from inside the folder is refused", sgate("Bash", { command: "ls" }, path.join(SEALED, "scn-a")).status === 2);
   ok("scenarios gate: an Edit or Write into the folder is refused as deep-plan's own records",
     sgate("Write", { file_path: path.join(SEALED, "scn-a", "verdicts.json"), content: "{}" }).status === 2);
+  const dn = path.dirname(TMP), bn = path.basename(TMP);
+  ok("scenarios gate: a brace-only Glob spelling reaches node and is refused (f7)",
+    sgate("Glob", { pattern: `${dn}/{${bn},zz}/se{a,b}led/scn-a/scenarios.json` }).status === 2);
+  ok("scenarios gate: braces holding a slash, and a [!x] class, are expanded as the shell would (f8)",
+    sgate("Bash", { command: `cat ${dn}/{${bn}/sealed,zz}/*/*` }).status === 2 &&
+    sgate("Bash", { command: `cat ${TMP}/[!x]ealed/scn-a/scenarios.json` }).status === 2 &&
+    sgate("Bash", { command: `ls ${dn}/{${bn},zz}/*.json` }).status === 0);
   const logged = access("scn-a").length;
-  ok("scenarios gate: every refusal was logged", logged >= 9, String(logged));
+  ok("scenarios gate: every refusal was logged", logged >= 12, String(logged));
   ok("scenarios gate: a Read elsewhere is allowed and not logged",
     sgate("Read", { file_path: path.join(SR, "app.txt") }).status === 0 && access("scn-a").length === logged);
   ok("scenarios gate: a Grep for the word in the repo is allowed",
@@ -8921,7 +8928,7 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   r = sc("scenarios", "list", "scn-a", "--json");
   const lj = JSON.parse(r.stdout || "{}");
   ok("scenarios: list --json has titles, last scores and the access count, and no reasons",
-    lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 9 && !/reason|SECRET/.test(r.stdout));
+    lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 12 && !/reason|SECRET/.test(r.stdout));
 
   // A harness that never comes up: every scenario fails on it.
   fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness: { ready: "exit 1", timeout: 2 } }));
