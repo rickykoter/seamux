@@ -99,7 +99,9 @@ These survive a compaction; everything below them is how.
    render refuses one with none unless it carries a written `waiver` (for
    work nothing executable or observable can prove, such as docs). Run
    `deep-plan verify resolve <files>` on each deliverable's files. No recipes
-   in the project? Set them up with the developer before drafting. Then ask
+   in the project? `deep-plan pack list` names packs that set a stack up
+   ([packs.md](references/packs.md)); otherwise set them up with the
+   developer before drafting. Then ask
    the human which increments deserve a lookout review and whether the full
    delivery does, and record it as `review.increments` and
    `review.delivery`; ask too whether those reviews run one reviewer or
@@ -113,7 +115,11 @@ These survive a compaction; everything below them is how.
    past "commit, open a draft PR, carry on") and give each a `go: {
    "human": "<why>" }`. An increment that auto-goes after a reviewed one
    needs `review.agentMayClose`; render says so
-   ([spec.md](references/spec.md#auto-go)). Ask
+   ([spec.md](references/spec.md#auto-go)). A repo's `.seamux/policy.json`
+   caps how far each path goes alone: `deep-plan policy show <files>` gives
+   each file's level, and render refuses go auto above a supervised path,
+   or a plan that ship would act on alone without a `scenarios` check the
+   policy requires ([policy.md](references/policy.md)). Ask
    too whether the plan's state should sync to a git branch other sessions
    pull, and record the answer as `share`
    ([sharing.md](references/sharing.md#state-branches)).
@@ -162,6 +168,11 @@ These survive a compaction; everything below them is how.
    A pass also cuts `~/.claude/plans/<slug>.approved.md`, the plan as agreed
    and immutable, to paste into tickets and PRs; amends change only the live
    surfaces, and the working page notes when the plan has drifted from it.
+   If an increment has a `scenarios` check, run `deep-plan scenarios write
+   <slug>` now, and ask the person to read and edit them with `deep-plan
+   scenarios show <slug>` in their own shell. Never read the sealed
+   scenarios yourself, by any route; `scenarios list` gives their titles
+   ([scenarios.md](references/scenarios.md)).
 8. **Suggest a compact before the first `go`.** Once the spec is rendered and
    graded the planning conversation is mostly scaffolding. Offer the human a
    `/compact` prompt tailored to this plan, naming the slug and the durable
@@ -215,6 +226,11 @@ These survive a compaction; everything below them is how.
     check is yours to fix without asking how; after 3 failed runs in a row
     the increment blocks, and you stop and re-plan instead of trying a
     fourth fix ([loops.md](references/loops.md#fix-until-green-then-stop)).
+11. **Ship after deliver.** On a repo with a policy, `deep-plan ship <slug>`
+    opens the PR (auto-pr), or merges it once every gate passes
+    (auto-merge); `--dry-run` says what it waits on. Never run `gh pr
+    merge` yourself, and never approve a land write
+    ([policy.md](references/policy.md#ship)).
 
 **In a cloud session** (claude.ai/code, `deep-plan doctor` says remote) the
 plugin runs from the repo's `.claude/skills/deep-plan`, put there by

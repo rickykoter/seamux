@@ -103,7 +103,7 @@ each station leaves something you can check before the next one starts.
 | **Build** | the agent | edits inside the increment | commits, one increment at a time |
 | **Prove** | the engine, and you for manual checks | `deep-plan check run <slug> <n>` | a verdict per check; `done` waits for all of them, and three failed runs in a row block the increment for a re-plan |
 | **Review** | a fresh reviewer agent; you close what matters | `lookout gate --plan <slug> --inc <n>` | findings on their lines, and the plan's map held against the diff; an open blocker or major holds the gate |
-| **Ship** | you | `deep-plan deliver <slug>` | a reviewed branch, its evidence, and tickets if you want them |
+| **Ship** | you, or `deep-plan ship` as far as the repo's policy allows | `deep-plan deliver <slug>`, then `deep-plan ship <slug>` | a reviewed branch, its evidence, and tickets if you want them; a PR opened, or merged once every gate passes |
 | **Retro** | you, with the agent | `deep-plan retro <slug>` | the plan's misses kept, merged or dropped as rules in `.seamux/lessons.md` |
 | **Land** | the app, after the merge | `kind: "land"` recipes in `.seamux/verify.json` | each recipe's stages timed, the live version against the merge, links such as a rollout notebook, in the Lookout tab |
 
@@ -133,6 +133,42 @@ section of the page and why it is there, the recipes in
 `.seamux/verify.json`, and `check run` with unit tests and a real browser.
 
 https://github.com/user-attachments/assets/74cc37ca-bd2c-4aa5-a7a4-3dba389f42be
+
+## A software factory: hidden scenarios, a policy per path, packs
+
+Three gates let a repo hand more of the line to the agents without
+trusting the agent that builds a change to grade it.
+
+**Scenarios.** After the grade, `deep-plan scenarios write <slug>` has a
+separate model draft acceptance scenarios from the approved plan. They are
+kept outside the repo, where the gate refuses the building session's
+reads and logs each attempt. You read and edit them with `deep-plan
+scenarios show <slug>` in your own shell. A check of kind `scenarios` has
+a different model judge them by running the change in a throwaway
+worktree, with the person's stores swapped for temp folders. The builder
+learns only each title, its score and the hints you allowed.
+
+**A policy per path.** `.seamux/policy.json` sets how far work on each
+path goes alone: `supervised`, `auto-go`, `auto-pr` or `auto-merge`. It is
+read from the base branch, so a branch cannot raise its own level, and a
+change takes the lowest level of its files. Render refuses an auto plan
+above an increment's ceiling. After deliver, `deep-plan ship <slug>` opens
+the PR at auto-pr. At auto-merge it merges once the delivery review is
+closed, the scenarios pass, the PR checks are green and the branch leaves
+`.seamux/` alone. A landing's write steps still wait for you at every
+level. A repo with no policy works as before.
+
+**Packs.** `deep-plan pack add node-web` (or `github-actions`, or a
+folder, or a git URL) merges a stack's recipes, land recipes, scenarios
+harness, policy draft, MCP servers and skills into the repo, and stamps
+each item in `.seamux/packs.json`. It adds policy entries only for paths
+your policy does not cover, at most at its default. `pack check` shows
+what drifted, and `pack update` re-merges only what nobody edited. This
+repo carries its own `seamux` pack.
+
+Details: [scenarios](deep-plan/references/scenarios.md),
+[policy and ship](deep-plan/references/policy.md),
+[packs](deep-plan/references/packs.md).
 
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),

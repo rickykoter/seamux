@@ -6,6 +6,20 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Hidden scenarios, a policy per path, and packs.** After the grade,
+  `deep-plan scenarios write` has a separate model draft acceptance
+  scenarios from the approved plan. They are kept in a sealed folder that
+  the gate refuses to the building session, and it logs each attempt. A
+  check of kind `scenarios` has a different model judge them in a
+  throwaway worktree with temp stores, and the builder sees only titles,
+  scores and the hints you allowed. `.seamux/policy.json`, read from the
+  base branch, sets each path's level (supervised, auto-go, auto-pr,
+  auto-merge). Render refuses an auto plan above an increment's ceiling,
+  and `deep-plan ship` opens the PR at auto-pr or merges it at auto-merge
+  once every gate passes. The Lookout tab's Merge stage shows the level and
+  what ship waits on. `deep-plan pack add` sets a repo up from a pack (this
+  repo's `seamux`, `node-web`, `github-actions`, a folder or a git URL) and
+  stamps what it merged, so `pack check` shows drift. ADRs 0106 to 0109.
 - **The Dock shows a landing's move at once.** The board now rebuilds when
   a landing's index or state file changes, so a stage moving or a Retry
   shows on the card within a moment. Before, it waited for the board's
