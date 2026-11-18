@@ -32,7 +32,8 @@ import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
 import * as CT from "./lib/contracts.mjs";
-import { brief, DIMENSIONS } from "./lib/prompt.mjs";
+import { brief, claimsBrief, DIMENSIONS } from "./lib/prompt.mjs";
+import * as CL from "./lib/claims.mjs";
 import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
@@ -467,6 +468,7 @@ function cmdPrompt() {
     die(`--dimension wants one of ${DIMENSIONS.join(", ")}`);
   if (dimension && skeptic) die("--dimension and --skeptic are two different briefs; pick one");
   if ((dimension || skeptic) && flag("round")) die("--round is one reviewer's brief; it takes no --dimension or --skeptic");
+  if (flag("claims") && (dimension || skeptic || flag("round"))) die("--claims is the claims check's own brief; it takes no --dimension, --skeptic or --round");
   // The brief is built from the stored patch, so a source that has moved on
   // since the review was opened would describe a tree nobody can see. Refused
   // before a round is sealed, so a stale print cannot spend the round.
@@ -477,6 +479,12 @@ function cmdPrompt() {
       : "lookout open with the same target";
     die(`${id} was opened on tree ${String(src.newRev).slice(0, 8)}, and the working tree is now ${now.slice(0, 8)}: ` +
       `re-open it first (${how}), then print the brief`);
+  }
+  if (flag("claims")) {
+    // The claims check (lib/claims.mjs): every assumption still owed a verdict.
+    if (!CL.pending(r).length) die(`${id} has no assumptions waiting on the claims check`);
+    process.stdout.write(claimsBrief(r, { patchPath: p.patch, outPath: path.join(inbox, id + ".claims.json"), reply: flag("reply") }));
+    return;
   }
   let round = null;
   if (flag("round")) {
@@ -601,6 +609,35 @@ function cmdFindings() {
 }
 
 // reply / address / resolve / dismiss / reopen <id> <finding-or-thread> [text]
+// `lookout claims add <id> <file|->`: the claims check's verdicts, validated
+// and stored. A broken or unchecked claim files its cross-system finding.
+function cmdClaims() {
+  const sub = positional()[0];
+  const id = positional()[1];
+  if (sub !== "add") die("claims add <id> <file|->");
+  if (!id || !S.ID_OK.test(id) || !S.exists(id)) die("claims add wants a review id (lookout list)");
+  let items;
+  try { items = CL.parse(readInput(positional()[2])); } catch (e) { die(e.message); }
+  let rows = {};
+  try { rows = JSON.parse(fs.readFileSync(S.paths(id).rows, "utf8")); } catch { /* no rows: nothing is outside */ }
+  const anchors = FD.anchorsFrom(rows);
+  let v, res;
+  const { review } = mutate(id, cur => {
+    v = CL.validate(cur, items, { anchors, cite: citer(cur.source) });
+    res = CL.ingest(cur, v.accepted, "claims");
+    return res;
+  });
+  const by = s => v.accepted.filter(x => x.status === s).length;
+  say(`lookout ${id}: ${v.accepted.length} verdict(s) stored (${by("held")} held, ${by("broken")} broken, ${by("unchecked")} unchecked)` +
+      (v.repeats ? `, ${v.repeats} already there` : "") +
+      (v.rejected.length ? `, ${v.rejected.length} rejected` : "") + `; ${res.findings.length} finding(s) filed`);
+  for (const f of res.findings) say(`  ${f.id} ${f.severity.padEnd(7)} ${f.file}:${f.line}  ${f.short_summary}`);
+  for (const r of v.rejected) say(`  rejected item ${r.index}: ${r.why}`);
+  const left = CL.pending(review);
+  if (left.length) say(`  still owed a verdict: ${left.map(a => a.id).join(", ")}`);
+  if (items.length && !v.accepted.length && !v.repeats) process.exitCode = 1;
+}
+
 function cmdThread(op) {
   const [id, fid, ...words] = positional();
   if (!id || !fid) die(`${op} <review-id> <finding-or-thread-id> [text]`);
@@ -626,7 +663,8 @@ function cmdGate() {
   const r = S.ID_OK.test(id) && S.exists(id) ? S.read(id) : null;
   const g = FD.gate(r);
   if (flag("json")) process.stdout.write(JSON.stringify({ id, ...g }) + "\n");
-  else say(`lookout gate ${id}: ${g.code === 0 ? "pass" : g.code === 1 ? "blocked" : "no verdict"} — ${g.why}` +
+  else say(`lookout gate ${id}: ${g.code === 0 ? "pass" : g.code === 1 ? "blocked" : g.code === 4 ? "claims unchecked" : "no verdict"} — ${g.why}` +
+           (g.code === 4 ? `\n  brief ONE fresh agent, not the reviewer, with: lookout prompt ${id} --claims` : "") +
            (g.code === 3 && !r ? `\n  open one: lookout open${opt("plan") ? ` --plan ${opt("plan")} --inc ${opt("inc")}` : ""}, then run its reviewer (lookout prompt <id>)` : "") +
            (g.code === 3 && r ? `\n  brief a reviewer subagent with: lookout prompt ${id}` : ""));
   process.exit(g.code);
@@ -706,7 +744,11 @@ function usage() {
         sealed round again when nothing new waits.
         --dimension correctness|security|performance, --skeptic: a panel
         finder's and a panel skeptic's brief (lookout/workflows/review.js).
+        --claims: the claims check's brief, every assumption still owed a
+        verdict; with --reply the caller pipes the answer to claims add.
         Refused while the working tree has moved past the review: re-open it.
+  lookout claims add <id> <file|->       store the claims check's verdicts:
+                            {verdicts: [{id, status: held|broken|unchecked, why, at|finding}]}
   lookout findings add <id> <file|->     validate and ingest a reviewer's JSON:
                             {findings, edges, notes}, or a bare array of findings
   lookout findings list <id> [--open] [--json]
@@ -714,7 +756,8 @@ function usage() {
   lookout address <id> <f#> [note]       say a finding is fixed; the human closes it
   lookout resolve|dismiss <id> <f#> [note]  refused unless opened --agent-may-close
   lookout reopen <id> <f#|t#> [note]
-  lookout gate <id> | --plan SLUG --inc N   exit 0 pass, 1 blocker/major open, 3 no review
+  lookout gate <id> | --plan SLUG --inc N   exit 0 pass, 1 blocker/major open, 3 no review,
+                            4 assumptions wait on the claims check
   lookout gh link <id> [--pr REF]   find (or set) the review's pull request and sync it
   lookout gh sync <id> [--force]    read the PR's head, review threads and checks; mark stale items
   lookout gh post <id> <f#|t#>… [--intro TEXT] [--again]
@@ -933,6 +976,7 @@ switch (verb) {
   }
   case "prompt": cmdPrompt(); break;
   case "findings": cmdFindings(); break;
+  case "claims": cmdClaims(); break;
   case "reply": case "address": case "resolve": case "dismiss": case "reopen": cmdThread(verb); break;
   case "gate":   cmdGate(); break;
   case "show":   cmdShow(); break;

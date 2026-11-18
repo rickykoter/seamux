@@ -107,16 +107,25 @@ change in the context that wrote it reads your intent instead of the code.
    name `lookout:review`, args `{"reviews": ["<id>"], "ingest": "agent"}`.
    A lead runs the brief above, three finders each take one dimension, a
    skeptic tries to refute each blocker or major, and a last fresh agent
-   saves the result. Each agent prints its own brief, so pass nothing else.
+   saves the result. When the notes carry assumptions, a fresh agent then
+   runs the claims check. Each agent prints its own brief, so pass nothing else.
    If the name is not found, pass `scriptPath`: `workflows/review.js` under
    the root `lookout engine` prints. With no Workflow tool, brief one
    subagent as above. Tell the human what the run's `dropped` lists: the
    findings a skeptic refuted, with why.
-3. When it returns, `lookout findings list <id>` and tell the human what was
+3. **The claims check.** When `lookout gate <id>` exits 4, the reviewer's
+   notes carry assumptions that nobody has tried to break yet. Spawn ONE
+   fresh subagent (not the reviewer, and without your view of the change)
+   whose prompt is the exact output of `lookout prompt <id> --claims`. It
+   answers each assumption held (with the line that shows it), broken or
+   unchecked, and saves the answers with `lookout claims add <id> <file>`.
+   A broken claim becomes a CONFIRMED `cross-system` finding, an unchecked
+   one a PLAUSIBLE one. The panel runs this step itself.
+4. When it returns, `lookout findings list <id>` and tell the human what was
    found (counts by severity, the blockers and majors in a line each). The
    page beside the terminal already shows every finding under its line,
    and opens on the Overview of the notes.
-4. Discuss. Fix what is real, then `lookout address <id> <f#> "<what changed>"`;
+5. Discuss. Fix what is real, then `lookout address <id> <f#> "<what changed>"`;
    answer anything with `lookout reply <id> <f#|t#> "<text>"`. A re-review
    round is always one subagent: re-open the review once the fixes are in,
    then brief it with `lookout prompt <id> --round` (a brief of a tree that
@@ -124,7 +133,7 @@ change in the context that wrote it reads your intent instead of the code.
    address notes and the summary you give the human are prose people read:
    run the `humanize` skill on any that runs past a sentence or two. The
    brief itself stays exactly as `lookout prompt` prints it.
-5. **Only the human closes a finding** — resolve or dismiss, on the page.
+6. **Only the human closes a finding** — resolve or dismiss, on the page.
    `lookout resolve` and `lookout dismiss` are refused for you unless the
    review was opened with `--agent-may-close` (a plan opts in with
    `review.agentMayClose`). Never work around that refusal, and never ask
@@ -132,7 +141,8 @@ change in the context that wrote it reads your intent instead of the code.
 
 `lookout gate <id>` is the verdict: exit 0 when no blocker or major finding
 is open (minor and nit never hold it), 1 when one is open or only addressed,
-3 when there is no review or no reviewer has reported. A finding the agent
+3 when there is no review or no reviewer has reported, 4 while an assumption
+waits on the claims check (step 3). A finding the agent
 marked addressed still holds the gate until the human closes it.
 
 **The quiz** (`lookout open --quiz`, a repo's `.seamux/lookout.json`
@@ -214,6 +224,8 @@ the person comment and close findings anyway:
 ```
 lookout prompt <id>          the reviewer brief
 lookout findings add <id> <file|->   validate and ingest a reviewer's JSON
+lookout prompt <id> --claims         the claims check's brief
+lookout claims add <id> <file|->     store its verdicts
 lookout findings list <id> [--open] [--json]
 lookout reply <id> <f#|t#> <text>    lookout address <id> <f#> [note]
 lookout resolve|dismiss|reopen <id> <f#|t#> [note]

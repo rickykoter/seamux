@@ -81,6 +81,15 @@ side's revision or whose line is past the end. A patch-file review has
 no repo to check against, so it keeps the citation marked unverified.
 The note body lists each assumption with its line.
 
+A reviewer is not trusted on its own assumptions. Once its notes are in,
+`lookout gate` exits 4 until a second, fresh agent has tried to break each
+one: `lookout prompt <id> --claims` is that agent's brief, and `lookout
+claims add` stores its answers. Each assumption ends up held (with the line
+that shows it), broken (a CONFIRMED `cross-system` finding on the line the
+claim rests on) or unchecked (a PLAUSIBLE one, so the gap stays in front of
+you). The review panel runs this check itself; deep-plan tells the session
+to run it when a plan's review check hits exit 4.
+
 `lookout open --quiz` (or `.seamux/lookout.json` `{"quiz": true}`, or a
 plan's `review.quiz`) adds a question to each high-risk group and hides its
 note until you answer, so you form your own reading of the change before
@@ -124,7 +133,8 @@ answers or resolves GitHub's threads itself, and never starts a fix.
 
 ## Reviews in a plan
 
-`lookout gate` answers 0 when no blocker or major finding is open. A
+`lookout gate` answers 0 when no blocker or major finding is open, and 4
+while an assumption waits on the claims check. A
 deep-plan increment you chose for review has a check that runs it, so the
 increment can't be done until you have closed those findings, and a plan
 with a delivery review can't be complete until its review passes (see

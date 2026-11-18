@@ -1,11 +1,12 @@
 export const meta = {
   name: 'review',
-  description: 'A lookout review panel: a lead and three dimension finders, then a skeptic on each serious finding',
+  description: 'A lookout review panel: a lead and three dimension finders, a skeptic on each serious finding, then a claims check on the notes\' assumptions',
   whenToUse: 'When a lookout review is set to the panel (lookout open --reviewer panel, a plan\'s review.reviewer, or .seamux/lookout.json). Args: {reviews: [review ids], ingest: "agent" | "reply"}.',
   phases: [
     { title: 'Find', detail: 'a lead with the full brief, and one finder per dimension' },
     { title: 'Verify', detail: 'a skeptic tries to refute each blocker or major' },
     { title: 'Ingest', detail: 'a fresh agent saves the merged review with lookout findings add' },
+    { title: 'Claims', detail: 'a fresh agent tries to break each assumption the notes cite, when there are any' },
   ],
 }
 
@@ -19,7 +20,12 @@ export const meta = {
 //     lookout's inbox and runs `lookout findings add`, repairing rejects;
 //   "reply": nothing is saved; the caller (the seamux app) ingests each
 //     review's merged object itself.
-// Returns { reviews: [{ id, findings, edges, notes, dropped, unchecked, ingest }] }.
+// Returns { reviews: [{ id, findings, edges, notes, dropped, unchecked, ingest, claims }] }.
+//
+// The Claims phase runs only with ingest "agent", and only when the lead's
+// notes carry assumptions: it needs them stored, with their ids, to answer.
+// In reply mode the caller ingests, then runs `lookout prompt <id> --claims`
+// itself; `lookout gate` exits 4 until it has.
 
 const DIMENSIONS = ['correctness', 'security', 'performance']
 const SERIOUS = ['blocker', 'major']
@@ -47,6 +53,11 @@ const SKEPTIC_SCHEMA = {
   type: 'object', required: ['refuted', 'why'],
   properties: { refuted: { type: 'boolean' }, why: { type: 'string' } },
 }
+const CLAIMS_RESULT = {
+  type: 'object', required: ['ok', 'printed'],
+  properties: { ok: { type: 'boolean', description: 'true when the last lookout claims add stored a verdict for every claim' },
+                printed: { type: 'string', description: 'what the last lookout claims add printed' } },
+}
 const INGEST_SCHEMA = {
   type: 'object', required: ['ok', 'printed'],
   properties: { ok: { type: 'boolean', description: 'true when the last findings add exited 0 with nothing rejected or owed' },
@@ -68,6 +79,16 @@ const skeptic = (id, f) => agent(briefed(`lookout prompt ${id} --skeptic`,
   // A backtick in its text would close the fence early; \u0060 is the same JSON.
   JSON.stringify(f, null, 2).replace(/`/g, '\\u0060') + '\n```'),
   { ...RUN, label: `skeptic ${id} ${f.file}:${f.line}`, phase: 'Verify', schema: SKEPTIC_SCHEMA })
+
+// The claims check: a fresh agent that saw none of the reviewers' notes, so
+// it starts from the code and not from the account it checks.
+const claims = id => agent(
+  `Run \`lookout prompt ${id} --claims\` with the Bash tool. It prints your brief: do exactly what it says, ` +
+  'read the code it points you at, and save your verdicts with the `lookout claims add` command it names, ' +
+  'fixing what it rejects, at most three times. Your final reply is a JSON object: ok, and what the last ' +
+  '`lookout claims add` printed.',
+  { ...RUN, label: `claims ${id}`, phase: 'Claims', schema: CLAIMS_RESULT })
+const hasAssumptions = notes => (notes || []).some(n => n && Array.isArray(n.assumptions) && n.assumptions.length)
 
 // One finding per file, side and line. The more severe copy wins, so a
 // finder's blocker is never hidden under the lead's minor on the same line;
@@ -130,8 +151,12 @@ const results = await pipeline(ids,
     // An ingest agent that died saved nothing: said so, never left as null,
     // which is what reply mode returns.
     if (ingest === 'agent') out.ingest = (await saved(r.id, merged)) || { ok: false, printed: 'the ingest agent reported nothing; nothing was saved' }
+    out.claims = null
+    if (ingest === 'agent' && out.ingest.ok && hasAssumptions(merged.notes))
+      out.claims = (await claims(r.id)) || { ok: false, printed: 'the claims agent reported nothing; lookout gate stays at 4' }
     log(`review ${r.id}: ${r.kept.length} finding(s) kept, ${r.dropped.length} refuted` +
-        (out.ingest ? (out.ingest.ok ? ', saved' : ', NOT saved cleanly') : ''))
+        (out.ingest ? (out.ingest.ok ? ', saved' : ', NOT saved cleanly') : '') +
+        (out.claims ? (out.claims.ok ? ', claims checked' : ', claims NOT checked cleanly') : ''))
     return out
   })
 

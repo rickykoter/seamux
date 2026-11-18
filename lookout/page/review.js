@@ -800,11 +800,19 @@
     const loc = a.inDiff && (R.files || []).some(f => f.path === e.path)
       ? el("a", { href: "#", class: "wloc", title: e.path, onclick: ev => { ev.preventDefault(); goToLine(e.path, e.side || "new", e.line); } }, at)
       : el("code", { class: "aloc", title: "a line outside the diff" }, at);
-    const v = a.verdict && (a.verdict.status || a.verdict);
-    return el("li", { "data-assumption": a.id }, a.text, " ",
+    const vd = a.verdict || null;
+    const v = vd && (vd.status || vd);
+    // The claims check's answer (lib/claims.mjs): held names the line that
+    // shows it, broken and unchecked the finding they filed.
+    const f = vd && vd.finding && (R.findings || []).find(x => x.id === vd.finding);
+    const detail = !vd ? null
+      : f ? [" ", el("a", { href: "#", class: "wloc", onclick: ev => { ev.preventDefault(); goTo(f.id); } }, f.id)]
+      : vd.at ? [" at ", el("code", { class: "aloc" }, `${vd.at.path}:${vd.at.line}`)] : null;
+    return el("li", { "data-assumption": a.id, title: vd && vd.why ? `claims check: ${vd.why}` : "" }, a.text, " ",
       el("span", { class: "outside-tag" }, "enforced at "), loc,
       a.verified === false ? el("span", { class: "outside-tag", title: "a patch-file review cannot check the cited line" }, " unverified") : null,
-      el("span", { class: "outside-tag averdict" }, " · " + (v ? (VERDICT[v] || String(v)) : "no verdict yet")));
+      el("span", { class: `outside-tag averdict${v ? " " + v : ""}` }, " · " + (v ? (VERDICT[v] || String(v)) : "no verdict yet")),
+      ...(detail || []));
   }
 
   // A note, compacted: why it is risky and its direction as two short

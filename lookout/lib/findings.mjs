@@ -259,11 +259,16 @@ export function roundAdvice(review) {
 }
 
 // The gate's answer. 3: nothing to judge (no review, or no reviewer has run);
-// 1: a blocker or major finding is open or only addressed; 0: pass. Minor and
-// nit findings never hold the gate.
+// 4: the reviewer wrote assumptions that no claims check has answered yet
+// (lib/claims.mjs), so the review is not finished; 1: a blocker or major
+// finding is open or only addressed; 0: pass. Minor and nit findings never
+// hold the gate. 4 comes before 1: the claims check may add the blockers.
 export function gate(review) {
   if (!review) return { code: 3, why: "no review" };
   if (!review.reviewedAt) return { code: 3, why: "no reviewer has reported on this review yet" };
+  const owed = (review.notes || []).flatMap(n => (n.assumptions || []).filter(a => !a.verdict).map(a => a.id));
+  if (owed.length)
+    return { code: 4, why: `${owed.length} assumption(s) wait on the claims check: ${owed.join(", ")}`, claims: owed };
   const open = (review.findings || []).filter(f => isOpen(f));
   const blocking = open.filter(f => BLOCKING.has(f.severity));
   const tail = `${open.length} open finding(s)`;
