@@ -110,7 +110,7 @@ const MODELS: [string, string][] = [
   ["fable", "Fable"],
 ];
 const SEVERITIES = ["blocker", "major", "minor", "nit"];
-const RUNNING = new Set(["resolving", "cloning", "fetching", "opening", "reviewing", "ingesting"]);
+const RUNNING = new Set(["resolving", "cloning", "fetching", "opening", "reviewing", "ingesting", "claims"]);
 /** A running review's steps, each with the statuses that belong to it. */
 const STEPS: [string[], string][] = [
   [["resolving"], "Find it on GitHub"],
@@ -118,6 +118,7 @@ const STEPS: [string[], string][] = [
   [["opening"], "Open the diff"],
   [["reviewing"], "Review"],
   [["ingesting"], "Save the findings"],
+  [["claims"], "Check the claims"],
 ];
 const SEL_KEY = "seamux.lookout.selected";
 const getLanding = (cwd: string, merge: string) => invoke<Landing | null>("landing_get", { cwd, merge });

@@ -1017,8 +1017,66 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
             heard.chars().take(300).collect::<String>()
         ));
     }
+    // Exit 4: the reviewer's notes rest on assumptions nobody has checked.
+    // A panel's workflow runs its own claims phase; one reviewer's are
+    // checked here, by a fresh agent that never saw the review.
+    if gate.code == 4 && !panel {
+        check_claims(id, &wt, &rid, &job)?;
+    }
     refresh(id);
     stage(id, "ready", "review done");
+    Ok(())
+}
+
+/// The claims check: ONE fresh agent, briefed with `lookout prompt --claims`,
+/// tries to break each assumption the reviewer wrote, and its verdicts go
+/// to `lookout claims add`, with the same fix rounds as the findings. A
+/// claim left without a verdict keeps the gate at 4, which the review says.
+fn check_claims(id: &str, wt: &Path, rid: &str, job: &Job) -> Result<(), String> {
+    let brief = ok(Ok(lookout(wt, &["prompt", rid, "--claims", "--reply"])?), "lookout prompt --claims")?;
+    stage(id, "claims", "a fresh agent is checking the reviewer's cross-system assumptions");
+    let (session, mut said) = claude(
+        wt,
+        &brief,
+        &job.model,
+        &job.depth,
+        REVIEWER_TOOLS,
+        Some(depth_guide(&job.depth)),
+        None,
+        REVIEW_TIME,
+        Some(id),
+    )?;
+    let mut round = 0;
+    loop {
+        stage(id, "claims", "saving the claims check's verdicts");
+        let o = exec("lookout", &["claims", "add", rid, "-"], Some(wt), Some(&said), QUICK)?;
+        let heard = format!("{}\n{}", o.out.trim(), o.err.trim()).trim().to_string();
+        note(id, &heard.chars().take(600).collect::<String>());
+        let clean = o.code == 0 && !heard.contains("rejected item") && !heard.contains("still owed");
+        if clean || round == REPLY_ROUNDS || session.is_empty() {
+            break;
+        }
+        round += 1;
+        stage(id, "claims", "lookout rejected part of the verdicts; the claims agent is fixing them");
+        let ask = format!(
+            "lookout claims add said:\n\n{heard}\n\nFix what it names and reply with the whole corrected JSON object again, and nothing else."
+        );
+        said = claude(
+            wt,
+            &ask,
+            &job.model,
+            &job.depth,
+            REVIEWER_TOOLS,
+            Some(depth_guide(&job.depth)),
+            Some(&session),
+            SLOW,
+            Some(id),
+        )?
+        .1;
+    }
+    if lookout(wt, &["gate", rid])?.code == 4 {
+        note(id, "some assumptions still have no verdict: lookout gate answers 4 until they do");
+    }
     Ok(())
 }
 
