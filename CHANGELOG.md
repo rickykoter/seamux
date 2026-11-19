@@ -6,6 +6,16 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **A factory policy for seamux.** The `seamux` pack (1.1.0) and this
+  repo's `.seamux/` now let `deep-plan ship` merge app and crew changes on
+  green checks. Dependency manifests, the land watcher, the plugins and
+  tools stop at a PR for a person to merge, and the factory's own guards
+  (the gate, policy, scenarios, judge and bash-guard) stay supervised. A
+  scenarios harness serves the app's pages against the demo mock, so a
+  judge can click through them. The judge's sandbox puts node's own bin
+  folder first on PATH: under its temp HOME, asdf's shims exited 126 and
+  no harness that ran npm could start.
+
 - **Hidden scenarios, a policy per path, and packs.** After the grade,
   `deep-plan scenarios write` has a separate model draft acceptance
   scenarios from the approved plan. They are kept in a sealed folder that

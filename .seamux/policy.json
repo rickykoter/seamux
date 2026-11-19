@@ -1,14 +1,48 @@
 {
-  "default": "auto-go",
+  "default": "auto-pr",
   "paths": [
     {
       "match": [
+        "app/ui/**",
+        "app/crates/**",
+        "crew/**",
         "docs/**",
         "*.md"
       ],
+      "level": "auto-merge"
+    },
+    {
+      "match": [
+        "app/package.json",
+        "app/package-lock.json",
+        "app/Cargo.toml",
+        "app/Cargo.lock",
+        "app/crates/*/Cargo.toml",
+        "docs/demo/reel/package.json",
+        "docs/demo/reel/package-lock.json",
+        "app/crates/seamux-app/src/land_watch.rs"
+      ],
       "level": "auto-pr"
+    },
+    {
+      "match": [
+        "deep-plan/hooks/**",
+        "deep-plan/lib/policy.mjs",
+        "deep-plan/lib/scenarios.mjs",
+        "deep-plan/lib/judge.mjs",
+        "deep-plan/lib/autogo.mjs",
+        "deep-plan/lib/state.mjs",
+        "bash-guard/**",
+        ".github/**",
+        "tools/scrub_check.py"
+      ],
+      "level": "supervised"
     }
   ],
+  "scenarios": {
+    "require": false,
+    "threshold": 0.8
+  },
   "merge": {
     "method": "squash"
   }

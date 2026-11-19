@@ -61,14 +61,18 @@ const q = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
 
 // The environment everything the change runs gets: the temp stores, and
 // none of deep-plan's own store overrides (they name the real ones, or the
-// sealed folder itself).
+// sealed folder itself). The bin folder of the node running this goes first
+// on PATH: a version manager's shims (asdf, nodenv) find their version
+// through the home folder, so under the temp HOME `node` and `npm` would
+// fail (asdf exits 126) while this node, with its npm and npx, still works.
 export function sandboxEnv(tmp, extra = {}) {
   const env = headlessEnv();
   for (const k of Object.keys(env)) if (/^DEEP_PLAN_/.test(k) || /^LOOKOUT_/.test(k)) delete env[k];
   for (const k of ["CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"]) delete env[k];
   const home = path.join(tmp, "home");
   for (const d of ["home", "cache", "crew"]) fs.mkdirSync(path.join(tmp, d), { recursive: true });
-  return { ...env, HOME: home, XDG_CACHE_HOME: path.join(tmp, "cache"), CREW_DURABLE_DIR: path.join(tmp, "crew"), ...extra };
+  const PATH = [path.dirname(process.execPath), env.PATH].filter(Boolean).join(path.delimiter);
+  return { ...env, PATH, HOME: home, XDG_CACHE_HOME: path.join(tmp, "cache"), CREW_DURABLE_DIR: path.join(tmp, "crew"), ...extra };
 }
 
 export function judgePrompt({ scenarios, exports, worktree }) {
@@ -156,10 +160,10 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
       saveVerdict(slug, v);
       return { code: 1, lines: [...lines, `scenarios: not judged, ${broke.what}`, ...(broke.tail ? broke.tail.split("\n").map(l => `  | ${l}`) : [])] };
     }
-    // The judge's shell: the temp stores and the exports, sourced before each
-    // command it runs.
+    // The judge's shell: the temp stores, the sandbox's PATH and the exports,
+    // sourced before each command it runs.
     const envFile = path.join(tmp, "judge-env.sh");
-    fs.writeFileSync(envFile, Object.entries({ HOME: env.HOME, XDG_CACHE_HOME: env.XDG_CACHE_HOME,
+    fs.writeFileSync(envFile, Object.entries({ PATH: env.PATH, HOME: env.HOME, XDG_CACHE_HOME: env.XDG_CACHE_HOME,
       CREW_DURABLE_DIR: env.CREW_DURABLE_DIR, PORT: env.PORT, DEEP_PLAN_JUDGE: "1", ...exports })
       .map(([k, v]) => `export ${k}=${q(v)}`).join("\n") +
       "\nunset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN " +

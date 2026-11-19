@@ -1,3 +1,12 @@
 {
-  "style": "seamux is plugins and a desktop app, not a web server: there is no harness to start. A scenario here drives a CLI (node deep-plan/deep_plan.mjs, lookout, crew) in the checkout with the stores pointed at a temp folder (DEEP_PLAN_STATE_DIR, DEEP_PLAN_KEYS_DIR, DEEP_PLAN_PLANS_DIR, CREW_DURABLE_DIR), the way the probes do, and names the command and the output a person would read. A scenario that needs the app or a live tmux session says so in its steps, so the judge scores it 0 rather than guess."
+  "style": "seamux is plugins (CLIs and hooks) and a desktop app. A scenario is one of two kinds. The app's pages: the harness serves app/ui at $BASE_URL in a plain browser against a mocked backend (docs/demo/app/mock.js, with the fixed demo world in world.mjs: its workspaces, PRs and reviews). Add ?backend=tmux for the tmux backend seamux is moving to, where the cmux-only controls hide. The scenario names the window size, what the person clicks or presses, and what they then see and where focus is. The judge drives it with node and the checkout's playwright-core (createRequire on docs/demo/reel/package.json, chromium.launch, page.goto, then wait for #conn.good); docs/demo/app/shoot.mjs shows how to reach each view. The mock answers only the commands it knows and logs '[demo] no mock for <command>' for the rest, so a scenario about a page the mock cannot fill says so. The CLIs: a scenario drives node deep-plan/deep_plan.mjs, lookout or crew in the checkout with the stores pointed at a temp folder (DEEP_PLAN_STATE_DIR, DEEP_PLAN_KEYS_DIR, DEEP_PLAN_PLANS_DIR, CREW_DURABLE_DIR), the way the probes do, and names the command and the output a person would read. A scenario that needs the real app, cmux or a live tmux session says so in its steps, so the judge scores it 0 rather than guess.",
+  "harness": {
+    "setup": "(cd app && npm ci --silent --no-audit --no-fund) && (cd docs/demo/reel && npm ci --silent --no-audit --no-fund --ignore-scripts) && { [ -n \"${PLAYWRIGHT_BROWSERS_PATH:-}\" ] || (cd docs/demo/reel && npx playwright-core install chromium-headless-shell); }",
+    "start": "DEMO_PORT=$PORT app/node_modules/.bin/vite --config docs/demo/app/vite.config.mjs --port $PORT --strictPort",
+    "ready": "curl -fsS -o /dev/null http://127.0.0.1:$PORT/",
+    "export": {
+      "BASE_URL": "http://127.0.0.1:$PORT/"
+    },
+    "timeout": 300
+  }
 }
