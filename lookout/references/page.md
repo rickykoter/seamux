@@ -29,7 +29,13 @@ tree (single-child folders folded together), one file's diff on the right.
   move between rows, Home and End jump to the ends, and Esc inside an open
   group folds it. An open group shows why it is risky and its direction as
   two short paragraphs, then its watch items (each `file:line` goes to its
-  line), any drift from the plan, touches as chips, and its files. A row
+  line), what it assumes about code outside the diff, any drift from the
+  plan, touches as chips, and its files. Each assumption shows the line
+  cited for it: a link when the diff shows that line, a plain path when it
+  does not, and "unverified" on a patch-file review. Beside it is the claims
+  check's verdict: held with the line that shows it, broken or not checked
+  with the finding it filed (a link to it), or "no verdict yet". Hovering
+  shows what the check traced. A row
   marks a stale or partial note. With the quiz on, a row whose note still
   waits on a question says "answer first", and opening it shows the
   question in place of the note. The group's id and why its files belong

@@ -24,14 +24,16 @@ import { spawn, spawnSync } from "node:child_process";
 import * as V from "./lib/vendor.mjs";
 import * as S from "./lib/store.mjs";
 import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenerated,
-         generatedByAttr, LARGE_LINES, repoInfo, moved } from "./lib/patch.mjs";
+         generatedByAttr, LARGE_LINES, repoInfo, moved, git } from "./lib/patch.mjs";
 import * as TU from "./lib/turns.mjs";
 import * as SC from "./lib/score.mjs";
 import * as GR from "./lib/group.mjs";
 import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
-import { brief, DIMENSIONS } from "./lib/prompt.mjs";
+import * as CT from "./lib/contracts.mjs";
+import { brief, claimsBrief, DIMENSIONS } from "./lib/prompt.mjs";
+import * as CL from "./lib/claims.mjs";
 import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
@@ -274,6 +276,12 @@ function cmdOpen() {
   const prior = S.exists(id) ? S.read(id) : null;
   const hash = S.patchHash(text);
   const cfg = repoConfig(src.root);
+  // Contract files, by the built-in rules and the repo's own globs. Marked on
+  // the file (risk ranks it; the brief lists it), and for a review that covers
+  // part of its branch, the ones the branch changed outside it.
+  const globs = CT.repoGlobs(cfg);
+  for (const m of meta) { const k = CT.contractKind(m.path, texts[m.path], globs); if (k) m.contract = k; }
+  const outside = CT.outside(src, meta.map(m => m.path), globs);
   let scoring;
   if (prior && prior.scoring && prior.scoring.patchHash === hash && prior.scoring.ok && !flag("rescore")) scoring = prior.scoring;
   else if (flag("no-jev")) scoring = { ok: false, jev: {}, why: "Jev scoring was turned off (--no-jev)" };
@@ -330,6 +338,8 @@ function cmdOpen() {
     // --pr: the pull request this review belongs to, for `lookout gh sync`
     // (else it is found from the branch). Kept across re-opens without it.
     ...(opt("pr") ? { prRef: opt("pr") } : {}),
+    // Always set, so a re-open that finds nothing outside clears the last one.
+    contractsOutside: outside.files && outside.files.length ? outside : null,
     stats: { files: meta.length, adds: meta.reduce((x, f) => x + f.adds, 0), dels: meta.reduce((x, f) => x + f.dels, 0) },
     files: meta,
     edges: found.edges,
@@ -388,7 +398,9 @@ function cmdOpen() {
   }
   if (flag("json")) {
     process.stdout.write(JSON.stringify({ id, page, store: p.json, patch: p.patch, files: meta.length,
-      shown: shown || null, highlight: review.highlight, quiz: !!review.policy.quiz, reviewer: review.policy.reviewer, linking,
+      shown: shown || null, highlight: review.highlight,
+      contracts: { inDiff: review.files.filter(f => f.contract).map(f => f.path),
+                   outside: ((review.contractsOutside && review.contractsOutside.files) || []).map(f => f.path) }, quiz: !!review.policy.quiz, reviewer: review.policy.reviewer, linking,
       scoring: { ok: review.scoring.ok, content: !!review.scoring.content, why: review.scoring.why || "" } }, null, 2) + "\n");
     return;
   }
@@ -399,6 +411,10 @@ function cmdOpen() {
   say(`  risk:  ${bands}; ${review.groups.filter(g => g.files.length > 1).length} related group(s)` +
       (review.scoring.ok ? `  (Jev${review.scoring.content ? " with hunk text" : ", paths and counts only"})`
                          : `  (signals only: ${review.scoring.why})`));
+  const inDiff = review.files.filter(f => f.contract).length;
+  const out = (review.contractsOutside && review.contractsOutside.files) || [];
+  if (inDiff || out.length)
+    say(`  contracts: ${inDiff} in the diff` + (out.length ? `, ${out.length} the branch changed outside it (the brief lists them)` : ""));
   say(`  page:  ${page}${shown ? "  (" + shown + ")" : ""}`);
   if (review.policy.quiz) say("  quiz:  on (a question on each high group before its note)");
   if (quizNote) say("  note:  " + quizNote);
@@ -452,6 +468,7 @@ function cmdPrompt() {
     die(`--dimension wants one of ${DIMENSIONS.join(", ")}`);
   if (dimension && skeptic) die("--dimension and --skeptic are two different briefs; pick one");
   if ((dimension || skeptic) && flag("round")) die("--round is one reviewer's brief; it takes no --dimension or --skeptic");
+  if (flag("claims") && (dimension || skeptic || flag("round"))) die("--claims is the claims check's own brief; it takes no --dimension, --skeptic or --round");
   // The brief is built from the stored patch, so a source that has moved on
   // since the review was opened would describe a tree nobody can see. Refused
   // before a round is sealed, so a stale print cannot spend the round.
@@ -462,6 +479,12 @@ function cmdPrompt() {
       : "lookout open with the same target";
     die(`${id} was opened on tree ${String(src.newRev).slice(0, 8)}, and the working tree is now ${now.slice(0, 8)}: ` +
       `re-open it first (${how}), then print the brief`);
+  }
+  if (flag("claims")) {
+    // The claims check (lib/claims.mjs): every assumption still owed a verdict.
+    if (!CL.pending(r).length) die(`${id} has no assumptions waiting on the claims check`);
+    process.stdout.write(claimsBrief(r, { patchPath: p.patch, outPath: path.join(inbox, id + ".claims.json"), reply: flag("reply") }));
+    return;
   }
   let round = null;
   if (flag("round")) {
@@ -483,6 +506,27 @@ function cmdPrompt() {
   process.stdout.write(brief(r, { patchPath: p.patch, plansDir: path.dirname(S.REVIEWS_DIR),
                                   outPath: path.join(inbox, id + ".incoming.json"), reply: flag("reply"), round,
                                   dimension, skeptic }));
+}
+
+// The check behind a note assumption's enforced_at (notes.mjs validateNotes):
+// the file at that side's revision and its line count. A patch-file review
+// has no repo to look in, so its citations stay unverified.
+export function citer(src) {
+  if (!src || src.kind === "patch" || !src.root) return () => null;
+  const seen = new Map();
+  return (p, side) => {
+    const rev = side === "old" ? src.oldRev : src.newRev;
+    if (!rev) return null;
+    const key = side + "\0" + p;
+    if (!seen.has(key)) {
+      // cat-file blob: a folder's path is not a line anyone can cite.
+      const buf = git(src.root, ["cat-file", "blob", `${rev}:${p}`], { allowFail: true, buffer: true });
+      seen.set(key, buf == null
+        ? { missing: `does not exist on the ${side} side (${String(rev).slice(0, 8)})` }
+        : { lines: buf.toString("utf8").replace(/\n$/, "").split("\n").length });
+    }
+    return seen.get(key);
+  };
 }
 
 function cmdFindings() {
@@ -514,7 +558,7 @@ function cmdFindings() {
       ev = N.validateEdges(cur, input.edges);
       edgesAdded = N.ingestEdges(cur, ev.accepted);
       arrange(cur);
-      nv = N.validateNotes(cur, input.notes, anchors);
+      nv = N.validateNotes(cur, input.notes, anchors, { cite: citer(cur.source) });
       notesIn = N.ingestNotes(cur, nv.accepted, "reviewer");
       arrange(cur);
       owed = N.missing(cur);
@@ -536,6 +580,11 @@ function cmdFindings() {
     for (const n of review.notes || [])
       say(`  ${n.id} ${String(n.group || "-").padEnd(4)} ${n.files.join(", ")}` +
           (n.quiz ? "  [quiz]" : "") + (n.partial ? "  (partial: its files are split)" : "") + (n.stale ? "  (stale)" : ""));
+    for (const a of N.assumptionsOf(review)) {
+      const e = a.enforced_at;
+      say(`    ${a.id} assumes: ${a.text.slice(0, 80)}${a.text.length > 80 ? "…" : ""}  @ ${e.path}:${e.line}` +
+          (e.side === "old" ? " (old)" : "") + (a.verified ? "" : "  (unverified: a patch review cannot check it)"));
+    }
     for (const m of owed) say(`  still owed: ${m}`);
     return;
   }
@@ -560,6 +609,35 @@ function cmdFindings() {
 }
 
 // reply / address / resolve / dismiss / reopen <id> <finding-or-thread> [text]
+// `lookout claims add <id> <file|->`: the claims check's verdicts, validated
+// and stored. A broken or unchecked claim files its cross-system finding.
+function cmdClaims() {
+  const sub = positional()[0];
+  const id = positional()[1];
+  if (sub !== "add") die("claims add <id> <file|->");
+  if (!id || !S.ID_OK.test(id) || !S.exists(id)) die("claims add wants a review id (lookout list)");
+  let items;
+  try { items = CL.parse(readInput(positional()[2])); } catch (e) { die(e.message); }
+  let rows = {};
+  try { rows = JSON.parse(fs.readFileSync(S.paths(id).rows, "utf8")); } catch { /* no rows: nothing is outside */ }
+  const anchors = FD.anchorsFrom(rows);
+  let v, res;
+  const { review } = mutate(id, cur => {
+    v = CL.validate(cur, items, { anchors, cite: citer(cur.source) });
+    res = CL.ingest(cur, v.accepted, "claims");
+    return res;
+  });
+  const by = s => v.accepted.filter(x => x.status === s).length;
+  say(`lookout ${id}: ${v.accepted.length} verdict(s) stored (${by("held")} held, ${by("broken")} broken, ${by("unchecked")} unchecked)` +
+      (v.repeats ? `, ${v.repeats} already there` : "") +
+      (v.rejected.length ? `, ${v.rejected.length} rejected` : "") + `; ${res.findings.length} finding(s) filed`);
+  for (const f of res.findings) say(`  ${f.id} ${f.severity.padEnd(7)} ${f.file}:${f.line}  ${f.short_summary}`);
+  for (const r of v.rejected) say(`  rejected item ${r.index}: ${r.why}`);
+  const left = CL.pending(review);
+  if (left.length) say(`  still owed a verdict: ${left.map(a => a.id).join(", ")}`);
+  if (items.length && !v.accepted.length && !v.repeats) process.exitCode = 1;
+}
+
 function cmdThread(op) {
   const [id, fid, ...words] = positional();
   if (!id || !fid) die(`${op} <review-id> <finding-or-thread-id> [text]`);
@@ -585,7 +663,8 @@ function cmdGate() {
   const r = S.ID_OK.test(id) && S.exists(id) ? S.read(id) : null;
   const g = FD.gate(r);
   if (flag("json")) process.stdout.write(JSON.stringify({ id, ...g }) + "\n");
-  else say(`lookout gate ${id}: ${g.code === 0 ? "pass" : g.code === 1 ? "blocked" : "no verdict"} — ${g.why}` +
+  else say(`lookout gate ${id}: ${g.code === 0 ? "pass" : g.code === 1 ? "blocked" : g.code === 4 ? "claims unchecked" : "no verdict"} — ${g.why}` +
+           (g.code === 4 ? `\n  brief ONE fresh agent, not the reviewer, with: lookout prompt ${id} --claims` : "") +
            (g.code === 3 && !r ? `\n  open one: lookout open${opt("plan") ? ` --plan ${opt("plan")} --inc ${opt("inc")}` : ""}, then run its reviewer (lookout prompt <id>)` : "") +
            (g.code === 3 && r ? `\n  brief a reviewer subagent with: lookout prompt ${id}` : ""));
   process.exit(g.code);
@@ -665,7 +744,11 @@ function usage() {
         sealed round again when nothing new waits.
         --dimension correctness|security|performance, --skeptic: a panel
         finder's and a panel skeptic's brief (lookout/workflows/review.js).
+        --claims: the claims check's brief, every assumption still owed a
+        verdict; with --reply the caller pipes the answer to claims add.
         Refused while the working tree has moved past the review: re-open it.
+  lookout claims add <id> <file|->       store the claims check's verdicts:
+                            {verdicts: [{id, status: held|broken|unchecked, why, at|finding}]}
   lookout findings add <id> <file|->     validate and ingest a reviewer's JSON:
                             {findings, edges, notes}, or a bare array of findings
   lookout findings list <id> [--open] [--json]
@@ -673,7 +756,8 @@ function usage() {
   lookout address <id> <f#> [note]       say a finding is fixed; the human closes it
   lookout resolve|dismiss <id> <f#> [note]  refused unless opened --agent-may-close
   lookout reopen <id> <f#|t#> [note]
-  lookout gate <id> | --plan SLUG --inc N   exit 0 pass, 1 blocker/major open, 3 no review
+  lookout gate <id> | --plan SLUG --inc N   exit 0 pass, 1 blocker/major open, 3 no review,
+                            4 assumptions wait on the claims check
   lookout gh link <id> [--pr REF]   find (or set) the review's pull request and sync it
   lookout gh sync <id> [--force]    read the PR's head, review threads and checks; mark stale items
   lookout gh post <id> <f#|t#>… [--intro TEXT] [--again]
@@ -892,6 +976,7 @@ switch (verb) {
   }
   case "prompt": cmdPrompt(); break;
   case "findings": cmdFindings(); break;
+  case "claims": cmdClaims(); break;
   case "reply": case "address": case "resolve": case "dismiss": case "reopen": cmdThread(verb); break;
   case "gate":   cmdGate(); break;
   case "show":   cmdShow(); break;

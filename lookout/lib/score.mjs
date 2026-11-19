@@ -3,7 +3,8 @@
 // Two halves, blended in code:
 //   signals — deterministic and always present: churn, what kind of path it is
 //             (hooks, servers and routes, schemas and migrations, config,
-//             auth and secrets, docs), tests-only and generated files
+//             auth and secrets, docs), contract files (lib/contracts.mjs,
+//             marked at open), tests-only and generated files
 //             down-weighted, and the worst open finding on the file.
 //   jev     — one TypeSafe `score` per file, all files in batched requests,
 //             read from the answer's distribution. By default the request
@@ -30,6 +31,7 @@ const KINDS = [
   ["config", 0.55, /(^|\/)(\.seamux|config|settings)\/|\.(json|toml|ini|cfg|conf|env)$|(^|\/)\.[a-z]+rc$/i],
   ["docs", 0.1, /\.(md|mdx|txt|rst|adoc)$|(^|\/)(docs?|CHANGELOG|LICENSE)(\/|$|\.)/i],
 ];
+const CONTRACT_RISK = 0.8;
 const TEST = /(^|\/)(tests?|__tests__|spec|e2e)\/|[._-](test|spec)\.[^/]+$|(^|\/)test_[^/]+\.py$|_test\.go$|(^|\/)probe\.mjs$|_probe\.(mjs|py)$/i;
 export const isTest = p => TEST.test(p);
 
@@ -44,7 +46,14 @@ export function signals(f) {
   if (changed >= 200) reasons.push(`${changed} lines changed`);
   const kind = KINDS.find(([, , re]) => re.test(f.path));
   let pathRisk = kind ? kind[1] : 0.4;
-  if (kind) reasons.push(kind[0]);
+  // A contract file (lib/contracts.mjs, marked at open) ranks with schemas
+  // and migrations whatever its path looks like: a message schema's .json is
+  // not config. A path kind that ranks higher still wins, and keeps its label.
+  if (f.contract) {
+    reasons.push(`contract: ${f.contract}`);
+    if (kind && kind[1] > CONTRACT_RISK) reasons.push(kind[0]);
+    pathRisk = Math.max(pathRisk, CONTRACT_RISK);
+  } else if (kind) reasons.push(kind[0]);
   if (f.status === "D") { pathRisk = Math.max(pathRisk, 0.5); reasons.push("deleted"); }
   let v = 0.4 * churn + 0.6 * pathRisk;
   if (isTest(f.path)) { v *= 0.5; reasons.push("tests only"); }

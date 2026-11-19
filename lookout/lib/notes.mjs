@@ -9,6 +9,8 @@
 //
 //   { id, files, why_risky, direction, watch: [{text, file, line, side, outside}],
 //     touches: [...TOUCHES], quiz?: {prompt, options, answer, why, answered?},
+//     assumptions?: [{id, text, enforced_at: {path, line, side}, inDiff,
+//                     verified, verdict}],
 //     fileHash: {path: hash at write}, by, createdAt,
 //     // derived on every arrange:
 //     group, partial, stale, drift: [finding ids] }
@@ -18,15 +20,26 @@
 // held to the non-leading lint deep-plan's alignment quiz uses (ported here:
 // ADR 0004, no plugin imports another's libs). It never gates.
 //
+// An assumption is a claim the change makes about code outside it: another
+// service's consumer, a framework hook, what an image copies. It cites the
+// line that enforces it (enforced_at), anywhere in the repo at that side's
+// revision, and the line is checked to exist at ingest. A note that touches
+// cross-system-assumption, or covers a contract file (lib/contracts.mjs),
+// must carry one, or a cross-system finding must sit on its files: an
+// assumption nobody cited is the miss this rule exists for. Ids are the
+// note's plus a1, a2..., so a claims check can attach a verdict to each.
+//
 // A reviewer edge {a, b, why} is one more edge provider (group.mjs
 // `reviewer`): it can join files under the same six-file cap, never split
 // them, and its why shows on the group's rail.
 import * as SC from "./score.mjs";
-import { FINDING } from "./findings.mjs";
+import { FINDING, CROSS } from "./findings.mjs";
 
 export const TOUCHES = ["invariant", "security-boundary", "data-model", "cross-system-assumption"];
 export const MAX_WATCH = 6;
 export const MAX_EDGES = 24;
+export const MAX_ASSUMPTIONS = 8;
+
 const TEXT_CAP = 700;
 const clip = (s, n = TEXT_CAP) => String(s ?? "").trim().slice(0, n);
 const now = () => new Date().toISOString();
@@ -53,6 +66,17 @@ export const QUIZ_SCHEMA = {
   },
 };
 
+export const ASSUMPTION_SCHEMA = {
+  type: "object",
+  required: ["text", "enforced_at"],
+  properties: {
+    text: { type: "string", description: "the claim, as something that could be false: what the other code does with this change" },
+    enforced_at: { type: "object", required: ["path", "line"], description: "the line that makes the claim true; any file in the repo, inside the diff or not",
+      properties: { path: { type: "string" }, line: { type: "integer", minimum: 1 },
+        side: { enum: ["new", "old"], default: "new", description: "old: the line as it was before the change" } } },
+  },
+};
+
 export function noteSchema(quiz) {
   return {
     type: "object",
@@ -66,6 +90,10 @@ export function noteSchema(quiz) {
           text: { type: "string" }, file: { type: "string" }, line: { type: "integer", minimum: 1 },
           side: { enum: ["new", "old"], default: "new" } } } },
       touches: { type: "array", items: { enum: TOUCHES }, description: "the fundamentals it touches; [] when none" },
+      assumptions: { type: "array", maxItems: MAX_ASSUMPTIONS,
+        description: "claims this change makes about code outside it (a consumer, a framework hook, a deployed image), each cited to the line that enforces it; " +
+          "required when the note touches cross-system-assumption or covers a contract file, unless a cross-system finding sits on its files",
+        items: ASSUMPTION_SCHEMA },
       ...(quiz ? { quiz: { ...QUIZ_SCHEMA, description: "required on a high group; omit elsewhere" } } : {}),
     },
   };
@@ -166,8 +194,15 @@ const hashes = review => Object.fromEntries((review.files || []).map(f => [f.pat
 
 // Validate notes against the review as arranged (the reviewer's edges already
 // in its groups). Returns { accepted, rejected: [{index, why}], dropped: [why] }.
-export function validateNotes(review, items, anchors) {
+//
+// `cite(path, side)` checks an assumption's enforced_at against the repo:
+// { lines } when the file exists at that side's revision, { missing: why }
+// when it does not, or null when it cannot be checked (a patch-file review),
+// which keeps the citation marked unverified.
+export function validateNotes(review, items, anchors, { cite = () => null } = {}) {
   const files = new Set((review.files || []).map(f => f.path));
+  const contracts = new Map((review.files || []).filter(f => f.contract).map(f => [f.path, f.contract]));
+  const crossOn = new Set((review.findings || []).filter(f => f.category === CROSS).map(f => f.file));
   const quizOn = !!(review.policy && review.policy.quiz);
   const accepted = [], rejected = [], dropped = [];
   (items || []).forEach((x, index) => {
@@ -194,6 +229,37 @@ export function validateNotes(review, items, anchors) {
       const a = anchors && anchors[file];
       watch.push({ text: clip(w.text, 300), file, line, side, outside: a ? !a[side].has(line) : false });
     }
+    const asIn = x.assumptions === undefined || x.assumptions === null ? [] : x.assumptions;
+    if (!Array.isArray(asIn)) return bad("assumptions must be an array");
+    if (asIn.length > MAX_ASSUMPTIONS) return bad(`assumptions: at most ${MAX_ASSUMPTIONS}`);
+    const assumptions = [];
+    for (const [i, a] of asIn.entries()) {
+      const at = `assumptions[${i}]`;
+      if (!a || typeof a !== "object") return bad(`${at} is not an object`);
+      const text = clip(a.text, 500);
+      if (!text) return bad(`${at}.text is required`);
+      const e = a.enforced_at;
+      if (!e || typeof e !== "object") return bad(`${at}.enforced_at is required: {path, line, side} of the line that makes the claim true`);
+      const p = norm(e.path), line = Number(e.line);
+      const side = e.side === undefined || e.side === null ? "new" : String(e.side).toLowerCase();
+      if (!p) return bad(`${at}.enforced_at.path is required`);
+      if (!Number.isInteger(line) || line < 1) return bad(`${at}.enforced_at.line must be a positive integer`);
+      if (side !== "new" && side !== "old") return bad(`${at}.enforced_at.side must be new or old`);
+      const c = cite(p, side);
+      if (c && c.missing) return bad(`${at}.enforced_at: ${JSON.stringify(p)} ${c.missing}`);
+      if (c && line > c.lines) return bad(`${at}.enforced_at: ${p} has ${c.lines} line(s) on the ${side} side, not ${line}`);
+      const an = anchors && anchors[p];
+      assumptions.push({ text, enforced_at: { path: p, line, side }, inDiff: !!(an && an[side].has(line)), verified: !!c });
+    }
+    // The rule: a cross-system note states what it assumes, at a line, or a
+    // finding says the assumption is open. Says which file or touch asked.
+    if (!assumptions.length && !nf.some(f => crossOn.has(f))) {
+      const k = nf.find(f => contracts.has(f));
+      const why = touches.includes("cross-system-assumption") ? "touches cross-system-assumption"
+        : k ? `covers ${k}, a contract file (${contracts.get(k)})` : "";
+      if (why) return bad(`this note ${why}: add assumptions, each citing the line that enforces it (enforced_at), ` +
+        `or file a ${CROSS} finding on one of its files saying what is unchecked`);
+    }
     const { group } = placement(review.groups, nf);
     const high = !!group && SC.bandOf(group.risk) === "high";
     let quiz;
@@ -208,7 +274,8 @@ export function validateNotes(review, items, anchors) {
       }
     } else if (quizOn && high)
       return bad(`${group.id} is a high group and the quiz is on: this note needs a quiz`);
-    accepted.push({ files: nf, why_risky, direction, watch, touches, ...(quiz ? { quiz } : {}) });
+    accepted.push({ files: nf, why_risky, direction, watch, touches, ...(quiz ? { quiz } : {}),
+                    ...(assumptions.length ? { assumptions } : {}) });
   });
   return { accepted, rejected, dropped };
 }
@@ -217,7 +284,10 @@ export function validateNotes(review, items, anchors) {
 // files it covers: the same group written again, or a group that grew (by an
 // edge, a shared finding, a re-open) and was written whole. The first one's
 // id is kept, and so is a question already answered on any of them, since an
-// answer is recorded once. Returns { added, replaced }.
+// answer is recorded once. Assumptions come only from the new note, so the
+// verdicts on the old one's go with it; their ids keep counting past the old
+// ones, so a verdict never lands on a claim it was not about.
+// Returns { added, replaced }.
 export function ingestNotes(review, accepted, by = "reviewer") {
   const list = review.notes = review.notes || [];
   const h = hashes(review);
@@ -231,17 +301,30 @@ export function ingestNotes(review, accepted, by = "reviewer") {
       const answered = covered.find(o => o.quiz && o.quiz.answered);
       const quiz = answered ? answered.quiz : x.quiz;
       const i = list.indexOf(old);
+      const past = Math.max(0, ...covered.flatMap(o => (o.assumptions || []).map(a => assumptionNum(a.id))));
       list[i] = { ...old, ...x, quiz, fileHash, at: now() };
       if (!quiz) delete list[i].quiz;
+      if (x.assumptions) list[i].assumptions = numberAssumptions(old.id, x.assumptions, past);
+      else delete list[i].assumptions;
       for (const o of covered.slice(1)) list.splice(list.indexOf(o), 1);
       replaced += covered.length;
     } else {
-      list.push({ id: "n" + n++, ...x, fileHash, by, createdAt: now() });
+      const id = "n" + n++;
+      list.push({ id, ...x, ...(x.assumptions ? { assumptions: numberAssumptions(id, x.assumptions, 0) } : {}),
+                  fileHash, by, createdAt: now() });
       added++;
     }
   }
   return { added, replaced };
 }
+
+const assumptionNum = id => { const m = /\.a(\d+)$/.exec(String(id || "")); return m ? Number(m[1]) : 0; };
+const numberAssumptions = (noteId, list, past) =>
+  list.map((a, k) => ({ id: `${noteId}.a${past + k + 1}`, ...a, verdict: null }));
+
+// Every assumption in the review, with the note it sits on.
+export const assumptionsOf = review =>
+  (review.notes || []).flatMap(n => (n.assumptions || []).map(a => ({ ...a, note: n.id })));
 
 // On every arrange: where each note sits now, and whether it still describes
 // the diff. Mutates notes (group, partial, stale, drift) and groups (notes).

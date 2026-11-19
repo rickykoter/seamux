@@ -5788,6 +5788,37 @@ if (want("review checks (lookout)")) {
     /review\.increments/.test(bad([{ kind: "manual", name: "m" }], { review: { increments: [1, 1] } }).stderr));
   ok("review.delivery is a boolean", /review\.delivery: true or false/.test(bad([{ kind: "manual", name: "m" }], { review: { delivery: "yes" } }).stderr));
 
+  // lookout gate's exit 4: the reviewer's notes carry assumptions no claims
+  // check has answered. The review check fails naming the claims brief, and
+  // passes once a verdict is stored for each.
+  const claimNote = file => {
+    const f = path.join(TMP, `claims-note-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(f, JSON.stringify({ findings: [], edges: [], notes: [{ files: [file], why_risky: "w", direction: "d", watch: [], touches: [],
+      assumptions: [{ text: "every caller reads a as a number", enforced_at: { path: file, line: 1 } }] }] }));
+    return f;
+  };
+  const heldAll = (id, file) => {
+    const st = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, id + ".json"), "utf8"));
+    const f = path.join(TMP, `claims-held-${Math.random().toString(36).slice(2)}.json`);
+    fs.writeFileSync(f, JSON.stringify({ verdicts: st.notes.flatMap(n => (n.assumptions || []).filter(a => !a.verdict))
+      .map(a => ({ id: a.id, status: "held", why: "traced", at: { path: file, line: 1 } })) }));
+    return lk("claims", "add", id, f);
+  };
+  {
+    arm("rv-cl", [{ kind: "review" }]);
+    fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 6;\n");
+    lc(LENV, "review", "rv-cl", "1");
+    lk("findings", "add", "rv-cl-inc1", claimNote("src/a.ts"));
+    r = lc(LENV, "check", "run", "rv-cl", "1", "review-code-review");
+    ok("review check: lookout's exit 4 fails it, naming the claims check's brief and not as a miss",
+      r.status === 1 && ck("rv-cl", "review-code-review").status === "fail" &&
+      /assumptions are unchecked — run the claims check — spawn ONE fresh agent \(not the reviewer\) with lookout prompt rv-cl-inc1 --claims/.test(ck("rv-cl", "review-code-review").note) &&
+      !/lesson candidate/.test(r.stderr), ck("rv-cl", "review-code-review").note + r.stderr);
+    const h = heldAll("rv-cl-inc1", "src/a.ts");
+    r = lc(LENV, "check", "run", "rv-cl", "1", "review-code-review");
+    ok("review check: passes once the claims check answered every assumption", h.status === 0 && r.status === 0 &&
+      ck("rv-cl", "review-code-review").status === "pass", h.stdout + r.stdout + r.stderr);
+  }
   // The delivery review: after the last increment the plan waits in a
   // delivery phase until lookout's review of every increment's work passes.
   {
@@ -5820,6 +5851,13 @@ if (want("review checks (lookout)")) {
     const cl = JSON.parse(fs.readFileSync(dstore, "utf8"));
     cl.findings[0].status = "resolved"; cl.findings[0].statusBy = "human";
     fs.writeFileSync(dstore, JSON.stringify(cl));
+    lk("findings", "add", "rv-d-delivery", claimNote("src/a.ts"));
+    d = lc(LENV, "deliver", "rv-d");
+    ok("deliver: lookout's exit 4 holds the plan and names the claims check",
+      d.status === 1 && stOf("rv-d").phase === "delivery" &&
+      /next: run the claims check — spawn ONE fresh agent \(not the reviewer\) with lookout prompt rv-d-delivery --claims/.test(d.stdout) &&
+      /then: deep-plan deliver rv-d/.test(d.stdout), d.stdout + d.stderr);
+    heldAll("rv-d-delivery", "src/a.ts");
     // An ending deliver archives the branch, so it settles open notes first.
     const nid = (/noted (n[0-9a-f]{8})/.exec(lc(LENV, "note", "--plan", "rv-d", "retry loop hides the timeout").stdout) || [])[1];
     d = lc(LENV, "deliver", "rv-d");
@@ -5987,13 +6025,29 @@ if (want("review checks (lookout)")) {
       /deliver refused: the family review is open on 1 member/.test(r.stderr) && stOf("frv-par").phase === "delivery", r.stdout + r.stderr);
     const cl = store(ids[1]); cl.findings[0].status = "resolved"; cl.findings[0].statusBy = "human";
     fs.writeFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, ids[1] + ".json"), JSON.stringify(cl));
+    {
+      const pf = store(ids[0]).files[0].path;
+      const nf = path.join(TMP, "frv-claims-note.json");
+      fs.writeFileSync(nf, JSON.stringify({ findings: [], edges: [], notes: [{ files: [pf], why_risky: "w", direction: "d", watch: [], touches: [],
+        assumptions: [{ text: "the kid reads it", enforced_at: { path: pf, line: 1 } }] }] }));
+      lk("findings", "add", ids[0], nf);
+      r = lc(LENV, "deliver", "frv-par");
+      ok("family review: a member whose assumptions wait on the claims check holds the parent, and the check is named",
+        r.status === 1 && /1 awaiting the claims check/.test(r.stdout) && r.stdout.includes(`lookout prompt ${ids[0]} --claims`) &&
+        r.stdout.trim().split("\n").pop() === `review: run the claims check — spawn ONE fresh agent (not the reviewer) with lookout prompt ${ids[0]} --claims` &&
+        stOf("frv-par").phase === "delivery", r.stdout + r.stderr);
+      const a = store(ids[0]).notes[0].assumptions[0];
+      const vf = path.join(TMP, "frv-claims-held.json");
+      fs.writeFileSync(vf, JSON.stringify({ verdicts: [{ id: a.id, status: "held", why: "traced", at: { path: pf, line: 1 } }] }));
+      lk("claims", "add", ids[0], vf);
+    }
     dropCandidates("frv-par", (...a) => lc(LENV, ...a));
     r = lc(LENV, "deliver", "frv-par");
     ok("family review: once every member's review passes, the parent is done",
       r.status === 0 && /family review passed for all 2 members/.test(r.stdout) && stOf("frv-par").phase === "done", r.stdout + r.stderr);
     for (const n of ["frv-par", "frv-kid"]) lc(LENV, "close", n);
   }
-  for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d", "rv-b", "rv-bd"]) lc(LENV, "close", n);
+  for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d", "rv-b", "rv-bd", "rv-cl"]) lc(LENV, "close", n);
 }
 
 // ---------------------------------------------------------------- host detection

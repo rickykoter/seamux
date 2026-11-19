@@ -789,6 +789,32 @@
       " — ", w.text);
   }
 
+  // An assumption (lib/notes.mjs): the claim, the line that enforces it, and
+  // the claims check's verdict once one ran. A cited line the diff shows
+  // links to it; one outside the diff is a plain path, since the page has
+  // nothing to scroll to.
+  const VERDICT = { held: "held", broken: "broken", unchecked: "not checked" };
+  function assumptionItem(a) {
+    const e = a.enforced_at || {};
+    const at = `${e.path}:${e.line}${e.side === "old" ? " (old)" : ""}`;
+    const loc = a.inDiff && (R.files || []).some(f => f.path === e.path)
+      ? el("a", { href: "#", class: "wloc", title: e.path, onclick: ev => { ev.preventDefault(); goToLine(e.path, e.side || "new", e.line); } }, at)
+      : el("code", { class: "aloc", title: "a line outside the diff" }, at);
+    const vd = a.verdict || null;
+    const v = vd && (vd.status || vd);
+    // The claims check's answer (lib/claims.mjs): held names the line that
+    // shows it, broken and unchecked the finding they filed.
+    const f = vd && vd.finding && (R.findings || []).find(x => x.id === vd.finding);
+    const detail = !vd ? null
+      : f ? [" ", el("a", { href: "#", class: "wloc", onclick: ev => { ev.preventDefault(); goTo(f.id); } }, f.id)]
+      : vd.at ? [" at ", el("code", { class: "aloc" }, `${vd.at.path}:${vd.at.line}`)] : null;
+    return el("li", { "data-assumption": a.id, title: vd && vd.why ? `claims check: ${vd.why}` : "" }, a.text, " ",
+      el("span", { class: "outside-tag" }, "enforced at "), loc,
+      a.verified === false ? el("span", { class: "outside-tag", title: "a patch-file review cannot check the cited line" }, " unverified") : null,
+      el("span", { class: `outside-tag averdict${v ? " " + v : ""}` }, " · " + (v ? (VERDICT[v] || String(v)) : "no verdict yet")),
+      ...(detail || []));
+  }
+
   // A note, compacted: why it is risky and its direction as two short
   // paragraphs, the watch list, any drift, its touches as chips. No caps
   // labels: the order says which is which. `lead` skips the direction when
@@ -799,6 +825,8 @@
       n.why_risky ? el("p", { class: "nwhy" }, n.why_risky) : null,
       lead ? null : el("p", { class: "ndir" }, n.direction),
       (n.watch || []).length ? el("ul", { class: "watch" }, n.watch.map(watchLink)) : null,
+      (n.assumptions || []).length ? el("div", { class: "nassume" }, el("span", { class: "outside-tag" }, "Assumes:"),
+        el("ul", { class: "watch" }, n.assumptions.map(assumptionItem))) : null,
       drift.length ? el("div", { class: "ndrift" }, el("span", { class: "ndrift-lead" }, "Drift from the plan:"),
         el("ul", { class: "watch" }, drift.map(f => el("li", null,
           el("a", { href: "#", class: "wloc", onclick: e => { e.preventDefault(); goTo(f.id); } }, f.id),

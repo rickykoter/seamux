@@ -610,6 +610,11 @@ function reviewExec(cur, slug, n) {
 // An increment's review is <slug>-inc<n>; the full delivery's is
 // <slug>-delivery (lookout's --inc all).
 const reviewId = (slug, n) => n === "all" ? `${slug}-delivery` : `${slug}-inc${Number(n)}`;
+// lookout gate's exit 4: the reviewer wrote cross-system assumptions that no
+// claims check has answered. The session runs it: ONE fresh agent, not the
+// reviewer, briefed by lookout itself.
+const LOOKOUT_CLAIMS = 4;
+const claimsLine = id => `run the claims check — spawn ONE fresh agent (not the reviewer) with lookout prompt ${id} --claims`;
 // What the session does once a review is open: the engine opens it, but only
 // the session can spawn the one reviewer subagent (it must not be the context
 // that wrote the change). The last line is for the board, which shows only that.
@@ -807,7 +812,7 @@ function familyDeliver(st, spec) {
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   fs.writeFileSync(ctx, familyContext(spec, idx));
   const pol = reviewPolicy(slug);
-  const spawn = [], blocked = [], passed = [], problems = [];
+  const spawn = [], blocked = [], passed = [], problems = [], claims = [];
   if (closed.length) say(`family review of ${slug}: skipping closed member(s) ${closed.join(", ")}`);
   for (const m of idx.members.filter(x => !closed.includes(x.slug))) {
     const id = `${slug}-family-${m.slug}`;
@@ -826,11 +831,18 @@ function familyDeliver(st, spec) {
       if (!r.ok) { problems.push(`${m.slug}: lookout open failed — ${r.out.split("\n")[0]}`); continue; }
       spawn.push(id);
     } else if (g.code === 0) passed.push(id);
+    else if (g.code === LOOKOUT_CLAIMS) claims.push(id);
     else blocked.push(`${id} (${g.out.split("\n")[0]})`);
   }
   say(`family review of ${slug}: ${passed.length} passed, ${spawn.length} awaiting a reviewer, ${blocked.length} blocked` +
+    (claims.length ? `, ${claims.length} awaiting the claims check` : "") +
     (problems.length ? `, ${problems.length} cannot open` : ""));
   for (const p of problems) say("  ✗ " + p);
+  if (claims.length) {
+    say("next: run the claims check on each, side by side in one message: ONE fresh agent per review (not its reviewer), whose prompt is the output of");
+    for (const id of claims) say(`  lookout prompt ${id} --claims`);
+    say(`then: deep-plan deliver ${slug}`);
+  }
   for (const b of blocked) say("  ✗ " + b + " — fix, lookout address, then deliver again");
   // A panel plan reviews every waiting member in one workflow run; a
   // one-reviewer plan spawns its reviewers side by side, in one message.
@@ -843,9 +855,10 @@ function familyDeliver(st, spec) {
     for (const id of spawn) say(`  lookout prompt ${id}`);
     say(`then: deep-plan deliver ${slug}` + (pol.agent ? "\n(this plan lets the agent close findings too)" : ""));
   }
-  if (problems.length || blocked.length || spawn.length) {
+  if (problems.length || blocked.length || spawn.length || claims.length) {
     if (spawn.length) say(pol.reviewer === "panel" ? `review: run the review panel — /lookout:review ${spawn.join(" ")}`
       : `review: spawn a reviewer — lookout prompt ${spawn[0]}`);
+    else if (claims.length) say(`review: ${claimsLine(claims[0])}`);
     else console.error(`deliver refused: the family review is open on ${problems.length + blocked.length} member(s)`);
     return 1;
   }
@@ -6197,6 +6210,7 @@ function checkRun(slug, n, ids, opts) {
         if (o.ok) kickoffs.push({ out: o.out, agent: o.agent, quiz: o.quiz, reviewer: o.reviewer });
       } else res.note = code === 127 ? LOOKOUT_MISSING
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
+        : code === LOOKOUT_CLAIMS ? `the reviewer's assumptions are unchecked — ${claimsLine(reviewId(slug, n))}`
         : res.note;
       if (code === 1 && /^\d+$/.test(String(n))) engineMiss(readState(slug), "review",
         `the lookout review of increment ${n} held a blocker or major finding open`, Number(n));
@@ -7457,6 +7471,12 @@ switch (cmd) {
       if (!r.ok) die(r.out || "lookout open failed");
       say(r.out + "\n\n" + spawnHint(slug, "all", r));
       say(spawnLine(slug, "all", r));
+      process.exit(1);
+    }
+    if (g.code === LOOKOUT_CLAIMS) {
+      say(`the delivery review's assumptions are unchecked — ${g.out.split("\n")[0]}`);
+      say(`next: ${claimsLine(reviewId(slug, "all"))}`);
+      say(`then: deep-plan deliver ${slug}`);
       process.exit(1);
     }
     if (g.code !== 0) die(`the delivery review holds the plan open — ${g.out.split("\n")[0]}\n` +
