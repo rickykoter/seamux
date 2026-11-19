@@ -8902,6 +8902,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios judge: the harness and the judge's shell get a temp HOME, cache and crew store, and no deep-plan store override (L8)",
     seen.length === 4 && seen[0].includes("dp-judge-") && seen[1].includes("dp-judge-") && seen[2].includes("dp-judge-") && seen[3] === "none" &&
     /export HOME='[^']*dp-judge-[^']*\/home'/.test(j.envFile) && /export BASE_URL=/.test(j.envFile), seen.join("|") + "\n" + j.envFile);
+  const nodeBin = path.dirname(process.execPath);
+  ok("scenarios judge: the harness and the judge's shell find node and npm under the temp HOME, with this node's bin folder first on PATH",
+    (await import("./lib/judge.mjs")).sandboxEnv(fs.mkdtempSync(path.join(TMP, "sbx-"))).PATH.split(path.delimiter)[0] === nodeBin &&
+    j.envFile.includes(`export PATH='${nodeBin}${path.delimiter}`), j.envFile);
   ok("scenarios judge: the worktree is removed afterwards",
     execSync("git worktree list", { cwd: SR, encoding: "utf8" }).trim().split("\n").length === 1);
   const vd = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8"));

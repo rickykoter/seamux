@@ -78,10 +78,18 @@ installed works the same: the files are ordinary repo files.
 
 ## The packs deep-plan ships
 
-- `seamux`: this repo's own recipes and land recipes, scenario guidance for
-  its CLIs, and a policy at auto-go with docs at auto-pr. It is added in
-  this repo, where `pack check` shows no drift; a change to
-  `.seamux/verify.json` shows as drift until the pack is updated with it.
+- `seamux`: this repo's own recipes and land recipes, a scenarios harness
+  that serves the app's pages in a browser against the demo mock
+  (`docs/demo/app`), and a policy for a software factory. App and crew
+  code (`app/ui`, `app/crates`, `crew`) and docs merge at auto-merge.
+  Dependency manifests and the land watcher stop at auto-pr, as do the
+  plugins and tools by default. The factory's own guards (the gate's hooks,
+  `policy`, `scenarios`, `judge`, `autogo` and `state` in `deep-plan/lib`,
+  bash-guard, CI and the scrub check) are supervised. Scenarios are not
+  required, since the judge cannot run the backend; a plan that changes
+  the app's pages adds a scenarios check itself. It is added in this repo,
+  where `pack check` shows no drift; a change to `.seamux/verify.json`
+  shows as drift until the pack is updated with it.
 - `node-web`: unit tests and a build on every change, Playwright e2e, a
   land recipe that waits for the production deployment GitHub reports for
   the merge, a harness that starts the dev server, a policy draft, and the

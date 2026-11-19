@@ -68,7 +68,10 @@ is expensive, so it runs detached; `check wait` follows it. It:
 1. makes a throwaway worktree at HEAD, so commit first: uncommitted work is
    not judged;
 2. points HOME, XDG_CACHE_HOME and CREW_DURABLE_DIR at a temp folder for
-   everything the change runs, and drops deep-plan's store overrides;
+   everything the change runs, and drops deep-plan's store overrides. The
+   bin folder of the node running deep-plan goes first on PATH, so a
+   version manager's shims (asdf, nodenv), which find their version through
+   the home folder, do not break `node`, `npm` and `npx` there;
 3. starts the repo's harness, if it has one;
 4. runs a different model (default sonnet, or the repo's `judge`) headless
    with Bash, Read, Grep and Glob only, from an empty folder beside the

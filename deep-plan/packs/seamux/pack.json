@@ -1,7 +1,7 @@
 {
   "pack": "seamux",
-  "version": "1.0.0",
-  "describes": "This repo's own set-up: its probe, lint and build recipes, its two land recipes (the plugins pulled into the kept checkout, and the app built and installed), scenario guidance for its CLIs, and a policy at auto-go with docs at auto-pr, so plans here auto-go as they always have.",
+  "version": "1.1.0",
+  "describes": "This repo's own set-up for a software factory: its probe, lint and build recipes, its two land recipes (the plugins pulled into the kept checkout, and the app built and installed), a scenarios harness that serves the app's pages in a browser against the demo mock, and a policy that merges app and crew changes on green checks, has a person merge plugin, tool and dependency changes, and keeps the factory's own guards supervised.",
   "detect": [
     ".claude-plugin/marketplace.json",
     "deep-plan/deep_plan.mjs"
@@ -640,19 +640,62 @@
     }
   ],
   "scenarios": {
-    "style": "seamux is plugins and a desktop app, not a web server: there is no harness to start. A scenario here drives a CLI (node deep-plan/deep_plan.mjs, lookout, crew) in the checkout with the stores pointed at a temp folder (DEEP_PLAN_STATE_DIR, DEEP_PLAN_KEYS_DIR, DEEP_PLAN_PLANS_DIR, CREW_DURABLE_DIR), the way the probes do, and names the command and the output a person would read. A scenario that needs the app or a live tmux session says so in its steps, so the judge scores it 0 rather than guess."
+    "harness": {
+      "setup": "(cd app && npm ci --silent --no-audit --no-fund) && (cd docs/demo/reel && npm ci --silent --no-audit --no-fund --ignore-scripts) && { [ -n \"${PLAYWRIGHT_BROWSERS_PATH:-}\" ] || (cd docs/demo/reel && npx playwright-core install chromium-headless-shell); }",
+      "start": "DEMO_PORT=$PORT app/node_modules/.bin/vite --config docs/demo/app/vite.config.mjs --port $PORT --strictPort",
+      "ready": "curl -fsS -o /dev/null http://127.0.0.1:$PORT/",
+      "export": {
+        "BASE_URL": "http://127.0.0.1:$PORT/"
+      },
+      "timeout": 300
+    },
+    "style": "seamux is plugins (CLIs and hooks) and a desktop app. A scenario is one of two kinds. The app's pages: the harness serves app/ui at $BASE_URL in a plain browser against a mocked backend (docs/demo/app/mock.js, with the fixed demo world in world.mjs: its workspaces, PRs and reviews). Add ?backend=tmux for the tmux backend seamux is moving to, where the cmux-only controls hide. The scenario names the window size, what the person clicks or presses, and what they then see and where focus is. The judge drives it with node and the checkout's playwright-core (createRequire on docs/demo/reel/package.json, chromium.launch, page.goto, then wait for #conn.good); docs/demo/app/shoot.mjs shows how to reach each view. The mock answers only the commands it knows and logs '[demo] no mock for <command>' for the rest, so a scenario about a page the mock cannot fill says so. The CLIs: a scenario drives node deep-plan/deep_plan.mjs, lookout or crew in the checkout with the stores pointed at a temp folder (DEEP_PLAN_STATE_DIR, DEEP_PLAN_KEYS_DIR, DEEP_PLAN_PLANS_DIR, CREW_DURABLE_DIR), the way the probes do, and names the command and the output a person would read. A scenario that needs the real app, cmux or a live tmux session says so in its steps, so the judge scores it 0 rather than guess."
   },
   "policy": {
-    "default": "auto-go",
+    "default": "auto-pr",
     "paths": [
       {
         "match": [
+          "app/ui/**",
+          "app/crates/**",
+          "crew/**",
           "docs/**",
           "*.md"
         ],
+        "level": "auto-merge"
+      },
+      {
+        "match": [
+          "app/package.json",
+          "app/package-lock.json",
+          "app/Cargo.toml",
+          "app/Cargo.lock",
+          "app/crates/*/Cargo.toml",
+          "docs/demo/reel/package.json",
+          "docs/demo/reel/package-lock.json",
+          "app/crates/seamux-app/src/land_watch.rs"
+        ],
         "level": "auto-pr"
+      },
+      {
+        "match": [
+          "deep-plan/hooks/**",
+          "deep-plan/lib/policy.mjs",
+          "deep-plan/lib/scenarios.mjs",
+          "deep-plan/lib/judge.mjs",
+          "deep-plan/lib/autogo.mjs",
+          "deep-plan/lib/state.mjs",
+          "bash-guard/**",
+          ".github/**",
+          "tools/scrub_check.py"
+        ],
+        "level": "supervised"
       }
     ],
+    "scenarios": {
+      "require": false,
+      "threshold": 0.8
+    },
     "merge": {
       "method": "squash"
     }
