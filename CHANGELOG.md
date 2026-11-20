@@ -6,6 +6,16 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **deep-plan's CI waits listen instead of polling.** A `ci` check and
+  `deep-plan ship`'s merge-when-green wait now block on `gh event listen`
+  (gh 2.105+, GitHub Event Streams) between looks. They read the checks
+  again as soon as a check suite finishes, the head moves, or the PR is
+  merged or closed; ship's wait also wakes when the PR hits a conflict. The old poll interval stays the
+  longest wait, so a listener that goes quiet or hangs is no slower than
+  polling. An older gh, an account outside the Event Streams preview, or
+  `DEEP_PLAN_GH_EVENTS=0` falls back to the plain poll, and the wait says
+  so once.
+
 - **A factory policy for seamux.** The `seamux` pack (1.1.0) and this
   repo's `.seamux/` now let `deep-plan ship` merge app and crew changes on
   green checks. Dependency manifests, the land watcher, the plugins and
