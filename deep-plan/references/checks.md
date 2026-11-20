@@ -272,8 +272,17 @@ A `ci` check takes no recipe or command (`name` defaults to "pr checks";
 one per deliverable): deep-plan waits on the branch's PR checks through
 gh. Its run fails at once when the branch has no PR, or when the PR head
 is not local HEAD, since a verdict must be about the tree being closed and
-the engine never pushes. Otherwise it polls `gh pr checks` until nothing is
-pending, up to `timeout` seconds (1800 by default), and passes when every
+the engine never pushes. Otherwise it reads `gh pr checks` until nothing is
+pending, up to `timeout` seconds (1800 by default). Between reads it waits
+on `gh event listen` (gh 2.105+) for the PR's next check suite, push or
+state change, but no longer than the poll interval (30 seconds unless
+`DEEP_PLAN_CI_INTERVAL_S` sets it), so a listener that goes quiet is no
+slower than polling. A listener that hangs past its own timeout is killed
+15 seconds later. Where gh refuses to listen (an older gh, an account
+without the Event Streams preview, or `DEEP_PLAN_GH_EVENTS=0`), the wait
+says so once and polls on the interval. Other listener errors poll for one
+interval and then listen again, until three in a row also turn it off. It
+passes when every
 check passed or was skipped. A failure names each failing check and prints
 the failed Actions job's log tail. A red CI run counts toward the retry
 cap; no PR, an unpushed head, gh failing or a timeout fails the check

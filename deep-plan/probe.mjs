@@ -8656,6 +8656,60 @@ if (want("ci check: the PR's checks behind the gate")) {
     !stOf("ci-t").increments[0].checks["ci-pr-checks"].fails, r.stdout);
   r = spawnSync("node", [path.join(HERE, "lib", "ci.mjs"), "wait", "--timeout", "abc"], { encoding: "utf8", env: CENV, cwd: CR });
   ok("ci: a timeout that is not a number is refused", r.status === 2 && /--timeout takes a number of seconds/.test(r.stderr), r.stderr);
+
+  // Between looks the wait listens for the PR's events (gh event listen)
+  // rather than sleeping the interval; an interval of 600s shows it woke early.
+  const GLOG = path.join(TMP, "ci-gh.log");
+  const pendThenPass = { status: 8, stdout: [
+    [{ name: "probes", workflow: "CI", bucket: "pending", link: "" }],
+    [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] };
+  const ciWait = env => {
+    fs.rmSync(GLOG, { force: true });
+    const t0 = Date.now();
+    const w = spawnSync("node", [path.join(HERE, "lib", "ci.mjs"), "wait", "--timeout", "900"],
+      { encoding: "utf8", env: { ...CENV, FAKE_GH_LOG: GLOG, DEEP_PLAN_CI_INTERVAL_S: "600", ...env }, cwd: CR, timeout: 60000 });
+    const calls = fs.existsSync(GLOG) ? fs.readFileSync(GLOG, "utf8").trim().split("\n").map(l => JSON.parse(l).argv) : [];
+    return { ...w, ms: Date.now() - t0, listens: calls.filter(a => a[0] === "event" && a[1] === "listen") };
+  };
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": pendThenPass,
+    "event listen": { stdout: '{"type":"com.github.pull_request.check_suite.status.changed.v1","data":{"conclusion":"success"}}\n' } });
+  r = ciWait({});
+  const la = r.listens[0] || [];
+  ok("ci: a pending wait listens for the PR's check, push and state events, no longer than the poll interval, and looks again when one arrives",
+    r.status === 0 && r.ms < 30000 && r.listens.length === 1 && la.includes("https://github.com/o/r/pull/12") &&
+    /check_suite\.status\.changed\.v1,com\.github\.pull_request\.head\.changed\.v1,com\.github\.pull_request\.state\.changed\.v1/.test(la.join(" ")) &&
+    /--timeout 600s/.test(la.join(" ")) && /all 1 check\(s\) passed/.test(r.stdout), r.stdout + r.stderr);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": pendThenPass,
+    "event listen": { status: 1, stderr: "event subscriptions are in preview and not enabled for this account: HTTP 403\n" } });
+  r = ciWait({ DEEP_PLAN_CI_INTERVAL_S: "1" });
+  ok("ci: a listener gh refuses (the preview not enabled) is said once, and the wait still settles",
+    r.status === 0 && r.listens.length === 1 && (r.stdout.match(/gh event listen is unavailable \(event subscriptions are in preview/g) || []).length === 1, r.stdout);
+  // A listener error that may pass (a 5xx) polls one interval and listens
+  // again; it does not turn events off for the whole wait.
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [
+    [{ name: "probes", workflow: "CI", bucket: "pending", link: "" }],
+    [{ name: "probes", workflow: "CI", bucket: "pending", link: "" }],
+    [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
+    "event listen": { status: 1, stderr: "error: event stream: HTTP 502\n" } });
+  r = ciWait({ DEEP_PLAN_CI_INTERVAL_S: "1" });
+  ok("ci: a listener error that may pass polls once and listens again, without turning events off",
+    r.status === 0 && r.listens.length === 2 && /gh event listen failed \(error: event stream: HTTP 502\)/.test(r.stdout) &&
+    !/is unavailable/.test(r.stdout), r.stdout);
+  // A listener that connects and then hangs past its own --timeout: the wait
+  // kills it and reads the checks again, so it is never stuck on events.
+  const HANG = path.join(TMP, "hang-gh");
+  fs.writeFileSync(HANG, `#!/bin/sh\nif [ "$1" = event ]; then echo "listening" >&2; exec sleep 600; fi\nexec "${path.join(HERE, "tools", "fake-gh")}" "$@"\n`, { mode: 0o755 });
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [
+    [{ name: "probes", workflow: "CI", bucket: "pending", link: "" }],
+    [{ name: "probes", workflow: "CI", bucket: "pending", link: "" }],
+    [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] } });
+  r = ciWait({ DEEP_PLAN_GH: HANG, DEEP_PLAN_CI_INTERVAL_S: "1" });
+  ok("ci: a listener that hangs past its timeout is killed and the wait reads the checks again",
+    r.status === 0 && r.ms < 45000 && /all 1 check\(s\) passed/.test(r.stdout), `${r.ms}ms ${r.stdout}${r.stderr}`);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": pendThenPass });
+  r = ciWait({ DEEP_PLAN_CI_INTERVAL_S: "0", DEEP_PLAN_GH_EVENTS: "0" });
+  ok("ci: DEEP_PLAN_GH_EVENTS=0 never starts a listener and polls as before",
+    r.status === 0 && r.listens.length === 0 && /all 1 check\(s\) passed/.test(r.stdout), r.stdout);
 }
 
 if (want("amend changes a rendered plan on purpose")) {
