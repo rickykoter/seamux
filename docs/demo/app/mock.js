@@ -577,6 +577,68 @@ function landAct(merge, recipe, act) {
   throw `unknown answer: ${act}`;
 }
 
+// Radar (radar.rs radar_frame): each open workspace's edited and planned
+// files. coupons-api and coupons-ui both edit total.js now; checkout-flow's
+// plan reaches form.js, which coupons-ui edits.
+const RADAR = {
+  checkout: { editing: ["src/checkout/errors.js", "test/checkout.test.js"], planned: [{ path: "src/checkout/form.js", plan: "checkout-errors", inc: 3, title: "Show the error under the field" }] },
+  api: { editing: ["src/checkout/total.js", "src/coupons/apply.js", "test/coupons.test.js"], planned: [] },
+  ui: { editing: ["src/checkout/total.js", "src/checkout/form.js", "src/checkout/form.css"], planned: [{ path: "src/checkout/receipt.js", plan: "coupons-ui", inc: 2, title: "Show the discount on the receipt" }] },
+  search: { editing: [], planned: [] },
+  docs: { editing: ["docs/coupons.md"], planned: [] },
+};
+function radarFrame() {
+  const contacts = ws.map((w) => ({
+    ws: w.id, pane: w.surface, title: w.title, root: treeOf(w), branch: w.branch, color: w.color,
+    state: w.state, editing: RADAR[w.key]?.editing ?? [], planned: RADAR[w.key]?.planned ?? [],
+  }));
+  const by = new Map();
+  for (const c of contacts) for (const f of c.editing) by.set(f, (by.get(f) ?? 0) + 1);
+  return { repos: [{ name: "shop", common: `${REPO}/.git`, contacts, collisions: [...by].filter(([, n]) => n > 1).map(([f]) => f) }] };
+}
+
+// Doctor (crew_core::doctor's scan and crew-resume's rows). The scan is the
+// app's own tmux's: on cmux it answers none, as the app does.
+const finding = (w, o) => ({ id: "", kind: "", class: "report", ws: w?.id ?? "", title: w?.title ?? "", cwd: w ? treeOf(w) : "", pane: w?.surface ?? "", summary: "", detail: "", session: "", subject: "", fixes: [], ...o });
+let doctorFindings = [
+  finding(W.checkout, {
+    id: "d1", kind: "claude-exited", class: "confirm", session: SESS.checkout,
+    summary: "Claude exited in its second pane 12 minutes ago", detail: "The pane is a shell now. Resuming starts claude --resume on the same conversation.",
+    fixes: [{ verb: "resume", label: "Resume Claude" }],
+  }),
+  finding(W.search, {
+    id: "d2", kind: "merged-live", class: "report",
+    summary: "Its PR #41 merged 38 minutes ago, and the workspace is still open", detail: "Reclaim checks for unpushed work, then closes it and removes the worktree.",
+    fixes: [{ verb: "reclaim", label: "Reclaim" }],
+  }),
+  finding(null, { id: "d3", kind: "orphan-pane-file", class: "safe", subject: "%41", summary: "A pane file for a pane tmux no longer has", fixes: [{ verb: "remove", label: "Remove" }] }),
+  finding(null, { id: "d4", kind: "orphan-pane-file", class: "safe", subject: "%57", summary: "A pane file for a pane tmux no longer has", fixes: [{ verb: "remove", label: "Remove" }] }),
+  finding(null, { id: "d5", kind: "dead-pane", class: "safe", subject: "%12", summary: "A pane whose command ended", fixes: [{ verb: "close", label: "Close" }] }),
+];
+const doctorScan = () => (backend === "tmux" ? { tmux: "ok", registry: "ok", findings: doctorFindings } : null);
+const doctorRow = (o) => ({ state: "live", latest: "", branch: "", when: 0, exists: true, ws: "", sessions: [], transcript: "", ...o });
+let doctorRows = [
+  ...WORKSPACES.map((w) => doctorRow({ cwd: treeOf(w), title: w.title, branch: w.branch, ws: w.id, when: secs(ago(w.sinceMin)), latest: LABELS[w.key] ?? "", sessions: w.agent ? [SESS[w.key]] : [] })),
+  doctorRow({ cwd: `${TREES}/legacy-cart`, state: "archived", title: "legacy-cart", branch: "sam/legacy-cart", when: secs(ago(60 * 26)), latest: "Move the cart's totals into one module", sessions: ["5b2c9e10-4a7d-4f3e-8c61-2d9e0b7a4f15"] }),
+  doctorRow({ cwd: `${TREES}/receipt-copy`, state: "past", title: "receipt-copy", branch: "sam/receipt-copy", when: secs(ago(60 * 52)), latest: "Reword the receipt's footer", sessions: ["c41e8a2b-7d90-4b15-a3e6-9f0c2d4b8e71"] }),
+  doctorRow({ cwd: `${TREES}/old-spike`, state: "gone", title: "old-spike", branch: "", exists: false, when: secs(ago(60 * 24 * 9)), latest: "Try a second search index" }),
+];
+/** An All workspaces row's verb (doctor_archive, _restore, _forget, _resume). */
+function rowAct(verb, cwd) {
+  const r = doctorRows.find((x) => x.cwd === cwd);
+  if (!r) throw "no workspace at that folder";
+  const to = { archive: ["live", "archived", "archived"], restore: ["archived", "live", "restored"], resume: ["past", "live", "resumed"] }[verb];
+  if (verb === "forget") {
+    if (r.state !== "archived") throw `${r.title} is not archived`;
+    doctorRows = doctorRows.filter((x) => x !== r);
+    return `forgot ${r.title}`;
+  }
+  if (r.state !== to[0]) throw `${r.title} is ${r.state}, not ${to[0]}`;
+  r.state = to[1];
+  r.when = secs(Date.now());
+  return `${to[2]} ${r.title}`;
+}
+
 // Reclaim. The fixes the wizard ran, by workspace: each clears its blocker.
 const reclaimFixed = new Map();
 function reclaimReport(id) {
@@ -1001,6 +1063,26 @@ const handlers = {
   ship_view: ({ cwd }) =>
     SHIP[cwd] ?? { plan: null, level: "auto-merge", levelBy: "src/** (auto-merge)", policy: { source: "origin/main", ref: "origin/main", why: "" }, gates: [], action: "none", waits: [] },
   land_act: ({ merge, recipe, act }) => landAct(merge, recipe, act),
+
+  radar_frame: radarFrame,
+
+  doctor_scan: doctorScan,
+  doctor_rows: () => ({ rows: doctorRows, live_known: true }),
+  doctor_fix: ({ id, verb }) => {
+    const f = doctorFindings.find((x) => x.id === id);
+    if (!f) throw "that finding is gone: scan again";
+    doctorFindings = doctorFindings.filter((x) => x !== f);
+    return `${verb === "resume" ? "resumed Claude in" : verb === "remove" ? "removed the pane file for" : `${verb}d`} ${f.title || f.subject}`;
+  },
+  doctor_fix_safe: () => {
+    const safe = doctorFindings.filter((f) => f.class === "safe" && f.fixes.length);
+    doctorFindings = doctorFindings.filter((f) => !safe.includes(f));
+    return safe.map((f) => ({ id: f.id, ok: true, message: "" }));
+  },
+  doctor_archive: ({ cwd }) => rowAct("archive", cwd),
+  doctor_restore: ({ cwd }) => rowAct("restore", cwd),
+  doctor_forget: ({ cwd }) => rowAct("forget", cwd),
+  doctor_resume: ({ cwd }) => rowAct("resume", cwd),
 
   new_ws_options: () => ({
     repos: [

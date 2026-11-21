@@ -33,19 +33,15 @@ const UI = join(REPO, "app", "ui");
 export const KNOWN = {
   /** Commands app/ui invokes that mock.js has no handler for. */
   commands: [
-    "bg_shells", "bg_stop", "clip_read", "doctor_fix", "doctor_fix_safe", "doctor_rows", "doctor_scan",
-    "held_act", "link_file", "notify_looking", "notify_take_link", "pane_held", "pane_stop",
-    "pane_stop_cancel", "pty_shell_run", "radar_frame", "resume_set", "session_last_exchange", "wake_prs",
-    "doctor_archive", "doctor_restore", "doctor_forget", "doctor_resume",
+    "bg_shells", "bg_stop", "clip_read", "held_act", "link_file", "notify_looking", "notify_take_link",
+    "pane_held", "pane_stop", "pane_stop_cancel", "pty_shell_run", "resume_set", "session_last_exchange", "wake_prs",
   ],
   /** Views that do not yet show what they are for. */
-  views: ["radar", "doctor"],
+  views: [],
   /** Page and console errors a listed command still causes, as a piece of
    *  their text. Each may show or not (some race), and is stale once its
    *  command leaves KNOWN.commands. */
-  errors: [
-    { text: "(reading 'repos')", while: "radar_frame" },
-  ],
+  errors: [],
 };
 
 /** Commands invoked through a template literal, spelled out. A template not
@@ -94,7 +90,8 @@ export const VIEWS = {
     shows: ".dockview .sheet .sheet-wake .w-list li",
   },
   lookout: { go: (p) => tab(p, "Lookout"), shows: ".review .r-stage-chip, .r-side .r-stage-chip" },
-  radar: { go: (p) => tab(p, "Radar"), shows: ".radar-repo" },
+  // A contact's row in the card: drawn only once a frame has workspaces in it.
+  radar: { go: (p) => tab(p, "Radar"), shows: ".radar-card .radar-name" },
   doctor: { go: (p) => menu(p, "Doctor"), shows: ".doc-ws" },
   usage: { go: (p) => menu(p, "Usage"), shows: null },
   palette: {
