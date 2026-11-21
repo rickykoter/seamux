@@ -639,6 +639,36 @@ function rowAct(verb, cwd) {
   return `${to[2]} ${r.title}`;
 }
 
+// The Dock's strips. coupons-api's Claude has two background shells (bg_app.rs):
+// its dev server, still running, and a test run that passed.
+const bgShells = new Map([
+  [W.api.surface, [
+    { id: "b1", command: "npm run dev -- --port 5173", label: "npm run dev", state: "running", exit: null, at: ago(31), ended: null,
+      tail: "  VITE v5.4.2  ready in 412 ms\n  ➜  Local:   http://localhost:5173/\n  page reload src/checkout/total.js" },
+    { id: "b2", command: "npm test -- coupons", label: "npm test", state: "done", exit: 0, at: ago(6), ended: ago(5.6),
+      tail: " ✓ test/coupons.test.js (9 tests) 41ms\n Test Files  1 passed (1)\n      Tests  9 passed (9)" },
+  ]],
+]);
+const shellsOf = (surface, tails) => (bgShells.get(surface) ?? []).map((s) => (tails ? s : { ...s, tail: undefined }));
+function stopShell(surface, id) {
+  const s = (bgShells.get(surface) ?? []).find((x) => x.id === id);
+  if (!s || s.state !== "running") return 0;
+  Object.assign(s, { state: "cancelled", exit: 143, ended: Date.now() });
+  return 1;
+}
+// The palette's preview of a Claude workspace (sessions.rs LastExchange).
+const EXCHANGE = {
+  checkout: ["Expired codes should get their own message, not the generic one.", "I'll add an expired check before the lookup. One question first: should an expired code answer 422 or 400?"],
+  api: ["Apply the coupon in total(), after tax.", "Done: total() now takes the coupon and applies it after tax. The test watcher is green; I'm adding a case for a coupon over the cart total."],
+  ui: ["Put the coupon field above the total, with its error under it.", "Wiring the field into the checkout form now: it posts to /api/coupons/apply and shows the server's message under the input."],
+  search: ["Merge it once the checks pass.", "PR #41 merged into main. The worktree has nothing unpushed, so it can be reclaimed."],
+};
+/** A workspace's PRs as the Wake lists them (crew-sync's list for its worktree). */
+function wakePrs(dir) {
+  const d = (dir ?? "").replace(/\/+$/, "");
+  return PRS.filter((p) => p.cwd === d).map(({ cwd, ws: _ws, ws_title, ...p }) => ({ ...p, branch: WORKSPACES.find((w) => treeOf(w) === cwd)?.branch, updatedAt: iso(ago(p.n === 41 ? 38 : 9)) }));
+}
+
 // Reclaim. The fixes the wizard ran, by workspace: each clears its blocker.
 const reclaimFixed = new Map();
 function reclaimReport(id) {
@@ -1083,6 +1113,31 @@ const handlers = {
   doctor_restore: ({ cwd }) => rowAct("restore", cwd),
   doctor_forget: ({ cwd }) => rowAct("forget", cwd),
   doctor_resume: ({ cwd }) => rowAct("resume", cwd),
+
+  // A pane's strips and banners. Nothing is held and nothing stopped in the
+  // demo, so those banners stay away, as on a quiet pane.
+  wake_prs: ({ dir }) => wakePrs(dir),
+  bg_shells: ({ surface, tails }) => shellsOf(surface, tails),
+  bg_stop: ({ surface, id }) => stopShell(surface, id),
+  pane_held: () => null,
+  held_act: () => {
+    throw "nothing is held in this pane";
+  },
+  pane_stop: () => null,
+  pane_stop_cancel: () => false,
+  pty_shell_run: () => null,
+  clip_read: () => ({ kind: "empty" }),
+  link_file: () => {
+    throw "the demo has no files to show";
+  },
+  session_last_exchange: ({ workspace }) => {
+    const w = ws.find((x) => x.id === workspace);
+    const x = w && EXCHANGE[w.key];
+    return x ? { prompt: x[0], reply: x[1], session: SESS[w.key], at: w.since } : null;
+  },
+  resume_set: () => null,
+  notify_looking: () => null,
+  notify_take_link: () => null,
 
   new_ws_options: () => ({
     repos: [

@@ -24,6 +24,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startServer, launch } from "./shoot.mjs";
+import { byKey } from "./world.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..", "..");
@@ -32,10 +33,7 @@ const UI = join(REPO, "app", "ui");
 /** What is still broken on the mock. Delete an entry in the change that fixes it. */
 export const KNOWN = {
   /** Commands app/ui invokes that mock.js has no handler for. */
-  commands: [
-    "bg_shells", "bg_stop", "clip_read", "held_act", "link_file", "notify_looking", "notify_take_link",
-    "pane_held", "pane_stop", "pane_stop_cancel", "pty_shell_run", "resume_set", "session_last_exchange", "wake_prs",
-  ],
+  commands: [],
   /** Views that do not yet show what they are for. */
   views: [],
   /** Page and console errors a listed command still causes, as a piece of
@@ -79,16 +77,25 @@ const menu = async (page, label) => {
 const emit = (page, event, payload) =>
   page.evaluate(([event, payload]) => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event, payload }), [event, payload]);
 
+const wakeUp = async (p) => {
+  await tab(p, "Dock");
+  // ⌘E only while the Wake is not up already (a press there goes back).
+  if (!(await p.locator(".dockview .sheet .sheet-wake .w-list li").first().isVisible().catch(() => false))) await emit(p, "sheet:key", "wake");
+};
+/** Pick a workspace on the Dock's board, as a click on its row does. */
+const pickRow = async (p, key) => {
+  await tab(p, "Dock");
+  await p.frameLocator(".dock-board iframe").locator(`.row[data-id="${byKey[key].id}"]`).first().click({ position: { x: 40, y: 12 } });
+};
+
 /** Each view: how to reach it from the Dock, and what it shows once it works. */
 export const VIEWS = {
   dock: { go: (p) => tab(p, "Dock"), shows: ".dockview .sheet .native-term .xterm-rows" },
-  wake: {
-    go: async (p) => {
-      await tab(p, "Dock");
-      if (!(await p.locator(".dockview .sheet .sheet-wake .w-list li").first().isVisible().catch(() => false))) await emit(p, "sheet:key", "wake");
-    },
-    shows: ".dockview .sheet .sheet-wake .w-list li",
-  },
+  wake: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-list li" },
+  // checkout-flow (the Dock's first pick) has PR #43 open as a draft.
+  wakeprs: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-prs" },
+  // coupons-api's Claude runs its dev server in the background.
+  bgshells: { go: (p) => pickRow(p, "api"), shows: ".dockview .bg-summary" },
   lookout: { go: (p) => tab(p, "Lookout"), shows: ".review .r-stage-chip, .r-side .r-stage-chip" },
   // A contact's row in the card: drawn only once a frame has workspaces in it.
   radar: { go: (p) => tab(p, "Radar"), shows: ".radar-card .radar-name" },
@@ -99,7 +106,8 @@ export const VIEWS = {
       await tab(p, "Dock");
       await p.keyboard.press("Meta+k");
     },
-    shows: ".palette-row",
+    // The selected row's preview, with its last prompt and reply.
+    shows: ".search-p-ex",
     after: (p) => p.keyboard.press("Escape"),
   },
 };
