@@ -490,6 +490,92 @@ const FINDINGS = {
 const others = [
   { id: "rv-coupons-inc1", title: "demo-coupons · increment 1", root: treeOf(W.api), branch: "sam/coupons-api", updated: secs(ago(66)), open: { minor: 1 } },
 ];
+const OTHER_FINDINGS = {
+  "rv-coupons-inc1": [
+    { id: "f1", file: "src/checkout/total.js", line: 14, severity: "minor", summary: "A coupon over the cart total makes the total negative", status: "open" },
+  ],
+};
+
+// The workspaces' PRs (land_watch.rs workspace_prs: crew-sync's lists with
+// their worktree), the landing of #41's merge (landing_get), and what ship
+// says of each open PR's worktree (ship_view). #41 and #44 are the PRs the
+// reviews above cover; #43 is one no review covers yet.
+const MERGE_41 = "4f1c2ab9e07d3c5a81b6e2d94f0a7c3e5b8d1f26";
+const prUrl = (n) => `https://github.com/${GH}/pull/${n}`;
+const prRow = (w, o) => ({ cwd: treeOf(w), ws: w.id, ws_title: w.title, url: prUrl(o.n), review: "", conflict: false, failing: [], gating: [], ...o });
+const PRS = [
+  prRow(W.search, {
+    n: 41, title: "Reindex search when a product is renamed", state: "merged", review: "APPROVED",
+    checks: { fail: 0, run: 0, pass: 6, gate: 0, unseen: 0 }, merge: { sha: MERGE_41, at: iso(ago(38)), base: "main" },
+  }),
+  prRow(W.api, { n: 44, title: "Take coupon codes at checkout", state: "open", review: "REVIEW_REQUIRED", checks: { fail: 0, run: 2, pass: 4, gate: 0, unseen: 0 } }),
+  prRow(W.checkout, {
+    n: 43, title: "Clear errors for bad coupon codes", state: "draft", checks: { fail: 1, run: 0, pass: 5, gate: 0, unseen: 0 },
+    failing: [{ name: "test / checkout", url: `https://github.com/${GH}/actions/runs/1187` }],
+  }),
+];
+const landStage = (name, status, startMin, endMin) => ({ name, status, ...(startMin != null ? { start: ago(startMin) } : {}), ...(endMin != null ? { end: ago(endMin) } : {}) });
+const landing41 = {
+  state: {
+    pr: "41",
+    merge: MERGE_41,
+    recipes: {
+      deploy: {
+        key: "deploy", name: "Deploy the shop", status: "running",
+        stages: [landStage("build", "done", 37, 34), landStage("deploy", "running", 34), landStage("live", "pending")],
+        version: { expect: MERGE_41.slice(0, 7), live: "9a3e7c1", match: false },
+        links: [{ label: "Deploy run", url: `https://github.com/${GH}/actions/runs/1192` }],
+      },
+      notebook: {
+        key: "notebook", name: "Rollout notebook", status: "awaiting",
+        stages: [landStage("notebook", "pending")],
+      },
+    },
+  },
+  overall: { status: "landing", stage: "deploy", recipe: "deploy", live: false },
+};
+const LAND_LOG = {
+  deploy: ["$ npm ci", "added 412 packages in 9s", "$ npm run build", "built dist/ in 3.1s", "$ scripts/deploy.sh", "uploading dist/ (2.4 MB)", "waiting on the rollout: 2 of 4 hosts"],
+  notebook: ["waiting for a person to approve: this recipe writes a rollout notebook"],
+};
+const SHIP = {
+  [treeOf(W.api)]: {
+    plan: "demo-coupons", level: "auto-merge", levelBy: "src/** (auto-merge)",
+    policy: { source: "origin/main", ref: "origin/main", why: "" },
+    gates: [
+      { gate: "delivered", ok: false, why: "increment 2 of 3 is still working" },
+      { gate: "checks", ok: false, why: "2 checks are running" },
+      { gate: "conflict", ok: true, why: "" },
+    ],
+    action: "wait", waits: ["the plan is delivered", "its checks are green"],
+  },
+  [treeOf(W.checkout)]: {
+    plan: "checkout-errors", level: "auto-pr", levelBy: "default (auto-pr)",
+    policy: { source: "origin/main", ref: "origin/main", why: "" },
+    gates: [{ gate: "delivered", ok: false, why: "increment 2 of 4 is waiting on you" }],
+    action: "wait", waits: ["the plan is delivered"],
+  },
+};
+/** land_act: what the person did at the Land stage, as the watcher tells it. */
+function landAct(merge, recipe, act) {
+  if (merge !== MERGE_41) throw "no landing for that merge";
+  const r = landing41.state.recipes[recipe];
+  if (!r) throw `no recipe ${recipe}`;
+  if (act === "approve") {
+    if (r.status !== "awaiting") throw `${recipe} is not waiting on you`;
+    r.status = "running";
+    r.stages = [landStage("notebook", "running", 0)];
+    return `approved ${recipe}; it runs on`;
+  }
+  if (act === "skip") {
+    r.status = "skipped";
+    r.stages = r.stages.map((s) => ({ ...s, status: s.status === "done" ? "done" : "skipped" }));
+    return `skipped ${recipe}`;
+  }
+  if (act === "retry") return `retrying ${recipe}`;
+  if (act === "dismiss") return "dismissed";
+  throw `unknown answer: ${act}`;
+}
 
 // Reclaim. The fixes the wizard ran, by workspace: each clears its blocker.
 const reclaimFixed = new Map();
@@ -896,6 +982,25 @@ const handlers = {
   review_fix: () => null,
   review_post: () => null,
   review_push: () => null,
+  review_other_findings: ({ id }) => OTHER_FINDINGS[id] ?? [],
+  review_other_post: ({ id }) => {
+    if (!OTHER_FINDINGS[id]) throw "that review has no pull request to post to";
+    return `${prUrl(44)}#pullrequestreview-2207`;
+  },
+  review_stop_orphan: () => null,
+  notify_review_looking: () => null,
+
+  // The change from review to release (release.ts).
+  landing_prs: () => PRS,
+  landing_get: ({ merge }) => (merge === MERGE_41 ? landing41 : null),
+  landing_log: ({ merge, recipe }) => {
+    if (merge !== MERGE_41 || !LAND_LOG[recipe]) throw "no log for that recipe";
+    return LAND_LOG[recipe].join("\n");
+  },
+  // A worktree with no plan: ship names the level and leaves the PR to a person.
+  ship_view: ({ cwd }) =>
+    SHIP[cwd] ?? { plan: null, level: "auto-merge", levelBy: "src/** (auto-merge)", policy: { source: "origin/main", ref: "origin/main", why: "" }, gates: [], action: "none", waits: [] },
+  land_act: ({ merge, recipe, act }) => landAct(merge, recipe, act),
 
   new_ws_options: () => ({
     repos: [

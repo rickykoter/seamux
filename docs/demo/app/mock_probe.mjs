@@ -34,20 +34,16 @@ export const KNOWN = {
   /** Commands app/ui invokes that mock.js has no handler for. */
   commands: [
     "bg_shells", "bg_stop", "clip_read", "doctor_fix", "doctor_fix_safe", "doctor_rows", "doctor_scan",
-    "held_act", "land_act", "landing_get", "landing_log", "landing_prs", "link_file", "notify_looking",
-    "notify_review_looking", "notify_take_link", "pane_held", "pane_stop", "pane_stop_cancel",
-    "pty_shell_run", "radar_frame", "resume_set", "review_other_findings", "review_other_post",
-    "review_stop_orphan", "session_last_exchange", "ship_view", "wake_prs",
+    "held_act", "link_file", "notify_looking", "notify_take_link", "pane_held", "pane_stop",
+    "pane_stop_cancel", "pty_shell_run", "radar_frame", "resume_set", "session_last_exchange", "wake_prs",
     "doctor_archive", "doctor_restore", "doctor_forget", "doctor_resume",
   ],
   /** Views that do not yet show what they are for. */
-  views: ["lookout", "radar", "doctor"],
+  views: ["radar", "doctor"],
   /** Page and console errors a listed command still causes, as a piece of
    *  their text. Each may show or not (some race), and is stale once its
    *  command leaves KNOWN.commands. */
   errors: [
-    { text: "(reading 'filter')", while: "landing_prs" },
-    { text: "(reading 'find')", while: "landing_prs" },
     { text: "(reading 'repos')", while: "radar_frame" },
   ],
 };
