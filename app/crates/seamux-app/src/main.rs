@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bg_app;
+mod bosun_app;
 mod clip_app;
 mod held_app;
 mod land_watch;
@@ -223,6 +224,9 @@ fn main() {
             sync_watch::start();
             // Armed sessions a usage limit stopped, continued at the reset.
             resume_watch::start(app.handle().clone());
+            // A Bosun started once comes back after a reboot or a tmux
+            // kill-server, so its loops run (tmux only).
+            bosun_app::start();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -320,7 +324,11 @@ fn main() {
             tuck_app::tuck_restore,
             tuck_app::tuck_unmute_all,
             newws_app::new_ws_options,
-            newws_app::new_ws_create
+            newws_app::new_ws_create,
+            bosun_app::bosun_status,
+            bosun_app::bosun_ensure,
+            bosun_app::bosun_log,
+            bosun_app::bosun_send
         ])
         .build(tauri::generate_context!())
         .expect("seamux app failed to start")
