@@ -14,6 +14,8 @@
 //! seamux bosun answer <id>       an ask's answer, on stdin
 //! seamux bosun log add           one entry on stdin | log list [--day D] [--json]
 //! seamux bosun dispatch <repo> <branch> --brief <file> [--json]
+//! seamux bosun loops [list] [--json] | loops run <id>
+//!                                bosun.json's timed prompts (loops.rs)
 //! ```
 //!
 //! It runs on the app's tmux backend only. Exit 0 on success, 1 when it
@@ -190,7 +192,7 @@ fn fail(what: &str, e: impl std::fmt::Display) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch");
+    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>]");
     2
 }
 
@@ -363,6 +365,7 @@ pub fn main(args: &[String]) -> i32 {
                 2
             }
         },
+        "loops" => loops::main(&args[1..], &dir),
         _ => usage(),
     }
 }
