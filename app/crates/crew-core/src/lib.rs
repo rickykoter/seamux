@@ -10,6 +10,7 @@
 pub mod asked;
 pub mod backend;
 pub mod bgshells;
+pub mod bosun;
 pub mod cachefacts;
 pub mod colors;
 pub mod costs;
@@ -44,6 +45,7 @@ pub use home::{crew_home, crew_local};
 /// The seamux tools this crate provides, by the Python script's basename.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("asked", asked::main),
+    ("bosun", bosun::main),
     ("cachefacts", cachefacts::main),
     ("costs", costs::main),
     ("crew-native", native::main),
