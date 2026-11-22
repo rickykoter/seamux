@@ -36,6 +36,16 @@ fn rule_path(p: &Path) -> String {
     format!("/{}/**", s.trim_end_matches('/'))
 }
 
+/// The ways Claude may write the seamux command: as `seamux` and as the
+/// full path the Bosun's prompts name.
+fn dispatch_forms(seamux: &str) -> Vec<String> {
+    let mut v = vec!["seamux".to_string()];
+    if seamux != "seamux" {
+        v.push(seamux.to_string());
+    }
+    v
+}
+
 /// The settings passed with --settings. `dir` is the Bosun's own folder, the
 /// one place it writes.
 pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
@@ -48,15 +58,22 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
         network["allowedDomains"] = json!(cfg.allowed_domains);
     }
     let prime = format!("{} bosun prime", crate::native::sh_quote(seamux));
+    // Dispatch is the one command let out of the sandbox, and only with the
+    // person's yes each time: an ask rule prompts even in auto mode. Rules
+    // match the command as typed, so the bare name and the full path each
+    // get one; any other form (a wrapper, sh -c) stays sandboxed and fails.
+    let dispatch: Vec<String> = dispatch_forms(seamux).iter().map(|c| format!("{c} bosun dispatch *")).collect();
     json!({
         "permissions": {
             "deny": [format!("Edit({})", rule_path(&cfg.root))],
+            "ask": dispatch.iter().map(|d| format!("Bash({d})")).collect::<Vec<_>>(),
             "allow": [format!("Edit({})", rule_path(dir)), format!("Read({})", rule_path(dir))],
         },
         "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,
             "allowUnsandboxedCommands": false,
+            "excludedCommands": dispatch,
             "filesystem": {"denyWrite": [root], "allowWrite": allow_write},
             "network": network,
         },
@@ -160,6 +177,9 @@ mod tests {
         assert_eq!(s["sandbox"]["filesystem"]["allowWrite"], json!(["/u/.claude/crew/bosun", "/u/.cache/gh"]));
         assert_eq!(s["sandbox"]["network"]["allowedDomains"], json!(["github.com"]));
         assert_eq!(s["hooks"]["SessionStart"][0]["hooks"][0]["command"], "/bin/seamux bosun prime");
+        let out = json!(["seamux bosun dispatch *", "/bin/seamux bosun dispatch *"]);
+        assert_eq!(s["sandbox"]["excludedCommands"], out, "dispatch alone leaves the sandbox");
+        assert_eq!(s["permissions"]["ask"], json!(["Bash(seamux bosun dispatch *)", "Bash(/bin/seamux bosun dispatch *)"]), "and asks every time");
     }
 
     #[test]

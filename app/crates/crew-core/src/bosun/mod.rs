@@ -8,13 +8,23 @@
 //! seamux bosun stop              end its pane; the next ensure resumes it
 //! seamux bosun run               the pane's command: the supervisor
 //! seamux bosun prime             the SessionStart hook (stdin: its payload)
+//! seamux bosun send <text> [--source S]            queue a prompt
+//! seamux bosun ask <question> [--from WHO] [--timeout S] | ask --id ID
+//!                                print the answer (exit 3: still waiting)
+//! seamux bosun answer <id>       an ask's answer, on stdin
+//! seamux bosun log add           one entry on stdin | log list [--day D] [--json]
+//! seamux bosun dispatch <repo> <branch> --brief <file> [--json]
 //! ```
 //!
 //! It runs on the app's tmux backend only. Exit 0 on success, 1 when it
 //! could not, 2 on bad arguments.
 
 pub mod config;
+pub mod dispatch;
 pub mod launch;
+pub mod log;
+pub mod loops;
+pub mod queue;
 pub mod supervise;
 
 use std::io::Read;
@@ -128,14 +138,66 @@ pub fn prime_note(cfg: &Config, today: &str, source: &str) -> String {
     format!("Bosun session note. {why} Today is {today}. You work from {} and are read-only there.\n", cfg.root.display())
 }
 
+/// The prime note with the latest answers from the log, so a new day's
+/// conversation knows what came before.
+pub fn prime_with_log(cfg: &Config, dir: &Path, today: &str, source: &str) -> String {
+    let mut note = prime_note(cfg, today, source);
+    let recent = log::recent(dir, 10);
+    if !recent.is_empty() {
+        note.push_str("Recent answers in your log (seamux bosun log list):\n");
+        for e in &recent {
+            let q: String = e["question"].as_str().unwrap_or("").chars().take(160).collect();
+            note.push_str(&format!("- {} ({})\n", q.replace('\n', " "), e["id"].as_str().unwrap_or("")));
+        }
+    }
+    let waiting = queue::waiting(dir).len();
+    if waiting > 0 {
+        note.push_str(&format!("{waiting} queued prompt(s) will be typed in as you go idle.\n"));
+    }
+    note
+}
+
+/// The text after the subcommand, flags (and their values) left out.
+fn words(args: &[String], valued: &[&str]) -> (String, Vec<(String, String)>) {
+    let mut text = Vec::new();
+    let mut flags = Vec::new();
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        if valued.contains(&a.as_str()) {
+            flags.push((a.clone(), it.next().cloned().unwrap_or_default()));
+        } else if a.starts_with("--") {
+            flags.push((a.clone(), String::new()));
+        } else {
+            text.push(a.clone());
+        }
+    }
+    (text.join(" "), flags)
+}
+
+fn flag<'a>(flags: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    flags.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
+fn stdin_text() -> String {
+    let mut s = String::new();
+    let _ = std::io::stdin().read_to_string(&mut s);
+    s
+}
+
+fn fail(what: &str, e: impl std::fmt::Display) -> i32 {
+    eprintln!("bosun {what}: {e}");
+    1
+}
+
 fn usage() -> i32 {
-    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime");
+    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch");
     2
 }
 
 pub fn main(args: &[String]) -> i32 {
     let json_out = args.iter().any(|a| a == "--json");
-    let sub = args.iter().find(|a| !a.starts_with("--")).map(String::as_str).unwrap_or("");
+    let sub = args.first().map(String::as_str).filter(|a| !a.starts_with("--")).unwrap_or("");
+    let dir = config::dir();
     let t = TmuxBackend::default();
     match sub {
         "ensure" => match ensure() {
@@ -199,6 +261,108 @@ pub fn main(args: &[String]) -> i32 {
             print!("{}", supervise::prime(&payload, &config::dir()));
             0
         }
+        "send" => {
+            let (text, flags) = words(args, &["--source"]);
+            match queue::enqueue(&dir, &text, flag(&flags, "--source").unwrap_or("send")) {
+                Ok(i) => {
+                    println!("{}", if json_out { json!({"id": i.id}).to_string() } else { format!("queued {}", i.id) });
+                    0
+                }
+                Err(e) => fail("send", e),
+            }
+        }
+        "ask" => {
+            let (text, flags) = words(args, &["--from", "--timeout", "--id"]);
+            let timeout = std::time::Duration::from_secs(flag(&flags, "--timeout").and_then(|t| t.parse().ok()).unwrap_or(900));
+            let id = match flag(&flags, "--id") {
+                Some(id) => id.to_string(),
+                None => {
+                    let who = flag(&flags, "--from").map(str::to_string).unwrap_or_else(|| {
+                        crate::py::env_or("SEAMUX_WORKSPACE_ID").map(|w| format!("workspace {w}")).unwrap_or_else(|| "a shell".into())
+                    });
+                    if text.trim().is_empty() {
+                        return fail("ask", "what is the question?");
+                    }
+                    let id = crate::backend::tmux::new_id().to_ascii_lowercase();
+                    let prompt = queue::ask_prompt(&id, &who, text.trim(), &launch::seamux_bin());
+                    if let Err(e) = queue::enqueue_as(&dir, &id, &prompt, &format!("ask:{who}")) {
+                        return fail("ask", e);
+                    }
+                    eprintln!("bosun ask {id}: queued; waiting up to {}s for the answer", timeout.as_secs());
+                    id
+                }
+            };
+            match queue::wait_answer(&dir, &id, timeout) {
+                Some(a) => {
+                    print!("{}", if json_out { json!({"id": id, "answer": a}).to_string() + "\n" } else { a });
+                    0
+                }
+                None => {
+                    eprintln!("bosun ask {id}: no answer yet; `seamux bosun ask --id {id}` waits again");
+                    3
+                }
+            }
+        }
+        "answer" => match args.get(1) {
+            Some(id) => match queue::answer(&dir, id, &stdin_text()) {
+                Ok(p) => {
+                    println!("answered {id} ({})", p.display());
+                    0
+                }
+                Err(e) => fail("answer", e),
+            },
+            None => usage(),
+        },
+        "log" => match args.get(1).map(String::as_str) {
+            Some("add") => {
+                let v: Value = match serde_json::from_str(&stdin_text()) {
+                    Ok(v) => v,
+                    Err(e) => return fail("log add", format!("stdin is not one JSON entry: {e}")),
+                };
+                match log::add(&dir, &v) {
+                    Ok(e) => {
+                        println!("{}", if json_out { e.to_string() } else { format!("logged {}", e["id"].as_str().unwrap_or("")) });
+                        0
+                    }
+                    Err(e) => fail("log add", e),
+                }
+            }
+            Some("list") => {
+                let (_, flags) = words(&args[1..], &["--day"]);
+                let day = flag(&flags, "--day").map(str::to_string).unwrap_or_else(|| launch::local_day_hour(launch::now_secs()).0);
+                match log::list(&dir, &day) {
+                    Ok(es) if json_out => {
+                        println!("{}", json!({"day": day, "entries": es}));
+                        0
+                    }
+                    Ok(es) => {
+                        for e in es {
+                            println!("{}  {}", e["id"].as_str().unwrap_or(""), e["question"].as_str().unwrap_or(""));
+                        }
+                        0
+                    }
+                    Err(e) => fail("log list", e),
+                }
+            }
+            _ => usage(),
+        },
+        "dispatch" => match dispatch::parse(&args[1..]) {
+            Ok(a) => match dispatch::run(&a) {
+                Ok(v) => {
+                    if a.json {
+                        println!("{v}");
+                    } else {
+                        println!("dispatched {} in {} (workspace {})", v["branch"].as_str().unwrap_or(""), v["path"].as_str().unwrap_or(""), v["workspace"].as_str().unwrap_or(""));
+                    }
+                    0
+                }
+                Err(e) => fail("dispatch", e),
+            },
+            Err(e) => {
+                eprintln!("bosun dispatch: {e}");
+                2
+            }
+        },
         _ => usage(),
     }
 }

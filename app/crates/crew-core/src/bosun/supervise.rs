@@ -29,6 +29,8 @@ const SENT_WAIT: Duration = Duration::from_secs(30);
 pub enum Action {
     /// Start a fresh conversation: type /clear.
     Clear,
+    /// Type the oldest queued item.
+    Send(super::queue::Item),
 }
 
 /// Whether the pane file says Claude waits for a prompt: idle, nothing
@@ -39,11 +41,16 @@ pub fn idle(p: Option<&crate::status::Pane>, now_ms: u64) -> bool {
 
 /// What is due now, given the kept state, the pane, the config and the
 /// local day and hour. Nothing is typed into a busy Claude.
-pub fn due(state: &State, pane_idle: bool, cfg: &Config, today: &str, hour: u32) -> Option<Action> {
+/// The morning's reset comes before anything queued, so a queued question
+/// lands in the new day's conversation.
+pub fn due(state: &State, pane_idle: bool, cfg: &Config, today: &str, hour: u32, queued: &[super::queue::Item]) -> Option<Action> {
     if !pane_idle {
         return None;
     }
-    launch::reset_due(&state.day, today, hour, cfg.reset_hour).then_some(Action::Clear)
+    if launch::reset_due(&state.day, today, hour, cfg.reset_hour) {
+        return Some(Action::Clear);
+    }
+    queued.first().cloned().map(Action::Send)
 }
 
 /// Type `text` into `t` and press Enter. Text with a newline goes in as a
@@ -103,8 +110,12 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
         // makes); the supervisor keeps the day it last typed /clear apart,
         // and the later of the two is the conversation's day.
         state.day = later_day(&state.day, &read_reset_day(&dir));
-        let (today, hour) = launch::local_day_hour(launch::now_secs());
-        let Some(action) = due(&state, is_idle, &cfg, &today, hour) else { continue };
+        let now = launch::now_secs();
+        // bosun-routines' loops queue what is due; the drain below types it.
+        super::loops::tick(&dir, now);
+        let (today, hour) = launch::local_day_hour(now);
+        let queued = if is_idle { super::queue::waiting(&dir) } else { Vec::new() };
+        let Some(action) = due(&state, is_idle, &cfg, &today, hour, &queued) else { continue };
         let Ok(Some(target)) = tmux::TmuxBackend::default().target(&pane) else { continue };
         let typed = match action {
             // Marked once typed (a failed type is tried again next tick), so
@@ -112,6 +123,8 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
             Action::Clear => type_line(&target, "/clear").inspect(|()| {
                 let _ = std::fs::write(dir.join(RESET_DAY), &today);
             }),
+            // Out of the queue once typed; a failed type stays for next tick.
+            Action::Send(item) => type_line(&target, &item.text).inspect(|()| super::queue::done(&item)),
         };
         match typed {
             Ok(()) => sent = Some(Instant::now()),
@@ -194,7 +207,7 @@ pub fn prime(payload: &str, dir: &Path) -> String {
     }
     let _ = state.save(dir);
     let cfg = Config::load_from(dir);
-    super::prime_note(&cfg, &today, source)
+    super::prime_with_log(&cfg, dir, &today, source)
 }
 
 #[cfg(test)]
@@ -227,11 +240,22 @@ mod tests {
     #[test]
     fn a_new_day_clears_only_when_idle_and_past_the_hour() {
         let old = State { session: "S".into(), day: "2026-11-21".into() };
-        assert_eq!(due(&old, true, &cfg(), "2026-11-22", 9), Some(Action::Clear));
-        assert_eq!(due(&old, false, &cfg(), "2026-11-22", 9), None, "busy");
-        assert_eq!(due(&old, true, &cfg(), "2026-11-22", 2), None, "before the hour");
+        assert_eq!(due(&old, true, &cfg(), "2026-11-22", 9, &[]), Some(Action::Clear));
+        assert_eq!(due(&old, false, &cfg(), "2026-11-22", 9, &[]), None, "busy");
+        assert_eq!(due(&old, true, &cfg(), "2026-11-22", 2, &[]), None, "before the hour");
         let today = State { session: "S".into(), day: "2026-11-22".into() };
-        assert_eq!(due(&today, true, &cfg(), "2026-11-22", 9), None);
+        assert_eq!(due(&today, true, &cfg(), "2026-11-22", 9, &[]), None);
+    }
+
+    #[test]
+    fn the_queue_drains_oldest_first_after_the_reset() {
+        let item = |id: &str| super::super::queue::Item { id: id.into(), at: 1, text: "t".into(), source: "send".into(), path: PathBuf::from("/q") };
+        let q = [item("a"), item("b")];
+        let today = State { session: "S".into(), day: "2026-11-22".into() };
+        assert_eq!(due(&today, true, &cfg(), "2026-11-22", 9, &q), Some(Action::Send(item("a"))));
+        assert_eq!(due(&today, false, &cfg(), "2026-11-22", 9, &q), None, "never into a busy Bosun");
+        let old = State { session: "S".into(), day: "2026-11-21".into() };
+        assert_eq!(due(&old, true, &cfg(), "2026-11-22", 9, &q), Some(Action::Clear), "the reset first");
     }
 
     #[test]
