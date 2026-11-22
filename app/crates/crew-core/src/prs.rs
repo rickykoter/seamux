@@ -12,6 +12,11 @@
 //! checks. `failing` and `gating` are [{ name, url }]. A merged PR read since
 //! plan landing also has `merge: { sha, at, base }`: its merge commit (40
 //! hex), when it merged (ISO 8601) and the branch it merged into.
+//!
+//! `at` is crew-sync's read. The land watcher also re-reads a list that
+//! holds an open PR every minute (plan landing-latency) and stamps that in
+//! `fast_at`, leaving `at` alone so crew-sync's own refresh still comes due.
+//! crew-sync's write drops `fast_at`.
 
 use std::path::PathBuf;
 

@@ -8,6 +8,10 @@
 //! may restart the app). One landing per repo runs at a time; the next
 //! waits, in merge order.
 //!
+//! crew-sync re-reads a list only every CREW_GH_INTERVAL, so each tick also
+//! re-reads, on a thread of its own, every list that holds an open PR and
+//! is over a minute old (fast_due, prs::refresh_known).
+//!
 //! What it knows is kept in <crew home>/landings/index.json, so a merge
 //! lands once across restarts; every read-change-write of it holds INDEX.
 //! Each tick reads the landings it has not finished telling about, and
@@ -24,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -350,7 +355,8 @@ fn tick(app: &AppHandle, keys: &mut HashMap<String, (String, String)>) {
     let home = landing::home();
     let now = crew_core::history::now_ms() as i64 / 1000;
     let rows = crew_core::backend::open(seamux_app::backend::kind()).and_then(|b| b.workspaces()).unwrap_or_default();
-    kick_sync(rows.iter().filter(|w| !w.cwd.is_empty()).map(|w| crew_core::prs::read(&w.cwd)), now);
+    let lists: Vec<(String, Option<Value>)> = rows.iter().filter(|w| !w.cwd.is_empty()).map(|w| (w.cwd.clone(), crew_core::prs::read(&w.cwd))).collect();
+    fast_refresh(fast_due(&lists, now));
     let mut seen: Vec<(String, Entry)> = Vec::new();
     for w in rows.iter().filter(|w| !w.cwd.is_empty()) {
         for s in merges_in(&w.id, &w.cwd, &crew_core::prs::list(&w.cwd), now) {
@@ -434,39 +440,43 @@ fn tick(app: &AppHandle, keys: &mut HashMap<String, (String, String)>) {
     }
 }
 
-/// Whether a PR list read at `at` (crew-sync's stamp, None for no list) is
-/// past its refresh at `now`: older than crew-sync's GitHub interval by a
-/// minute.
-pub fn stale(at: Option<f64>, now: i64, ttl: i64) -> bool {
-    at.is_some_and(|a| now as f64 - a > (ttl + 60) as f64)
+/// A list that holds a PR still able to merge is re-read this often, so a
+/// merge starts landing within about two minutes rather than waiting on
+/// crew-sync's CREW_GH_INTERVAL (plan landing-latency).
+pub const FAST_SECS: i64 = 60;
+
+/// The worktrees whose PR lists are due a fast re-read at `now`: each list
+/// holds a PR that is open or a draft and was read (by crew-sync or a fast
+/// re-read, prs::last_read) over FAST_SECS ago. A
+/// worktree with no list is crew-sync's to start. Each once, in order.
+pub fn fast_due(lists: &[(String, Option<Value>)], now: i64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (cwd, list) in lists {
+        let Some(l) = list else { continue };
+        let at = crew_cli::sync::prs::last_read(l);
+        let prs = l.get("prs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+        if now as f64 - at > FAST_SECS as f64 && crew_cli::sync::prs::has_open(prs) && !out.contains(cwd) {
+            out.push(cwd.clone());
+        }
+    }
+    out
 }
 
-/// Start crew-sync when a workspace's PR list is past its refresh. On the
-/// tmux backend only a turn's end runs it (crew-hooks sync_maybe), so a
-/// merge made while every session idles would wait for the next turn
-/// before it landed. At most once every two minutes; crew-sync's own lock
-/// and interval keep two runs from asking GitHub twice.
-fn kick_sync(lists: impl Iterator<Item = Option<Value>>, now: i64) {
-    static LAST: Mutex<i64> = Mutex::new(0);
-    let ttl = std::env::var("CREW_GH_INTERVAL").ok().and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(300);
-    let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
-    if now - *last < 120 || !lists.into_iter().any(|l| stale(l.as_ref().and_then(|v| v.get("at")).and_then(Value::as_f64), now, ttl)) {
+/// Re-read the due lists on a thread of its own, one run at a time: a slow
+/// GitHub never piles runs up or holds the tick. The next tick reads what
+/// it wrote. crew-sync (sync_watch on tmux, crew-listen on cmux) still owns
+/// the full refresh; lookout's own floor keeps the two from asking twice.
+fn fast_refresh(cwds: Vec<String>) {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if cwds.is_empty() || RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
-    *last = now;
-    let child = Command::new(crate::pane_app::seamux_cli())
-        .arg("crew-sync")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .env_remove("CLAUDECODE")
-        .env("PATH", run_path())
-        .spawn();
-    if let Ok(mut c) = child {
-        std::thread::spawn(move || {
-            let _ = c.wait();
-        });
-    }
+    std::thread::spawn(move || {
+        for cwd in &cwds {
+            let _ = std::panic::catch_unwind(|| crew_cli::sync::prs::refresh_known(cwd, FAST_SECS));
+        }
+        RUNNING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// A failed start: tried again after a growing wait, and told (once) when
@@ -837,10 +847,22 @@ mod tests {
     }
 
     #[test]
-    fn a_pr_list_is_stale_a_minute_past_its_refresh_and_none_is_not() {
-        assert!(!stale(Some(1000.0), 1000 + 360, 300));
-        assert!(stale(Some(1000.0), 1000 + 361, 300));
-        assert!(!stale(None, 1_000_000, 300), "no list: nothing to refresh");
+    fn a_list_with_an_open_pr_is_due_a_minute_after_its_read_and_others_never() {
+        let l = |at: f64, states: &[&str]| -> Option<Value> {
+            Some(json!({"at": at, "prs": states.iter().enumerate().map(|(i, s)| json!({"n": i + 1, "state": s})).collect::<Vec<_>>()}))
+        };
+        let lists = vec![
+            ("/w/open".to_string(), l(1000.0, &["merged", "open"])),
+            ("/w/draft".to_string(), l(1000.0, &["draft"])),
+            ("/w/fresh".to_string(), l(1000.0 + 30.0, &["open"])),
+            ("/w/done".to_string(), l(0.0, &["merged", "closed"])),
+            ("/w/none".to_string(), None),
+            ("/w/open".to_string(), l(1000.0, &["open"])),
+            ("/w/fast".to_string(), Some(json!({"at": 0.0, "fast_at": 1000.0 + 30.0, "prs": [{"n": 1, "state": "open"}]}))),
+        ];
+        assert_eq!(fast_due(&lists, 1000 + FAST_SECS), Vec::<String>::new(), "exactly a minute old is not yet due");
+        assert_eq!(fast_due(&lists, 1000 + FAST_SECS + 1), vec!["/w/open", "/w/draft"], "open or draft, over a minute old, each once");
+        assert_eq!(fast_due(&lists, 1000 + FAST_SECS + 31), vec!["/w/open", "/w/draft", "/w/fresh", "/w/fast"], "a fast re-read's own stamp counts");
     }
 
     #[test]
