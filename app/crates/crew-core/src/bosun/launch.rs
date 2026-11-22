@@ -90,9 +90,12 @@ impl State {
     }
 }
 
-/// The transcript Claude keeps for `session` when it runs in `root`.
-pub fn transcript(root: &Path, session: &str) -> PathBuf {
-    crate::home::project_dir(&crate::py::home(), &root.to_string_lossy()).join(format!("{session}.jsonl"))
+/// Whether Claude keeps a transcript for `session` under `projects`
+/// (~/.claude/projects). Each project folder is looked in, rather than the
+/// root's folder name worked out, since Claude Code shortens long ones.
+pub fn has_transcript(projects: &Path, session: &str) -> bool {
+    let name = format!("{session}.jsonl");
+    fs::read_dir(projects).into_iter().flatten().flatten().any(|e| e.path().join(&name).is_file())
 }
 
 /// claude's arguments: resume the kept session when its transcript is
@@ -183,6 +186,18 @@ mod tests {
         assert!(!reset_due("2026-11-21", "2026-11-22", 3, 4), "before the hour");
         assert!(!reset_due("2026-11-22", "2026-11-22", 9, 4), "same day");
         assert!(!reset_due("", "2026-11-22", 9, 4), "no conversation yet");
+    }
+
+    #[test]
+    fn a_transcript_is_found_in_any_project_folder() {
+        let d = std::env::temp_dir().join(format!("bosun-proj-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("-u-a-very-long-folder-abc123")).unwrap();
+        fs::write(d.join("-u-a-very-long-folder-abc123/S1.jsonl"), "{}").unwrap();
+        assert!(has_transcript(&d, "S1"));
+        assert!(!has_transcript(&d, "S2"));
+        assert!(!has_transcript(&d.join("missing"), "S1"));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

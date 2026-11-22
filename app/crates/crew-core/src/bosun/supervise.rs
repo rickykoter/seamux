@@ -140,7 +140,9 @@ pub fn run() -> i32 {
             }
         };
         let mut state = State::load(&dir);
-        let resume = Some(state.session.clone()).filter(|s| !s.is_empty() && launch::transcript(&cfg.root, s).is_file());
+        // Claude Code keeps transcripts under CLAUDE_CONFIG_DIR when set.
+        let projects = crate::py::env_or("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| crate::py::home().join(".claude")).join("projects");
+        let resume = Some(state.session.clone()).filter(|s| !s.is_empty() && launch::has_transcript(&projects, s));
         let fresh = tmux::new_id().to_ascii_lowercase();
         if resume.is_none() {
             state = State { session: fresh.clone(), day: launch::local_day_hour(launch::now_secs()).0 };
