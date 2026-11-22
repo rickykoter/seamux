@@ -1257,8 +1257,8 @@ check("on tmux, turn finds the pane's Claude session in its pane file",
 rc, out, calls = crew_diff("turn", SEAMUX_PANE_ID=pane_id, CLAUDE_CODE_SESSION_ID="sess-env")
 check("…CLAUDE_CODE_SESSION_ID comes first", calls and calls[0]["argv"][2] == "sess-env/last", f"{calls}")
 rc, out, calls = crew_diff("turn")
-check("…and with no session known, lookout is asked for the last turn as is",
-      calls and calls[0]["argv"][:3] == ["open", "--turn", "last"], f"{calls}")
+check("…and with no session known, crew-diff says so and opens nothing",
+      rc == 1 and "no Claude session here" in out and not calls, f"{out}\n{calls}")
 
 bad = results.count(False)
 print(f"\nworkspaces probe: {len(results) - bad} passed, {bad} failed")

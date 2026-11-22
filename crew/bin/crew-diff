@@ -68,7 +68,11 @@ PY
 
 show_turn() {
   local sid; sid="$(turn_session)"
-  "$LOOKOUT" open --turn "${sid:+$sid/}last" --title "last turn · $BRANCH"
+  if [ -z "$sid" ]; then
+    echo "crew-diff: no Claude session here (no CLAUDE_CODE_SESSION_ID, no pane file for SEAMUX_PANE_ID, no cmux session for this workspace); run it from the workspace's own pane" >&2
+    return 1
+  fi
+  "$LOOKOUT" open --turn "$sid/last" --title "last turn · $BRANCH"
 }
 
 # A range as a lookout review: real commits, so threads anchor to them.
@@ -86,13 +90,15 @@ show_commit() {  # <sha>
 }
 
 # A patch on stdin as a lookout review. The file stays in crew's cache under
-# a name for this repo, branch and source: lookout reads it again when the
-# review is rebuilt, and the same path is the same review next time.
+# a name for this checkout, branch and source: lookout reads it again when the
+# review is rebuilt, and the same path is the same review next time. A hash
+# of the checkout's path keeps two checkouts with one name apart.
 show_patch() {  # <source> <title>
   local dir file
   dir="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/crew-diff"
   mkdir -p "$dir"
-  file="$dir/$(printf '%s-%s-%s' "$(basename "$REPO")" "$BRANCH" "$1" | tr -c 'A-Za-z0-9._-' '-').patch"
+  local tag; tag="$(printf '%s' "$REPO" | shasum 2>/dev/null | cut -c1-8)"
+  file="$dir/$(printf '%s-%s-%s-%s' "$(basename "$REPO")" "$tag" "$BRANCH" "$1" | tr -c 'A-Za-z0-9._-' '-').patch"
   cat > "$file"
   if [ ! -s "$file" ]; then
     rm -f "$file"

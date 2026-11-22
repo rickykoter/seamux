@@ -258,7 +258,8 @@ if [ -n "$sandbox" ]; then
   # read-only ~/.claude and its own network namespace, so the flag is not
   # forwarded. Say so instead of silently diverging from the host behaviour.
   [ "${CREW_REMOTE:-1}" = 1 ] && say "note: remote control not yet supported in sandboxed workspaces"
-  command="$SANDBOX_BIN attach $path"
+  # Quoted: it runs through a shell, and a path may hold spaces.
+  command="$(printf '%q attach %q' "$SANDBOX_BIN" "$path")"
 fi
 
 # On the seamux app's own tmux, the app's backend opens it: seamux
@@ -279,7 +280,7 @@ if [ "$backend" = tmux ]; then
     printf '\033[32m✓\033[0m %s\n' "$full ready at $path${sandbox:+ (sandboxed)}"
   else
     printf '\033[33m!\033[0m %s\n' "the app's tmux did not open it: $opened"
-    printf '\033[32m✓\033[0m %s\n' "$full ready at $path — start it with: cd $path && $command"
+    printf '\033[32m✓\033[0m %s\n' "$full ready at $path — start it with: cd $(printf '%q' "$path") && $command"
   fi
 elif [ -x "$CMUX" ] && [ -n "$SEAMUX_BIN" ] && CMUX_BIN="$CMUX" "$SEAMUX_BIN" crew-native workspace --cwd "$path" --command "$command" --focus >/dev/null; then
   say "opened cmux workspace (native tmux)"
