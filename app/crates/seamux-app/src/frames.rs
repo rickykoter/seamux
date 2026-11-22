@@ -18,7 +18,6 @@ pub const TAIL_WAIT: Duration = Duration::from_millis(4);
 /// A frame held past this size goes out as it is.
 const FRAME_MAX: usize = 4 << 20;
 
-#[derive(Default)]
 pub struct FrameGate {
     buf: Vec<u8>,
     open: bool,
@@ -26,6 +25,14 @@ pub struct FrameGate {
     // How much of a held frame was already looked through: the next read is
     // searched from just before there, not from the frame's start again.
     seen: usize,
+    // How long a frame is held for its end: FRAME_WAIT, longer in a test.
+    frame_wait: Duration,
+}
+
+impl Default for FrameGate {
+    fn default() -> Self {
+        FrameGate { buf: Vec::new(), open: false, held: None, seen: 0, frame_wait: FRAME_WAIT }
+    }
 }
 
 impl FrameGate {
@@ -82,7 +89,7 @@ impl FrameGate {
 
     /// When the held bytes must go out, if any are held.
     pub fn deadline(&self) -> Option<Instant> {
-        self.held.map(|t| t + if self.open { FRAME_WAIT } else { TAIL_WAIT })
+        self.held.map(|t| t + if self.open { self.frame_wait } else { TAIL_WAIT })
     }
 
     /// Everything held, at once: its deadline passed, or the output ended.
@@ -98,11 +105,14 @@ impl FrameGate {
 /// FrameGate holds each frame until it ends (or its deadline passes);
 /// without, every read goes out as it came. Stops early when `send` says
 /// the page went away (returns false).
-pub fn pump(mut r: std::fs::File, whole: bool, mut send: impl FnMut(Vec<u8>) -> bool) {
+pub fn pump(r: std::fs::File, whole: bool, send: impl FnMut(Vec<u8>) -> bool) {
+    pump_through(r, whole, FrameGate::default(), send)
+}
+
+fn pump_through(mut r: std::fs::File, whole: bool, mut gate: FrameGate, mut send: impl FnMut(Vec<u8>) -> bool) {
     use std::io::Read;
     use std::os::fd::AsRawFd;
     let mut buf = vec![0u8; 64 * 1024];
-    let mut gate = FrameGate::default();
     loop {
         if let Some(due) = gate.deadline() {
             let wait = due.saturating_duration_since(Instant::now());
@@ -198,24 +208,42 @@ mod tests {
         assert_eq!(g.feed(b"\x1b[0m", now), b"\x1b[0m");
     }
 
-    /// Through a real pipe: a frame written in pieces arrives as one write,
-    /// and one whose end never comes arrives at its deadline.
-    #[test]
-    fn pump_sends_a_frame_once_and_a_stuck_one_at_its_deadline() {
-        use std::io::Write;
+    fn pipe() -> (std::fs::File, std::fs::File) {
         use std::os::fd::FromRawFd;
         let mut fds = [0; 2];
         // SAFETY: pipe(2) fills two descriptors, each owned by one File below.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        let (r, mut w) = unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) };
-        let (tx, rx) = std::sync::mpsc::channel::<(Vec<u8>, Instant)>();
-        let t = std::thread::spawn(move || pump(r, true, |b| tx.send((b, Instant::now())).is_ok()));
+        unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) }
+    }
+
+    /// Through a real pipe, a frame written in pieces arrives as one write.
+    /// The gate here holds a frame for seconds, so a slow runner's late
+    /// pieces cannot reach a deadline first.
+    #[test]
+    fn pump_sends_a_frame_written_in_pieces_once() {
+        use std::io::Write;
+        let (r, mut w) = pipe();
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let gate = FrameGate { frame_wait: Duration::from_secs(10), ..FrameGate::default() };
+        let t = std::thread::spawn(move || pump_through(r, true, gate, |b| tx.send(b).is_ok()));
         for part in [B, b"row 1 ", b"row 2", E] {
             w.write_all(part).unwrap();
             std::thread::sleep(Duration::from_millis(5));
         }
-        let (got, _) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let got = rx.recv_timeout(Duration::from_secs(20)).unwrap();
         assert_eq!(got, cat(&[B, b"row 1 row 2", E]), "the frame came in one piece");
+        drop(w);
+        t.join().unwrap();
+    }
+
+    /// Through a real pipe, a frame whose end never comes arrives at its
+    /// deadline, not before.
+    #[test]
+    fn pump_sends_a_stuck_frame_at_its_deadline() {
+        use std::io::Write;
+        let (r, mut w) = pipe();
+        let (tx, rx) = std::sync::mpsc::channel::<(Vec<u8>, Instant)>();
+        let t = std::thread::spawn(move || pump(r, true, |b| tx.send((b, Instant::now())).is_ok()));
         let sent = Instant::now();
         w.write_all(&cat(&[B, b"stuck"])).unwrap();
         let (got, at) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
