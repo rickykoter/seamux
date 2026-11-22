@@ -326,7 +326,8 @@ pub fn assign(root: &str) -> R<(String, String)> {
 
 /// The allocated color, allocating nothing (`crew-sync --dry-run`'s read).
 pub fn peek(root: &str) -> Option<String> {
-    read_entry(&entry_path(root)).and_then(|e| e.val("COLOR").map(String::from))
+    // One reader of the registry for every crate (crew-board's rows too).
+    crew_core::colors::peek(root)
 }
 
 // --- color math (Peacock's, reimplemented) ----------------------------------------
