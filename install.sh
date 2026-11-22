@@ -241,15 +241,20 @@ resolve_from() {
 }
 
 # Restart the app when it was running, so what was just installed is what runs.
+# -a: macOS pgrep and pkill skip their own ancestors by default, so when the
+# app itself runs this script (a landing does), a plain -f never finds it.
+# With -a an ancestor shell whose command line merely names the bundle would
+# match too, so the pattern is anchored: the app's argv is its binary's path.
 restart_app() {
-  pgrep -f "$APPDIR/Contents/MacOS/seamux-app" >/dev/null || return 0
+  local me="^$APPDIR/Contents/MacOS/seamux-app( |\$)"
+  pgrep -a -f "$me" >/dev/null || return 0
   if [ "$DRY" = 1 ]; then say "would restart the running seamux app"; return 0; fi
   osascript -e "tell application id \"$APP_BUNDLE_ID\" to quit" >/dev/null 2>&1
   local i; for i in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -f "$APPDIR/Contents/MacOS/seamux-app" >/dev/null || break; sleep 0.3
+    pgrep -a -f "$me" >/dev/null || break; sleep 0.3
   done
-  pkill -f "$APPDIR/Contents/MacOS/seamux-app" 2>/dev/null; sleep 0.3
-  pkill -9 -f "$APPDIR/Contents/MacOS/seamux-app" 2>/dev/null
+  pkill -a -f "$me" 2>/dev/null; sleep 0.3
+  pkill -a -9 -f "$me" 2>/dev/null
   open "$APPDIR" && ok "restarted the seamux app"
 }
 

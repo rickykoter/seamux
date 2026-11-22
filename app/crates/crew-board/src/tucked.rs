@@ -22,34 +22,8 @@ pub fn stamp() -> Option<SystemTime> {
     std::fs::metadata(file()).and_then(|m| m.modified()).ok()
 }
 
-/// How a worktree is quieted: "mute" | "snooze" | "tuck", and when a snooze
-/// ends (ms since the epoch).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Quiet {
-    pub level: String,
-    pub until: Option<u64>,
-}
-
-/// worktree root -> its level, from `text` (tucked.json's contents), at
-/// `now_ms`: a snooze without an end, or whose end has passed, is left out.
-pub fn levels(text: &str, now_ms: u64) -> HashMap<String, Quiet> {
-    let Ok(v) = serde_json::from_str::<Value>(text) else { return HashMap::new() };
-    v.get("entries")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| {
-            let path = e.get("path")?.as_str()?;
-            let level = e.get("level")?.as_str()?;
-            let until = match level {
-                "mute" | "tuck" => None,
-                "snooze" => Some(e.get("until")?.as_u64().filter(|u| *u > now_ms)?),
-                _ => return None,
-            };
-            Some((path.to_string(), Quiet { level: level.to_string(), until }))
-        })
-        .collect()
-}
+/// The parser lives in crew-core, which crew-sync reads it through too.
+pub use crew_core::tucked::{levels, Quiet};
 
 static ROOTS: Mutex<Option<HashMap<String, (String, Instant)>>> = Mutex::new(None);
 const ROOT_TTL: Duration = Duration::from_secs(300);

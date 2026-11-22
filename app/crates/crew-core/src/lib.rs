@@ -36,6 +36,7 @@ pub mod pyjson;
 pub mod radar;
 pub mod runs;
 pub mod status;
+pub mod tucked;
 pub mod typesafe;
 pub mod upgrade;
 pub mod workspace_open;
