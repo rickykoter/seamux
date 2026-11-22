@@ -6,7 +6,12 @@
 //!
 //! ```text
 //! seamux workspace-open <worktree> [--prompt TEXT] [--no-remote] [--if-missing] [--json]
+//! seamux workspace-open <worktree> --command CMD [--if-missing] [--json]
 //! ```
+//!
+//! `--command` runs CMD in the new session in place of Claude: crew-worktree
+//! opens a sandbox's `crew-sandbox attach` this way. It shapes nothing of
+//! Claude's, so it refuses `--prompt`, `--remote` and `--no-remote`.
 //!
 //! `--if-missing` opens nothing when a workspace already works in that
 //! worktree, and says which. Exit 0 when a workspace is open at the end
@@ -33,6 +38,8 @@ pub enum Outcome {
 pub struct Args {
     pub path: PathBuf,
     pub prompt: Option<String>,
+    /// What the session runs, in place of the Claude command.
+    pub command: Option<String>,
     pub remote: Option<bool>,
     pub if_missing: bool,
     pub json: bool,
@@ -45,6 +52,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     while let Some(x) = it.next() {
         match x.as_str() {
             "--prompt" => a.prompt = Some(it.next().ok_or("--prompt wants the text")?.clone()),
+            "--command" => a.command = Some(it.next().ok_or("--command wants the command")?.clone()),
             "--no-remote" => a.remote = Some(false),
             "--remote" => a.remote = Some(true),
             "--if-missing" => a.if_missing = true,
@@ -55,7 +63,24 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         }
     }
     a.path = path.ok_or("which worktree? workspace-open <path>")?;
+    if let Some(c) = &a.command {
+        if c.trim().is_empty() {
+            return Err("--command wants the command".into());
+        }
+        if a.prompt.is_some() || a.remote.is_some() {
+            return Err("--command replaces the Claude command, so it takes no --prompt, --remote or --no-remote".into());
+        }
+    }
     Ok(a)
+}
+
+/// What the new session runs: `--command` as given, else Claude with its
+/// Remote Control name and prompt.
+pub fn session_command(a: &Args, remote_name: Option<&str>) -> String {
+    match &a.command {
+        Some(c) => c.clone(),
+        None => claude_command(remote_name, a.prompt.as_deref()),
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -108,7 +133,7 @@ pub fn main(args: &[String]) -> i32 {
         let (top, repo, branch) = worktree_facts(&a.path)?;
         let s = Settings::from_env();
         let name = a.remote.unwrap_or(s.remote).then(|| format!("{}/{}", name_of(&repo), if branch.is_empty() { name_of(&top) } else { branch.clone() }));
-        let cmd = claude_command(name.as_deref(), a.prompt.as_deref());
+        let cmd = session_command(&a, name.as_deref());
         let (kind, b) = crate::backend::pick();
         let b = b?;
         let out = open_for(b.as_ref(), &top, &cmd, a.if_missing)?;
@@ -192,6 +217,25 @@ mod tests {
         assert!(parse(&s(&["/a", "/b"])).is_err());
         assert!(parse(&s(&["/a", "--prompt"])).is_err());
         assert!(parse(&s(&["/a", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn command_replaces_claude_and_refuses_what_shapes_claude() {
+        let a = parse(&s(&["/w/x", "--command", "crew-sandbox attach /w/x", "--if-missing", "--json"])).unwrap();
+        assert_eq!(a.command.as_deref(), Some("crew-sandbox attach /w/x"));
+        assert!(a.if_missing && a.json);
+        assert_eq!(session_command(&a, Some("repo/x")), "crew-sandbox attach /w/x", "as given, no Remote Control name");
+        for extra in [&["--prompt", "hi"][..], &["--remote"][..], &["--no-remote"][..]] {
+            let mut v = s(&["/w/x", "--command", "c"]);
+            v.extend(s(extra));
+            let e = parse(&v).unwrap_err();
+            assert!(e.contains("--command replaces the Claude command"), "{extra:?}: {e}");
+        }
+        assert!(parse(&s(&["/w/x", "--command"])).is_err());
+        assert!(parse(&s(&["/w/x", "--command", "  "])).is_err());
+        // Without --command, Claude as before.
+        let b = parse(&s(&["/w/x", "--prompt", "go"])).unwrap();
+        assert_eq!(session_command(&b, None), claude_command(None, Some("go")));
     }
 
     #[test]
