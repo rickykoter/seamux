@@ -147,7 +147,7 @@ fn s_or(v: &Value, default: Value) -> Value {
 
 /// The rows for the tmux backend's workspaces: its registry, each folder's
 /// git state and commits. No sidebar there, so no PR yet (crew-sync's facts
-/// fill the chips) and no colour.
+/// fill the chips), and the colour crew-color registered for the worktree.
 /// What crew-sync last published for a tmux workspace: its description
 /// tokens and its pull request ({n, state, url}, or null).
 pub type Facts = HashMap<String, (String, Value)>;
@@ -158,6 +158,7 @@ pub fn tmux_rows(
     forced: Option<&str>,
     pane: &dyn Fn(&str) -> Option<crew_core::status::Pane>,
     facts: &Facts,
+    color: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<Value> {
     rows.iter()
         .map(|w| {
@@ -187,10 +188,16 @@ pub fn tmux_rows(
                 _ => "none".to_string(),
             };
             let pr_str = |k: &str| pr.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            // The colour crew-color gave the worktree, keyed by its root (the
+            // root: pin, else its folder); none when it gave none, as cmux
+            // shows no custom_color then.
+            let color = if w.cwd.is_empty() { String::new() } else {
+                color(&crew_core::worktree::root_or(&synced, &w.cwd)).unwrap_or_default()
+            };
             json!({
                 "id": w.id, "ref": w.id, "title": if w.title.is_empty() { w.id.clone() } else { w.title.clone() },
                 "cwd": w.cwd, "desc": desc, "branch": branch, "pr": pr_n, "dirty": dirty, "running": running,
-                "raw": "", "color": "", "selected": forced.is_some_and(|f| f.eq_ignore_ascii_case(&w.id)),
+                "raw": "", "color": color, "selected": forced.is_some_and(|f| f.eq_ignore_ascii_case(&w.id)),
                 "pr_state": pr_str("state").to_ascii_lowercase(), "pr_url": pr_str("url"),
             })
         })
@@ -210,7 +217,7 @@ pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
             .into_iter()
             .map(|(id, d, pr)| (id.to_ascii_uppercase(), (d, pr)))
             .collect();
-        return tmux_rows(&rows, &live, forced, &|p| crew_core::status::read(&dir, p), &facts);
+        return tmux_rows(&rows, &live, forced, &|p| crew_core::status::read(&dir, p), &facts, &crew_core::colors::peek);
     }
     let Some(c) = cmux_cli::client() else { return Vec::new() };
     let listed = match c.workspace_list(None) {
@@ -843,11 +850,8 @@ pub fn build(o: &Opts) -> Value {
         }
     }
     crate::tucked::break_snoozes(&mut all);
-    // On tmux, lookout's page for a diff chip has nowhere to open: the
-    // review is made and served, and nothing shows it. Not offered there.
-    if crate::backend::kind() == crew_core::backend::Kind::Tmux {
-        rank::drop_chip(&mut all, "diff");
-    }
+    // On tmux the diff chip stays: framed by the seamux app, the app runs it
+    // and opens the review in the Dock's side column (plan board-tmux-chips).
     // Each workspace's panes: what each is doing, which owns the plan,
     // which has wandered past the pin.
     if let Some((live, files)) = &panes {
@@ -1063,6 +1067,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_tmux_row_wears_the_colour_crew_color_registered_for_its_root() {
+        let rows = vec![
+            crew_core::backend::WorkspaceRow { id: "W1".into(), title: "shop".into(), cwd: "/w/shop".into() },
+            crew_core::backend::WorkspaceRow { id: "W2".into(), title: "api".into(), cwd: "/w/api".into() },
+        ];
+        // W1's facts pin its root elsewhere (a folder that exists, or the pin
+        // is not followed): the colour is the pinned root's.
+        let pinned = std::env::temp_dir().join(format!("board-colour-root-{}", std::process::id()));
+        std::fs::create_dir_all(&pinned).unwrap();
+        let pinned_s = pinned.to_string_lossy().into_owned();
+        let mut facts = Facts::new();
+        facts.insert("W1".into(), (format!("root:{pinned_s} ci:pass"), Value::Null));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let color = |root: &str| {
+            asked.borrow_mut().push(root.to_string());
+            (root == pinned_s).then(|| "#2aa198".to_string())
+        };
+        let out = tmux_rows(&rows, &[], None, &|_| None, &facts, &color);
+        assert_eq!(out[0]["color"], "#2aa198");
+        assert_eq!(out[1]["color"], "", "no registered colour: none, as on cmux");
+        assert_eq!(asked.borrow().as_slice(), &[pinned_s.clone(), "/w/api".to_string()]);
+        let _ = std::fs::remove_dir_all(&pinned);
+    }
+
+    #[test]
     fn tmux_rows_come_from_the_registry_with_git_state_and_no_pr() {
         use crew_core::backend::{PaneRow, WorkspaceRow};
         // A repo of its own on a named branch: CI checks a pull request out
@@ -1079,14 +1108,14 @@ mod tests {
             WorkspaceRow { id: "W2".into(), title: "".into(), cwd: "".into() },
         ];
         let live = vec![PaneRow { id: "P1".into(), workspace: "w1".into(), cwd: here.clone(), label: "Claude".into() }];
-        let out = tmux_rows(&rows, &live, Some("W2"), &|_| None, &Facts::new());
+        let out = tmux_rows(&rows, &live, Some("W2"), &|_| None, &Facts::new(), &|_| None);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["id"], "W1");
         assert_eq!(out[0]["title"], "shop");
         assert_eq!(out[0]["cwd"], here.as_str());
         assert_eq!(out[0]["running"], false, "a live pane with no file is no work");
         let working = |id: &str| { let mut p = crew_core::status::Pane::new("W1", id); p.state = "working".into(); Some(p) };
-        let busy = tmux_rows(&rows, &live, Some("W2"), &working, &Facts::new());
+        let busy = tmux_rows(&rows, &live, Some("W2"), &working, &Facts::new(), &|_| None);
         assert_eq!(busy[0]["running"], true, "its pane's file says working, matched in any case");
         assert_eq!(out[0]["pr"], "none");
         assert_eq!(out[0]["branch"], "dev/rows", "the repo's branch");
@@ -1110,13 +1139,13 @@ mod tests {
                 crew_core::status::Pane::from_json(&json!({"ws": "W1", "surface": id, "state": st}))
             }
         };
-        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "needs_input"), &Facts::new())[0]["desc"], "phase:waiting");
-        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "idle"), &Facts::new())[0]["desc"], "phase:working");
-        assert_eq!(tmux_rows(&rows, &live, None, &at("idle", "idle"), &Facts::new())[0]["desc"], "");
+        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "needs_input"), &Facts::new(), &|_| None)[0]["desc"], "phase:waiting");
+        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "idle"), &Facts::new(), &|_| None)[0]["desc"], "phase:working");
+        assert_eq!(tmux_rows(&rows, &live, None, &at("idle", "idle"), &Facts::new(), &|_| None)[0]["desc"], "");
         // crew-sync's tokens and PR ride along; its stale phase gives way to the panes'.
         let mut facts = Facts::new();
         facts.insert("W1".into(), ("ci:fail phase:working jira:x".into(), json!({"n": 12, "state": "OPEN", "url": "https://x/12"})));
-        let r = &tmux_rows(&rows, &live, None, &at("needs_input", "idle"), &facts)[0];
+        let r = &tmux_rows(&rows, &live, None, &at("needs_input", "idle"), &facts, &|_| None)[0];
         assert_eq!(r["desc"], "ci:fail jira:x phase:waiting");
         assert_eq!((r["pr"].clone(), r["pr_state"].clone(), r["pr_url"].clone()), (json!("12"), json!("open"), json!("https://x/12")));
     }
