@@ -312,21 +312,18 @@ export class DockView {
   private tell(): void {
     const peek = !!this.peek && this.peek === this.ws;
     if (this.frame?.contentWindow && this.origin)
-      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs", "held", "land", "diff"], peek, sprite: sprite.get() }, this.origin);
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs", "held", "land", ...(document.body.dataset.backend === "tmux" ? ["diff"] : [])], peek, sprite: sprite.get() }, this.origin);
   }
 
-  /** The board's diff chip: a lookout review of the workspace's worktree,
-   *  made through crew-board (diff_app.rs), opened in the side column with
-   *  the workspace in front. Says why when there is no folder or no review. */
+  /** The board's diff chip, on the tmux backend only (its can list says
+   *  diff there; on cmux the chip stays lookout's cmux host's): a lookout
+   *  review of the workspace's own folder, made through crew-board
+   *  (diff_app.rs), opened in the side column with the workspace in front.
+   *  Says why when there is no review. */
   private async openDiff(ws: string, name: string): Promise<void> {
-    const cwd = this.tiles.find((t) => t.workspace === ws && t.cwd)?.cwd ?? "";
-    if (!cwd) {
-      say(`Couldn't find ${name}'s folder`, undefined, true);
-      return;
-    }
     say(`Reviewing ${name}…`);
     try {
-      const id = await invoke<string>("board_diff", { cwd, ws });
+      const id = await invoke<string>("board_diff", { ws });
       this.select(ws, true);
       await this.sheet.open({ path: `/review/${id}`, title: `${name} review`, workspace: ws });
     } catch (err) {

@@ -343,9 +343,15 @@ fn lookout_diff_run(node: &str, engine: &str, cwd: &str, wsid: &str, json: bool)
     cmd.args([engine, "open", "--view-only", "--at", cwd]).current_dir(cwd).env_remove("CMUX_WORKSPACE_ID").env_remove("SEAMUX_WORKSPACE_ID");
     if json {
         // The caller shows the page itself (the app's Dock): lookout only
-        // makes and stores the review, and names it. On the seamux host it
-        // opens nothing and starts no server of its own.
-        cmd.arg("--json").env("SEAMUX_HOST", "seamux");
+        // makes and stores the review, and names it.
+        cmd.arg("--json");
+    }
+    if json || crate::backend::kind() == crew_core::backend::Kind::Tmux {
+        // On the seamux host lookout opens nothing and starts no server of
+        // its own: the app's Dock lists the workspace's reviews. The board's
+        // server has no pane, so without this lookout would take the
+        // terminal host and serve the page itself.
+        cmd.env("SEAMUX_HOST", "seamux");
     }
     if !wsid.is_empty() {
         let var = if crate::backend::kind() == crew_core::backend::Kind::Tmux { "SEAMUX_WORKSPACE_ID" } else { "CMUX_WORKSPACE_ID" };
