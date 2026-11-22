@@ -13,7 +13,7 @@ directory. Their worktrees sit beside them in `<repo>.worktrees/`.
 |---|---|---|
 | branches in flight | `git --no-optional-locks -C <repo> worktree list` and `git --no-optional-locks -C <repo> for-each-ref --sort=-committerdate --count=10 --format='%(refname:short) %(committerdate:relative)' refs/heads` | local refs only: never fetch, it writes under the root |
 | open PRs | `gh pr list -R <owner/repo> --state open --json number,title,author,isDraft,reviewDecision,statusCheckRollup` | `<owner/repo>` from `git -C <repo> remote get-url origin` |
-| live workspaces | `seamux bosun context radar --json` | each repo's `contacts`: a live workspace's title, branch and state. It reads the registry without writing, and leaves the Bosun's own row out. Don't use `seamux workspaces list-json` or another workspace list: they write the registry back, and the sandbox refuses that |
+| live workspaces | `seamux bosun context radar --json` | each repo's `contacts`: a live workspace's title, branch and state. It reads the registry without writing, and leaves the Bosun's own row out. Don't use `seamux workspaces list-json` or another workspace list: they write the registry back, and the sandbox refuses that. If `seamux bosun context` is not there yet (an older seamux says the subcommand is unknown), put live workspaces under Not checked and name that error |
 | recent deploys | `gh api 'repos/<owner/repo>/deployments?per_page=5'`, else `gh release list -R <owner/repo> --limit 3`, else the Datadog or Splunk MCP's deploy events | name the source you used |
 
 Run independent reads side by side. Skip a repo with no remote for PRs and
