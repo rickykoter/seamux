@@ -37,6 +37,9 @@ What is asserted:
     it would delete (not on node_modules, nor on a copy of the primary
     checkout's) and on a cmux it cannot find, and otherwise force-closes and
     removes the worktree.
+  - crew-worktree opens its worktree through seamux workspace-open --command
+    on the app's tmux, says why and prints the command when that fails, and
+    keeps crew-native on cmux.
 
     python3 crew/tools/workspaces_probe.py      exit 0 when all hold
 """
@@ -1091,6 +1094,73 @@ os.remove(os.path.join(reg_dir, "workspaces.json"))
 rc, out = reclaim("--yes", "ws-l")
 check("an idle agent is force-closed and the worktree removed",
       rc == 0 and "workspace close ws-l --force" in log() and not rows() and not os.path.isdir(landed), out)
+
+# --- crew-worktree, on each backend (plan cmux-shell-tools) -----------------
+# A temp repo with a local bare origin, a stub seamux that logs its calls and
+# answers `workspaces backend` from STUB_BACKEND, and a stub cmux. HOME is a
+# temp dir: nothing here reaches the real stores (L8).
+print("crew-worktree")
+WTOOL = os.path.join(CREW, "bin", "crew-worktree")
+wt_root = os.path.join(T, "wt")
+wt_code = os.path.join(wt_root, "code")
+wt_origin = os.path.join(wt_root, "shop.git")
+os.makedirs(wt_code)
+subprocess.run(["git", "init", "-q", "--bare", "-b", "main", wt_origin], check=True, env=ENV)
+wt_main = os.path.join(wt_code, "shop")
+subprocess.run(["git", "clone", "-q", wt_origin, wt_main], check=True, env=ENV, capture_output=True)
+subprocess.run(["git", "-C", wt_main, "-c", "user.name=p", "-c", "user.email=p@example.invalid",
+                "commit", "-q", "--allow-empty", "-m", "first"], check=True, env=ENV)
+subprocess.run(["git", "-C", wt_main, "push", "-q", "origin", "HEAD:main"], check=True, env=ENV, capture_output=True)
+subprocess.run(["git", "-C", wt_main, "remote", "set-head", "origin", "main"], check=True, env=ENV, capture_output=True)
+WT_LOG = os.path.join(wt_root, "calls.jsonl")
+STUB_SEAMUX = os.path.join(wt_root, "seamux")
+with open(STUB_SEAMUX, "w") as fh:
+    fh.write("#!%s\n" % sys.executable + r"""import json, os, sys
+a = sys.argv[1:]
+open(os.environ["WT_LOG"], "a").write(json.dumps(["seamux"] + a) + "\n")
+if a[:2] == ["workspaces", "backend"]:
+    print(os.environ.get("STUB_BACKEND", "")); sys.exit(0 if os.environ.get("STUB_BACKEND") else 1)
+if a[:1] == ["workspace-open"]:
+    if os.environ.get("STUB_OPEN_RC", "0") != "0":
+        print("workspace-open: tmux refused", file=sys.stderr); sys.exit(1)
+    print("opened W9 for %s (tmux)" % a[1]); sys.exit(0)
+sys.exit(0)
+""")
+STUB_CMUX = os.path.join(wt_root, "cmux")
+with open(STUB_CMUX, "w") as fh:
+    fh.write("#!%s\n" % sys.executable + r"""import json, os, sys
+open(os.environ["WT_LOG"], "a").write(json.dumps(["cmux"] + sys.argv[1:]) + "\n")
+""")
+os.chmod(STUB_SEAMUX, 0o755)
+os.chmod(STUB_CMUX, 0o755)
+
+
+def worktree(branch, *argv, **extra):
+    open(WT_LOG, "w").close()
+    env = dict(ENV, HOME=os.path.join(wt_root, "home"), CREW_CODE_ROOT=wt_code, SEAMUX_BIN=STUB_SEAMUX,
+               CREW_CMUX=STUB_CMUX, CREW_REMOTE="1", WT_LOG=WT_LOG, **extra)
+    r = subprocess.run(["bash", WTOOL, "--repo", "shop"] + list(argv) + [branch], cwd=wt_root, env=env,
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    calls = [json.loads(l) for l in open(WT_LOG) if l.strip()]
+    return r.returncode, r.stdout + r.stderr, calls
+
+
+wt_path = os.path.join(wt_code, "shop.worktrees", "on-tmux")
+rc, out, calls = worktree("on-tmux", STUB_BACKEND="tmux")
+opens = [c for c in calls if c[1:2] == ["workspace-open"]]
+check("on tmux, crew-worktree opens the worktree through seamux workspace-open --command",
+      rc == 0 and opens == [["seamux", "workspace-open", wt_path, "--command", 'claude --remote-control "shop/dev/on-tmux"']]
+      and os.path.isdir(wt_path) and "dev/on-tmux ready at" in out and "open it yourself" not in out, f"{out}\n{calls}")
+check("…and never calls cmux or crew-native there",
+      not [c for c in calls if c[0] == "cmux" or c[1:2] == ["crew-native"]], str(calls))
+rc, out, calls = worktree("refused", STUB_BACKEND="tmux", STUB_OPEN_RC="1")
+check("when workspace-open fails, crew-worktree says why and prints the command to start it with",
+      rc == 0 and "did not open it: workspace-open: tmux refused" in out
+      and "start it with: cd " in out and 'claude --remote-control "shop/dev/refused"' in out, out)
+rc, out, calls = worktree("on-cmux", STUB_BACKEND="cmux")
+check("on cmux, crew-worktree still opens a native session through crew-native",
+      rc == 0 and any(c[1:3] == ["crew-native", "workspace"] for c in calls)
+      and not [c for c in calls if c[1:2] == ["workspace-open"]], f"{out}\n{calls}")
 
 bad = results.count(False)
 print(f"\nworkspaces probe: {len(results) - bad} passed, {bad} failed")

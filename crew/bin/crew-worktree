@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # crew-worktree [--repo <name|path>] [--sandbox [--claude=link|isolated]]
 #               [--dry-run] [branch] [base]
-#   new worktree for any repo under ~/code, ready to commit, opened as a cmux
-#   workspace with Claude already running.
+#   new worktree for any repo under ~/code, ready to commit, opened as a
+#   workspace (cmux's, or the seamux app's own tmux) with Claude already running.
 #
 # Which repo, in order:
 #   --repo <name|path>   explicit; a bare name resolves under $CREW_CODE_ROOT
@@ -261,12 +261,27 @@ if [ -n "$sandbox" ]; then
   command="$SANDBOX_BIN attach $path"
 fi
 
-# A native session (cmux local-tmux, which the seamux app draws too), as every
-# new session starts, through the seamux CLI. A plain cmux terminal only when
-# seamux is missing or opened no workspace; when its native start fails it runs
-# Claude in the workspace's own terminal and says so.
+# On the seamux app's own tmux, the app's backend opens it: seamux
+# workspace-open runs this script's command as given (Claude, or the sandbox
+# attach), so both look the same as on cmux. If it fails, say so and leave
+# the command to run by hand.
+#
+# On cmux, a native session (cmux local-tmux, which the seamux app draws too),
+# as every new session starts, through the seamux CLI. A plain cmux terminal
+# only when seamux is missing or opened no workspace; when its native start
+# fails it runs Claude in the workspace's own terminal and says so.
 SEAMUX_BIN="${SEAMUX_BIN:-$(command -v seamux 2>/dev/null || true)}"
-if [ -x "$CMUX" ] && [ -n "$SEAMUX_BIN" ] && CMUX_BIN="$CMUX" "$SEAMUX_BIN" crew-native workspace --cwd "$path" --command "$command" --focus >/dev/null; then
+backend=""
+[ -n "$SEAMUX_BIN" ] && backend="$("$SEAMUX_BIN" workspaces backend 2>/dev/null || true)"
+if [ "$backend" = tmux ]; then
+  if opened="$("$SEAMUX_BIN" workspace-open "$path" --command "$command" 2>&1)"; then
+    say "$opened"
+    printf '\033[32m✓\033[0m %s\n' "$full ready at $path${sandbox:+ (sandboxed)}"
+  else
+    printf '\033[33m!\033[0m %s\n' "the app's tmux did not open it: $opened"
+    printf '\033[32m✓\033[0m %s\n' "$full ready at $path — start it with: cd $path && $command"
+  fi
+elif [ -x "$CMUX" ] && [ -n "$SEAMUX_BIN" ] && CMUX_BIN="$CMUX" "$SEAMUX_BIN" crew-native workspace --cwd "$path" --command "$command" --focus >/dev/null; then
   say "opened cmux workspace (native tmux)"
   printf '\033[32m✓\033[0m %s\n' "$full ready at $path${sandbox:+ (sandboxed)}"
 elif [ -x "$CMUX" ]; then

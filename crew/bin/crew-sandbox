@@ -129,7 +129,9 @@ esac
 ROOT="$(git -C "${target:-${WS_CWD:-$PWD}}" rev-parse --show-toplevel 2>/dev/null \
   || printf '%s' "${target:-${WS_CWD:-$PWD}}")"
 BRANCH="$(git -C "$ROOT" branch --show-current 2>/dev/null || true)"
-WS="${CMUX_WORKSPACE_ID:-}"
+# The workspace it was made for: the one named, else this pane's, on the
+# seamux app's tmux (SEAMUX_*) or cmux.
+WS="${ws_given:-${SEAMUX_WORKSPACE_ID:-${CMUX_WORKSPACE_ID:-}}}"
 
 root_hash() { printf '%s' "$1" | md5 -q 2>/dev/null || printf '%s' "$1" | md5sum | cut -d' ' -f1; }
 reg_file() { printf '%s/%s' "$REG" "$(root_hash "$1")"; }
