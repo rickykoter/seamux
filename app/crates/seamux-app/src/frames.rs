@@ -23,6 +23,9 @@ pub struct FrameGate {
     buf: Vec<u8>,
     open: bool,
     held: Option<Instant>,
+    // How much of a held frame was already looked through: the next read is
+    // searched from just before there, not from the frame's start again.
+    seen: usize,
 }
 
 impl FrameGate {
@@ -30,10 +33,11 @@ impl FrameGate {
     pub fn feed(&mut self, data: &[u8], now: Instant) -> Vec<u8> {
         self.buf.extend_from_slice(data);
         // Everything before `ready` goes out: the start of the first frame
-        // not yet ended, or all of it. A held frame starts with its begin
-        // marker, so looking again from the start finds it, already open.
+        // not yet ended, or all of it. A held frame is searched again only
+        // from where the last read ended, less a marker's length (a marker
+        // may have been cut there).
         let mut ready = if self.open { 0 } else { self.buf.len() };
-        let mut i = 0;
+        let mut i = if self.open { self.seen.saturating_sub(MARK.len()) } else { 0 };
         while let Some(k) = find(&self.buf[i..], MARK) {
             let p = i + k;
             let Some(&last) = self.buf.get(p + MARK.len()) else {
@@ -66,6 +70,7 @@ impl FrameGate {
             return self.flush();
         }
         let out: Vec<u8> = self.buf.drain(..ready).collect();
+        self.seen = if self.open { self.buf.len() } else { 0 };
         if self.buf.is_empty() {
             self.held = None;
         } else if !out.is_empty() || self.held.is_none() {
@@ -84,6 +89,7 @@ impl FrameGate {
     pub fn flush(&mut self) -> Vec<u8> {
         self.open = false;
         self.held = None;
+        self.seen = 0;
         std::mem::take(&mut self.buf)
     }
 }
