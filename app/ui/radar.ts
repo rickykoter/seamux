@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { askButton } from "./bosun_ask";
+import { workspaceAsk } from "./bosun_model";
 
 // The shape of radar_frame (crates/seamux-app/src/radar.rs).
 type Planned = { path: string; plan: string; inc: number; title: string };
@@ -760,6 +762,11 @@ export class RadarView {
     return b;
   }
 
+  /** Ask the Bosun about a workspace: its name, branch, worktree and files go with the question. */
+  private askButton(c: Contact, cls: string): HTMLButtonElement {
+    return askButton(() => workspaceAsk(c), cls);
+  }
+
   /** A workspace's badge: its colour with its letter, hollow when it only plans the file. */
   private badge(i: number, planned = false): HTMLSpanElement {
     const c = this.current()!.contacts[i];
@@ -902,7 +909,7 @@ export class RadarView {
     if (c.state === "needs_input") top.append(h("span", "radar-ask", "needs you"));
     const open = this.jumpButton(c, "Open", "radar-open");
     if (c.state === "needs_input") open.classList.add("keep");
-    top.append(open);
+    top.append(open, this.askButton(c, "radar-open"));
     // Who it collides with, by badge: the first four, then "+N".
     const withRow = h("div", "radar-with");
     const caret = h("span", "radar-caret", opened ? "▾" : "▸");
@@ -943,7 +950,7 @@ export class RadarView {
         n.title = o.title;
         head.append(this.badge(p.other), n);
         if (o.state === "needs_input") head.append(h("span", "radar-ask", "needs you"));
-        head.append(this.jumpButton(o, "Open", "radar-open keep"));
+        head.append(this.jumpButton(o, "Open", "radar-open keep"), this.askButton(o, "radar-open keep"));
         pr.append(head);
         this.hover(pr, null, p.files);
         const ful = h("ul", "radar-list");
@@ -1064,7 +1071,9 @@ export class RadarView {
       li.append(top);
       if (ed) li.append(h("div", "radar-meta", `editing on ${c.branch}`));
       for (const p of pl) li.append(h("div", "radar-meta", `planned in ${p.plan}, increment ${p.inc}${p.title ? `: ${p.title}` : ""}`));
-      li.append(this.jumpButton(c));
+      const acts = h("div", "radar-acts");
+      acts.append(this.jumpButton(c), this.askButton(c, "radar-jump"));
+      li.append(acts);
       ul.append(li);
     }
     this.card.append(ul);
@@ -1124,7 +1133,9 @@ export class RadarView {
     if (c.state === "needs_input") head.append(h("span", "radar-ask", "needs you"));
     this.card.append(head, h("p", "radar-dim", `branch ${c.branch}`), h("p", "radar-dim", `worktree ${c.root}`));
     if (c.partial) this.card.append(h("p", "radar-warn", "Git didn't answer in time on this worktree, so this is its last good reading and may be missing files."));
-    this.card.append(this.jumpButton(c));
+    const acts = h("div", "radar-acts");
+    acts.append(this.jumpButton(c), this.askButton(c, "radar-jump"));
+    this.card.append(acts);
     this.banded([...new Set([...c.editing, ...c.planned.map((p) => p.path)])], marksOf(repo), i);
   }
 }

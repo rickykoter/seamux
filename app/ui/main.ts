@@ -88,6 +88,7 @@ tabs.onSelect = (id) => {
   radarView.setShown(id === "radar");
   if (id === "doctor") doctorView.shown();
   bosunView.setShown(id === "bosun");
+  if (id === "bosun") bosunView.focusMain();
 };
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
 // at the end of the strip. Choosing a session shows it in the Dock.
@@ -127,6 +128,10 @@ void listen<{ review: string; item: string }>("notify:review", (e) => {
   tabs.select("review");
   void reviewView.focus(e.payload.review, e.payload.item);
 });
+
+// Ask the Bosun from Radar or Lookout (bosun_ask.ts) queued a question: the
+// Bosun drops down so the answer can be watched.
+window.addEventListener("seamux:bosun-asked", () => bosunView.afterAsk());
 
 // A pane's link opens its page in the Dock's side column, and only there
 // (sheet.ts linkSheet): with another view up, the Dock comes forward first.

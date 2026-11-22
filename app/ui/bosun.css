@@ -112,6 +112,41 @@ body[data-bosun="working"] .tab[data-tab="bosun"]::after {
   content: ""; position: absolute; top: 5px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--working);
 }
 
+/* ---- Ask the Bosun (bosun_ask.ts), on Radar rows and Lookout reviews ---- */
+/* The Bosun runs on tmux only: elsewhere, no Ask. */
+body:not([data-backend="tmux"]) .bosun-ask-btn, body:not([data-backend="tmux"]) .bosun-ask-item { display: none !important; }
+.radar-acts { display: flex; gap: 6px; align-items: center; margin: 4px 0 0 24px; }
+.radar-card > .radar-acts { margin: 8px 0 0; }
+.radar-acts > .radar-jump { margin: 0; }
+.radar-open.bosun-ask-btn { margin-left: 4px; }
+.bosun-askbox {
+  position: fixed; z-index: 60; width: 340px; max-width: calc(100vw - 16px); display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border-radius: 10px; background: var(--card); color: var(--fg);
+  border: 1px solid var(--line2); box-shadow: 0 10px 28px var(--shade), 0 1px 3px var(--shade);
+  font-size: var(--fs-2);
+}
+.bosun-askbox-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bosun-askbox-t { flex: none; font-weight: 600; }
+.bosun-askbox-chip {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-1);
+  padding: 1px 8px; border-radius: 999px; background: var(--on); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line);
+}
+.bosun-askbox-q {
+  font: inherit; line-height: 1.4; resize: vertical; min-height: 54px; padding: 6px 8px; border-radius: 7px;
+  border: 1px solid var(--line2); background: var(--field); color: var(--fg);
+}
+.bosun-askbox-q:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.bosun-askbox-err { margin: 0; color: var(--bad-t); font-size: var(--fs-1); }
+.bosun-askbox-err[hidden] { display: none; }
+.bosun-askbox-foot { display: flex; align-items: center; gap: 8px; }
+.bosun-askbox-hint { flex: 1; color: var(--muted); font-size: var(--fs-1); }
+.bosun-askbox-send {
+  font: inherit; padding: 4px 12px; border-radius: 6px; border: 0; cursor: pointer;
+  background: var(--primary); color: var(--on-primary);
+}
+.bosun-askbox-send:disabled { opacity: 0.6; cursor: default; }
+.bosun-askbox-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 @media (prefers-reduced-motion: reduce) {
   .bosun-drop, .bosun-dim { transition: none; }
   .bosun-whistle .bw-arc, .bosun-whistle .bw-body { animation: none !important; }

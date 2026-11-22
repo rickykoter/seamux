@@ -2,7 +2,7 @@
 // rail's days and cards, the whistle's mood and what ⌘B does. A pure
 // module, which Node runs as TypeScript.
 import {
-  card, chips, dayBefore, dayLabel, daysToLoad, dropAct, firstLine, freshIds, fromLabel, mood, rail, recheck, sourceTarget,
+  askText, card, chips, dayBefore, dayLabel, daysToLoad, dropAct, firstLine, freshIds, fromLabel, mood, rail, recheck, reviewAsk, sourceTarget, tilde, workspaceAsk,
   type Entry, type LogPage,
 } from "./bosun_model.ts";
 
@@ -76,6 +76,28 @@ ok("a URL source opens as a URL", JSON.stringify(sourceTarget({ kind: "gh", ref:
 ok("a file:line source opens the file at its line", JSON.stringify(sourceTarget({ kind: "file", ref: "/u/code/r/src/a.rs:42", label: "" })) === '{"path":"/u/code/r/src/a.rs","line":42}');
 ok("a file:line:col source keeps its line", JSON.stringify(sourceTarget({ kind: "file", ref: "/u/code/r/a.rs:42:7", label: "" })) === '{"path":"/u/code/r/a.rs","line":42}');
 ok("a query or ticket key opens nowhere", sourceTarget({ kind: "sql", ref: "select 1", label: "" }) === null && sourceTarget({ kind: "jira", ref: "PROJ-9", label: "" }) === null);
+
+// ---- Ask the Bosun ----
+const w = workspaceAsk({
+  title: "checkout-api", branch: "feat/coupons", root: "/Users/me/code/shop.worktrees/coupons",
+  editing: ["api/routes.rs", "api/coupons.rs", "web/form.tsx", "web/receipt.tsx"], planned: [{ plan: "coupons", inc: 2 }, { plan: "coupons", inc: 2 }],
+});
+ok("a Radar ask's chip is the workspace and its branch", w.chip === "checkout-api · feat/coupons" && w.from === "Radar");
+ok("its facts name the worktree with ~", w.facts.includes("worktree ~/code/shop.worktrees/coupons"), w.facts);
+ok("its files are counted and the first few named", w.facts.includes("editing 4 files: routes.rs, coupons.rs, form.tsx and 1 more"), w.facts);
+ok("a plan increment is named once", w.facts.filter((f) => f.startsWith("planned")).join() === "planned in coupons increment 2", w.facts);
+ok("a workspace with no branch or files says only its name", workspaceAsk({ title: "x", branch: "", root: "", editing: [], planned: [] }).facts.join() === "workspace x");
+const j = reviewAsk({ title: "coupons", repo: "acme/shop", branch: "feat/coupons", pr: 812, url: "https://github.com/acme/shop/pull/812", open: { blocker: 1, major: 0, minor: 2 } });
+ok("a review ask's chip names its PR", j.chip === "coupons · PR #812" && j.from === "Lookout");
+ok("its facts carry the PR link and the open findings", j.facts.includes("PR #812 (https://github.com/acme/shop/pull/812)") && j.facts.includes("open findings: 1 blocker, 2 minor"), j.facts);
+ok("a title that names its PR is not told it twice", reviewAsk({ title: "shop · PR #41", pr: 41 }).chip === "shop · PR #41");
+ok("a review with nothing open says so", reviewAsk({ title: "t", open: {} }).facts.includes("no open findings"));
+ok("a PR row carries its state", reviewAsk({ title: "Fix it", pr: 9, url: "u", state: "draft" }).facts.includes("PR #9 (u), draft"));
+ok("a review with no PR asks about the change", reviewAsk({ title: "t", branch: "b" }).suggest.startsWith("What's the state of this change"));
+const text = askText(w, "  Is this safe to merge?  ");
+ok("the queued text leads with the question", text.startsWith("Is this safe to merge?\n\nContext (asked from the app's Radar): workspace checkout-api; branch feat/coupons;"), text);
+ok("the context ends in one full stop", text.endsWith("planned in coupons increment 2."), text);
+ok("~ replaces only a home folder", tilde("/Users/me/code") === "~/code" && tilde("/opt/Users/me") === "/opt/Users/me");
 
 console.log(`bosun_probe: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

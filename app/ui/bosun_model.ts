@@ -135,6 +135,68 @@ export function recheck(e: Entry): string {
   return e.question.trim();
 }
 
+/** ~ for the home folder in a path. */
+export function tilde(p: string): string {
+  return p.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+}
+
+// ---- Ask the Bosun (bosun_ask.ts) ----
+
+/** What an Ask from a Radar row or a Lookout review carries: the chip the
+ *  box shows, the facts written into the question, and a question to start from. */
+export type AskContext = { from: "Radar" | "Lookout"; chip: string; facts: string[]; suggest: string };
+
+/** "4 files: a.ts, b.ts, c.ts and 1 more", by base name. */
+export function fileList(paths: string[], max = 3): string {
+  const names = paths.map((p) => p.split("/").pop() || p);
+  const shown = names.slice(0, max).join(", ");
+  const more = names.length > max ? ` and ${names.length - max} more` : "";
+  return `${names.length} file${names.length === 1 ? "" : "s"}: ${shown}${more}`;
+}
+
+/** A Radar workspace: its name, branch, worktree, and what it edits and plans. */
+export function workspaceAsk(w: { title: string; branch: string; root: string; editing: string[]; planned: { plan: string; inc: number }[] }): AskContext {
+  const facts = [`workspace ${w.title}`];
+  if (w.branch) facts.push(`branch ${w.branch}`);
+  if (w.root) facts.push(`worktree ${tilde(w.root)}`);
+  if (w.editing.length) facts.push(`editing ${fileList(w.editing)}`);
+  const plans = [...new Set(w.planned.map((p) => `${p.plan} increment ${p.inc}`))];
+  if (plans.length) facts.push(`planned in ${plans.join(", ")}`);
+  return {
+    from: "Radar",
+    chip: w.branch ? `${w.title} · ${w.branch}` : w.title,
+    facts,
+    suggest: `Where does ${w.title} stand against main, and is anyone else touching its files?`,
+  };
+}
+
+/** A Lookout review (a review job, a terminal review, or a PR no review covers). */
+export function reviewAsk(r: {
+  title: string; repo?: string; branch?: string; root?: string; pr?: number | null; url?: string | null; state?: string; open?: Record<string, number>;
+}): AskContext {
+  const facts = [`Lookout review ${r.title}`];
+  if (r.repo) facts.push(`repo ${r.repo}`);
+  if (r.branch) facts.push(`branch ${r.branch}`);
+  if (r.root) facts.push(`worktree ${tilde(r.root)}`);
+  if (r.pr) facts.push(`PR #${r.pr}${r.url ? ` (${r.url})` : ""}${r.state ? `, ${r.state}` : ""}`);
+  else if (r.url) facts.push(r.url);
+  const open = Object.entries(r.open ?? {}).filter(([, n]) => n > 0);
+  if (r.open) facts.push(open.length ? `open findings: ${open.map(([s, n]) => `${n} ${s}`).join(", ")}` : "no open findings");
+  return {
+    from: "Lookout",
+    // A title that already names its PR ("shop · PR #41") is not told it twice.
+    chip: r.pr && !r.title.includes(`#${r.pr}`) ? `${r.title} · PR #${r.pr}` : !r.pr && r.branch ? `${r.title} · ${r.branch}` : r.title,
+    facts,
+    suggest: r.pr ? `What's the state of PR #${r.pr}: its checks, its reviews, and what is left before it merges?` : "What's the state of this change, and what is left before it can merge?",
+  };
+}
+
+/** The queued text: the question, then its context as one short line. */
+export function askText(ctx: AskContext, question: string): string {
+  const q = question.trim();
+  return `${q}\n\nContext (asked from the app's ${ctx.from}): ${ctx.facts.join("; ")}.`;
+}
+
 /** Where a source opens: a URL, an absolute file at a line, or nowhere (a query's text, a ticket key). */
 export type Target = { url: string } | { path: string; line?: number } | null;
 

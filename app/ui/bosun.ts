@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TermSlot } from "./native";
 import { follow, openFile } from "./panelinks";
 import {
-  daysToLoad, dropAct, freshIds, mood, rail, recheck, sourceTarget,
+  daysToLoad, dropAct, freshIds, mood, rail, recheck, sourceTarget, tilde,
   type Card, type LogPage, type Mood, type Status,
 } from "./bosun_model";
 
@@ -51,11 +51,6 @@ export function whistle(): SVGSVGElement {
     svg("path", { class: `bw-arc bw-arc${i}`, d: `M${28 + r * 0.55} ${9.6 - r * 0.8} A ${r} ${r} 0 0 1 ${28 + r * 0.55} ${9.6 + r * 0.5}` }, arcs);
   }
   return s;
-}
-
-/** ~ for the home folder in a path, for the header. */
-function tilde(p: string): string {
-  return p.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
 }
 
 /** The ⌘4 tab and the ⌘B drop-down: one Bosun, two places to see it. */
@@ -414,12 +409,15 @@ export class BosunView {
     }, 4000);
   }
 
-  /** Queue `text` and drop the Bosun down to watch it (the Ask box, bosun_ask.ts). */
-  async send(text: string): Promise<string> {
-    const id = await invoke<string>("bosun_send", { text });
+  /** An Ask was queued (bosun_ask.ts): drop the Bosun down to watch it answer, or read now on its tab. */
+  afterAsk(): void {
     this.asked = true;
     if (!this.tabShown) this.setDrop(true);
     else this.tick();
-    return id;
+  }
+
+  /** Keyboard focus in the view's main area, its terminal (main.ts, on picking the tab). */
+  focusMain(): void {
+    window.setTimeout(() => this.term.focus(), 60);
   }
 }

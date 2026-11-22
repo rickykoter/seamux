@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openAsk } from "./bosun_ask";
+import { reviewAsk, type AskContext } from "./bosun_model";
 import { listen } from "@tauri-apps/api/event";
 import { chipFor, landPanel, mergePanel, prPanel, railEl, readLandings, stageFor, stagesOf, type Landing, type PrRow, type ShipView, type Stage } from "./release";
 
@@ -912,7 +914,8 @@ export class ReviewView {
   /** A PR no review covers: its name, its title, and the rail. */
   private drawPr(p: PrRow): void {
     const dir = p.cwd.split("/").filter(Boolean).pop() ?? p.cwd;
-    this.headOf(`${dir} · PR #${p.n}`, null, p.ws_title || "", p.url, [], { key: `pr:${p.url}`, items: [] });
+    const ask = this.askItem(() => reviewAsk({ title: p.title, root: p.cwd, pr: p.n, url: p.url, state: p.state }));
+    this.headOf(`${dir} · PR #${p.n}`, null, p.ws_title || "", p.url, [], { key: `pr:${p.url}`, items: [ask] });
     this.ctl.replaceChildren(el("p", "r-detail", p.title));
   }
 
@@ -999,6 +1002,20 @@ export class ReviewView {
    * the row folds (FOLDS, `this.fold` of them) when the width runs short.
    * `meta` shows inline unless there is a ⋯ menu to hold it.
    */
+  /** A ⋯ item that asks the Bosun about this review: the ask box opens
+   *  under the ⋯ button, once the menu has closed (bosun_ask.ts). */
+  private askItem(ctx: () => AskContext): HTMLButtonElement {
+    const b = btn("Ask the Bosun…", () => {
+      this.moreOpen = null;
+      this.render(true);
+      // The item may be gone by now: the box hangs under the ⋯ the head has after the redraw.
+      const anchor = this.head.querySelector<HTMLElement>(".r-more-btn") ?? this.head;
+      openAsk(anchor.getBoundingClientRect(), ctx());
+    }, "r-btn quiet bosun-ask-item");
+    b.title = "Ask the Bosun about this review; its branch, PR and findings go with the question";
+    return b;
+  }
+
   private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: { key: string; items: HTMLElement[] } | null = null, status: HTMLElement | null = null): void {
     const h = el("div", "r-mhead-row");
     const folds = new Set<Fold>(FOLDS.slice(0, this.fold));
@@ -1209,7 +1226,10 @@ export class ReviewView {
       if (this.confirm.get(key) === "post")
         below.push(this.confirmBox(key, `Post ${n} finding${n === 1 ? "" : "s"} as one review on ${g.repo} PR #${g.pr}? Everyone watching the pull request is notified, and the text is the reviewer's, not yours.`, "Post", () => void this.postOther(o, picked)));
     }
-    this.headOf(o.title, null, meta, g?.url || null, buttons, { key, items: [] });
+    const ask = this.askItem(() => reviewAsk({
+      title: o.title, root: o.root, branch: o.branch, repo: g?.repo, pr: g?.pr, url: g?.url, state: g?.state, open: o.open,
+    }));
+    this.headOf(o.title, null, meta, g?.url || null, buttons, { key, items: [ask] });
     // The detail line says what can be done, as the Findings menu can do it.
     const parts = [openSummary(o.open)];
     if (g?.stale) parts.push(`${g.stale} stale`);
@@ -1309,6 +1329,10 @@ export class ReviewView {
       log.title = "What the review did, step by step";
       items.push(log);
     }
+    items.push(this.askItem(() => reviewAsk({
+      title: this.title(j), repo: j.repo, branch: j.branch, pr: j.pr,
+      url: j.repo && j.pr ? `https://github.com/${j.repo}/pull/${j.pr}` : null, open: j.open,
+    })));
     const more = { key: j.id, items };
     // A fix or post underway says what it is doing on the header row.
     let status: HTMLElement | null = null;

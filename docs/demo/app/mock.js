@@ -783,7 +783,51 @@ let migrateOffers = MIGRATE_NAMES.slice(0, Number(migrateQ.get("migrate") || 0))
 }));
 const dropOffer = (pane) => (migrateOffers = migrateOffers.filter((o) => o.pane !== pane));
 
+// The Bosun (app/crates/seamux-app/src/bosun_app.rs): on tmux, a live one
+// drawn in the first demo pane, with two days of answers; on cmux, the note
+// that it needs tmux. Asks and re-checks go into a queue nobody types.
+const bosunDay = (msAgo) => new Date(Date.now() - msAgo).toISOString().slice(0, 10);
+const BOSUN_LOG = (() => {
+  const now = Date.now();
+  const e = (id, minAgo, question, answer, sources, asker) => ({ id, at: now - minAgo * 60e3, question, answer, sources, asker });
+  const today = [
+    e("b2", 40, "What's open on checkout-api?", "3 PRs open: #812 waits on review, #815 has red CI, #819 is a draft.", [
+      { kind: "github", ref: "https://github.com/acme/shop/pull/812", label: "PR 812" },
+      { kind: "github", ref: "https://github.com/acme/shop/pull/815", label: "PR 815" },
+    ], "app"),
+    e("b1", 180, "Is PROJ-311 still blocked?", "Yes. It waits on #815, whose CI is red on the payments contract test.", [
+      { kind: "jira", ref: "PROJ-311", label: "PROJ-311" },
+    ], "ask:checkout-flow"),
+  ];
+  const yesterday = [
+    e("b0", 26 * 60, "p95 latency on orders over the last 24h?", "180ms, inside the 250ms budget. One spike at 14:05 to 610ms.", [
+      { kind: "datadog", ref: "https://app.datadoghq.com/dashboard/orders", label: "orders dashboard" },
+    ], "loop:systems"),
+  ];
+  return { [bosunDay(0)]: today, [bosunDay(86400e3)]: yesterday };
+})();
+const bosunQueue = [];
+const bosunStatus = () =>
+  backend === "tmux"
+    ? { backend, tmux: true, known: true, live: true, ws: "WBOSUN", pane: [...panes.keys()][0], state: "idle", session: "bosun", day: bosunDay(0), root: `${HOME}/code` }
+    : { backend, tmux: false, known: false, live: false, why: "The Bosun runs on the app's tmux backend; this app runs on cmux." };
+
 const handlers = {
+  bosun_status: bosunStatus,
+  bosun_ensure: () => {
+    if (backend !== "tmux") throw "The Bosun runs on the app's tmux backend; this app runs on cmux.";
+    return bosunStatus();
+  },
+  bosun_log: ({ day } = {}) => {
+    const today = bosunDay(0);
+    const d = day ?? today;
+    return { day: d, today, days: Object.keys(BOSUN_LOG).sort().reverse(), entries: BOSUN_LOG[d] ?? [] };
+  },
+  bosun_send: ({ text }) => {
+    if (backend !== "tmux") throw "The Bosun runs on the app's tmux backend; this app runs on cmux.";
+    bosunQueue.push(text);
+    return `q${bosunQueue.length}`;
+  },
   migrate_offers: () => migrateOffers,
   migrate_apply: async ({ pane }) => {
     await new Promise((r) => setTimeout(r, 150));
