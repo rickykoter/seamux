@@ -137,15 +137,20 @@ pub fn render(head: &str, ix: &Index, limit: usize) -> String {
     let loops: Vec<&String> = ix.loops.iter().collect();
     let (mut dropped_a, mut dropped_q) = (0, 0);
     // A first cut, counted once: drop the oldest answers until the rest
-    // would fit, with room for the headings and the left-out line. The loop
-    // below then settles the exact text.
+    // would fit with room for the headings and the left-out line, but keep
+    // back the last one it would drop, so the cut never takes one that
+    // fits. The loop below then settles the exact text.
     let len = |v: &[&String]| v.iter().map(|x| x.chars().count()).sum::<usize>();
     let room = limit.saturating_sub(head.chars().count() + len(&queued) + len(&loops) + 400);
     let mut total = len(&answers);
-    while total > room && !answers.is_empty() {
-        total -= answers.remove(0).chars().count();
-        dropped_a += 1;
+    let mut cut = 0;
+    while total > room && cut < answers.len() {
+        total -= answers[cut].chars().count();
+        cut += 1;
     }
+    let cut = cut.saturating_sub(1);
+    answers.drain(..cut);
+    dropped_a += cut;
     loop {
         let mut out = String::from(head);
         if !answers.is_empty() || dropped_a > 0 {
@@ -300,6 +305,16 @@ mod tests {
         assert!(out.contains("- e199:") && !out.contains("- e000:"), "the newest stay");
         assert!(out.contains("older answers left out"));
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn answers_that_fit_are_all_kept() {
+        // Close to the limit, with short headings: nothing is left out.
+        let answers: Vec<String> = (0..9).map(|i| format!("- e{i}: {}\n", "q".repeat(1030))).collect();
+        let ix = Index { answers, queued: vec![], loops: vec![] };
+        let out = render("H\n", &ix, LIMIT);
+        assert!(out.chars().count() <= LIMIT);
+        assert!(!out.contains("left out") && out.contains("- e0:"), "{}", &out[..200]);
     }
 
     #[test]
