@@ -123,7 +123,8 @@ case "$1" in
   crew-plugin-root) exit 1 ;;
   crew-board-intent) exec {sys.executable} {INTENT} crew-board-intent ;;
   workspaces) case "$2" in
-      list-json) cat {os.path.join(FAKE, "ws.json")!r} 2>/dev/null ;;
+      list-json) [ -n "${{FAKE_LIST_FAIL:-}}" ] && {{ echo "registry locked" >&2; exit 1; }}
+        cat {os.path.join(FAKE, "ws.json")!r} 2>/dev/null ;;
       backend) [ -n "${{FAKE_BACKEND:-}}" ] && echo "$FAKE_BACKEND" ;;
     esac; exit 0 ;;
   crew-hook) {{ printf '%s ' "$2"; cat; echo; }} >> {os.path.join(FAKE, "hooks.log")!r} ;;
@@ -544,6 +545,14 @@ r = crew("status")
 out = r.stdout + r.stderr
 check("with neither id, crew status says it is in no pane, for the session and the workspace",
       out.count("not in a seamux app pane or a cmux terminal") == 2, out)
+r = crew("status", SEAMUX_BACKEND="tmux", CMUX_WORKSPACE_ID=W1)
+out = r.stdout + r.stderr
+check("a tmux shell with only an inherited CMUX_WORKSPACE_ID is in no pane, as crew-core's in_cmux says",
+      out.count("not in a seamux app pane or a cmux terminal") == 2, out)
+r = crew("status", FAKE_LIST_FAIL="1", **APP)
+out = r.stdout + r.stderr
+check("when list-json fails, this workspace says seamux failed and why, not that the workspace closed",
+      "seamux workspaces list-json failed: registry locked" in out and "closed?" not in out, out)
 try:
     os.remove(os.path.join(FAKE, "hooks.log"))
 except OSError:

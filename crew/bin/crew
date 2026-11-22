@@ -942,7 +942,11 @@ cmd_off() { mkdir -p "$STATE"; : > "$STATE/disabled"; echo "crew off (hooks stay
 # workspace id, the rule crew_core::ident uses. A native cmux session carries
 # SEAMUX_WORKSPACE_ID too, but not SEAMUX_BACKEND=tmux, so it stays cmux's.
 in_app_pane() { [ "${SEAMUX_BACKEND:-}" = tmux ] && [ -n "${SEAMUX_WORKSPACE_ID:-}" ]; }
-in_some_pane() { in_app_pane || [ -n "${CMUX_WORKSPACE_ID:-}" ]; }
+# A cmux pane, as crew_core::ident::in_cmux says: a CMUX_WORKSPACE_ID that a
+# shell on the app's tmux inherited (the app launched from a cmux terminal)
+# does not make it one.
+in_cmux_pane() { [ -n "${CMUX_WORKSPACE_ID:-}" ] && [ "${SEAMUX_BACKEND:-}" != tmux ]; }
+in_some_pane() { in_app_pane || in_cmux_pane; }
 
 # This session's Claude: CLAUDE_CODE_SESSION_ID when Claude runs the command,
 # else the pane file for SEAMUX_PANE_ID (the app's tmux), else cmux's hook
@@ -969,7 +973,14 @@ PY
 # This workspace on the app's tmux, as cmux's sidebar-state showed it there:
 # the registry row (title, folder, crew-sync's facts) and each pane's state.
 app_workspace() {
-  "$SEAMUX" workspaces list-json 2>/dev/null | python3 -c '
+  local rows err
+  err="$(mktemp -t crew-status)"
+  if ! rows="$("$SEAMUX" workspaces list-json 2>"$err")"; then
+    printf '  seamux workspaces list-json failed: %s\n' "$(tail -n 1 "$err" 2>/dev/null || true)"
+    rm -f "$err"; return 0
+  fi
+  rm -f "$err"
+  printf '%s' "$rows" | python3 -c '
 import glob, json, os, sys
 ws, state = sys.argv[1], sys.argv[2]
 try:
@@ -1186,7 +1197,7 @@ cmd_status() {
   head_ "this workspace"
   if in_app_pane; then
     app_workspace
-  elif [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
+  elif in_cmux_pane; then
     "$CMUX" sidebar-state 2>/dev/null | sed 's/^/  /'
   else
     printf '  not in a seamux app pane or a cmux terminal\n'
