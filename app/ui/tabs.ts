@@ -13,13 +13,15 @@ export type Tab = {
   missing?: string;
 };
 
-/** The views, in the strip, Command-1 to Command-3. The Wake is no view
+/** The views, in the strip, Command-1 to Command-4. The Wake is no view
  *  of its own: each workspace's is beside its terminal in the Dock (⌘E),
- *  with a picker for any other's, so one word means one place. */
+ *  with a picker for any other's, so one word means one place. The Bosun
+ *  (bosun.ts) also drops down over any view with ⌘B. */
 export const TABS: Tab[] = [
   { id: "dock", label: "Dock" },
   { id: "review", label: "Lookout" },
   { id: "radar", label: "Radar" },
+  { id: "bosun", label: "Bosun" },
 ];
 
 /** The pages behind the ⋯ menu: the app's own views (no path), and pages
@@ -78,6 +80,7 @@ export class Tabs {
       b.className = "tab";
       b.type = "button";
       b.textContent = tab.label;
+      b.dataset.tab = tab.id;
       b.addEventListener("click", () => this.select(tab.id));
       this.strip.append(b);
       this.buttons.set(tab.id, b);
@@ -147,7 +150,7 @@ export class Tabs {
     this.onSelect(id);
   }
 
-  /** Command-1 to Command-3 pick the views. */
+  /** Command-1 to Command-4 pick the views. */
   selectIndex(i: number): void {
     const tab = TABS[i];
     if (tab) this.select(tab.id);
