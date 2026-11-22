@@ -938,21 +938,79 @@ cmd_off() { mkdir -p "$STATE"; : > "$STATE/disabled"; echo "crew off (hooks stay
 #
 # It cannot make future turns publish. For that the session has to be restarted,
 # which `--resume` makes cheap (crew-resume does it in one keystroke).
+# A pane on the seamux app's own tmux: SEAMUX_BACKEND=tmux with its
+# workspace id, the rule crew_core::ident uses. A native cmux session carries
+# SEAMUX_WORKSPACE_ID too, but not SEAMUX_BACKEND=tmux, so it stays cmux's.
+in_app_pane() { [ "${SEAMUX_BACKEND:-}" = tmux ] && [ -n "${SEAMUX_WORKSPACE_ID:-}" ]; }
+# A cmux pane, as crew_core::ident::in_cmux says: a CMUX_WORKSPACE_ID that a
+# shell on the app's tmux inherited (the app launched from a cmux terminal)
+# does not make it one.
+in_cmux_pane() { [ -n "${CMUX_WORKSPACE_ID:-}" ] && [ "${SEAMUX_BACKEND:-}" != tmux ]; }
+in_some_pane() { in_app_pane || in_cmux_pane; }
+
+# This session's Claude: CLAUDE_CODE_SESSION_ID when Claude runs the command,
+# else the pane file for SEAMUX_PANE_ID (the app's tmux), else cmux's hook
+# store for CMUX_WORKSPACE_ID. The order crew-diff's turn view uses.
 crew_session_id() {
-  python3 - "$HOME/.cmuxterm/claude-hook-sessions.json" "${CMUX_WORKSPACE_ID:-}" <<'PY' 2>/dev/null
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then printf '%s\n' "$CLAUDE_CODE_SESSION_ID"; return; fi
+  python3 - "$STATE/pane-${SEAMUX_PANE_ID:-}.json" "${SEAMUX_PANE_ID:-}" \
+    "$HOME/.cmuxterm/claude-hook-sessions.json" "${CMUX_WORKSPACE_ID:-}" <<'PY' 2>/dev/null
 import json, sys
-try:
-    with open(sys.argv[1]) as fh:
-        d = json.load(fh)
-    print(((d.get("activeSessionsByWorkspace") or {}).get(sys.argv[2]) or {}).get("sessionId") or "")
-except Exception:
-    pass
+pane_file, pane, store, ws = sys.argv[1:5]
+def load(p):
+    try:
+        with open(p) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+sid = load(pane_file).get("session") if pane else ""
+if not sid and ws:
+    sid = ((load(store).get("activeSessionsByWorkspace") or {}).get(ws) or {}).get("sessionId")
+print(sid or "")
 PY
+}
+
+# This workspace on the app's tmux, as cmux's sidebar-state showed it there:
+# the registry row (title, folder, crew-sync's facts) and each pane's state.
+app_workspace() {
+  local rows err
+  err="$(mktemp -t crew-status)"
+  if ! rows="$("$SEAMUX" workspaces list-json 2>"$err")"; then
+    printf '  seamux workspaces list-json failed: %s\n' "$(tail -n 1 "$err" 2>/dev/null || true)"
+    rm -f "$err"; return 0
+  fi
+  rm -f "$err"
+  printf '%s' "$rows" | python3 -c '
+import glob, json, os, sys
+ws, state = sys.argv[1], sys.argv[2]
+try:
+    rows = json.load(sys.stdin).get("workspaces") or []
+except Exception:
+    rows = []
+row = next((w for w in rows if (w.get("id") or "").lower() == ws.lower()), None)
+if row is None:
+    print("  the app does not list workspace %s (closed?)" % ws)
+    sys.exit(0)
+print("  title:  %s" % (row.get("title") or "?"))
+print("  folder: %s" % (row.get("current_directory") or "?"))
+facts = [t for t in (row.get("description") or "").split() if not t.startswith("root:")]
+print("  facts:  %s" % (" ".join(facts) or "none yet"))
+for f in sorted(glob.glob(os.path.join(state, "pane-*.json"))):
+    try:
+        p = json.load(open(f))
+    except Exception:
+        continue
+    if (p.get("ws") or "").lower() != ws.lower():
+        continue
+    pid = os.path.basename(f)[5:-5]
+    sess = (" (session %s)" % p["session"][:8]) if p.get("session") else ""
+    print("  pane %s: %s%s" % (pid[:8], p.get("state") or "?", sess))
+' "$SEAMUX_WORKSPACE_ID" "$STATE"
 }
 
 cmd_adopt() {
   head_ "crew adopt"
-  [ -n "${CMUX_WORKSPACE_ID:-}" ] || { bad "not inside a cmux terminal"; return 1; }
+  in_some_pane || { bad "not in a seamux app pane or a cmux terminal"; return 1; }
 
   local sid; sid="$(crew_session_id)"
   [ -n "$sid" ] || { bad "no Claude session registered for this workspace"; return 1; }
@@ -1119,7 +1177,7 @@ cmd_status() {
   fi
 
   head_ "this session"
-  if [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
+  if in_some_pane; then
     local sid; sid="$(crew_session_id)"
     if [ -z "$sid" ]; then
       printf '  no Claude session registered for this workspace\n'
@@ -1133,14 +1191,16 @@ cmd_status() {
     fi
     [ -n "$sid" ] && printf '  session: %s\n' "$sid"
   else
-    printf '  not running inside a cmux terminal\n'
+    printf '  not in a seamux app pane or a cmux terminal\n'
   fi
 
   head_ "this workspace"
-  if [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
+  if in_app_pane; then
+    app_workspace
+  elif in_cmux_pane; then
     "$CMUX" sidebar-state 2>/dev/null | sed 's/^/  /'
   else
-    printf '  not running inside a cmux terminal\n'
+    printf '  not in a seamux app pane or a cmux terminal\n'
   fi
 }
 
@@ -1515,15 +1575,22 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
   fi
   # Computer Use is optional (crew works without it) — report, never fail.
   local _cua="$HOME/Library/Application Support/cmux/cmux-cua"
-  if [ -d "$_cua" ] && find "$_cua" -name "cmux-cua" -type f 2>/dev/null | grep -c . >/dev/null; then
+  if [ "$_backend" = tmux ]; then
+    # cmux's own helper: nothing on the app's tmux uses it, so its onboarding
+    # is not advice to give there.
+    note "Computer Use is cmux's helper; the seamux app's tmux does not use it"
+  elif [ -d "$_cua" ] && find "$_cua" -name "cmux-cua" -type f 2>/dev/null | grep -c . >/dev/null; then
     ok "Computer Use helper installed (agents can drive the browser/UI)"
   else
     warn "Computer Use not set up — optional; finish the onboarding in cmux (README: Computer Use)"
   fi
 
   head_ "context"
-  [ -n "${CMUX_WORKSPACE_ID:-}" ] && ok "CMUX_WORKSPACE_ID set (hooks will fire)" \
-    || warn "no CMUX_WORKSPACE_ID — hooks no-op outside cmux terminals"
+  # The ids the hooks read (crew_core::ident): SEAMUX_WORKSPACE_ID, which
+  # the app's tmux and cmux's native sessions set, else CMUX_WORKSPACE_ID.
+  if [ -n "${SEAMUX_WORKSPACE_ID:-}" ]; then ok "SEAMUX_WORKSPACE_ID set (hooks will fire)"
+  elif [ -n "${CMUX_WORKSPACE_ID:-}" ]; then ok "CMUX_WORKSPACE_ID set (hooks will fire)"
+  else warn "no SEAMUX_WORKSPACE_ID or CMUX_WORKSPACE_ID — hooks no-op outside the seamux app's panes and cmux terminals"; fi
 
   printf '\n'
   [ "${FAIL:-0}" -eq 0 ] && { printf '\033[32mall good\033[0m\n'; return 0; }
