@@ -36,9 +36,10 @@ export const KNOWN = {
   commands: [],
   /** Views that do not yet show what they are for. */
   views: [],
-  /** Page and console errors a listed command still causes, as a piece of
-   *  their text. Each may show or not (some race), and is stale once its
-   *  command leaves KNOWN.commands. */
+  /** Page and console errors a listed command still causes, each as
+   *  { text, while }: text is a piece of the error's text, and while is the
+   *  KNOWN.commands entry that causes it. Each may show or not (some race),
+   *  and is stale once its command leaves KNOWN.commands. */
   errors: [],
 };
 
