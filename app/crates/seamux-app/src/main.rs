@@ -25,6 +25,7 @@ mod resume_watch;
 mod review_app;
 mod shell;
 mod stop_app;
+mod sync_watch;
 mod tuck_app;
 mod views_app;
 mod wake_app;
@@ -217,6 +218,9 @@ fn main() {
             pr_watch::start(app.handle().clone());
             // Merged PRs landed by their land recipes (plan landing).
             land_watch::start_watch(app.handle().clone());
+            // crew-sync on a tick and when a workspace opens or closes, on
+            // tmux only: on cmux, crew-listen does it.
+            sync_watch::start();
             // Armed sessions a usage limit stopped, continued at the reset.
             resume_watch::start(app.handle().clone());
             Ok(())

@@ -189,6 +189,26 @@ pub fn ensure_intent() -> bool {
     }
 }
 
+/// The PATH a background crew tool runs with: the person's login shell's
+/// first, then the app's, so crew-sync finds gh. An app opened from Finder
+/// has launchd's PATH, which does not. Asked of the shell once. The same
+/// lookup as land_watch's run_path, which this plan leaves untouched
+/// (land_watch.rs stops ship at a PR); a later change folds the two.
+pub fn login_path() -> String {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let shell = crew_core::py::env_or("SHELL").unwrap_or_else(|| "/bin/zsh".into());
+        // An interactive login shell, since asdf and nvm hook in from .zshrc;
+        // the last line, since a shell may print a banner before it.
+        let login = crew_core::py::run(&shell, &["-ilc", "printf '%s' \"$PATH\""], Duration::from_secs(5))
+            .filter(|(code, _, _)| *code == 0)
+            .and_then(|(_, out, _)| out.lines().last().map(|l| l.trim().to_string()))
+            .unwrap_or_default();
+        crate::land_watch::join_path(&login, &std::env::var("PATH").unwrap_or_default())
+    })
+    .clone()
+}
+
 #[tauri::command]
 pub async fn intent_server() -> IntentServer {
     tauri::async_runtime::spawn_blocking(|| {
