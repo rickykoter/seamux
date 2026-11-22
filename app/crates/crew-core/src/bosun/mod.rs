@@ -18,6 +18,8 @@
 //!                                bosun.json's timed prompts (loops.rs)
 //! seamux bosun precompact        the PreCompact hook (stdin: its payload)
 //! seamux bosun recall            the SessionStart hook after a compaction
+//! seamux bosun context radar|lookout [--json]
+//!                                what the app's Radar and Lookout tabs show (read-only)
 //! ```
 //!
 //! It runs on the app's tmux backend only. Exit 0 on success, 1 when it
@@ -25,6 +27,7 @@
 
 pub mod compact;
 pub mod config;
+pub mod context;
 pub mod dispatch;
 pub mod launch;
 pub mod log;
@@ -195,7 +198,7 @@ fn fail(what: &str, e: impl std::fmt::Display) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>] | precompact | recall");
+    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>] | precompact | recall | context radar|lookout");
     2
 }
 
@@ -369,6 +372,7 @@ pub fn main(args: &[String]) -> i32 {
             }
         },
         "loops" => loops::main(&args[1..], &dir),
+        "context" => context::main(&args[1..]),
         "precompact" | "recall" => {
             let since = launch::State::load(&dir).day;
             let (today, _) = launch::local_day_hour(launch::now_secs());

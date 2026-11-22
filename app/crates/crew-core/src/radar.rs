@@ -281,7 +281,7 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 fn git_run(dir: &str, args: &[&str]) -> Git {
     let mut a = vec!["--no-optional-locks", "-C", dir];
     a.extend_from_slice(args);
-    match crew_core::py::run("git", &a, GIT_TIMEOUT) {
+    match crate::py::run("git", &a, GIT_TIMEOUT) {
         Some((0, out, _)) => Git::Out(out),
         Some(_) => Git::Failed,
         None => Git::Lost,
