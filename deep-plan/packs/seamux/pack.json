@@ -1,6 +1,6 @@
 {
   "pack": "seamux",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "describes": "This repo's own set-up for a software factory: its probe, lint and build recipes, its two land recipes (the plugins pulled into the kept checkout, and the app built and installed), a scenarios harness that serves the app's pages in a browser against the demo mock, and a policy that merges app and crew changes on green checks, has a person merge plugin, tool and dependency changes, and keeps the factory's own guards supervised.",
   "detect": [
     ".claude-plugin/marketplace.json",
@@ -52,7 +52,7 @@
     {
       "id": "plugin-validate",
       "kind": "test",
-      "run": "claude plugin validate . && for p in deep-plan restack bash-guard crew seamux-mods lookout humanize; do claude plugin validate \"$p\" || exit 1; done",
+      "run": "claude plugin validate . && for p in deep-plan restack bash-guard crew seamux-mods lookout humanize bosun; do claude plugin validate \"$p\" || exit 1; done",
       "match": [
         ".claude-plugin/**",
         "*/.claude-plugin/**",
@@ -577,7 +577,7 @@
         "lookout/**",
         "restack/**",
         "bash-guard/**",
-        "humanize/**",
+        "humanize/**", "bosun/**",
         "seamux-mods/**",
         "shared/**",
         ".claude-plugin/**"

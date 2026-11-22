@@ -85,6 +85,42 @@ pub fn later_day(a: &str, b: &str) -> String {
     if b > a { b.to_string() } else { a.to_string() }
 }
 
+/// Whether Claude Code's prompt is empty, read from the pane's screen (tmux
+/// capture-pane -e): the text after the last `❯` line's marker. A dim run
+/// is the placeholder hint, and so is a "Try \"…" line. None when no prompt
+/// line is found (the caller types anyway). Typing after a person's draft
+/// (a stray `/`) turns the question into a slash command, so a draft waits.
+pub fn input_empty(screen: &str) -> Option<bool> {
+    let line = screen.lines().rev().find(|l| l.contains('❯'))?;
+    let after = &line[line.find('❯')? + '❯'.len_utf8()..];
+    let after = after.trim_start_matches(|c: char| c == '\u{a0}' || c == ' ');
+    if after.starts_with("\x1b[2m") {
+        return Some(true);
+    }
+    let mut plain = String::new();
+    let mut chars = after.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // An escape sequence: CSI runs to its final letter.
+            for d in chars.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    let plain = plain.trim_matches(|c: char| c.is_whitespace() || c == '\u{a0}');
+    Some(plain.is_empty() || plain.starts_with("Try \""))
+}
+
+/// The pane's screen with its colours, for `input_empty`.
+fn screen(t: &Target) -> Option<String> {
+    let o = tmux::tmux(&t.socket, &["capture-pane", "-e", "-p", "-t", &tmux::pane_of(t)]).ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
 fn now_ms() -> u64 {
     crate::history::now_ms()
 }
@@ -93,10 +129,26 @@ fn now_ms() -> u64 {
 fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
     let files = crate::status::pane_dir();
     let mut sent: Option<Instant> = None;
+    // An item typed and not yet started on: it stays queued until the pane
+    // leaves idle, so a prompt Claude never ran is typed again.
+    let mut pending: Option<(super::queue::Item, Instant)> = None;
     while running.load(Ordering::SeqCst) {
         thread::sleep(TICK);
         let p = crate::status::read(&files, &pane);
         let is_idle = idle(p.as_ref(), now_ms());
+        if let Some((item, at)) = &pending {
+            if !is_idle {
+                super::queue::done(item);
+                pending = None;
+            } else if at.elapsed() >= SENT_WAIT {
+                if super::queue::bump(item) >= super::queue::MAX_TRIES {
+                    eprintln!("bosun: {} was typed {} times and never started; it is in queue/failed", item.id, super::queue::MAX_TRIES);
+                    super::queue::fail(item);
+                }
+                pending = None;
+            }
+            continue;
+        }
         if let Some(at) = sent {
             // Typed a moment ago: wait for the turn to start (or give up waiting).
             if is_idle && at.elapsed() < SENT_WAIT {
@@ -117,17 +169,22 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
         let queued = if is_idle { super::queue::waiting(&dir) } else { Vec::new() };
         let Some(action) = due(&state, is_idle, &cfg, &today, hour, &queued) else { continue };
         let Ok(Some(target)) = tmux::TmuxBackend::default().target(&pane) else { continue };
+        // A person's half-typed prompt is never typed after (or wiped): wait.
+        if screen(&target).as_deref().and_then(input_empty) == Some(false) {
+            continue;
+        }
         let typed = match action {
             // Marked once typed (a failed type is tried again next tick), so
             // a /clear that prime never hears of is not typed again on every one.
             Action::Clear => type_line(&target, "/clear").inspect(|()| {
                 let _ = std::fs::write(dir.join(RESET_DAY), &today);
             }),
-            // Out of the queue once typed; a failed type stays for next tick.
-            Action::Send(item) => type_line(&target, &item.text).inspect(|()| super::queue::done(&item)),
+            // Out of the queue once the Bosun starts on it (above).
+            Action::Send(item) => type_line(&target, &item.text).inspect(|()| pending = Some((item.clone(), Instant::now()))),
         };
         match typed {
-            Ok(()) => sent = Some(Instant::now()),
+            Ok(()) if pending.is_none() => sent = Some(Instant::now()),
+            Ok(()) => {}
             Err(e) => eprintln!("bosun: could not type into the pane: {e}"),
         }
     }
@@ -256,6 +313,18 @@ mod tests {
         assert_eq!(due(&today, false, &cfg(), "2026-11-22", 9, &q), None, "never into a busy Bosun");
         let old = State { session: "S".into(), day: "2026-11-21".into() };
         assert_eq!(due(&old, true, &cfg(), "2026-11-22", 9, &q), Some(Action::Clear), "the reset first");
+    }
+
+    #[test]
+    fn a_draft_in_the_prompt_is_not_typed_after() {
+        let e = "\x1b[39m\u{276f}\u{a0}";
+        assert_eq!(input_empty(&format!("x\n{e}\n")), Some(true));
+        assert_eq!(input_empty(&format!("x\n{e}/\n")), Some(false), "a stray slash waits");
+        assert_eq!(input_empty(&format!("x\n{e}hello\x1b[0m\n")), Some(false));
+        assert_eq!(input_empty(&format!("{e}\x1b[2mTry \"how does it work?\"\x1b[22m")), Some(true), "the dim hint");
+        assert_eq!(input_empty("\u{276f} Try \"how does x work?\""), Some(true));
+        assert_eq!(input_empty("\u{276f} /old message\nother\n\u{276f}\u{a0}\n"), Some(true), "the last prompt line counts");
+        assert_eq!(input_empty("no prompt here"), None);
     }
 
     #[test]
