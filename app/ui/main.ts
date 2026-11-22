@@ -89,6 +89,8 @@ tabs.onSelect = (id) => {
   if (id === "doctor") doctorView.shown();
   bosunView.setShown(id === "bosun");
   if (id === "bosun") bosunView.focusMain();
+  // The focus log (focus_log.rs) names the tab each loss happened on.
+  void invoke("focus_tab", { tab: id }).catch(() => {});
 };
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
 // at the end of the strip. Choosing a session shows it in the Dock.
