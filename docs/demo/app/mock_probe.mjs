@@ -91,7 +91,10 @@ const pickRow = async (p, key) => {
 
 /** Each view: how to reach it from the Dock, and what it shows once it works. */
 export const VIEWS = {
-  dock: { go: (p) => tab(p, "Dock"), shows: ".dockview .sheet .native-term .xterm-rows" },
+  // .xterm-screen, not .xterm-rows: the native pane draws with WebGL by
+  // default (#253, scrolllab.ts LAB_DEFAULT), and only xterm's DOM renderer
+  // makes rows. The screen is there with either renderer.
+  dock: { go: (p) => tab(p, "Dock"), shows: ".dockview .sheet .native-term .xterm-screen" },
   wake: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-list li" },
   // checkout-flow (the Dock's first pick) has PR #43 open as a draft.
   wakeprs: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-prs" },
