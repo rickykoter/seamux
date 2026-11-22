@@ -70,7 +70,7 @@ jobs:
       - name: Validate the marketplace and every plugin
         run: |
           claude plugin validate .
-          for p in deep-plan restack bash-guard crew seamux-mods lookout humanize; do claude plugin validate "$p" || exit 1; done
+          for p in deep-plan restack bash-guard crew seamux-mods lookout humanize bosun; do claude plugin validate "$p" || exit 1; done
 
       - name: seamux-mods tests
         run: claude plugin test seamux-mods
