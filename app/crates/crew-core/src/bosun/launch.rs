@@ -68,6 +68,9 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
             "deny": [format!("Edit({})", rule_path(&cfg.root))],
             "ask": dispatch.iter().map(|d| format!("Bash({d})")).collect::<Vec<_>>(),
             "allow": [format!("Edit({})", rule_path(dir)), format!("Read({})", rule_path(dir))],
+            // A working directory too: shell input redirection reads only from
+            // those, so `bosun answer <id> < <dir>/drafts/<id>.md` works.
+            "additionalDirectories": [own.clone()],
         },
         "sandbox": {
             "enabled": true,
@@ -170,6 +173,7 @@ mod tests {
         let s = settings(&cfg(), Path::new("/u/.claude/crew/bosun"), "/bin/seamux");
         assert_eq!(s["permissions"]["deny"], json!(["Edit(//u/code/**)"]));
         assert_eq!(s["permissions"]["allow"][0], "Edit(//u/.claude/crew/bosun/**)");
+        assert_eq!(s["permissions"]["additionalDirectories"], json!(["/u/.claude/crew/bosun"]), "its folder is a working directory");
         assert_eq!(s["sandbox"]["enabled"], true);
         assert_eq!(s["sandbox"]["allowUnsandboxedCommands"], false, "no retry outside the sandbox");
         assert_eq!(s["sandbox"]["failIfUnavailable"], true, "no Bosun without its sandbox");
