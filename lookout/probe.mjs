@@ -424,6 +424,16 @@ if (want("risk + groups")) {
   const rf = S.read(o2.id);
   ok("open: a TypeSafe failure falls back to signals, with the reason kept for the banner",
      rf.scoring.ok === false && /503/.test(rf.scoring.why) && rf.files.every(f => typeof f.risk === "number" && f.jev === null), rf.scoring.why);
+  // A request bigger than a pipe holds: the failing client exits before it
+  // is read, which breaks the pipe (EPIPE) every time. Its own reason stands.
+  write(R3, ".seamux/lookout.json", '{"sendContent": true}');
+  for (let i = 0; i < 40; i++) write(R3, `big/f${i}.txt`, `${"x".repeat(60)}\n`.repeat(50));
+  const oBig = JSON.parse(open(failing, "--rescore").stdout || "{}");
+  const rBig = S.read(oBig.id);
+  ok("open: a failing client that never reads a large request still gives its own reason, not a timeout",
+     rBig.scoring.ok === false && /503/.test(rBig.scoring.why) && !/in time/.test(rBig.scoring.why), rBig.scoring.why);
+  fs.rmSync(path.join(R3, ".seamux"), { recursive: true });
+  fs.rmSync(path.join(R3, "big"), { recursive: true });
   const o3 = JSON.parse(open("", "--rescore").stdout || "{}");
   ok("open: no client at all is signals only too", S.read(o3.id).scoring.ok === false &&
      /no TypeSafe client/.test(S.read(o3.id).scoring.why));

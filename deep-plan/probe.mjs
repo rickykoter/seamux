@@ -9478,6 +9478,9 @@ if (want("scout workflow")) {
   ok("scout: a hypothesis without a falsify check is refused", /wants \[\{id, claim, kind/.test(threw), threw);
 }
 
-fs.rmSync(TMP, { recursive: true, force: true });
+// A detached child (lookout open --link's gh sync) may still be writing here:
+// retry a removal that a late file trips (ENOTEMPTY) rather than crash the
+// run (plan flaky-probes).
+fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 console.log(`\ndeep-plan probe: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

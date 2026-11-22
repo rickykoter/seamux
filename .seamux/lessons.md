@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L11 -->
+<!-- next: L12 -->
 
 ## L1
 applies: **
@@ -65,3 +65,9 @@ applies: app/crates/**, crew/**
 from: dock-many-prs (correction c4a0e799c), 2026-11-13
 
 Code a branch's checks run never opens the person's real stores: point CREW_DURABLE_DIR, XDG_CACHE_HOME and HOME at a temp dir, or a branch build can migrate the live store before merge. After a schema change, verify it on the real store once the merged build is installed.
+
+## L11
+applies: **
+from: demo-mock-catchup inc 4 (correction c864d2d03), 2026-11-22
+
+After an amend on a plan with a scenarios check, name the promises it changed and have the person review the scenarios (scenarios show, in their own shell) before the next judge run: a sealed scenario keeps checking the old promise.
