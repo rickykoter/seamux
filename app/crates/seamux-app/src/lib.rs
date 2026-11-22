@@ -4,12 +4,14 @@
 pub mod actions;
 pub mod build_stamp;
 pub mod backend;
-pub mod codeowners;
+// Radar's reading lives in crew-core, so the seamux CLI runs it too
+// (`seamux bosun context radar`); these paths stay for the app's callers.
+pub use crew_core::codeowners;
 pub mod frames;
 pub mod ghostty;
 pub mod pane;
 pub mod pty;
-pub mod radar;
+pub use crew_core::radar;
 pub mod reclaim;
 pub mod review;
 pub mod sessions;

@@ -76,7 +76,7 @@ pub fn type_line(t: &Target, text: &str) -> Result<(), String> {
 /// The file holding the day the supervisor last typed /clear.
 const RESET_DAY: &str = "reset-day";
 
-fn read_reset_day(dir: &Path) -> String {
+pub(crate) fn read_reset_day(dir: &Path) -> String {
     std::fs::read_to_string(dir.join(RESET_DAY)).map(|s| s.trim().to_string()).unwrap_or_default()
 }
 

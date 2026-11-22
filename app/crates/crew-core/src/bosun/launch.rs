@@ -58,6 +58,9 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
         network["allowedDomains"] = json!(cfg.allowed_domains);
     }
     let prime = format!("{} bosun prime", crate::native::sh_quote(seamux));
+    // bosun-routines: what a compaction keeps, and that index again after it.
+    let precompact = format!("{} bosun precompact", crate::native::sh_quote(seamux));
+    let recall = format!("{} bosun recall", crate::native::sh_quote(seamux));
     // Dispatch is the one command let out of the sandbox, and only with the
     // person's yes each time: an ask rule prompts even in auto mode. Rules
     // match the command as typed, so the bare name and the full path each
@@ -81,7 +84,11 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
             "network": network,
         },
         "hooks": {
-            "SessionStart": [{"hooks": [{"type": "command", "command": prime, "timeout": 10}]}],
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": prime, "timeout": 10}]},
+                {"matcher": "compact", "hooks": [{"type": "command", "command": recall, "timeout": 10}]},
+            ],
+            "PreCompact": [{"hooks": [{"type": "command", "command": precompact, "timeout": 10}]}],
         },
     })
 }
@@ -143,11 +150,9 @@ pub fn write_files(cfg: &Config, dir: &Path, seamux: &str) -> Result<(PathBuf, P
 
 /// The local date (YYYY-MM-DD) and hour at `secs` since the epoch.
 pub fn local_day_hour(secs: i64) -> (String, u32) {
-    // SAFETY: localtime_r writes only into `tm`.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let t: libc::time_t = secs as libc::time_t;
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    (format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday), tm.tm_hour.max(0) as u32)
+    // One reading of local time (loops.rs), so the loops' day is the supervisor's.
+    let l = super::loops::local(secs);
+    (l.day, l.minute / 60)
 }
 
 pub fn now_secs() -> i64 {
@@ -181,6 +186,9 @@ mod tests {
         assert_eq!(s["sandbox"]["filesystem"]["allowWrite"], json!(["/u/.claude/crew/bosun", "/u/.cache/gh"]));
         assert_eq!(s["sandbox"]["network"]["allowedDomains"], json!(["github.com"]));
         assert_eq!(s["hooks"]["SessionStart"][0]["hooks"][0]["command"], "/bin/seamux bosun prime");
+        assert_eq!(s["hooks"]["SessionStart"][1]["matcher"], "compact");
+        assert_eq!(s["hooks"]["SessionStart"][1]["hooks"][0]["command"], "/bin/seamux bosun recall");
+        assert_eq!(s["hooks"]["PreCompact"][0]["hooks"][0]["command"], "/bin/seamux bosun precompact");
         let out = json!(["seamux bosun dispatch *", "/bin/seamux bosun dispatch *"]);
         assert_eq!(s["sandbox"]["excludedCommands"], out, "dispatch alone leaves the sandbox");
         assert_eq!(s["permissions"]["ask"], json!(["Bash(seamux bosun dispatch *)", "Bash(/bin/seamux bosun dispatch *)"]), "and asks every time");

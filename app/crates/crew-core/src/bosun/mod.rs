@@ -14,12 +14,20 @@
 //! seamux bosun answer <id>       an ask's answer, on stdin
 //! seamux bosun log add           one entry on stdin | log list [--day D] [--json]
 //! seamux bosun dispatch <repo> <branch> --brief <file> [--json]
+//! seamux bosun loops [list] [--json] | loops run <id>
+//!                                bosun.json's timed prompts (loops.rs)
+//! seamux bosun precompact        the PreCompact hook (stdin: its payload)
+//! seamux bosun recall            the SessionStart hook after a compaction
+//! seamux bosun context radar|lookout [--json]
+//!                                what the app's Radar and Lookout tabs show (read-only)
 //! ```
 //!
 //! It runs on the app's tmux backend only. Exit 0 on success, 1 when it
 //! could not, 2 on bad arguments.
 
+pub mod compact;
 pub mod config;
+pub mod context;
 pub mod dispatch;
 pub mod launch;
 pub mod log;
@@ -190,7 +198,7 @@ fn fail(what: &str, e: impl std::fmt::Display) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch");
+    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>] | precompact | recall | context radar|lookout");
     2
 }
 
@@ -363,6 +371,15 @@ pub fn main(args: &[String]) -> i32 {
                 2
             }
         },
+        "loops" => loops::main(&args[1..], &dir),
+        "context" => context::main(&args[1..]),
+        "precompact" | "recall" => {
+            let since = compact::conversation_day(&dir);
+            let (today, _) = launch::local_day_hour(launch::now_secs());
+            let out = if sub == "precompact" { compact::precompact(&stdin_text(), &dir, &since, &today) } else { compact::recall(&dir, &since, &today) };
+            print!("{out}");
+            0
+        }
         _ => usage(),
     }
 }

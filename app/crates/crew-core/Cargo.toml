@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 cmux.workspace = true
 serde_json.workspace = true
+# Radar's types (radar.rs, moved from seamux-app) derive Serialize.
+serde = { version = "1", features = ["derive"] }
 libc = "0.2"
 sha2 = "0.10"
 # proxy-from-env: honor ALL_PROXY / HTTPS_PROXY / HTTP_PROXY, as urllib does.
