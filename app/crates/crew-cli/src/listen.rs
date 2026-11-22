@@ -18,7 +18,7 @@
 //! and the board is the intent server's /board page, which follows the ranked
 //! state over SSE. It still makes sure that server is up.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -37,9 +37,6 @@ struct Cfg {
 }
 
 impl Cfg {
-    fn stamp(&self) -> PathBuf {
-        self.state.join("sync-stamp")
-    }
     fn cursor(&self) -> PathBuf {
         self.state.join("events.seq")
     }
@@ -61,18 +58,37 @@ fn log(msg: &str) {
 }
 
 fn disabled(c: &Cfg) -> bool {
-    c.state.join("disabled").exists() || std::env::var("CREW_DISABLED").is_ok_and(|v| !v.is_empty())
+    disabled_at(&c.state)
+}
+
+fn disabled_at(state: &Path) -> bool {
+    state.join("disabled").exists() || std::env::var("CREW_DISABLED").is_ok_and(|v| !v.is_empty())
 }
 
 /// The shared throttle allows another reconcile.
-fn due(c: &Cfg) -> bool {
-    let Ok(text) = std::fs::read_to_string(c.stamp()) else { return true };
+fn due_at(state: &Path, interval: i64) -> bool {
+    let Ok(text) = std::fs::read_to_string(state.join("sync-stamp")) else { return true };
     let t = crate::pyval::py_strip(&text);
     let last = if t.is_empty() { Some(0) } else { crate::pyval::py_int(t) };
     match last {
-        Some(last) => (crew_core::py::now() as i128 - last) >= c.interval as i128,
+        Some(last) => (crew_core::py::now() as i128 - last) >= interval as i128,
         None => true, // int() raised
     }
+}
+
+/// Claim the next reconcile: crew is on and the shared sync-stamp in `state`
+/// is `interval` seconds old, then the stamp is moved to now. True when the
+/// caller may start crew-sync. crew-listen's reconcile and, on the app's
+/// tmux, the app's sync watcher both ask here, so one rule throttles them;
+/// the Stop hook's sync_maybe reads the same stamp.
+pub fn claim(state: &Path, interval: i64) -> bool {
+    let _g = CLAIM.lock().unwrap_or_else(|p| p.into_inner());
+    if disabled_at(state) || !due_at(state, interval) {
+        return false;
+    }
+    let _ = std::fs::create_dir_all(state);
+    let _ = std::fs::write(state.join("sync-stamp"), (crew_core::py::now() as i64).to_string());
+    true
 }
 
 /// How often the listener checks the intent server is up (and its own binary).
@@ -135,13 +151,8 @@ fn start_intent() -> bool {
 
 /// Claim the stamp, then start a reconcile in the background.
 fn reconcile(c: &Cfg, reason: &str) -> bool {
-    {
-        let _g = CLAIM.lock().unwrap_or_else(|p| p.into_inner());
-        if disabled(c) || !due(c) {
-            return false;
-        }
-        let _ = std::fs::create_dir_all(&c.state);
-        let _ = std::fs::write(c.stamp(), (crew_core::py::now() as i64).to_string());
+    if !claim(&c.state, c.interval) {
+        return false;
     }
     let Some(sync) = sibling::own("crew-sync") else {
         log("no seamux binary to run crew-sync");
@@ -349,5 +360,49 @@ pub fn main(args: &[String]) -> i32 {
         log(&format!("event stream ended; retrying in {backoff}s"));
         std::thread::sleep(Duration::from_secs(backoff));
         backoff = (backoff * 2).min(300);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh state dir under the temp dir: never the person's ~/.cache (L8).
+    fn state(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("crew-listen-claim-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn a_claim_moves_the_stamp_and_the_next_waits_out_the_interval() {
+        let d = state("interval");
+        assert!(claim(&d, 120), "no stamp yet: due");
+        let stamp = std::fs::read_to_string(d.join("sync-stamp")).unwrap();
+        assert!((crew_core::py::now() as i64 - stamp.trim().parse::<i64>().unwrap()).abs() <= 1);
+        assert!(!claim(&d, 120), "stamped a moment ago");
+        assert!(claim(&d, 0), "an interval of 0 never waits");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_old_or_unreadable_stamp_is_due() {
+        let d = state("old");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("sync-stamp"), (crew_core::py::now() as i64 - 200).to_string()).unwrap();
+        assert!(claim(&d, 120), "200s old against 120s");
+        std::fs::write(d.join("sync-stamp"), "not a number").unwrap();
+        assert!(claim(&d, 120), "int() raised: due, as the Python had it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn crew_off_claims_nothing_and_leaves_the_stamp() {
+        let d = state("off");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("disabled"), "").unwrap();
+        assert!(!claim(&d, 0));
+        assert!(!d.join("sync-stamp").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
