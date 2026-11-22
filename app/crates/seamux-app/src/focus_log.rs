@@ -5,7 +5,8 @@
 //! a terminal, to tell a lost focus from a hidden window.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::mpsc::Sender;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 
@@ -30,9 +31,30 @@ fn tab() -> String {
     TAB.lock().map(|t| t.clone()).unwrap_or_default()
 }
 
-/// ~/Library/Logs/seamux, where macOS keeps an app's logs.
+/// ~/Library/Logs/seamux, where macOS keeps an app's logs. Nowhere on other
+/// systems: the log is for the macOS window's focus.
 fn dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Logs/seamux"))
+}
+
+/// The one thread that writes the log, fed in the order lines are recorded,
+/// so a hide's line always comes before the lost focus it caused.
+fn writer(dir: PathBuf) -> &'static Sender<Value> {
+    static TX: OnceLock<Sender<Value>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        std::thread::spawn(move || {
+            for line in rx {
+                if let Err(e) = append(&dir, &line, KEEP) {
+                    eprintln!("seamux: focus log: {e}");
+                }
+            }
+        });
+        tx
+    })
 }
 
 /// Append `line` to `dir`'s focus.jsonl, keeping the last `keep` lines.
@@ -63,11 +85,7 @@ fn record(mut line: Value) {
         m.insert("at".into(), json!(super::shell::now_ms()));
         m.insert("tab".into(), json!(tab()));
     }
-    std::thread::spawn(move || {
-        if let Err(e) = append(&dir, &line, KEEP) {
-            eprintln!("seamux: focus log: {e}");
-        }
-    });
+    let _ = writer(dir).send(line);
 }
 
 /// The window lost focus: what the guard saw and what it did.

@@ -781,13 +781,13 @@ export class Sheet {
     return { ...this.place };
   }
 
-  /** `show`: "wake" or "plan" go to that tab even when the workspace is
-   *  already up. `pane`: show that pane's terminal (a pane row on the board). */
   /** The Dock's tab was selected: keys go to the shown pane (main.ts). */
   focusMain(): boolean {
     return !this.el.hidden && this.chat.focusTerm();
   }
 
+  /** `show`: "wake" or "plan" go to that tab even when the workspace is
+   *  already up. `pane`: show that pane's terminal (a pane row on the board). */
   focusWorkspace(ws: string, show = "any", pane = ""): void {
     if (ws !== this.workspace() || !this.active) {
       this.enter({ workspace: ws });

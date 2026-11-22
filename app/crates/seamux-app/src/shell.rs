@@ -688,6 +688,29 @@ pub struct Seen {
     pub modifier: bool,
     /// The person asked to go to cmux within the last 3 s.
     pub cmux_allowed: bool,
+    /// How often focus was taken back from this same app in the last 10 s.
+    pub taken_lately: usize,
+}
+
+/// An app focus was taken back from this many times in TAKEN_WINDOW_MS
+/// keeps it the next time: it is activating itself on purpose (a dialog,
+/// an updater), and a fight helps no one.
+const TAKEN_LIMIT: usize = 2;
+const TAKEN_WINDOW_MS: u64 = 10_000;
+/// The apps focus was taken back from lately: (bundle id, when).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+static TAKEN: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// How often focus was taken back from `app` lately; with `now_taken`, note
+/// one more.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn taken_from(app: &str, now: u64, now_taken: bool) -> usize {
+    let mut t = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+    t.retain(|(_, at)| now.saturating_sub(*at) < TAKEN_WINDOW_MS);
+    if now_taken {
+        t.push((app.to_string(), now));
+    }
+    t.iter().filter(|(a, _)| a == app).count()
 }
 
 /// What the guard did about a lost focus, and why.
@@ -700,6 +723,8 @@ pub enum Verdict {
     CmuxAllowed,
     NoApp,
     Ours,
+    /// Taken back from this app TAKEN_LIMIT times already, just now.
+    GaveUp,
     PointerAway,
     Modifier,
     ClickedElsewhere,
@@ -732,6 +757,9 @@ pub fn take_back(s: &Seen) -> Verdict {
     if s.clicked_elsewhere {
         return Verdict::ClickedElsewhere;
     }
+    if s.taken_lately >= TAKEN_LIMIT {
+        return Verdict::GaveUp;
+    }
     Verdict::TakeBack
 }
 
@@ -749,19 +777,25 @@ fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
                 let Ok(ptr) = w2.ns_window() else { return };
                 // SAFETY: as in join_full_screen_spaces; this runs on the main thread.
                 let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                let app = front::frontmost();
+                let now = now_ms();
                 let seen = Seen {
-                    front: front::frontmost(),
+                    taken_lately: app.as_deref().map_or(0, |a| taken_from(a, now, false)),
+                    front: app,
                     ours: front::we_are_front(),
                     visible: w2.is_visible().unwrap_or(false),
                     pointer_over: front::pointer_over(win),
                     // A click on another app or screen, or Cmd-Tab: the person went there.
                     clicked_elsewhere: front::clicked_elsewhere_within(0.6),
                     modifier: front::modifier_within(0.6),
-                    cmux_allowed: now_ms() < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed),
+                    cmux_allowed: now < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed),
                 };
                 let verdict = take_back(&seen);
                 crate::focus_log::lost(&seen, verdict);
                 if verdict == Verdict::TakeBack {
+                    if let Some(a) = &seen.front {
+                        taken_from(a, now, true);
+                    }
                     win.orderFrontRegardless();
                     let _ = w2.set_focus();
                 }
@@ -987,6 +1021,23 @@ mod tests {
         assert_eq!(take_back(&Seen { visible: false, ..unasked("com.apple.finder") }), Verdict::Hidden);
         assert_eq!(take_back(&Seen { ours: true, ..unasked("dev.seamux.app") }), Verdict::Ours);
         assert_eq!(take_back(&Seen { front: None, ..unasked("") }), Verdict::NoApp);
+    }
+
+    #[test]
+    fn gives_up_on_an_app_that_keeps_coming_back() {
+        assert_eq!(take_back(&Seen { taken_lately: 1, ..unasked("com.apple.finder") }), Verdict::TakeBack);
+        assert_eq!(take_back(&Seen { taken_lately: 2, ..unasked("com.apple.finder") }), Verdict::GaveUp);
+        // The guards still come first: a click on the app is the person's.
+        assert_eq!(take_back(&Seen { taken_lately: 2, clicked_elsewhere: true, ..unasked("com.apple.finder") }), Verdict::ClickedElsewhere);
+    }
+
+    #[test]
+    fn takes_back_count_per_app_and_age_out() {
+        let app = "test.taken.counts";
+        assert_eq!(super::taken_from(app, 1_000, true), 1);
+        assert_eq!(super::taken_from(app, 2_000, true), 2);
+        assert_eq!(super::taken_from("test.taken.other", 2_000, false), 0);
+        assert_eq!(super::taken_from(app, 12_500, false), 0);
     }
 
     #[test]
