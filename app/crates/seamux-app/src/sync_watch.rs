@@ -30,15 +30,16 @@ struct Watch {
     ids: Option<BTreeSet<String>>,
     /// A workspace opened or closed and no sync has run since.
     pending: bool,
-    /// When the last try was made (claimed or not).
-    tried: i64,
+    /// When this watcher last started a sync (or, before the first, a
+    /// tick ago, so the first pass tries).
+    synced: i64,
 }
 
 impl Watch {
     /// A watcher whose first pass tries at once: a sync soon after launch,
     /// if the stamp allows.
     fn new(now: i64, tick: i64) -> Watch {
-        Watch { ids: None, pending: false, tried: now - tick }
+        Watch { ids: None, pending: false, synced: now - tick }
     }
 
     /// The registry's ids, read again because the file changed. The first
@@ -54,17 +55,20 @@ impl Watch {
     fn reason(&self, now: i64, tick: i64) -> Option<&'static str> {
         if self.pending {
             Some("workspaces")
-        } else if now - self.tried >= tick {
+        } else if now - self.synced >= tick {
             Some("tick")
         } else {
             None
         }
     }
 
-    /// A try was made. A pending change is settled only by a sync that ran.
+    /// A try was made. Only a claimed one settles a pending change and
+    /// restarts the tick: one the stamp refused (a Stop hook synced a moment
+    /// ago) is tried again next pass, so a sync runs as soon as the stamp is
+    /// due rather than a whole tick later.
     fn tried(&mut self, now: i64, claimed: bool) {
-        self.tried = now;
         if claimed {
+            self.synced = now;
             self.pending = false;
         }
     }
@@ -159,6 +163,19 @@ mod tests {
         w.tried(1000, true);
         assert_eq!(w.reason(1119, 120), None);
         assert_eq!(w.reason(1120, 120), Some("tick"));
+    }
+
+    #[test]
+    fn a_tick_the_stamp_refused_is_tried_again_next_pass() {
+        // A Stop hook synced at 1119: the tick at 1120 is refused, and the
+        // watcher keeps trying each pass until the stamp is due at 1239.
+        let mut w = Watch::new(1000, 120);
+        w.tried(1000, true);
+        w.tried(1120, false);
+        assert_eq!(w.reason(1122, 120), Some("tick"));
+        w.tried(1239, true);
+        assert_eq!(w.reason(1241, 120), None);
+        assert_eq!(w.reason(1359, 120), Some("tick"));
     }
 
     #[test]
