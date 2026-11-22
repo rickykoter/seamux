@@ -292,23 +292,67 @@ static DIFF_BUSY: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 /// The diff chip: this branch against its base as lookout's review beside the
 /// row's terminal. One build per worktree at a time; a second press says so.
 pub fn lookout_diff(cwd: &str, wsid: &str) -> (bool, String) {
-    let Some((node, engine)) = lookout_engine() else { return (false, "lookout is not installed".into()) };
+    match lookout_open(cwd, wsid, false) {
+        Ok(_) => (true, format!("lookout {cwd}")),
+        Err(Busy) => (true, format!("lookout already opening {cwd}")),
+        Err(Failed(why)) => (false, why),
+    }
+}
+
+/// A review of `cwd`'s branch for workspace `wsid`, its id from lookout open
+/// --json. The seamux app calls it for the board's diff chip on tmux, then
+/// opens /review/<id> in the Dock's side column (plan board-tmux-chips).
+pub fn lookout_review(cwd: &str, wsid: &str) -> Result<String, String> {
+    match lookout_open(cwd, wsid, true) {
+        Ok(out) => review_id(&out).ok_or_else(|| "lookout did not name the review it made".to_string()),
+        Err(Busy) => Err("a review of this folder is already being made".into()),
+        Err(Failed(why)) => Err(why),
+    }
+}
+
+/// The review id in lookout open --json's output.
+fn review_id(out: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(out.trim()).ok()?;
+    v.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+enum OpenErr {
+    Busy,
+    Failed(String),
+}
+use OpenErr::{Busy, Failed};
+
+/// lookout open for `cwd`, one at a time per folder; its stdout on success.
+fn lookout_open(cwd: &str, wsid: &str, json: bool) -> Result<String, OpenErr> {
+    let Some((node, engine)) = lookout_engine() else { return Err(Failed("lookout is not installed".into())) };
     {
         let mut busy = DIFF_BUSY.lock().unwrap_or_else(|p| p.into_inner());
         let set = busy.get_or_insert_with(HashSet::new);
         if set.contains(cwd) {
-            return (true, format!("lookout already opening {cwd}"));
+            return Err(Busy);
         }
         set.insert(cwd.to_string());
     }
-    let res = lookout_diff_run(&node, &engine, cwd, wsid);
+    let res = lookout_diff_run(&node, &engine, cwd, wsid, json);
     DIFF_BUSY.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(HashSet::new).remove(cwd);
     res
 }
 
-fn lookout_diff_run(node: &str, engine: &str, cwd: &str, wsid: &str) -> (bool, String) {
+fn lookout_diff_run(node: &str, engine: &str, cwd: &str, wsid: &str, json: bool) -> Result<String, OpenErr> {
     let mut cmd = Command::new(node);
     cmd.args([engine, "open", "--view-only", "--at", cwd]).current_dir(cwd).env_remove("CMUX_WORKSPACE_ID").env_remove("SEAMUX_WORKSPACE_ID");
+    if json {
+        // The caller shows the page itself (the app's Dock): lookout only
+        // makes and stores the review, and names it.
+        cmd.arg("--json");
+    }
+    if json || crate::backend::kind() == crew_core::backend::Kind::Tmux {
+        // On the seamux host lookout opens nothing and starts no server of
+        // its own: the app's Dock lists the workspace's reviews. The board's
+        // server has no pane, so without this lookout would take the
+        // terminal host and serve the page itself.
+        cmd.env("SEAMUX_HOST", "seamux");
+    }
     if !wsid.is_empty() {
         let var = if crate::backend::kind() == crew_core::backend::Kind::Tmux { "SEAMUX_WORKSPACE_ID" } else { "CMUX_WORKSPACE_ID" };
         cmd.env(var, wsid);
@@ -316,14 +360,14 @@ fn lookout_diff_run(node: &str, engine: &str, cwd: &str, wsid: &str) -> (bool, S
     match spawn_wait(cmd, Duration::from_secs(90)) {
         None => {
             log(&format!("FAIL lookout diff {cwd}: did not run or timed out"));
-            (false, "lookout did not run".into())
+            Err(Failed("lookout did not run".into()))
         }
-        Some((0, _, _)) => (true, format!("lookout {cwd}")),
+        Some((0, out, _)) => Ok(out),
         Some((_, out, err)) => {
             let why = if err.trim().is_empty() { out } else { err };
             let tail: String = why.trim().chars().rev().take(160).collect::<Vec<_>>().into_iter().rev().collect();
             log(&format!("FAIL lookout diff {cwd}: {tail}"));
-            (false, "lookout refused it".into())
+            Err(Failed("lookout refused it".into()))
         }
     }
 }
@@ -560,7 +604,9 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
             let (ok, why) = lookout_diff(&cwd, &sel);
             if kind == crew_core::backend::Kind::Tmux {
                 // lookout's page is in the app's Dock; cmux's diff is not there.
-                return (ok, why);
+                // Framed by the app, the chip never comes here (the app runs
+                // it and opens the review); from a browser, say where it is.
+                return (ok, if ok { "review made: the seamux app's Dock lists it beside this workspace's terminal".into() } else { why });
             }
             if ok {
                 if !sel.is_empty() {
@@ -777,6 +823,14 @@ pub fn q(x: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_id_comes_from_lookout_open_json() {
+        let out = "{\n  \"id\": \"seamux-origin-main_head\",\n  \"page\": \"/x.html\",\n  \"files\": 3\n}\n";
+        assert_eq!(review_id(out).as_deref(), Some("seamux-origin-main_head"));
+        assert_eq!(review_id("{\"id\": \"\"}"), None, "an empty id is none");
+        assert_eq!(review_id("lookout seamux: 3 file(s)"), None, "plain output names nothing");
+    }
 
     #[test]
     fn on_cmux_every_verb_keeps_its_cmux_route() {

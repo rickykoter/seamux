@@ -1183,6 +1183,11 @@ const handlers = {
   }),
   new_ws_create: ({ form, onStep }) => create(form, onStep),
 
+  // The board's diff chip on tmux (dock.ts openDiff): the review it made.
+  board_diff: async () => {
+    await wait(600);
+    return "rv-coupons-inc1";
+  },
   reclaim_check: async ({ ws: id }) => {
     await wait(900);
     return reclaimReport(id);
