@@ -974,7 +974,7 @@ PY
 # the registry row (title, folder, crew-sync's facts) and each pane's state.
 app_workspace() {
   local rows err
-  err="$(mktemp -t crew-status)"
+  err="$(mktemp "${TMPDIR:-/tmp}/crew-status.XXXXXX")"
   if ! rows="$("$SEAMUX" workspaces list-json 2>"$err")"; then
     printf '  seamux workspaces list-json failed: %s\n' "$(tail -n 1 "$err" 2>/dev/null || true)"
     rm -f "$err"; return 0
