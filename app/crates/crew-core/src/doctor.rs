@@ -665,6 +665,13 @@ impl Doctor {
         let t = &self.tmux;
         let files = t.pane_files();
         let name = if f.title.is_empty() { short(&f.subject).to_string() } else { f.title.clone() };
+        // The Bosun's pane is started only by its own ensure, with its
+        // read-only flags; a plain claude line would drop them.
+        let bosun = (!f.pane.is_empty() && t.kind_of_pane(&f.pane) == crate::bosun::KIND) || (!f.ws.is_empty() && t.kind_of_ws(&f.ws) == crate::bosun::KIND);
+        if bosun && matches!((f.kind, verb), ("lost-pane", _) | ("claude-exited", _) | ("empty-workspace", "reopen")) {
+            let w = crate::bosun::ensure_at(t, &crate::bosun::config::Config::load())?;
+            return Ok(format!("the Bosun is {} (pane {})", w.how, short(&w.pane)));
+        }
         match (f.kind, verb) {
             ("missing-worktree" | "duplicate-workspace", "forget") => {
                 t.close_workspace(&f.ws)?;
