@@ -31,7 +31,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use crew_core::landing;
@@ -308,26 +308,6 @@ fn node_dp(args: &[&str], timeout: Duration) -> Result<String, String> {
     if code == 0 { Ok(out) } else { Err(err.trim().lines().last().unwrap_or("deep-plan failed").to_string()) }
 }
 
-/// The PATH a landing runs with: the person's login shell's first, then the
-/// app's. A landing runs as the person, and a recipe's tools (cargo for
-/// install.sh --app, gh, jq) live where their terminal finds them; an app
-/// opened from Finder has launchd's PATH plus node's folder (main.rs
-/// adopt_login_path), which has none of them. Asked of the shell once.
-fn run_path() -> String {
-    static PATH: OnceLock<String> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let shell = crew_core::py::env_or("SHELL").unwrap_or_else(|| "/bin/zsh".into());
-        // An interactive login shell, since asdf and nvm hook in from .zshrc;
-        // the last line, since a shell may print a banner before it.
-        let login = crew_core::py::run(&shell, &["-ilc", "printf '%s' \"$PATH\""], Duration::from_secs(5))
-            .filter(|(code, _, _)| *code == 0)
-            .and_then(|(_, out, _)| out.lines().last().map(|l| l.trim().to_string()))
-            .unwrap_or_default();
-        join_path(&login, &std::env::var("PATH").unwrap_or_default())
-    })
-    .clone()
-}
-
 /// `first`'s folders, then `then`'s not already in it, in order.
 pub fn join_path(first: &str, then: &str) -> String {
     let mut seen = BTreeSet::new();
@@ -358,7 +338,7 @@ pub fn spawn_runs(repo: &str, merge: &str, pr: u64, recipes: &[String]) -> Optio
         .stderr(Stdio::null())
         // A landing is the person's, run as them, never as a Claude session.
         .env_remove("CLAUDECODE")
-        .env("PATH", run_path())
+        .env("PATH", crate::shell::login_path())
         .process_group(0)
         .spawn()
         .ok()?;
@@ -619,7 +599,7 @@ fn listen(lists: &[(String, Option<Value>)]) {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .env_remove("CLAUDECODE")
-            .env("PATH", run_path())
+            .env("PATH", crate::shell::login_path())
             .spawn();
         let Ok(child) = child else { continue };
         EARS.lock().unwrap_or_else(|p| p.into_inner()).live.insert(url.clone());
@@ -831,7 +811,7 @@ pub async fn landing_get(cwd: String, merge: String) -> Result<Option<Value>, St
 /// waits on, for the Merge stage. A dry run: it opens, readies and merges
 /// nothing. Run as the person, with their login PATH, since it asks gh.
 fn ship_of(cwd: &str) -> Result<Value, String> {
-    let path = format!("PATH={}", run_path());
+    let path = format!("PATH={}", crate::shell::login_path());
     let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
     let args = ["-u", "CLAUDECODE", path.as_str(), "node", script.as_str(), "ship", "--at", cwd, "--dry-run", "--json"];
     let (code, out, err) = crew_core::py::run("env", &args, Duration::from_secs(45)).ok_or("deep-plan did not run (no node, or it timed out)")?;

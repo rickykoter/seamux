@@ -190,24 +190,102 @@ pub fn ensure_intent() -> bool {
     }
 }
 
-/// The PATH a background crew tool runs with: the person's login shell's
-/// first, then the app's, so crew-sync finds gh. An app opened from Finder
-/// has launchd's PATH, which does not. Asked of the shell once. The same
-/// lookup as land_watch's run_path, which this plan leaves untouched
-/// (land_watch.rs stops ship at a PR); a later change folds the two.
+/// The PATH the app's background tools run with: a landing's recipes (cargo
+/// for install.sh --app, gh, jq), lookout's listeners and crew-sync. The
+/// person's login shell's first, then the app's: an app opened from Finder
+/// has launchd's PATH plus node's folder (main.rs adopt_login_path), where
+/// none of those live. Only a lookup that worked is kept. A failed one is
+/// logged once per reason and asked again after LOGIN_RETRY; until one works,
+/// the app's PATH plus the toolchain folders that exist stands in.
 pub fn login_path() -> String {
-    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PATH.get_or_init(|| {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    #[derive(Default)]
+    struct Cache {
+        found: Option<String>,
+        tried: Option<Instant>,
+        told: Option<String>,
+    }
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Mutex::default);
+    let app = std::env::var("PATH").unwrap_or_default();
+    let ask = {
+        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(found) = &c.found {
+            return found.clone();
+        }
+        let now = Instant::now();
+        let ask = login_due(c.tried, now);
+        if ask {
+            // Stamped before asking, so a caller meanwhile takes the fallback
+            // instead of starting a second shell.
+            c.tried = Some(now);
+        }
+        ask
+    };
+    if ask {
         let shell = crew_core::py::env_or("SHELL").unwrap_or_else(|| "/bin/zsh".into());
-        // An interactive login shell, since asdf and nvm hook in from .zshrc;
-        // the last line, since a shell may print a banner before it.
-        let login = crew_core::py::run(&shell, &["-ilc", "printf '%s' \"$PATH\""], Duration::from_secs(5))
-            .filter(|(code, _, _)| *code == 0)
-            .and_then(|(_, out, _)| out.lines().last().map(|l| l.trim().to_string()))
-            .unwrap_or_default();
-        crate::land_watch::join_path(&login, &std::env::var("PATH").unwrap_or_default())
-    })
-    .clone()
+        // An interactive login shell, since asdf and nvm hook in from .zshrc.
+        let answer = crew_core::py::run(&shell, &["-ilc", "printf '%s' \"$PATH\""], LOGIN_WAIT);
+        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+        match read_login(answer) {
+            Ok(login) => {
+                if c.told.is_some() {
+                    eprintln!("seamux: the login shell's PATH answered at last; using it");
+                }
+                let path = crate::land_watch::join_path(&login, &app);
+                c.found = Some(path.clone());
+                return path;
+            }
+            Err(why) => {
+                if c.told.as_deref() != Some(why.as_str()) {
+                    eprintln!("seamux: no PATH from the login shell {shell} ({why}); using the app's PATH and the usual tool folders, asking again in {}s", LOGIN_RETRY.as_secs());
+                    c.told = Some(why);
+                }
+            }
+        }
+    }
+    fallback_path(&app, &crew_core::py::home(), |d| d.is_dir())
+}
+
+/// How long one login shell may take to print its PATH.
+const LOGIN_WAIT: Duration = Duration::from_secs(5);
+/// How long after a failed lookup the next is asked.
+const LOGIN_RETRY: Duration = Duration::from_secs(60);
+/// Where the tools a landing needs live when the login shell does not say:
+/// rustup's cargo, asdf, Homebrew on either arch, and pip/pipx.
+const TOOL_DIRS: [&str; 5] = ["~/.cargo/bin", "~/.asdf/shims", "/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"];
+
+/// Whether to ask the login shell now: never asked, or the last failed
+/// lookup was LOGIN_RETRY ago.
+fn login_due(tried: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    tried.is_none_or(|t| now.saturating_duration_since(t) >= LOGIN_RETRY)
+}
+
+/// The login shell's PATH from its answer (py::run's: None when it timed out
+/// or did not start), or why there is none. The last line, since a shell may
+/// print a banner before it.
+fn read_login(answer: Option<(i32, String, String)>) -> Result<String, String> {
+    match answer {
+        None => Err(format!("no answer in {}s", LOGIN_WAIT.as_secs())),
+        Some((code, _, err)) if code != 0 => Err(match err.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
+            Some(last) => format!("exit {code}: {last}"),
+            None => format!("exit {code}"),
+        }),
+        Some((_, out, _)) => out.lines().last().map(str::trim).filter(|l| !l.is_empty()).map(String::from).ok_or_else(|| "no output".to_string()),
+    }
+}
+
+/// The PATH while the login shell gives none: the app's, then each of
+/// TOOL_DIRS that is a folder (`~/` read as `home`).
+fn fallback_path(app: &str, home: &std::path::Path, is_dir: impl Fn(&std::path::Path) -> bool) -> String {
+    let dirs: Vec<String> = TOOL_DIRS
+        .iter()
+        .map(|d| d.strip_prefix("~/").map(|r| home.join(r)).unwrap_or_else(|| PathBuf::from(d)))
+        .filter(|d| is_dir(d))
+        .map(|d| d.to_string_lossy().into_owned())
+        .collect();
+    crate::land_watch::join_path(app, &dirs.join(":"))
 }
 
 #[tauri::command]
@@ -808,6 +886,35 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn login_due_asks_first_and_then_a_minute_after_a_failure() {
+        let t0 = std::time::Instant::now();
+        assert!(login_due(None, t0), "never asked: ask");
+        assert!(!login_due(Some(t0), t0 + Duration::from_secs(59)), "failed under a minute ago: wait");
+        assert!(login_due(Some(t0), t0 + Duration::from_secs(60)), "a minute on: ask again");
+    }
+
+    #[test]
+    fn read_login_keeps_a_path_and_names_every_failure() {
+        let ok = |out: &str| read_login(Some((0, out.into(), String::new())));
+        assert_eq!(ok("/h/.cargo/bin:/usr/bin"), Ok("/h/.cargo/bin:/usr/bin".into()));
+        assert_eq!(ok("Welcome!\n  /a:/b  \n"), Ok("/a:/b".into()), "the last line, trimmed, past a banner");
+        assert_eq!(ok(""), Err("no output".into()));
+        assert_eq!(ok("banner\n   "), Err("no output".into()), "a blank last line is no PATH");
+        assert_eq!(read_login(None), Err("no answer in 5s".into()), "timed out or did not start");
+        assert_eq!(read_login(Some((1, "/a".into(), "zsh: bad option\n\n".into()))), Err("exit 1: zsh: bad option".into()));
+        assert_eq!(read_login(Some((127, String::new(), String::new()))), Err("exit 127".into()));
+    }
+
+    #[test]
+    fn fallback_path_adds_the_tool_folders_that_exist_after_the_apps() {
+        let home = std::path::Path::new("/h");
+        let have = |d: &std::path::Path| ["/h/.cargo/bin", "/opt/homebrew/bin", "/usr/local/bin"].iter().any(|h| d == std::path::Path::new(h));
+        assert_eq!(fallback_path("/usr/bin:/bin:/usr/local/bin", home, have), "/usr/bin:/bin:/usr/local/bin:/h/.cargo/bin:/opt/homebrew/bin");
+        assert_eq!(fallback_path("", home, |_| false), "", "nothing anywhere: empty");
+        assert_eq!(fallback_path("/usr/bin", home, |_| true), "/usr/bin:/h/.cargo/bin:/h/.asdf/shims:/opt/homebrew/bin:/usr/local/bin:/h/.local/bin");
+    }
+
     #[test]
     fn cmux_is_known_by_its_bundle_ids() {
         assert!(super::is_cmux_bundle("com.cmuxterm.app"));
