@@ -124,10 +124,13 @@ pub fn lookout_bin() -> Option<String> {
     dirs.into_iter().filter(|d| !d.is_empty()).map(|d| format!("{d}/lookout")).find(|p| Path::new(p).is_file())
 }
 
-fn ask_lookout(bin: &str, cwd: &str, repo: &str, ns: &[u64]) -> Option<Value> {
+fn ask_lookout(bin: &str, cwd: &str, repo: &str, ns: &[u64], force: bool) -> Option<Value> {
     let mut argv: Vec<String> = vec![bin.into(), "gh".into(), "prs".into(), repo.into()];
     argv.extend(ns.iter().map(u64::to_string));
     argv.extend(["--cwd".into(), cwd.into(), "--json".into()]);
+    if force {
+        argv.push("--force".into());
+    }
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let chunks = ns.len().div_ceil(25).max(1) as u64;
     let r = proc::run(&args, Some(cwd), &[], Some(Duration::from_secs(30 * chunks)))?;
@@ -157,7 +160,7 @@ pub fn refresh(cwd: &str, ttl: i64, gh: &Map<String, Value>) {
         return;
     }
     let Some(bin) = lookout_bin() else { return };
-    let Some((list, complete)) = gather(&wanted, &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns)) else { return };
+    let Some((list, complete)) = gather(&wanted, &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns, false)) else { return };
     write_list(cwd, &json!({"at": if complete { now } else { prev_at.unwrap_or(0.0) }, "prs": list}));
 }
 
@@ -165,6 +168,17 @@ pub fn refresh(cwd: &str, ttl: i64, gh: &Map<String, Value>) {
 /// that is open or a draft.
 pub fn has_open(list: &[Value]) -> bool {
     list.iter().any(|p| matches!(p.get("state").and_then(Value::as_str), Some("open" | "draft")))
+}
+
+/// The URLs of a list's PRs that can still merge (open or a draft): what
+/// the land watcher listens on.
+pub fn open_urls(list: &[Value]) -> Vec<String> {
+    list.iter()
+        .filter(|p| matches!(p.get("state").and_then(Value::as_str), Some("open" | "draft")))
+        .filter_map(|p| p.get("url").and_then(Value::as_str))
+        .filter(|u| parse_url(u).is_some())
+        .map(String::from)
+        .collect()
 }
 
 /// The PR URLs a list holds, in its order: what refresh_known asks about.
@@ -179,8 +193,9 @@ pub fn known_urls(list: &[Value]) -> Vec<String> {
 /// without crew-sync's gh facts would drop the branch's PR. crew-sync's run
 /// still adds newly made PRs: this re-read stamps `fast_at` and leaves
 /// `at`, crew-sync's stamp, alone, so crew-sync's refresh still comes due
-/// (review f4). True when it wrote the list.
-pub fn refresh_known(cwd: &str, ttl: i64) -> bool {
+/// (review f4). `force` asks past lookout's 45s floor: the land watcher's
+/// listener heard this list's PR change state. True when it wrote the list.
+pub fn refresh_known(cwd: &str, ttl: i64, force: bool) -> bool {
     let now = py::now();
     let Some(prev) = crew_core::prs::read(cwd) else { return false };
     if now - last_read(&prev) < ttl as f64 {
@@ -191,7 +206,7 @@ pub fn refresh_known(cwd: &str, ttl: i64) -> bool {
         return false;
     }
     let Some(bin) = lookout_bin() else { return false };
-    let Some((list, complete)) = gather(&known_urls(&prev_list), &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns)) else {
+    let Some((list, complete)) = gather(&known_urls(&prev_list), &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns, force)) else {
         return false;
     };
     // crew-sync may have written while lookout answered (a PR it just
@@ -345,13 +360,13 @@ mod tests {
         std::env::set_var("CREW_PRS_DIR", &dir);
         std::env::set_var("CREW_LOOKOUT", dir.join("no-lookout"));
         let cwd = "/tmp/prs-known-worktree";
-        assert!(!refresh_known(cwd, 60), "no list: nothing to re-read");
+        assert!(!refresh_known(cwd, 60, false), "no list: nothing to re-read");
         assert!(write_list(cwd, &json!({"at": py::now(), "prs": [pr(7, "open")]})));
-        assert!(!refresh_known(cwd, 60), "younger than its ttl");
+        assert!(!refresh_known(cwd, 60, false), "younger than its ttl");
         assert!(write_list(cwd, &json!({"at": py::now() - 400.0, "fast_at": py::now(), "prs": [pr(7, "open")]})));
-        assert!(!refresh_known(cwd, 60), "a fast re-read just ran");
+        assert!(!refresh_known(cwd, 60, false), "a fast re-read just ran");
         assert!(write_list(cwd, &json!({"at": py::now() - 120.0, "prs": [pr(7, "open")]})));
-        assert!(!refresh_known(cwd, 60), "due, but with no lookout the file stands");
+        assert!(!refresh_known(cwd, 60, false), "due, but with no lookout the file stands");
         assert_eq!(crew_core::prs::list(cwd).len(), 1);
         std::env::remove_var("CREW_PRS_DIR");
         std::env::remove_var("CREW_LOOKOUT");

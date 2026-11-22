@@ -2748,6 +2748,32 @@ if (want("github: many PRs in one read")) {
 // Only the copy the pointer names, a run with no usable pointer, or setup
 // writes it: a worktree's lookout run for a probe or a check must not move
 // every session and the app onto itself.
+if (want("github: listen for a PR's state change")) {
+  // Its own map file, so a section running beside it never sees this one's.
+  const map = path.join(TMP, "gh-map-listen.json");
+  const url = "https://github.com/o/r/pull/7";
+  const key = `event listen --resource ${url} --event com.github.pull_request.state.changed.v1 --timeout 5s`;
+  const listen = (m, ...a) => {
+    fs.writeFileSync(map, JSON.stringify(m));
+    return spawnSync("node", [path.join(HERE, "lookout.mjs"), "gh", "listen", ...a], { encoding: "utf8", env: { ...ENV, FAKE_GH_MAP: map } });
+  };
+  let r = listen({ [key]: { stdout: '{"type":"com.github.pull_request.state.changed.v1","data":{"state":"merged"}}\n' } }, url, "--timeout", "5", "--json");
+  let j = {}; try { j = JSON.parse(r.stdout); } catch { /* shown below */ }
+  ok("listen: an event exits 0 and prints it as one line", r.status === 0 && j.url === url && j.event && j.event.data.state === "merged", r.stdout + r.stderr);
+  r = listen({ [key]: { status: 8 } }, url, "--timeout", "5");
+  ok("listen: gh's own timeout with no event exits 2", r.status === 2, r.stdout + r.stderr);
+  r = listen({ [key]: { status: 1, stderr: 'unknown command "event" for "gh"\n\nUsage:  gh <command>\n  Learn about accessibility experiences using `gh help accessibility`\n' } }, url, "--timeout", "5");
+  ok("listen: an older gh exits 3 and says why in its own words", r.status === 3 && /unknown command "event"/.test(r.stderr) && !/accessibility/.test(r.stderr), r.stderr);
+  r = listen({ [key]: { status: 1, stderr: "event subscriptions are in preview and not enabled for this account: HTTP 403\n" } }, url, "--timeout", "5");
+  ok("listen: an account outside the preview exits 3", r.status === 3, r.stderr);
+  r = listen({ [key]: { status: 1, stderr: "stream closed: HTTP 502\n" } }, url, "--timeout", "5");
+  ok("listen: a failure that may pass exits 1, for the caller to count", r.status === 1 && /HTTP 502/.test(r.stderr), r.stderr);
+  r = spawnSync("node", [path.join(HERE, "lookout.mjs"), "gh", "listen", url], { encoding: "utf8", env: { ...ENV, FAKE_GH_MAP: map, LOOKOUT_GH_EVENTS: "0" } });
+  ok("listen: LOOKOUT_GH_EVENTS=0 exits 3 without running gh", r.status === 3 && /LOOKOUT_GH_EVENTS=0/.test(r.stderr), r.stderr);
+  r = listen({}, "https://github.com/o/r/issues/7");
+  ok("listen: an issue URL is refused", r.status === 1 && /gh listen <https/.test(r.stderr), r.stderr);
+}
+
 if (want("engine pointer")) {
   const file = path.join(TMP, "pointer", "engine.json");
   const env = { ...ENV, LOOKOUT_ENGINE_FILE: file };

@@ -10,7 +10,9 @@
 //!
 //! crew-sync re-reads a list only every CREW_GH_INTERVAL, so each tick also
 //! re-reads, on a thread of its own, every list that holds an open PR and
-//! is over a minute old (fast_due, prs::refresh_known).
+//! is over a minute old (fast_due, prs::refresh_known). Where gh can listen
+//! (gh event listen, 2.105+), each open PR also has a `lookout gh listen`
+//! (Ears): a heard change re-reads that list at once and wakes the tick.
 //!
 //! What it knows is kept in <crew home>/landings/index.json, so a merge
 //! lands once across restarts; every read-change-write of it holds INDEX.
@@ -29,7 +31,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use crew_core::landing;
@@ -383,7 +385,9 @@ fn tick(app: &AppHandle, keys: &mut HashMap<String, (String, String)>) {
     let now = crew_core::history::now_ms() as i64 / 1000;
     let rows = crew_core::backend::open(seamux_app::backend::kind()).and_then(|b| b.workspaces()).unwrap_or_default();
     let lists: Vec<(String, Option<Value>)> = rows.iter().filter(|w| !w.cwd.is_empty()).map(|w| (w.cwd.clone(), crew_core::prs::read(&w.cwd))).collect();
-    fast_refresh(fast_due(&lists, now));
+    listen(&lists);
+    let hot: Vec<String> = std::mem::take(&mut EARS.lock().unwrap_or_else(|p| p.into_inner()).hot).into_iter().collect();
+    fast_refresh(fast_due(&lists, now), hot);
     let mut seen: Vec<(String, Entry)> = Vec::new();
     for w in rows.iter().filter(|w| !w.cwd.is_empty()) {
         for s in merges_in(&w.id, &w.cwd, &crew_core::prs::list(&w.cwd), now) {
@@ -494,17 +498,165 @@ pub fn fast_due(lists: &[(String, Option<Value>)], now: i64) -> Vec<String> {
 /// GitHub never piles runs up or holds the tick. The next tick reads what
 /// it wrote. crew-sync (sync_watch on tmux, crew-listen on cmux) still owns
 /// the full refresh; lookout's own floor keeps the two from asking twice.
-fn fast_refresh(cwds: Vec<String>) {
+/// `hot` lists, whose PR a listener heard change, are read at once and past
+/// that floor, and then the watcher is woken to land what they say.
+fn fast_refresh(due: Vec<String>, hot: Vec<String>) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
-    if cwds.is_empty() || RUNNING.swap(true, Ordering::SeqCst) {
+    if (due.is_empty() && hot.is_empty()) || RUNNING.swap(true, Ordering::SeqCst) {
+        // A hot list a running pass missed waits for the next tick.
+        let mut ears = EARS.lock().unwrap_or_else(|p| p.into_inner());
+        ears.hot.extend(hot);
         return;
     }
     std::thread::spawn(move || {
-        for cwd in &cwds {
-            let _ = std::panic::catch_unwind(|| crew_cli::sync::prs::refresh_known(cwd, FAST_SECS));
+        for cwd in &hot {
+            let _ = std::panic::catch_unwind(|| crew_cli::sync::prs::refresh_known(cwd, 0, true));
+        }
+        if !hot.is_empty() {
+            wake();
+        }
+        for cwd in due.iter().filter(|c| !hot.contains(c)) {
+            let _ = std::panic::catch_unwind(|| crew_cli::sync::prs::refresh_known(cwd, FAST_SECS, false));
         }
         RUNNING.store(false, Ordering::SeqCst);
     });
+}
+
+// ---------------------------------------------------------------- listen
+
+/// The most open PRs heard at once: one `lookout gh listen` (one gh) each.
+pub const LISTEN_MAX: usize = 12;
+/// How long one listen runs before the next tick starts it afresh.
+const LISTEN_SECS: u64 = 600;
+/// Failures in a row that may pass before listening goes off for this run.
+pub const LISTEN_TRANSIENT_MAX: u32 = 3;
+
+/// The watcher's listeners on open PRs (plan landing-latency): `lookout gh
+/// listen`, which waits on gh event listen (gh 2.105+). Where gh cannot
+/// listen, listening goes off for this app run and the minute re-read
+/// carries on alone.
+#[derive(Debug, Default)]
+pub struct Ears {
+    /// PR URLs with a listener running.
+    pub live: BTreeSet<String>,
+    /// Worktrees whose PR a listener heard change: re-read at once.
+    pub hot: BTreeSet<String>,
+    /// Why listening is off for this app run; empty while it is on.
+    pub off: String,
+    /// Failures in a row that may pass.
+    pub transient: u32,
+}
+
+static EARS: Mutex<Ears> = Mutex::new(Ears { live: BTreeSet::new(), hot: BTreeSet::new(), off: String::new(), transient: 0 });
+
+impl Ears {
+    /// The open PRs to start listening on now, as (url, worktree): each
+    /// open or draft PR in the lists not heard yet, up to LISTEN_MAX in all.
+    pub fn wanted(&self, lists: &[(String, Option<Value>)]) -> Vec<(String, String)> {
+        if !self.off.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (cwd, list) in lists {
+            let prs = list.as_ref().and_then(|l| l.get("prs")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+            for url in crew_cli::sync::prs::open_urls(prs) {
+                if self.live.len() + out.len() >= LISTEN_MAX {
+                    return out;
+                }
+                if !self.live.contains(&url) && !out.iter().any(|(u, _)| *u == url) {
+                    out.push((url, cwd.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// One listener on `url` (in worktree `cwd`) ended with lookout's exit
+    /// `code`: 0 heard a change, 2 heard none in time, 3 gh cannot listen
+    /// here, anything else a failure that may pass. A line to log once when
+    /// this turns listening off.
+    pub fn ended(&mut self, url: &str, cwd: &str, code: Option<i32>, why: &str) -> Option<String> {
+        self.live.remove(url);
+        match code {
+            Some(0) => {
+                self.transient = 0;
+                self.hot.insert(cwd.to_string());
+                None
+            }
+            Some(2) => {
+                self.transient = 0;
+                None
+            }
+            Some(3) => self.turn_off(why),
+            _ => {
+                self.transient += 1;
+                if self.transient >= LISTEN_TRANSIENT_MAX { self.turn_off(why) } else { None }
+            }
+        }
+    }
+
+    fn turn_off(&mut self, why: &str) -> Option<String> {
+        if !self.off.is_empty() {
+            return None;
+        }
+        self.off = if why.is_empty() { "lookout gh listen failed".into() } else { why.to_string() };
+        Some(format!("land_watch: not listening for merges ({}); the minute re-read goes on", self.off))
+    }
+}
+
+/// Start a listener for each open PR not heard yet, each on a thread that
+/// waits on its `lookout gh listen` and records how it ended.
+fn listen(lists: &[(String, Option<Value>)]) {
+    let wanted = EARS.lock().unwrap_or_else(|p| p.into_inner()).wanted(lists);
+    if wanted.is_empty() {
+        return;
+    }
+    let Some(bin) = crew_cli::sync::prs::lookout_bin() else { return };
+    for (url, cwd) in wanted {
+        let child = Command::new(&bin)
+            .args(["gh", "listen", &url, "--timeout", &LISTEN_SECS.to_string(), "--cwd", &cwd, "--json"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .env_remove("CLAUDECODE")
+            .env("PATH", run_path())
+            .spawn();
+        let Ok(child) = child else { continue };
+        EARS.lock().unwrap_or_else(|p| p.into_inner()).live.insert(url.clone());
+        std::thread::spawn(move || {
+            let (code, why) = match child.wait_with_output() {
+                Ok(o) => (o.status.code(), String::from_utf8_lossy(&o.stderr).trim().trim_start_matches("lookout gh listen: ").to_string()),
+                Err(e) => (None, e.to_string()),
+            };
+            let (log, heard) = {
+                let mut ears = EARS.lock().unwrap_or_else(|p| p.into_inner());
+                (ears.ended(&url, &cwd, code, &why), code == Some(0))
+            };
+            if let Some(line) = log {
+                eprintln!("{line}");
+            }
+            if heard {
+                wake();
+            }
+        });
+    }
+}
+
+/// The watcher's sleep between ticks, which a heard change cuts short.
+static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+fn wake() {
+    let (m, cv) = &WAKE;
+    *m.lock().unwrap_or_else(|p| p.into_inner()) = true;
+    cv.notify_all();
+}
+
+/// Sleep up to `d`, or until woken.
+fn nap(d: Duration) {
+    let (m, cv) = &WAKE;
+    let g = m.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut g, _) = cv.wait_timeout_while(g, d, |woke| !*woke).unwrap_or_else(|p| p.into_inner());
+    *g = false;
 }
 
 /// A failed start: tried again after a growing wait, and told (once) when
@@ -526,7 +678,7 @@ pub fn start_watch(app: AppHandle) {
         let mut keys = HashMap::new();
         loop {
             tick(&app, &mut keys);
-            std::thread::sleep(EVERY);
+            nap(EVERY);
         }
     });
 }
@@ -768,6 +920,44 @@ mod tests {
         assert_eq!(status_of(&e, None, false).status, "stopped", "died before writing anything");
         let done = json!({"recipes": {"seamux": {"key": "seamux", "status": "done", "stages": []}}});
         assert_eq!(status_of(&e, Some(&done), false).status, "done");
+    }
+
+    fn listed(prs: &[(u64, &str)]) -> Option<Value> {
+        Some(json!({"at": 0.0, "prs": prs.iter().map(|(n, st)| json!({"n": n, "url": format!("https://github.com/o/r/pull/{n}"), "state": st})).collect::<Vec<_>>()}))
+    }
+
+    #[test]
+    fn the_ears_hear_each_open_pr_once_up_to_the_cap() {
+        let u = |n: u64| format!("https://github.com/o/r/pull/{n}");
+        let lists = vec![("/w/a".to_string(), listed(&[(1, "open"), (2, "merged"), (3, "draft")])), ("/w/b".to_string(), listed(&[(1, "open"), (4, "closed")])),
+                         ("/w/c".to_string(), None)];
+        let mut ears = Ears::default();
+        assert_eq!(ears.wanted(&lists), vec![(u(1), "/w/a".to_string()), (u(3), "/w/a".to_string())], "open and draft only, each PR once");
+        ears.live.insert(u(1));
+        assert_eq!(ears.wanted(&lists), vec![(u(3), "/w/a".to_string())], "a PR already heard is not heard twice");
+        let many: Vec<(u64, &str)> = (10..40).map(|n| (n, "open")).collect();
+        assert_eq!(Ears::default().wanted(&[("/w/m".to_string(), listed(&many))]).len(), LISTEN_MAX);
+        ears.off = "gh too old".into();
+        assert!(ears.wanted(&lists).is_empty(), "off: no new listeners");
+    }
+
+    #[test]
+    fn a_heard_change_is_hot_and_a_refusal_or_three_failures_turn_listening_off() {
+        let mut ears = Ears::default();
+        ears.live.insert("u1".into());
+        assert_eq!(ears.ended("u1", "/w/a", Some(0), ""), None);
+        assert!(ears.hot.contains("/w/a") && ears.live.is_empty(), "heard: re-read /w/a at once");
+        assert_eq!(ears.ended("u2", "/w/b", Some(2), ""), None);
+        assert!(!ears.hot.contains("/w/b"), "no change in time: nothing to re-read");
+        assert_eq!(ears.ended("u3", "/w/b", Some(1), "HTTP 502"), None);
+        assert_eq!(ears.ended("u3", "/w/b", Some(2), ""), None, "a quiet end clears the count");
+        assert_eq!(ears.ended("u3", "/w/b", Some(1), "HTTP 502"), None);
+        assert_eq!(ears.ended("u3", "/w/b", Some(1), "HTTP 502"), None);
+        assert!(ears.ended("u3", "/w/b", None, "HTTP 502").unwrap().contains("HTTP 502"), "the third failure in a row turns it off, said once");
+        let mut old = Ears::default();
+        assert!(old.ended("u", "/w", Some(3), "unknown command \"event\" for \"gh\"").unwrap().contains("unknown command"));
+        assert_eq!(old.ended("u", "/w", Some(3), "again"), None, "off is said once");
+        assert_eq!(old.off, "unknown command \"event\" for \"gh\"");
     }
 
     #[test]
