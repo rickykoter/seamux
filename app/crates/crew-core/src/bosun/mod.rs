@@ -16,11 +16,14 @@
 //! seamux bosun dispatch <repo> <branch> --brief <file> [--json]
 //! seamux bosun loops [list] [--json] | loops run <id>
 //!                                bosun.json's timed prompts (loops.rs)
+//! seamux bosun precompact        the PreCompact hook (stdin: its payload)
+//! seamux bosun recall            the SessionStart hook after a compaction
 //! ```
 //!
 //! It runs on the app's tmux backend only. Exit 0 on success, 1 when it
 //! could not, 2 on bad arguments.
 
+pub mod compact;
 pub mod config;
 pub mod dispatch;
 pub mod launch;
@@ -192,7 +195,7 @@ fn fail(what: &str, e: impl std::fmt::Display) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>]");
+    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>] | precompact | recall");
     2
 }
 
@@ -366,6 +369,13 @@ pub fn main(args: &[String]) -> i32 {
             }
         },
         "loops" => loops::main(&args[1..], &dir),
+        "precompact" | "recall" => {
+            let since = launch::State::load(&dir).day;
+            let (today, _) = launch::local_day_hour(launch::now_secs());
+            let out = if sub == "precompact" { compact::precompact(&stdin_text(), &dir, &since, &today) } else { compact::recall(&dir, &since, &today) };
+            print!("{out}");
+            0
+        }
         _ => usage(),
     }
 }
