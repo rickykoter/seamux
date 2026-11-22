@@ -13,6 +13,7 @@ pub mod bgshells;
 pub mod bosun;
 pub mod cachefacts;
 pub mod codeowners;
+pub mod colors;
 pub mod costs;
 pub mod doctor;
 pub mod dp_engine;
