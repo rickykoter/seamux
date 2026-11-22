@@ -1,0 +1,154 @@
+/* The Bosun (bosun.ts): the ⌘4 tab, a rail of answers beside its terminal,
+   and the ⌘B drop-down over the top of any view. */
+
+.panel.bosun { display: grid; grid-template-columns: 264px minmax(0, 1fr); overflow: hidden; }
+.panel.bosun[hidden] { display: none; }
+.panel.bosun.folded { grid-template-columns: 30px minmax(0, 1fr); }
+
+/* ---- the rail ---- */
+.bosun-rail { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--strip); }
+.bosun-rail-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px 12px; }
+.bosun-rail-title { flex: 1; font-size: var(--fs-2); color: var(--section); font-variant: all-small-caps; letter-spacing: 0.04em; }
+.bosun-fold {
+  flex: none; width: 22px; height: 22px; border: 0; border-radius: 5px; background: none; color: var(--muted);
+  font: inherit; cursor: pointer; line-height: 1;
+}
+.bosun-fold:hover { background: var(--on); color: var(--fg); }
+.bosun-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.folded .bosun-rail-head { padding: 8px 4px; }
+.folded .bosun-rail-title, .folded .bosun-list { display: none; }
+.bosun-list { flex: 1; overflow-y: auto; padding: 0 8px 16px; display: flex; flex-direction: column; gap: 10px; }
+.bosun-empty { color: var(--muted); font-size: var(--fs-2); padding: 8px 4px; margin: 0; }
+.bosun-day { display: flex; flex-direction: column; gap: 6px; }
+.bosun-day-t { margin: 4px 4px 0; font-size: var(--fs-1); font-weight: 600; color: var(--section); text-transform: uppercase; letter-spacing: 0.06em; }
+
+.bosun-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 6px;
+  display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-2);
+}
+.bosun-card.open { border-color: var(--line2); }
+.bosun-card-top { color: var(--muted); font-size: var(--fs-1); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bosun-q { margin: 0; color: var(--fg); font-weight: 600; line-height: 1.35; }
+.bosun-first { margin: 0; color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.bosun-answer { white-space: pre-wrap; color: var(--fg); line-height: 1.45; max-height: 40vh; overflow-y: auto; padding: 2px 0; }
+.bosun-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.bosun-chip {
+  font-size: var(--fs-1); padding: 0 6px; border-radius: 4px; line-height: 17px;
+  background: var(--on); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line);
+}
+.bosun-chip.k-gh { color: var(--accent-t); }
+.bosun-chip.k-jira { color: var(--ef-text-blue); }
+.bosun-chip.k-sql, .bosun-chip.k-dd, .bosun-chip.k-splunk, .bosun-chip.k-dash { color: var(--ef-text-purple); }
+.bosun-chip.k-file { color: var(--good-t); }
+.bosun-sources { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.bosun-sources li { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.bosun-src-k { flex: none; font-size: var(--fs-1); color: var(--muted); min-width: 34px; }
+.bosun-src { color: var(--accent-t); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bosun-src:hover { text-decoration: underline; }
+.bosun-src-ref { font: var(--fs-1) var(--ef-mono); color: var(--fg); overflow-wrap: anywhere; }
+/* Reopen and Re-check: quiet until the card is hovered or holds focus. */
+.bosun-acts { display: flex; justify-content: flex-end; gap: 2px; opacity: 0.55; transition: opacity 120ms; }
+.bosun-card:hover .bosun-acts, .bosun-card:focus-within .bosun-acts, .bosun-card.open .bosun-acts { opacity: 1; }
+.bosun-act {
+  font: inherit; font-size: var(--fs-1); border: 0; border-radius: 5px; background: none; color: var(--accent-t);
+  padding: 2px 6px; cursor: pointer;
+}
+.bosun-act:hover:not(:disabled) { background: var(--on); }
+.bosun-act:disabled { color: var(--muted); cursor: default; }
+.bosun-act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---- the terminal's side, and the header both places share ---- */
+.bosun-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.bosun-head {
+  flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line);
+  font-size: var(--fs-2); color: var(--muted); user-select: none; -webkit-user-select: none;
+}
+.bosun-name { color: var(--fg); font-weight: 600; }
+.bosun-root { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bosun-state { margin-left: auto; font-size: var(--fs-1); }
+.bosun-state[data-state="working"] { color: var(--role-working-t); }
+.bosun-state[data-state="needs_input"] { color: var(--ask-t); }
+.bosun-key { font-size: var(--fs-1); padding: 0 5px; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--line2); }
+.bosun-host { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--term); }
+.bosun-host > .term-slot { flex: 1; min-height: 0; }
+.bosun-host > .term-slot[hidden] { display: none; }
+.bosun-note { margin: 14vh auto 0; max-width: 420px; text-align: center; color: var(--muted); padding: 0 16px; }
+.bosun-note[hidden] { display: none; }
+.bosun-note-t { color: var(--fg); font-weight: 600; }
+.bosun-err { font: var(--fs-1) var(--ef-mono); color: var(--bad-t); overflow-wrap: anywhere; }
+
+/* ---- the ⌘B drop-down: slides from under the strip onto the top 60% ---- */
+.bosun-drop {
+  position: absolute; left: 0; right: 0; top: 0; height: 60%; z-index: 40; display: flex; flex-direction: column;
+  background: var(--term); border-bottom: 1px solid var(--line2); box-shadow: 0 10px 28px var(--shade);
+  transform: translateY(-100%); transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.bosun-drop.down { transform: translateY(0); }
+.bosun-drop[hidden], .bosun-dim[hidden] { display: none; }
+.bosun-drop .bosun-head { background: var(--strip); }
+.bosun-dim { position: absolute; inset: 0; z-index: 39; background: rgba(0, 0, 0, 0.32); opacity: 0; transition: opacity 180ms; }
+.bosun-dim.down { opacity: 1; }
+
+/* ---- the whistle: a brass bosun's call that pipes while the Bosun works ---- */
+.bosun-whistle { width: 38px; height: 23px; margin: -3px 0; flex: none; overflow: visible; }
+.bw-gun, .bw-buoy, .bw-mouth { fill: var(--ef-yellow); stroke: var(--ef-text-orange); stroke-width: 0.7; }
+.bw-keel { fill: none; stroke: var(--ef-text-orange); stroke-width: 1.4; stroke-linecap: round; }
+.bw-ring { fill: none; stroke: var(--ef-text-orange); stroke-width: 0.9; }
+.bw-hole { fill: var(--ef-ink); }
+.bw-shine { fill: var(--ef-ink); opacity: 0.25; }
+.bw-arc { fill: none; stroke: var(--role-working); stroke-width: 1.2; stroke-linecap: round; opacity: 0; }
+.bw-body { transform-origin: 16px 12px; transform-box: view-box; }
+.bosun-whistle[data-mood="pipe"] .bw-arc { animation: bw-pipe 1.2s ease-out infinite; }
+.bosun-whistle[data-mood="pipe"] .bw-arc1 { animation-delay: 0.2s; }
+.bosun-whistle[data-mood="pipe"] .bw-arc2 { animation-delay: 0.4s; }
+.bosun-whistle[data-mood="trill"] .bw-body { animation: bw-trill 0.35s ease-in-out 3; }
+.bosun-whistle[data-mood="trill"] .bw-arc { stroke: var(--good); animation: bw-pipe 0.45s ease-out 3; }
+@keyframes bw-pipe { 0% { opacity: 0; } 30% { opacity: 0.9; } 100% { opacity: 0; } }
+@keyframes bw-trill { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
+
+/* The tab's own mark while the Bosun works: a small dot after its name. */
+.tab[data-tab="bosun"] { position: relative; }
+body[data-bosun="working"] .tab[data-tab="bosun"]::after {
+  content: ""; position: absolute; top: 5px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--working);
+}
+
+/* ---- Ask the Bosun (bosun_ask.ts), on Radar rows and Lookout reviews ---- */
+/* The Bosun runs on tmux only: elsewhere, no Ask. */
+body:not([data-backend="tmux"]) .bosun-ask-btn, body:not([data-backend="tmux"]) .bosun-ask-item { display: none !important; }
+.radar-acts { display: flex; gap: 6px; align-items: center; margin: 4px 0 0 24px; }
+.radar-card > .radar-acts { margin: 8px 0 0; }
+.radar-acts > .radar-jump { margin: 0; }
+.radar-open.bosun-ask-btn { margin-left: 4px; }
+.bosun-askbox {
+  position: fixed; z-index: 60; width: 340px; max-width: calc(100vw - 16px); display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border-radius: 10px; background: var(--card); color: var(--fg);
+  border: 1px solid var(--line2); box-shadow: 0 10px 28px var(--shade), 0 1px 3px var(--shade);
+  font-size: var(--fs-2);
+}
+.bosun-askbox-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bosun-askbox-t { flex: none; font-weight: 600; }
+.bosun-askbox-chip {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-1);
+  padding: 1px 8px; border-radius: 999px; background: var(--on); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line);
+}
+.bosun-askbox-q {
+  font: inherit; line-height: 1.4; resize: vertical; min-height: 54px; padding: 6px 8px; border-radius: 7px;
+  border: 1px solid var(--line2); background: var(--field); color: var(--fg);
+}
+.bosun-askbox-q:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.bosun-askbox-err { margin: 0; color: var(--bad-t); font-size: var(--fs-1); }
+.bosun-askbox-err[hidden] { display: none; }
+.bosun-askbox-foot { display: flex; align-items: center; gap: 8px; }
+.bosun-askbox-hint { flex: 1; color: var(--muted); font-size: var(--fs-1); }
+.bosun-askbox-send {
+  font: inherit; padding: 4px 12px; border-radius: 6px; border: 0; cursor: pointer;
+  background: var(--primary); color: var(--on-primary);
+}
+.bosun-askbox-send:disabled { opacity: 0.6; cursor: default; }
+.bosun-askbox-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bosun-drop, .bosun-dim { transition: none; }
+  .bosun-whistle .bw-arc, .bosun-whistle .bw-body { animation: none !important; }
+  .bosun-whistle[data-mood="pipe"] .bw-arc { opacity: 0.7; }
+}

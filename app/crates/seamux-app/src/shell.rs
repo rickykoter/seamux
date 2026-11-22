@@ -18,14 +18,15 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 /// jump to its plan, review, ask and other tabs (sheetgroups.ts; again
 /// steps through that group), ⌘] and ⌘[ step through its tabs, ⌘. moves to the next
 /// workspace that needs you (DockView.nextAttention), ⌘K opens session search
-/// (palette.ts). A page in a frame keeps
+/// (palette.ts), ⌘B drops the Bosun down over any view (bosun.ts). A page in a frame keeps
 /// keys from the shell, so they are shortcuts rather than key listeners.
 /// (⌘J is a native pane's own: its companion shell.)
 fn sheet_keys() -> Vec<(Shortcut, &'static str)> {
     [("CmdOrCtrl+KeyE", "wake"), ("CmdOrCtrl+BracketRight", "next"), ("CmdOrCtrl+BracketLeft", "prev"),
      ("CmdOrCtrl+Period", "attention"), ("CmdOrCtrl+KeyK", "search"), ("CmdOrCtrl+Shift+KeyE", "hide"),
      ("CmdOrCtrl+Shift+KeyP", "group:plan"), ("CmdOrCtrl+Shift+KeyL", "group:review"),
-     ("CmdOrCtrl+Shift+KeyA", "group:ask"), ("CmdOrCtrl+Shift+KeyO", "group:other")]
+     ("CmdOrCtrl+Shift+KeyA", "group:ask"), ("CmdOrCtrl+Shift+KeyO", "group:other"),
+     ("CmdOrCtrl+KeyB", "bosun")]
         .iter()
         .filter_map(|(k, n)| k.parse::<Shortcut>().ok().map(|s| (s, *n)))
         .collect()
@@ -820,7 +821,7 @@ mod tests {
     #[test]
     fn sheet_keys_all_parse() {
         let names: Vec<&str> = sheet_keys().iter().map(|(_, n)| *n).collect();
-        assert_eq!(names, ["wake", "next", "prev", "attention", "search", "hide", "group:plan", "group:review", "group:ask", "group:other"]);
+        assert_eq!(names, ["wake", "next", "prev", "attention", "search", "hide", "group:plan", "group:review", "group:ask", "group:other", "bosun"]);
     }
 
     #[test]

@@ -15,6 +15,8 @@ import { RadarView } from "./radar";
 import "./radar.css";
 import { DoctorView } from "./doctor";
 import "./doctor.css";
+import { BosunView } from "./bosun";
+import "./bosun.css";
 import { Palette } from "./palette";
 import { appearanceButton } from "./appearance";
 
@@ -65,6 +67,9 @@ const radarEl = document.getElementById("radar")!;
 const radarView = new RadarView(radarEl);
 const doctorEl = document.getElementById("doctor")!;
 const doctorView = new DoctorView(doctorEl);
+// The Bosun: its ⌘4 tab, and the ⌘B drop-down it lays over the stage.
+const bosunEl = document.getElementById("bosun")!;
+const bosunView = new BosunView(bosunEl, document.getElementById("stage")!);
 
 const tabs = new Tabs(
   document.getElementById("strip")!,
@@ -74,6 +79,7 @@ const tabs = new Tabs(
     ["review", reviewEl],
     ["radar", radarEl],
     ["doctor", doctorEl],
+    ["bosun", bosunEl],
   ]),
 );
 tabs.onSelect = (id) => {
@@ -81,6 +87,8 @@ tabs.onSelect = (id) => {
   reviewView.setShown(id === "review");
   radarView.setShown(id === "radar");
   if (id === "doctor") doctorView.shown();
+  bosunView.setShown(id === "bosun");
+  if (id === "bosun") bosunView.focusMain();
 };
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
 // at the end of the strip. Choosing a session shows it in the Dock.
@@ -121,6 +129,10 @@ void listen<{ review: string; item: string }>("notify:review", (e) => {
   void reviewView.focus(e.payload.review, e.payload.item);
 });
 
+// Ask the Bosun from Radar or Lookout (bosun_ask.ts) queued a question: the
+// Bosun drops down so the answer can be watched.
+window.addEventListener("seamux:bosun-asked", () => bosunView.afterAsk());
+
 // A pane's link opens its page in the Dock's side column, and only there
 // (sheet.ts linkSheet): with another view up, the Dock comes forward first.
 window.addEventListener("seamux:show-dock", () => tabs.select("dock"));
@@ -136,6 +148,8 @@ window.addEventListener("seamux:land-open", (e) => {
 // ⌘. (a shell.rs shortcut, so it works in a framed page too): on to the next
 // workspace that needs you.
 void listen<string>("sheet:key", (e) => {
+  // ⌘B: the Bosun drops down over this view, or goes away again.
+  if (e.payload === "bosun") return bosunView.key(tabs.current);
   if (e.payload !== "attention") return;
   tabs.select("dock");
   dockView.nextAttention();
@@ -147,8 +161,12 @@ document.addEventListener("keydown", (e) => {
   // Not an Escape something below already took: the Dock's terminal catches
   // a second Esc in a row (native.ts, so Claude's Rewind does not open) and
   // only blurs, but xterm lets the key it declined go on up to here.
-  if (e.key === "Escape" && !e.defaultPrevented) hide();
-  // ⌘1…⌘3 pick the views, while focus is in the shell rather than a framed page.
+  // With the Bosun dropped down, Escape puts it away instead.
+  if (e.key === "Escape" && !e.defaultPrevented) {
+    if (bosunView.isDown()) bosunView.setDrop(false);
+    else hide();
+  }
+  // ⌘1…⌘4 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {
     tabs.selectIndex(Number(e.key) - 1);
     e.preventDefault();
