@@ -91,7 +91,7 @@ const pickRow = async (p, key) => {
 
 /** Each view: how to reach it from the Dock, and what it shows once it works. */
 export const VIEWS = {
-  dock: { go: (p) => tab(p, "Dock"), shows: ".dockview .sheet .native-term .xterm-rows" },
+  dock: { go: (p) => tab(p, "Dock"), shows: ".dockview .sheet .native-term .xterm-screen :is(.xterm-rows, canvas)" },
   wake: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-list li" },
   // checkout-flow (the Dock's first pick) has PR #43 open as a draft.
   wakeprs: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-prs" },
@@ -100,6 +100,8 @@ export const VIEWS = {
   lookout: { go: (p) => tab(p, "Lookout"), shows: ".review .r-stage-chip, .r-side .r-stage-chip" },
   // A contact's row in the card: drawn only once a frame has workspaces in it.
   radar: { go: (p) => tab(p, "Radar"), shows: ".radar-card .radar-name" },
+  // The answer log reads on either backend, so the rail's cards show on cmux too.
+  bosun: { go: (p) => tab(p, "Bosun"), shows: ".panel.bosun .bosun-card .bosun-q" },
   doctor: { go: (p) => menu(p, "Doctor"), shows: ".doc-ws" },
   usage: { go: (p) => menu(p, "Usage"), shows: null },
   palette: {
