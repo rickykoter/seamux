@@ -496,6 +496,184 @@ const FINDINGS = {
 const others = [
   { id: "rv-coupons-inc1", title: "demo-coupons · increment 1", root: treeOf(W.api), branch: "sam/coupons-api", updated: secs(ago(66)), open: { minor: 1 } },
 ];
+const OTHER_FINDINGS = {
+  "rv-coupons-inc1": [
+    { id: "f1", file: "src/checkout/total.js", line: 14, severity: "minor", summary: "A coupon over the cart total makes the total negative", status: "open" },
+  ],
+};
+
+// The workspaces' PRs (land_watch.rs workspace_prs: crew-sync's lists with
+// their worktree), the landing of #41's merge (landing_get), and what ship
+// says of each open PR's worktree (ship_view). #41 and #44 are the PRs the
+// reviews above cover; #43 is one no review covers yet.
+const MERGE_41 = "4f1c2ab9e07d3c5a81b6e2d94f0a7c3e5b8d1f26";
+const prUrl = (n) => `https://github.com/${GH}/pull/${n}`;
+const prRow = (w, o) => ({ cwd: treeOf(w), ws: w.id, ws_title: w.title, url: prUrl(o.n), review: "", conflict: false, failing: [], gating: [], ...o });
+const PRS = [
+  prRow(W.search, {
+    n: 41, title: "Reindex search when a product is renamed", state: "merged", review: "APPROVED",
+    checks: { fail: 0, run: 0, pass: 6, gate: 0, unseen: 0 }, merge: { sha: MERGE_41, at: iso(ago(38)), base: "main" },
+  }),
+  prRow(W.api, { n: 44, title: "Take coupon codes at checkout", state: "open", review: "REVIEW_REQUIRED", checks: { fail: 0, run: 2, pass: 4, gate: 0, unseen: 0 } }),
+  prRow(W.checkout, {
+    n: 43, title: "Clear errors for bad coupon codes", state: "draft", checks: { fail: 1, run: 0, pass: 5, gate: 0, unseen: 0 },
+    failing: [{ name: "test / checkout", url: `https://github.com/${GH}/actions/runs/1187` }],
+  }),
+];
+const landStage = (name, status, startMin, endMin) => ({ name, status, ...(startMin != null ? { start: ago(startMin) } : {}), ...(endMin != null ? { end: ago(endMin) } : {}) });
+const landing41 = {
+  state: {
+    pr: "41",
+    merge: MERGE_41,
+    recipes: {
+      deploy: {
+        key: "deploy", name: "Deploy the shop", status: "running",
+        stages: [landStage("build", "done", 37, 34), landStage("deploy", "running", 34), landStage("live", "pending")],
+        version: { expect: MERGE_41.slice(0, 7), live: "9a3e7c1", match: false },
+        links: [{ label: "Deploy run", url: `https://github.com/${GH}/actions/runs/1192` }],
+      },
+      notebook: {
+        key: "notebook", name: "Rollout notebook", status: "awaiting",
+        stages: [landStage("notebook", "pending")],
+      },
+    },
+  },
+  overall: { status: "landing", stage: "deploy", recipe: "deploy", live: false },
+};
+const LAND_LOG = {
+  deploy: ["$ npm ci", "added 412 packages in 9s", "$ npm run build", "built dist/ in 3.1s", "$ scripts/deploy.sh", "uploading dist/ (2.4 MB)", "waiting on the rollout: 2 of 4 hosts"],
+  notebook: ["waiting for a person to approve: this recipe writes a rollout notebook"],
+};
+const SHIP = {
+  [treeOf(W.api)]: {
+    plan: "demo-coupons", level: "auto-merge", levelBy: "src/** (auto-merge)",
+    policy: { source: "origin/main", ref: "origin/main", why: "" },
+    gates: [
+      { gate: "delivered", ok: false, why: "increment 2 of 3 is still working" },
+      { gate: "checks", ok: false, why: "2 checks are running" },
+      { gate: "conflict", ok: true, why: "" },
+    ],
+    action: "wait", waits: ["the plan is delivered", "its checks are green"],
+  },
+  [treeOf(W.checkout)]: {
+    plan: "checkout-errors", level: "auto-pr", levelBy: "default (auto-pr)",
+    policy: { source: "origin/main", ref: "origin/main", why: "" },
+    gates: [{ gate: "delivered", ok: false, why: "increment 2 of 4 is waiting on you" }],
+    action: "wait", waits: ["the plan is delivered"],
+  },
+};
+/** land_act: what the person did at the Land stage, as the watcher tells it. */
+function landAct(merge, recipe, act) {
+  if (merge !== MERGE_41) throw "no landing for that merge";
+  const r = landing41.state.recipes[recipe];
+  if (!r) throw `no recipe ${recipe}`;
+  if (act === "approve") {
+    if (r.status !== "awaiting") throw `${recipe} is not waiting on you`;
+    r.status = "running";
+    r.stages = [landStage("notebook", "running", 0)];
+    return `approved ${recipe}; it runs on`;
+  }
+  if (act === "skip") {
+    r.status = "skipped";
+    r.stages = r.stages.map((s) => ({ ...s, status: s.status === "done" ? "done" : "skipped" }));
+    return `skipped ${recipe}`;
+  }
+  if (act === "retry") return `retrying ${recipe}`;
+  if (act === "dismiss") return "dismissed";
+  throw `unknown answer: ${act}`;
+}
+
+// Radar (radar.rs radar_frame): each open workspace's edited and planned
+// files. coupons-api and coupons-ui both edit total.js now; checkout-flow's
+// plan reaches form.js, which coupons-ui edits.
+const RADAR = {
+  checkout: { editing: ["src/checkout/errors.js", "test/checkout.test.js"], planned: [{ path: "src/checkout/form.js", plan: "checkout-errors", inc: 3, title: "Show the error under the field" }] },
+  api: { editing: ["src/checkout/total.js", "src/coupons/apply.js", "test/coupons.test.js"], planned: [] },
+  ui: { editing: ["src/checkout/total.js", "src/checkout/form.js", "src/checkout/form.css"], planned: [{ path: "src/checkout/receipt.js", plan: "coupons-ui", inc: 2, title: "Show the discount on the receipt" }] },
+  search: { editing: [], planned: [] },
+  docs: { editing: ["docs/coupons.md"], planned: [] },
+};
+function radarFrame() {
+  const contacts = ws.map((w) => ({
+    ws: w.id, pane: w.surface, title: w.title, root: treeOf(w), branch: w.branch, color: w.color,
+    state: w.state, editing: RADAR[w.key]?.editing ?? [], planned: RADAR[w.key]?.planned ?? [],
+  }));
+  const by = new Map();
+  for (const c of contacts) for (const f of c.editing) by.set(f, (by.get(f) ?? 0) + 1);
+  return { repos: [{ name: "shop", common: `${REPO}/.git`, contacts, collisions: [...by].filter(([, n]) => n > 1).map(([f]) => f) }] };
+}
+
+// Doctor (crew_core::doctor's scan and crew-resume's rows). The scan is the
+// app's own tmux's: on cmux it answers none, as the app does.
+const finding = (w, o) => ({ id: "", kind: "", class: "report", ws: w?.id ?? "", title: w?.title ?? "", cwd: w ? treeOf(w) : "", pane: w?.surface ?? "", summary: "", detail: "", session: "", subject: "", fixes: [], ...o });
+let doctorFindings = [
+  finding(W.checkout, {
+    id: "d1", kind: "claude-exited", class: "confirm", session: SESS.checkout,
+    summary: "Claude exited in its second pane 12 minutes ago", detail: "The pane is a shell now. Resuming starts claude --resume on the same conversation.",
+    fixes: [{ verb: "resume", label: "Resume Claude" }],
+  }),
+  finding(W.search, {
+    id: "d2", kind: "merged-live", class: "report",
+    summary: "Its PR #41 merged 38 minutes ago, and the workspace is still open", detail: "Reclaim checks for unpushed work, then closes it and removes the worktree.",
+    fixes: [{ verb: "reclaim", label: "Reclaim" }],
+  }),
+  finding(null, { id: "d3", kind: "orphan-pane-file", class: "safe", subject: "%41", summary: "A pane file for a pane tmux no longer has", fixes: [{ verb: "remove", label: "Remove" }] }),
+  finding(null, { id: "d4", kind: "orphan-pane-file", class: "safe", subject: "%57", summary: "A pane file for a pane tmux no longer has", fixes: [{ verb: "remove", label: "Remove" }] }),
+  finding(null, { id: "d5", kind: "dead-pane", class: "safe", subject: "%12", summary: "A pane whose command ended", fixes: [{ verb: "close", label: "Close" }] }),
+];
+const doctorScan = () => (backend === "tmux" ? { tmux: "ok", registry: "ok", findings: doctorFindings } : null);
+const doctorRow = (o) => ({ state: "live", latest: "", branch: "", when: 0, exists: true, ws: "", sessions: [], transcript: "", ...o });
+let doctorRows = [
+  ...WORKSPACES.map((w) => doctorRow({ cwd: treeOf(w), title: w.title, branch: w.branch, ws: w.id, when: secs(ago(w.sinceMin)), latest: LABELS[w.key] ?? "", sessions: w.agent ? [SESS[w.key]] : [] })),
+  doctorRow({ cwd: `${TREES}/legacy-cart`, state: "archived", title: "legacy-cart", branch: "sam/legacy-cart", when: secs(ago(60 * 26)), latest: "Move the cart's totals into one module", sessions: ["5b2c9e10-4a7d-4f3e-8c61-2d9e0b7a4f15"] }),
+  doctorRow({ cwd: `${TREES}/receipt-copy`, state: "past", title: "receipt-copy", branch: "sam/receipt-copy", when: secs(ago(60 * 52)), latest: "Reword the receipt's footer", sessions: ["c41e8a2b-7d90-4b15-a3e6-9f0c2d4b8e71"] }),
+  doctorRow({ cwd: `${TREES}/old-spike`, state: "gone", title: "old-spike", branch: "", exists: false, when: secs(ago(60 * 24 * 9)), latest: "Try a second search index" }),
+];
+/** An All workspaces row's verb (doctor_archive, _restore, _forget, _resume). */
+function rowAct(verb, cwd) {
+  const r = doctorRows.find((x) => x.cwd === cwd);
+  if (!r) throw "no workspace at that folder";
+  const to = { archive: ["live", "archived", "archived"], restore: ["archived", "live", "restored"], resume: ["past", "live", "resumed"] }[verb];
+  if (verb === "forget") {
+    if (r.state !== "archived") throw `${r.title} is not archived`;
+    doctorRows = doctorRows.filter((x) => x !== r);
+    return `forgot ${r.title}`;
+  }
+  if (r.state !== to[0]) throw `${r.title} is ${r.state}, not ${to[0]}`;
+  r.state = to[1];
+  r.when = secs(Date.now());
+  return `${to[2]} ${r.title}`;
+}
+
+// The Dock's strips. coupons-api's Claude has two background shells (bg_app.rs):
+// its dev server, still running, and a test run that passed.
+const bgShells = new Map([
+  [W.api.surface, [
+    { id: "b1", command: "npm run dev -- --port 5173", label: "npm run dev", state: "running", exit: null, at: ago(31), ended: null,
+      tail: "  VITE v5.4.2  ready in 412 ms\n  ➜  Local:   http://localhost:5173/\n  page reload src/checkout/total.js" },
+    { id: "b2", command: "npm test -- coupons", label: "npm test", state: "done", exit: 0, at: ago(6), ended: ago(5.6),
+      tail: " ✓ test/coupons.test.js (9 tests) 41ms\n Test Files  1 passed (1)\n      Tests  9 passed (9)" },
+  ]],
+]);
+const shellsOf = (surface, tails) => (bgShells.get(surface) ?? []).map((s) => (tails ? s : { ...s, tail: undefined }));
+function stopShell(surface, id) {
+  const s = (bgShells.get(surface) ?? []).find((x) => x.id === id);
+  if (!s || s.state !== "running") return 0;
+  Object.assign(s, { state: "cancelled", exit: 143, ended: Date.now() });
+  return 1;
+}
+// The palette's preview of a Claude workspace (sessions.rs LastExchange).
+const EXCHANGE = {
+  checkout: ["Expired codes should get their own message, not the generic one.", "I'll add an expired check before the lookup. One question first: should an expired code answer 422 or 400?"],
+  api: ["Apply the coupon in total(), after tax.", "Done: total() now takes the coupon and applies it after tax. The test watcher is green; I'm adding a case for a coupon over the cart total."],
+  ui: ["Put the coupon field above the total, with its error under it.", "Wiring the field into the checkout form now: it posts to /api/coupons/apply and shows the server's message under the input."],
+  search: ["Merge it once the checks pass.", "PR #41 merged into main. The worktree has nothing unpushed, so it can be reclaimed."],
+};
+/** A workspace's PRs as the Wake lists them (crew-sync's list for its worktree). */
+function wakePrs(dir) {
+  const d = (dir ?? "").replace(/\/+$/, "");
+  return PRS.filter((p) => p.cwd === d).map(({ cwd, ws: _ws, ws_title, ...p }) => ({ ...p, branch: WORKSPACES.find((w) => treeOf(w) === cwd)?.branch, updatedAt: iso(ago(p.n === 41 ? 38 : 9)) }));
+}
 
 // Reclaim. The fixes the wizard ran, by workspace: each clears its blocker.
 const reclaimFixed = new Map();
@@ -540,10 +718,11 @@ function reclaimReport(id) {
     sandbox: null,
     checks,
     blockers: checks.filter((c) => c.kind === "fail").length,
+    // In crew-reclaim's order and words (crew/bin/crew-reclaim, "removes").
     remove: [
-      { what: "workspace", target: `${w.title} (${w.ref})`, note: "closed in cmux" },
-      { what: "worktree", target: treeOf(w), note: merged ? "184 MB" : "" },
-      { what: "branch", target: w.branch, note: "merged; origin keeps its copy" },
+      { what: "worktree", target: treeOf(w), note: merged ? "184 MB" : "212 MB" },
+      { what: "branch", target: w.branch, note: "safe delete; kept if git declines" },
+      { what: "workspace", target: w.title, note: "closed first, with whatever runs in it" },
     ],
   };
 }
@@ -969,6 +1148,72 @@ const handlers = {
   review_fix: () => null,
   review_post: () => null,
   review_push: () => null,
+  review_other_findings: ({ id }) => OTHER_FINDINGS[id] ?? [],
+  review_other_post: ({ id }) => {
+    if (!OTHER_FINDINGS[id]) throw "that review has no pull request to post to";
+    return `${prUrl(44)}#pullrequestreview-2207`;
+  },
+  review_stop_orphan: () => null,
+  notify_review_looking: () => null,
+
+  // The change from review to release (release.ts).
+  landing_prs: () => PRS,
+  landing_get: ({ merge }) => (merge === MERGE_41 ? landing41 : null),
+  landing_log: ({ merge, recipe }) => {
+    if (merge !== MERGE_41 || !LAND_LOG[recipe]) throw "no log for that recipe";
+    return LAND_LOG[recipe].join("\n");
+  },
+  // A worktree with no plan: ship names the level and leaves the PR to a person.
+  ship_view: ({ cwd }) =>
+    SHIP[cwd] ?? { plan: null, level: "auto-merge", levelBy: "src/** (auto-merge)", policy: { source: "origin/main", ref: "origin/main", why: "" }, gates: [], action: "none", waits: [] },
+  land_act: ({ merge, recipe, act }) => landAct(merge, recipe, act),
+
+  radar_frame: radarFrame,
+
+  doctor_scan: doctorScan,
+  doctor_rows: () => ({ rows: doctorRows, live_known: true }),
+  doctor_fix: ({ id, verb }) => {
+    const f = doctorFindings.find((x) => x.id === id);
+    if (!f) throw "that finding is gone: scan again";
+    doctorFindings = doctorFindings.filter((x) => x !== f);
+    return `${verb === "resume" ? "resumed Claude in" : verb === "remove" ? "removed the pane file for" : `${verb}d`} ${f.title || f.subject}`;
+  },
+  doctor_fix_safe: () => {
+    // No tmux workspaces on cmux, so nothing for the doctor to fix.
+    if (backend !== "tmux") return [];
+    const safe = doctorFindings.filter((f) => f.class === "safe" && f.fixes.length);
+    doctorFindings = doctorFindings.filter((f) => !safe.includes(f));
+    return safe.map((f) => ({ id: f.id, ok: true, message: "" }));
+  },
+  doctor_archive: ({ cwd }) => rowAct("archive", cwd),
+  doctor_restore: ({ cwd }) => rowAct("restore", cwd),
+  doctor_forget: ({ cwd }) => rowAct("forget", cwd),
+  doctor_resume: ({ cwd }) => rowAct("resume", cwd),
+
+  // A pane's strips and banners. Nothing is held and nothing stopped in the
+  // demo, so those banners stay away, as on a quiet pane.
+  wake_prs: ({ dir }) => wakePrs(dir),
+  bg_shells: ({ surface, tails }) => shellsOf(surface, tails),
+  bg_stop: ({ surface, id }) => stopShell(surface, id),
+  pane_held: () => null,
+  held_act: () => {
+    throw "nothing is held in this pane";
+  },
+  pane_stop: () => null,
+  pane_stop_cancel: () => false,
+  pty_shell_run: () => null,
+  clip_read: () => ({ kind: "empty" }),
+  link_file: () => {
+    throw "the demo has no files to show";
+  },
+  session_last_exchange: ({ workspace }) => {
+    const w = ws.find((x) => x.id === workspace);
+    const x = w && EXCHANGE[w.key];
+    return x ? { prompt: x[0], reply: x[1], session: SESS[w.key], at: w.since } : null;
+  },
+  resume_set: () => null,
+  notify_looking: () => null,
+  notify_take_link: () => null,
 
   new_ws_options: () => ({
     repos: [

@@ -20,7 +20,12 @@ What is asserted:
   - uninstall puts both Docks back, keeps the sandbox registry and
     transcripts while clearing the rest of the state, does not kill a
     listen.pid that is no longer the reconciler, and claims no removal of a
-    thing that was never there.
+    thing that was never there;
+  - crew status and crew adopt in a seamux app pane read the pane file and
+    the app's registry, a native cmux session stays on cmux's path, and a
+    shell in neither says so;
+  - crew doctor's context line passes on either id and warns with neither,
+    and on the app's tmux Computer Use is a note.
 
     python3 crew/tools/install_probe.py      exit 0 when all hold
 """
@@ -117,6 +122,12 @@ case "$1" in
   --tools) printf '%s\\n' crew-color crew-digest crew-feed crew-resume crew-sweep crew-sync crew-listen crew-artifacts crew-board ;;
   crew-plugin-root) exit 1 ;;
   crew-board-intent) exec {sys.executable} {INTENT} crew-board-intent ;;
+  workspaces) case "$2" in
+      list-json) [ -n "${{FAKE_LIST_FAIL:-}}" ] && {{ echo "registry locked" >&2; exit 1; }}
+        cat {os.path.join(FAKE, "ws.json")!r} 2>/dev/null ;;
+      backend) [ -n "${{FAKE_BACKEND:-}}" ] && echo "$FAKE_BACKEND" ;;
+    esac; exit 0 ;;
+  crew-hook) {{ printf '%s ' "$2"; cat; echo; }} >> {os.path.join(FAKE, "hooks.log")!r} ;;
   *) exit 0 ;;
 esac
 """, 0o755)
@@ -500,6 +511,82 @@ os.remove(CODELOG)
 r = run(["bash", os.path.join(CREW, "bin", "crew-code"), WT], env=CODE_ENV)
 got = open(CODELOG).read().split("\n") if os.path.exists(CODELOG) else []
 check("…and without --goto, only the window", r.returncode == 0 and got[:2] == [WT, ""], repr(got))
+
+# --- crew status and crew adopt in an app pane (plan crew-status-tmux) -------
+# The fake seamux answers `workspaces list-json` from ws.json and logs each
+# `crew-hook` event with its payload; the pane file sits in the temp HOME.
+W1, P1 = "5A000000-0000-4000-8000-000000000001", "5B000000-0000-4000-8000-000000000001"
+write(os.path.join(FAKE, "ws.json"), json.dumps({"workspaces": [
+    {"id": W1, "ref": W1, "title": "shop", "current_directory": "/w/shop",
+     "description": "root:/w/shop ci:pass pr:open"}]}))
+os.makedirs(STATE, exist_ok=True)
+write(os.path.join(STATE, f"pane-{P1}.json"), json.dumps({"ws": W1, "surface": P1, "session": "sess-app", "state": "working"}))
+write(os.path.join(STATE, "session-sess-app"), "")
+APP = {"SEAMUX_BACKEND": "tmux", "SEAMUX_WORKSPACE_ID": W1, "SEAMUX_PANE_ID": P1}
+CREW_BIN = os.path.join(CREW, "bin", "crew")
+
+
+def crew(*argv, **env):
+    return run(["bash", CREW_BIN] + list(argv), env=env)
+
+
+r = crew("status", **APP)
+out = r.stdout + r.stderr
+check("in an app pane, crew status finds the session in the pane file and calls its hooks live",
+      "session: sess-app" in out and "live" in out.split("this session")[-1].split("this workspace")[0], out)
+check("…and shows the workspace from the registry: title, folder, facts without the root pin, each pane's state",
+      "title:  shop" in out and "folder: /w/shop" in out and "facts:  ci:pass pr:open" in out
+      and "root:" not in out.split("this workspace")[-1] and f"pane {P1[:8]}: working (session sess-app)" in out, out)
+r = crew("status", SEAMUX_WORKSPACE_ID=W1, CMUX_WORKSPACE_ID=W1)
+out = r.stdout + r.stderr
+check("a native cmux session (both ids, no SEAMUX_BACKEND) takes the cmux path, not the registry",
+      "title:  shop" not in out and "not in a seamux app pane" not in out, out)
+r = crew("status")
+out = r.stdout + r.stderr
+check("with neither id, crew status says it is in no pane, for the session and the workspace",
+      out.count("not in a seamux app pane or a cmux terminal") == 2, out)
+r = crew("status", SEAMUX_BACKEND="tmux", CMUX_WORKSPACE_ID=W1)
+out = r.stdout + r.stderr
+check("a tmux shell with only an inherited CMUX_WORKSPACE_ID is in no pane, as crew-core's in_cmux says",
+      out.count("not in a seamux app pane or a cmux terminal") == 2, out)
+r = crew("status", FAKE_LIST_FAIL="1", **APP)
+out = r.stdout + r.stderr
+check("when list-json fails, this workspace says seamux failed and why, not that the workspace closed",
+      "seamux workspaces list-json failed: registry locked" in out and "closed?" not in out, out)
+try:
+    os.remove(os.path.join(FAKE, "hooks.log"))
+except OSError:
+    pass
+r = crew("adopt", **APP)
+hooks = open(os.path.join(FAKE, "hooks.log")).read() if os.path.exists(os.path.join(FAKE, "hooks.log")) else ""
+check("crew adopt runs in an app pane and replays the session and task hooks with the pane's session",
+      r.returncode == 0 and "session sess-app" in r.stdout
+      and "session {" in hooks and "task {" in hooks and '"session_id": "sess-app"' in hooks
+      and os.path.exists(os.path.join(STATE, "session-sess-app.adopted")), r.stdout + r.stderr + "\n" + hooks)
+r = crew("adopt")
+check("…and with neither id it refuses, naming both kinds of pane",
+      r.returncode == 1 and "not in a seamux app pane or a cmux terminal" in r.stdout + r.stderr, r.stdout + r.stderr)
+
+# --- crew doctor's context and Computer Use lines (plan crew-status-tmux) ----
+def doctor_lines(**env):
+    r = crew("doctor", **env)
+    out = r.stdout + r.stderr
+    return out, [l for l in out.splitlines() if "Computer Use" in l or "hooks will fire" in l or "hooks no-op" in l]
+
+
+out, lines = doctor_lines(FAKE_BACKEND="tmux", **APP)
+check("on the app's tmux, doctor's context line passes on SEAMUX_WORKSPACE_ID",
+      any("✓" in l and "SEAMUX_WORKSPACE_ID set (hooks will fire)" in l for l in lines), "\n".join(lines) or out[-600:])
+check("…and Computer Use is a note there, not a warning",
+      any("Computer Use is cmux's helper" in l and "!" not in l for l in lines)
+      and not any("Computer Use not set up" in l for l in lines), "\n".join(lines))
+out, lines = doctor_lines(FAKE_BACKEND="cmux", CMUX_WORKSPACE_ID=W1)
+check("in a cmux terminal it passes on CMUX_WORKSPACE_ID, and Computer Use reads as before",
+      any("CMUX_WORKSPACE_ID set (hooks will fire)" in l for l in lines)
+      and any("Computer Use not set up" in l for l in lines), "\n".join(lines))
+out, lines = doctor_lines()
+check("with neither id it warns that hooks no-op outside the app's panes and cmux terminals",
+      any("no SEAMUX_WORKSPACE_ID or CMUX_WORKSPACE_ID" in l for l in lines), "\n".join(lines))
 
 # --- cleanup -----------------------------------------------------------------
 try:

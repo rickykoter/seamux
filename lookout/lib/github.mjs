@@ -20,7 +20,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as S from "./store.mjs";
 
 export const GH = () => process.env.LOOKOUT_GH || "gh";
@@ -630,5 +630,57 @@ function floor(key, now) {
     for (const k of Object.keys(st)) if (k.startsWith("prs:") && !(now - ((st[k] || {}).at || 0) < FLOOR_KEEP_MS)) delete st[k];
     st[key] = { at: now };
     writeState(st);
+  });
+}
+
+// ---------------------------------------------------------------- listen
+// `lookout gh listen <pr-url>`: wait on `gh event listen` (gh 2.105+, GitHub
+// Event Streams) for the PR's next state change (merged, closed, drafted).
+// The app's land watcher runs one per open PR so a merge lands at once
+// (plan landing-latency); it re-reads open PRs every minute either way, so
+// a listener that cannot run costs nothing but speed. Rules as deep-plan's
+// ci.mjs pause (ADR 0004: no plugin imports another's files): a refusal
+// that will not pass (an older gh, an account outside the preview, a host
+// without Event Streams) is OFF; anything else is ERROR, which the caller
+// counts. LOOKOUT_GH_EVENTS=0 turns it off.
+export const STATE_EVENT = "com.github.pull_request.state.changed.v1";
+export const LISTEN = { EVENT: 0, ERROR: 1, QUIET: 2, OFF: 3 };
+const LISTEN_REFUSED = /unknown command|not enabled|HTTP 40[134]|not available|Enterprise|GHE\.com/i;
+// gh's own exit when its --timeout ends the listen with no event.
+const GH_LISTEN_TIMEOUT = 8;
+export const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+
+// { code, why?, event? }: code is one of LISTEN. Resolves at the first
+// event, at gh's own timeout, or 15s past it if gh hangs.
+export function listen(url, { timeoutS = 600, cwd } = {}) {
+  if (process.env.LOOKOUT_GH_EVENTS === "0") return Promise.resolve({ code: LISTEN.OFF, why: "LOOKOUT_GH_EVENTS=0" });
+  if (!PR_URL.test(url || "")) return Promise.resolve({ code: LISTEN.ERROR, why: `not a pull request URL: ${url}` });
+  const t = Math.max(1, Math.ceil(Number(timeoutS) || 600));
+  return new Promise(resolve => {
+    let done = false, errText = "", out = "";
+    const child = spawn(GH(), ["event", "listen", "--resource", url, "--event", STATE_EVENT, "--timeout", `${t}s`],
+      { cwd: cwd && fs.existsSync(cwd) ? cwd : undefined, stdio: ["ignore", "pipe", "pipe"] });
+    const finish = r => {
+      if (done) return;
+      done = true; clearTimeout(watchdog);
+      try { child.kill(); } catch { /* gone */ }
+      resolve(r);
+    };
+    const watchdog = setTimeout(() => finish({ code: LISTEN.QUIET, why: `gh event listen did not end ${t + 15}s in` }), (t + 15) * 1000);
+    child.on("error", e => finish(e.code === "ENOENT" ? { code: LISTEN.OFF, why: `${GH()} is not installed` } : { code: LISTEN.ERROR, why: e.message }));
+    child.stdout.on("data", d => {
+      out += d;
+      const line = out.split("\n").find(l => l.trim());
+      if (line) finish({ code: LISTEN.EVENT, event: parse(line) || line.trim() });
+    });
+    child.stderr.on("data", d => { errText += d; });
+    child.on("close", code => {
+      if (code === 0) return finish({ code: LISTEN.EVENT, event: parse(out.trim()) || null });
+      if (code === GH_LISTEN_TIMEOUT) return finish({ code: LISTEN.QUIET });
+      // The line that says why: a refusal's own, else gh's last word.
+      const lines = errText.split("\n").map(l => l.trim()).filter(Boolean);
+      const why = lines.find(l => LISTEN_REFUSED.test(l)) || lines.pop() || `gh event listen exited ${code === null ? "on a signal" : code}`;
+      finish({ code: LISTEN_REFUSED.test(errText) ? LISTEN.OFF : LISTEN.ERROR, why });
+    });
   });
 }
