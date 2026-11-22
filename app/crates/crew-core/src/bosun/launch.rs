@@ -150,11 +150,9 @@ pub fn write_files(cfg: &Config, dir: &Path, seamux: &str) -> Result<(PathBuf, P
 
 /// The local date (YYYY-MM-DD) and hour at `secs` since the epoch.
 pub fn local_day_hour(secs: i64) -> (String, u32) {
-    // SAFETY: localtime_r writes only into `tm`.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let t: libc::time_t = secs as libc::time_t;
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    (format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday), tm.tm_hour.max(0) as u32)
+    // One reading of local time (loops.rs), so the loops' day is the supervisor's.
+    let l = super::loops::local(secs);
+    (l.day, l.minute / 60)
 }
 
 pub fn now_secs() -> i64 {

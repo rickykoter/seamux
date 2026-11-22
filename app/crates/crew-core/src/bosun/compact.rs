@@ -89,10 +89,17 @@ fn when(secs: i64, today: &str) -> String {
     if l.day == today { hm } else { format!("{} {hm}", l.day) }
 }
 
+/// The day the Bosun's conversation began: the later of state.json's day
+/// and the day the supervisor last typed /clear, as the supervisor reads it.
+pub fn conversation_day(dir: &Path) -> String {
+    super::supervise::later_day(&super::launch::State::load(dir).day, &super::supervise::read_reset_day(dir))
+}
+
 /// The index of `dir` as of `today`, for a conversation that began on `since`.
 pub fn index(dir: &Path, since: &str, today: &str) -> Index {
     let answers = answers_since(dir, since, today);
-    let queued = queue::waiting(dir)
+    let waiting = queue::waiting(dir);
+    let queued = waiting
         .iter()
         .map(|i| format!("- {} ({}): {}\n", i.id, i.source, one_line(i.text.lines().find(|l| !l.trim().is_empty() && !l.starts_with('[')).unwrap_or(&i.text), 160)))
         .collect();
@@ -103,10 +110,16 @@ pub fn index(dir: &Path, since: &str, today: &str) -> Index {
         .filter(|(_, l)| !l.queued.is_empty())
         .map(|(id, l)| {
             let src = format!("loop:{id}");
-            let found = answers.iter().rev().find(|e| s(e, "id") == l.queued || s(e, "asker") == src);
+            // This run's answer: logged under its item id, or as the loop's
+            // asker after the run was queued. An older run's answer is not it.
+            let since_run = (l.last.max(0) as u64) * 1000;
+            let found = answers
+                .iter()
+                .rev()
+                .find(|e| s(e, "id") == l.queued || (s(e, "asker") == src && e.get("at").and_then(Value::as_u64).unwrap_or(0) >= since_run));
             let what = match found {
                 Some(e) => format!("answered as {}: {}", s(e, "id"), one_line(s(e, "answer"), 300)),
-                None if queue::waiting(dir).iter().any(|i| i.id == l.queued) => "still waiting in the queue".to_string(),
+                None if waiting.iter().any(|i| i.id == l.queued) => "still waiting in the queue".to_string(),
                 None => "no answer logged yet".to_string(),
             };
             format!("- {id}, last run {}: {what}\n", when(l.last, today))
@@ -123,6 +136,16 @@ pub fn render(head: &str, ix: &Index, limit: usize) -> String {
     let mut queued: Vec<&String> = ix.queued.iter().collect();
     let loops: Vec<&String> = ix.loops.iter().collect();
     let (mut dropped_a, mut dropped_q) = (0, 0);
+    // A first cut, counted once: drop the oldest answers until the rest
+    // would fit, with room for the headings and the left-out line. The loop
+    // below then settles the exact text.
+    let len = |v: &[&String]| v.iter().map(|x| x.chars().count()).sum::<usize>();
+    let room = limit.saturating_sub(head.chars().count() + len(&queued) + len(&loops) + 400);
+    let mut total = len(&answers);
+    while total > room && !answers.is_empty() {
+        total -= answers.remove(0).chars().count();
+        dropped_a += 1;
+    }
     loop {
         let mut out = String::from(head);
         if !answers.is_empty() || dropped_a > 0 {
@@ -212,6 +235,33 @@ mod tests {
         assert!(out.contains("- checkin, last run") && out.contains("answered as l1: answer to sitrep"));
         assert!(out.contains("- prs, last run") && out.contains("still waiting in the queue"));
         assert!(!out.contains("asked, when compacting"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_older_runs_answer_is_not_the_newest_runs() {
+        let d = tmp("stale");
+        // The 09:30 run (item r1) was answered; the 14:00 run (item r2) was typed but not yet logged.
+        let morning = json!({"id": "r1", "at": 1_000_000, "question": "my PRs", "answer": "two PRs", "sources": [], "asker": "loop:my-prs"}).to_string();
+        fs::write(d.join("log/2026-11-23.jsonl"), morning + "\n").unwrap();
+        fs::write(d.join("loops-state.json"), json!({"my-prs": {"last": 2_000, "slot": "2026-11-23 14:00", "queued": "r2"}}).to_string()).unwrap();
+        let ix = index(&d, "2026-11-23", "2026-11-23").loops.join("");
+        assert!(ix.contains("no answer logged yet") && !ix.contains("answered as r1"), "{ix}");
+        // Logged as the loop's asker after the run, under another id: that is this run's answer.
+        let later = json!({"id": "x9", "at": 2_000_500, "question": "my PRs", "answer": "three PRs", "sources": [], "asker": "loop:my-prs"}).to_string();
+        fs::write(d.join("log/2026-11-23.jsonl"), fs::read_to_string(d.join("log/2026-11-23.jsonl")).unwrap() + &later + "\n").unwrap();
+        assert!(index(&d, "2026-11-23", "2026-11-23").loops.join("").contains("answered as x9: three PRs"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_conversations_day_is_the_later_of_state_and_the_reset() {
+        let d = tmp("day");
+        super::super::launch::State { session: "s".into(), day: "2026-11-22".into() }.save(&d).unwrap();
+        assert_eq!(conversation_day(&d), "2026-11-22");
+        // The supervisor typed /clear this morning; prime has not rewritten state.json yet.
+        fs::write(d.join("reset-day"), "2026-11-23").unwrap();
+        assert_eq!(conversation_day(&d), "2026-11-23");
         let _ = fs::remove_dir_all(&d);
     }
 

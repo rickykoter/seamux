@@ -374,7 +374,7 @@ pub fn main(args: &[String]) -> i32 {
         "loops" => loops::main(&args[1..], &dir),
         "context" => context::main(&args[1..]),
         "precompact" | "recall" => {
-            let since = launch::State::load(&dir).day;
+            let since = compact::conversation_day(&dir);
             let (today, _) = launch::local_day_hour(launch::now_secs());
             let out = if sub == "precompact" { compact::precompact(&stdin_text(), &dir, &since, &today) } else { compact::recall(&dir, &since, &today) };
             print!("{out}");

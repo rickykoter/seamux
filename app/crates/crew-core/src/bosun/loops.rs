@@ -101,8 +101,8 @@ fn parse_every(s: &str) -> Option<i64> {
     let (n, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit())?);
     let n: i64 = n.parse().ok()?;
     let secs = match unit {
-        "m" => n * 60,
-        "h" => n * 3600,
+        "m" => n.checked_mul(60)?,
+        "h" => n.checked_mul(3600)?,
         _ => return None,
     };
     (secs >= MIN_EVERY).then_some(secs)
@@ -304,6 +304,17 @@ pub fn load(dir: &Path) -> Vec<Result<Loop, String>> {
     cfg.get("loops").and_then(Value::as_array).map(|a| a.iter().map(parse).collect()).unwrap_or_default()
 }
 
+/// The id of every entry in bosun.json's loops, whether or not it parses:
+/// a loop with a typo keeps its last run until the typo is fixed.
+fn entry_ids(dir: &Path) -> Vec<String> {
+    read_json(&dir.join("bosun.json"))
+        .and_then(|v| v.get("loops").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|e| e.get("id").and_then(Value::as_str).map(|s| s.trim().to_string()))
+        .collect()
+}
+
 fn load_state(dir: &Path) -> Map<String, Value> {
     match read_json(&dir.join(STATE)) {
         Some(Value::Object(m)) => m,
@@ -369,9 +380,11 @@ pub fn tick_at(dir: &Path, now_secs: i64, now: &Local, seamux: &str) -> Vec<Stri
             }
         }
     }
-    // Loops no longer in bosun.json leave the state.
+    // Loops no longer in bosun.json leave the state; one that is there but
+    // does not parse right now keeps it.
     let before = state.len();
-    state.retain(|k, _| loops.iter().any(|l| &l.id == k));
+    let ids = entry_ids(dir);
+    state.retain(|k, _| ids.iter().any(|id| id == k));
     if changed || state.len() != before {
         if let Err(e) = write_json(&dir.join(STATE), &Value::Object(state)) {
             eprintln!("bosun loops: could not save {STATE}: {e}");
@@ -641,6 +654,18 @@ mod tests {
         write_json(&d.join("bosun.json"), &json!({"loops": [{"id": "a", "every": "1h", "prompt": "pa"}]})).unwrap();
         tick_at(&d, 300, &at("2026-11-23", 1, 9, 5), "/bin/seamux");
         assert_eq!(state(&d).into_iter().map(|(k, _)| k).collect::<Vec<_>>(), ["a"]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_loop_with_a_typo_keeps_its_last_run() {
+        let d = tmp("typo");
+        write_json(&d.join("bosun.json"), &json!({"loops": [{"id": "a", "every": "1h", "prompt": "pa"}, {"id": "b", "every": "1h", "prompt": "pb"}]})).unwrap();
+        tick_at(&d, 100, &at("2026-11-23", 1, 9, 0), "/bin/seamux");
+        write_json(&d.join("bosun.json"), &json!({"loops": [{"id": "a", "every": "1h", "prompt": "pa"}, {"id": "b", "every": "1hr", "prompt": "pb"}]})).unwrap();
+        tick_at(&d, 200, &at("2026-11-23", 1, 9, 1), "/bin/seamux");
+        assert_eq!(state(&d).into_iter().map(|(k, _)| k).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(parse_every("9999999999999999h"), None, "a count that overflows is refused");
         let _ = fs::remove_dir_all(&d);
     }
 
