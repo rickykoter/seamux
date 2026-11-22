@@ -59,6 +59,11 @@ CMUX="$(command -v cmux || true)"
 # cmux is optional: on a machine without it the seamux app runs on its own
 # tmux, and the steps that render, validate or reload cmux's config are skipped.
 have_cmux() { command -v "$CMUX" >/dev/null 2>&1; }
+# The backend crew reads workspaces from: cmux, tmux (the seamux app's own)
+# or nothing. On tmux the app reconciles, not crew-listen (plan tmux-sync-timer).
+crew_backend() { [ -x "$SEAMUX" ] && "$SEAMUX" workspaces backend 2>/dev/null; }
+# The seamux app is open: on tmux its sync watcher is the periodic reconcile.
+app_running() { pgrep -f 'seamux.app/Contents/MacOS/seamux-app' >/dev/null 2>&1; }
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=1; }
@@ -1065,6 +1070,8 @@ cmd_listen() {
     *)
       if [ -n "$live" ]; then
         ok "listener running (pid $pid) — events + a ${CREW_TICK_SECONDS:-120}s reconcile, board every ${CREW_BOARD_TICK:-10}s"
+      elif [ "$(crew_backend)" = tmux ]; then
+        printf '  listener not needed on tmux — the seamux app reconciles (a %ss tick + workspace changes); crew-listen is for cmux\n' "${CREW_TICK_SECONDS:-120}"
       elif [ -f "$STATE/listen.off" ]; then
         printf '  listener off by choice — turn on with: crew listen on\n'
       else
@@ -1090,6 +1097,12 @@ cmd_status() {
   [ -f "$STATE/listen.pid" ] && lpid="$(cat "$STATE/listen.pid" 2>/dev/null || true)"
   if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
     printf ' + daemon (events + %ss tick, pid %s)\n' "${CREW_TICK_SECONDS:-120}" "$lpid"
+  elif [ "$(crew_backend)" = tmux ]; then
+    if app_running; then
+      printf ' + the seamux app (%ss tick + workspace changes)\n' "${CREW_TICK_SECONDS:-120}"
+    else
+      printf ' + \033[33mno app\033[0m (on tmux the seamux app reconciles while it is open)\n'
+    fi
   else
     printf ' + \033[33mno daemon\033[0m (starts on the next Claude session)\n'
   fi
@@ -1313,6 +1326,11 @@ cmd_doctor() {
   [ -f "$STATE/listen.pid" ] && dpid="$(cat "$STATE/listen.pid" 2>/dev/null || true)"
   if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
     ok "daemon running (pid $dpid) — events + ${CREW_TICK_SECONDS:-120}s tick"
+  elif [ "$_backend" = tmux ]; then
+    # On tmux the app's sync watcher is the periodic reconcile; crew-listen
+    # follows cmux's events and does not run there.
+    if app_running; then ok "the seamux app reconciles on tmux — ${CREW_TICK_SECONDS:-120}s tick + workspace changes"
+    else warn "the seamux app is not running — on tmux only the Stop hook reconciles until it opens"; fi
   elif [ -f "$STATE/listen.off" ]; then
     warn "daemon off by choice — only the Stop hook reconciles; crew listen on"
   else
