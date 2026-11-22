@@ -10,6 +10,7 @@ It is a set of Claude Code plugins. Take the one you came for, or all of them.
 | **restack** | Rebases a stack of branches onto a moved base and regenerates conflicting generated files instead of making you merge them. | anywhere Claude Code runs |
 | **lookout** | Opens a diff beside the terminal, riskiest files first, with a reviewer's findings on their lines for you and the agent to talk through. A plan can make an increment wait on its review. | anywhere Claude Code runs |
 | **humanize** | Rewrites prose so it reads like a careful human wrote it: strips AI writing tells and untangles sentences that are hard to parse. Other seamux skills use it on the text they write. | anywhere Claude Code runs |
+| **bosun** | A skill for the Bosun, a read-only Claude session the seamux app keeps over your code root. It gives sitreps, answers with a source on every fact, and hands real work to a new workspace. Any other session can ask it a question. | macOS, with the seamux app on tmux |
 | **seamux-mods** *(optional)* | Draws deep-plan inside the terminal: a plan pane, a `go next` prompt when the gate blocks an edit, and the plan in the status line. | Claude Code 2.1.287+ |
 
 deep-plan and lookout don't need cmux. They serve their own pages in Claude
@@ -172,8 +173,8 @@ Details: [scenarios](deep-plan/references/scenarios.md),
 
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),
-[humanize](humanize/README.md), [crew](crew/README.md) and
-[seamux-mods](seamux-mods/README.md).
+[humanize](humanize/README.md), [crew](crew/README.md),
+[bosun](bosun/README.md) and [seamux-mods](seamux-mods/README.md).
 
 
 ## Where it runs
@@ -479,6 +480,15 @@ hard to parse. The other skills run it over the text they write for people.
 
 https://github.com/user-attachments/assets/4207e5f2-8a98-486f-9f18-3542f4edf82f
 
+### bosun: questions across your repos, answered with sources
+
+The Bosun is one Claude session the seamux app keeps running over your code
+root, off the board and read-only on files. The bosun skill tells it how to
+give a sitrep, cite every fact, log each answer, and hand real work to a new
+workspace through `seamux bosun dispatch`, which you approve each time. In
+any other session the same skill asks it a question with `seamux bosun ask`.
+It installs with crew. [bosun's README](bosun/README.md).
+
 ### seamux-mods: deep-plan in the terminal
 
 An optional plugin that draws deep-plan inside Claude Code, so you can steer
@@ -660,8 +670,8 @@ is in, so they stay on the checkout you keep.
 
 For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 `--with-github-issues` and `--with-observability=STACK` set the crew plugin's
-options, and `--no-crew`, `--no-restack`, `--no-guard`, `--no-lookout` and
-`--no-humanize` skip plugins.
+options, and `--no-crew`, `--no-restack`, `--no-guard`, `--no-lookout`,
+`--no-humanize` and `--no-bosun` skip plugins. bosun installs only with crew.
 
 ### Without cmux: the seamux app, Claude desktop, a terminal, the cloud
 
@@ -851,6 +861,7 @@ Read these before you rely on seamux.
 | `restack/` | plugin: the skill and `bin/restack` (see its `README.md` and `SKILL.md`) |
 | `lookout/` | plugin: the review skill, `bin/lookout`, the page and the comments hook (see its `README.md` and `SKILL.md`) |
 | `humanize/` | plugin: the prose skill other skills run over their text (see its `README.md`) |
+| `bosun/` | plugin: the Bosun's skill, for sitreps, cited answers, dispatch and asking (see its `README.md`) |
 | `bash-guard/` | plugin: blocks destructive commands on every Bash call |
 | `crew/` | plugin: Claude hooks and options; `crew apply` copies it to `~/.config/cmux/crew` (see `crew/README.md`) |
 | `crew/claude/` | the status line, and the settings merge `crew apply` runs |

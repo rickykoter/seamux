@@ -49,6 +49,12 @@
       "source": "./humanize",
       "description": "Rewrite prose so it reads like a careful human wrote it: removes AI writing tells and untangles hard-to-parse syntax, with a scanner for the mechanical tells.",
       "category": "productivity"
+    },
+    {
+      "name": "bosun",
+      "source": "./bosun",
+      "description": "The Bosun's skill: sitreps across your repos, answers that cite every fact, dispatch of real work to a new workspace, and asking the Bosun from any other session. Needs the seamux app on its tmux backend.",
+      "category": "productivity"
     }
   ]
 }

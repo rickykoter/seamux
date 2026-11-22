@@ -6,6 +6,16 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **A bosun plugin.** It is the skill for the Bosun, the read-only Claude
+  session the seamux app keeps over your code root. In the Bosun it gives a
+  sitrep across the repos, cites a source for every fact, answers a queued
+  question with `seamux bosun answer`, and logs each answer with
+  `seamux bosun log add`. It hands real work to a new workspace with
+  `seamux bosun dispatch`, which you approve each time, and the new
+  worktree's folder ends in the log entry's id. In any other session it
+  asks the Bosun with `seamux bosun ask`. `./install.sh` installs it with
+  crew, and `--no-bosun` skips it.
+
 - **deep-plan's CI waits listen instead of polling.** A `ci` check and
   `deep-plan ship`'s merge-when-green wait now block on `gh event listen`
   (gh 2.105+, GitHub Event Streams) between looks. They read the checks

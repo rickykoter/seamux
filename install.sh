@@ -2,7 +2,8 @@
 # install.sh — seamux, as Claude Code plugins.
 #
 #   ./install.sh [--dry-run] [--github] [--mods] [--no-crew] [--no-restack]
-#                [--no-guard] [--no-lookout] [--no-humanize] [--no-apply] [--no-migrate] [--main-repo PATH]
+#                [--no-guard] [--no-lookout] [--no-humanize] [--no-bosun] [--no-apply] [--no-migrate]
+#                [--main-repo PATH]
 #                [--with-jira[=SITE]] [--with-github-issues]
 #                [--with-observability=STACK]
 #   ./install.sh --check        what is installed, and drift in the crew tree
@@ -19,7 +20,7 @@
 # marketplace (a folder marketplace: the plugins run from the checkout itself,
 # so an edit plus /reload-plugins is live with no version bump; --github adds
 # the published repo instead), installs deep-plan, restack, bash-guard, lookout
-# and crew (seamux-mods with --mods), runs each engine's `setup` and `crew apply`, then
+# and crew (and bosun with it; seamux-mods with --mods), runs each engine's `setup` and `crew apply`, then
 # migrates what the old installer left behind: the ~/.claude/skills copies,
 # their shims, and the settings.json hook entries the plugins now carry. Every
 # file it migrates is moved into ~/.claude/seamux-migrated/<time>/, never
@@ -37,7 +38,7 @@ MARKET="seamux"
 
 APPDIR="$HOME/Applications/seamux.app"
 APP_BUNDLE_ID="dev.seamux.app"
-DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 HUMANIZE=1 APPLY=1 MIGRATE=1 MAIN="" FROM=""
+DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 HUMANIZE=1 BOSUN=1 APPLY=1 MIGRATE=1 MAIN="" FROM=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" OBS_STACK=""
 
 while [ $# -gt 0 ]; do
@@ -56,6 +57,7 @@ while [ $# -gt 0 ]; do
     --no-guard) GUARD=0; shift ;;
     --no-lookout) LOOKOUT=0; shift ;;
     --no-humanize) HUMANIZE=0; shift ;;
+    --no-bosun) BOSUN=0; shift ;;
     --no-apply) APPLY=0; shift ;;
     --no-migrate) MIGRATE=0; shift ;;
     --main-repo)
@@ -65,7 +67,7 @@ while [ $# -gt 0 ]; do
     --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
     --with-github-issues) WITH_GHI=1; shift ;;
     --with-observability=*) OBS_STACK="${1#--with-observability=}"; shift ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1 (--help lists them)" >&2; exit 2 ;;
   esac
 done
@@ -92,8 +94,10 @@ PLUGINS="deep-plan"
 [ "$LOOKOUT" = 1 ] && PLUGINS="$PLUGINS lookout"
 [ "$HUMANIZE" = 1 ] && PLUGINS="$PLUGINS humanize"
 [ "$CREW" = 1 ]    && PLUGINS="$PLUGINS crew"
+# bosun shells out to seamux, which comes with the app crew needs: it goes where crew goes.
+[ "$CREW" = 1 ] && [ "$BOSUN" = 1 ] && PLUGINS="$PLUGINS bosun"
 [ "$MODS" = 1 ]    && PLUGINS="$PLUGINS seamux-mods"
-ALL_PLUGINS="deep-plan restack bash-guard lookout humanize crew seamux-mods"
+ALL_PLUGINS="deep-plan restack bash-guard lookout humanize crew bosun seamux-mods"
 
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
 # Through `seamux crew-plugin-root` once seamux is installed. Before it is (a
@@ -423,7 +427,7 @@ if [ "$CREW" = 1 ] && [ "$CHECK" = 0 ] && [ "$UNINSTALL" = 0 ] && [ ! -x "$LOCAL
   else
     warn "crew needs seamux, which needs cargo, npm and the Xcode command line tools to build — skipping crew; install them, then ./install.sh --app and ./install.sh"
     CREW=0
-    PLUGINS=" $PLUGINS "; PLUGINS="${PLUGINS// crew / }"; PLUGINS="${PLUGINS# }"; PLUGINS="${PLUGINS% }"
+    PLUGINS=" $PLUGINS "; PLUGINS="${PLUGINS// crew / }"; PLUGINS="${PLUGINS// bosun / }"; PLUGINS="${PLUGINS# }"; PLUGINS="${PLUGINS% }"
   fi
 fi
 
@@ -456,7 +460,7 @@ try:
 except ValueError:
     ps = []
 bad = 0
-for name in ("deep-plan", "restack", "bash-guard", "lookout", "humanize", "crew", "seamux-mods"):
+for name in ("deep-plan", "restack", "bash-guard", "lookout", "humanize", "crew", "bosun", "seamux-mods"):
     p = next((x for x in ps if x.get("id", "").split("@")[0] == name and x.get("id", "").endswith("@seamux")), None)
     if not p:
         print(f"  \033[2m·    {name}: not installed\033[0m"); continue
@@ -513,7 +517,7 @@ fi
 
 # ---------------------------------------------------------------- platform
 if [ "$CREW" = 1 ]; then
-  [ "$(uname -s)" = "Darwin" ] || { warn "not macOS — skipping crew (the seamux app is mac-only); --no-crew silences this"; CREW=0; PLUGINS="${PLUGINS/ crew/}"; }
+  [ "$(uname -s)" = "Darwin" ] || { warn "not macOS — skipping crew (the seamux app is mac-only); --no-crew silences this"; CREW=0; PLUGINS="${PLUGINS/ crew/}"; PLUGINS="${PLUGINS/ bosun/}"; }
 fi
 if [ "$CREW" = 1 ]; then
   CMUX="$(command -v cmux || "$HERE/crew/bin/crew-cmux-bin" 2>/dev/null || true)"
