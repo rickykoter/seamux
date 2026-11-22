@@ -14,6 +14,8 @@ import {
 
 /** How often the Bosun's state and log are read while it shows. */
 const EVERY = 4000;
+/** How often only its state is read while neither place shows (the tab's dot). */
+const EVERY_HIDDEN = 15000;
 /** How long a fresh answer's trill lasts. */
 const TRILL_MS = 1400;
 const FOLD_KEY = "seamux.bosun.railFolded";
@@ -79,6 +81,8 @@ export class BosunView {
   private tabShown = false;
   private dropOpen = false;
   private timer = 0;
+  /** Counts ticks, so only the newest schedules the next. */
+  private ticks = 0;
   private trillUntil = 0;
   private stateSince = 0;
   private lastState = "";
@@ -216,12 +220,24 @@ export class BosunView {
   }
 
   /** Read now, and on a timer while either place shows. */
+  /** One polling chain: a tick that a newer one overtook schedules nothing. While
+   *  neither place shows, only the state is read, slowly, so the tab's working
+   *  dot goes out when the Bosun stops. */
   private tick(): void {
     window.clearTimeout(this.timer);
-    if (!this.visible()) return;
-    void this.read().finally(() => {
-      if (this.visible()) this.timer = window.setTimeout(() => this.tick(), EVERY);
+    const g = ++this.ticks;
+    const shown = this.visible();
+    void (shown ? this.read() : this.readState()).finally(() => {
+      if (g === this.ticks) this.timer = window.setTimeout(() => this.tick(), this.visible() ? EVERY : EVERY_HIDDEN);
     });
+  }
+
+  /** The state alone, for the tab's dot: no ensure, no log, nothing drawn. */
+  private async readState(): Promise<void> {
+    const s = await invoke<Status>("bosun_status").catch(() => null);
+    if (!s) return;
+    const state = s.live ? s.state ?? "" : "";
+    document.body.dataset.bosun = state === "working" ? "working" : "";
   }
 
   private async read(): Promise<void> {

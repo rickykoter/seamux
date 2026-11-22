@@ -191,10 +191,13 @@ export function reviewAsk(r: {
   };
 }
 
-/** The queued text: the question, then its context as one short line. */
+/** The queued text: the question, then its context as one short line. A
+ *  PR title or branch from outside may hold newlines; each fact is kept to
+ *  one line so nothing in it reads as a line of its own. */
 export function askText(ctx: AskContext, question: string): string {
   const q = question.trim();
-  return `${q}\n\nContext (asked from the app's ${ctx.from}): ${ctx.facts.join("; ")}.`;
+  const facts = ctx.facts.map((f) => f.replace(/\s+/g, " ").trim()).filter(Boolean);
+  return `${q}\n\nContext (asked from the app's ${ctx.from}): ${facts.join("; ")}.`;
 }
 
 /** Where a source opens: a URL, an absolute file at a line, or nowhere (a query's text, a ticket key). */

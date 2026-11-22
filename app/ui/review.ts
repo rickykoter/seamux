@@ -995,13 +995,6 @@ export class ReviewView {
     this.ctl.replaceChildren(msg);
   }
 
-  /**
-   * The one header row: the name, its state, then what can be done, then the
-   * framed page's tools (its gate pill beside the state, its View ▾ menu by
-   * the ⋯). `more` is the ⋯ menu's key and items; it also takes whatever
-   * the row folds (FOLDS, `this.fold` of them) when the width runs short.
-   * `meta` shows inline unless there is a ⋯ menu to hold it.
-   */
   /** A ⋯ item that asks the Bosun about this review: the ask box opens
    *  under the ⋯ button, once the menu has closed (bosun_ask.ts). */
   private askItem(ctx: () => AskContext): HTMLButtonElement {
@@ -1016,6 +1009,13 @@ export class ReviewView {
     return b;
   }
 
+  /**
+   * The one header row: the name, its state, then what can be done, then the
+   * framed page's tools (its gate pill beside the state, its View ▾ menu by
+   * the ⋯). `more` is the ⋯ menu's key and items; it also takes whatever
+   * the row folds (FOLDS, `this.fold` of them) when the width runs short.
+   * `meta` shows inline unless there is a ⋯ menu to hold it.
+   */
   private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: { key: string; items: HTMLElement[] } | null = null, status: HTMLElement | null = null): void {
     const h = el("div", "r-mhead-row");
     const folds = new Set<Fold>(FOLDS.slice(0, this.fold));
