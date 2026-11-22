@@ -132,60 +132,59 @@ pub fn index(dir: &Path, since: &str, today: &str) -> Index {
 /// dropped until it fits in `limit` characters with `head`. Empty when
 /// there is nothing to show.
 pub fn render(head: &str, ix: &Index, limit: usize) -> String {
-    let mut answers: Vec<&String> = ix.answers.iter().collect();
-    let mut queued: Vec<&String> = ix.queued.iter().collect();
-    let loops: Vec<&String> = ix.loops.iter().collect();
-    let (mut dropped_a, mut dropped_q) = (0, 0);
-    // A first cut, counted once: drop the oldest answers until the rest
-    // would fit with room for the headings and the left-out line, but keep
-    // back the last one it would drop, so the cut never takes one that
-    // fits. The loop below then settles the exact text.
-    let len = |v: &[&String]| v.iter().map(|x| x.chars().count()).sum::<usize>();
-    let room = limit.saturating_sub(head.chars().count() + len(&queued) + len(&loops) + 400);
-    let mut total = len(&answers);
-    let mut cut = 0;
-    while total > room && cut < answers.len() {
-        total -= answers[cut].chars().count();
-        cut += 1;
+    let fits = |t: &str| t.chars().count() <= limit;
+    let all = |da: usize, dq: usize| build(head, &ix.answers[da..], da, &ix.queued[dq..], dq, &ix.loops);
+    let out = all(0, 0);
+    if fits(&out) {
+        return if out == head { String::new() } else { out };
     }
-    let cut = cut.saturating_sub(1);
-    answers.drain(..cut);
-    dropped_a += cut;
-    loop {
-        let mut out = String::from(head);
-        if !answers.is_empty() || dropped_a > 0 {
-            out.push_str("\nAnswers in this conversation (id, asker, question, sources):\n");
-            if dropped_a > 0 {
-                out.push_str(&format!("({dropped_a} older answers left out; `seamux bosun log list` has them)\n"));
-            }
-            answers.iter().for_each(|a| out.push_str(a));
+    // The fewest oldest answers to leave out, found by halving: past the
+    // first, each one left out only shortens the text, so the test is
+    // monotonic and a handful of builds finds the exact cut.
+    let n = ix.answers.len();
+    if n > 0 && fits(&all(n, 0)) {
+        let (mut lo, mut hi) = (1, n);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if fits(&all(mid, 0)) { hi = mid } else { lo = mid + 1 }
         }
-        if !queued.is_empty() || dropped_q > 0 {
-            out.push_str("\nStill waiting in the queue (typed in as you go idle):\n");
-            if dropped_q > 0 {
-                out.push_str(&format!("({dropped_q} older prompts left out)\n"));
-            }
-            queued.iter().for_each(|q| out.push_str(q));
-        }
-        if !loops.is_empty() {
-            out.push_str("\nLoops (bosun.json), last run and what it found:\n");
-            loops.iter().for_each(|l| out.push_str(l));
-        }
-        if out.chars().count() <= limit {
-            return if out == head { String::new() } else { out };
-        }
-        if !answers.is_empty() {
-            answers.remove(0);
-            dropped_a += 1;
-        } else if !queued.is_empty() {
-            queued.remove(0);
-            dropped_q += 1;
-        } else {
-            // Only the head and the loops are left: cut the loops' end.
-            let cut: String = out.chars().take(limit.saturating_sub(1)).collect();
-            return format!("{cut}…");
+        return all(lo, 0);
+    }
+    // Every answer is out and it still does not fit: the oldest queued prompts go too.
+    for dq in 1..=ix.queued.len() {
+        let out = all(n, dq);
+        if fits(&out) {
+            return out;
         }
     }
+    // Only the head and the loops are left: cut the loops' end.
+    let cut: String = all(n, ix.queued.len()).chars().take(limit.saturating_sub(1)).collect();
+    format!("{cut}…")
+}
+
+/// The text under `head` with `answers` and `queued`, saying how many older
+/// ones were left out.
+fn build(head: &str, answers: &[String], dropped_a: usize, queued: &[String], dropped_q: usize, loops: &[String]) -> String {
+    let mut out = String::from(head);
+    if !answers.is_empty() || dropped_a > 0 {
+        out.push_str("\nAnswers in this conversation (id, asker, question, sources):\n");
+        if dropped_a > 0 {
+            out.push_str(&format!("({dropped_a} older answers left out; `seamux bosun log list` has them)\n"));
+        }
+        answers.iter().for_each(|a| out.push_str(a));
+    }
+    if !queued.is_empty() || dropped_q > 0 {
+        out.push_str("\nStill waiting in the queue (typed in as you go idle):\n");
+        if dropped_q > 0 {
+            out.push_str(&format!("({dropped_q} older prompts left out)\n"));
+        }
+        queued.iter().for_each(|q| out.push_str(q));
+    }
+    if !loops.is_empty() {
+        out.push_str("\nLoops (bosun.json), last run and what it found:\n");
+        loops.iter().for_each(|l| out.push_str(l));
+    }
+    out
 }
 
 /// The PreCompact hook's stdout for `payload` (its JSON on stdin).
@@ -305,6 +304,21 @@ mod tests {
         assert!(out.contains("- e199:") && !out.contains("- e000:"), "the newest stay");
         assert!(out.contains("older answers left out"));
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_cut_leaves_out_the_fewest_answers() {
+        // Many short answers: every count of left-out answers is tried
+        // against a plain one-at-a-time trim, and render must match it.
+        let answers: Vec<String> = (0..400).map(|i| format!("- e{i:03}: {}\n", "q".repeat(20 + i % 7))).collect();
+        let ix = Index { answers: answers.clone(), queued: vec!["- q1 (send): x\n".into()], loops: vec!["- l, last run 09:00: y\n".into()] };
+        for limit in [500, 3_000, 9_500, 12_000] {
+            let out = render("H\n", &ix, limit);
+            let fewest = (0..=answers.len())
+                .find(|k| build("H\n", &answers[*k..], *k, &ix.queued, 0, &ix.loops).chars().count() <= limit)
+                .unwrap();
+            assert_eq!(out, build("H\n", &answers[fewest..], fewest, &ix.queued, 0, &ix.loops), "limit {limit}");
+        }
     }
 
     #[test]
