@@ -646,6 +646,13 @@ impl TmuxBackend {
         list(&reg, "workspaces").iter().find(|w| s(w, "id").eq_ignore_ascii_case(&ws)).map(|w| s(w, "kind")).unwrap_or_default()
     }
 
+    /// The ids (upper case) of the workspaces with a `kind`, read without the
+    /// lock: a reader that keeps its own list of workspaces (crew-sync's pane
+    /// file pruning) leaves their files alone, since the lists never show them.
+    pub fn kinded_ids(&self) -> std::collections::HashSet<String> {
+        self.read().map(|r| hidden_ids(&r)).unwrap_or_default()
+    }
+
     /// The `kind` of workspace `ws` ("" for an ordinary or unknown one).
     pub fn kind_of_ws(&self, ws: &str) -> String {
         let Ok(reg) = self.read() else { return String::new() };
@@ -916,6 +923,17 @@ mod tests {
         assert_eq!(b.workspaces().unwrap().iter().map(|w| w.id.clone()).collect::<Vec<_>>(), vec![keep.clone()]);
         assert_eq!(b.panes(None).unwrap().len(), 1, "the other workspace's pane stays");
         assert!(b.close_workspace(&a).is_err(), "already gone");
+    }
+
+    #[test]
+    fn kinded_ids_are_read_from_the_registry_without_tmux() {
+        let dir = PathBuf::from(format!("/tmp/sx-kinded-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("workspaces.json"), r#"{"version":1,"workspaces":[{"id":"w1"},{"id":"b1","kind":"bosun"}],"panes":[]}"#).unwrap();
+        let ids = TmuxBackend::at(dir.clone()).kinded_ids();
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), vec!["B1".to_string()]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

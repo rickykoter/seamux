@@ -584,7 +584,14 @@ pub fn main(args: &[String]) -> i32 {
         // cmux's list answers for one window: a workspace missing from it is
         // gone only when no Claude of it is alive either.
         let ws_alive = |ws: &str| by_ws.get(ws).is_some_and(|l| l.iter().any(|(_, r)| facts::live(r)));
+        // The Bosun's workspace (a registry row with a kind) is left out of
+        // every list, so it would read as gone: its pane files are not ours
+        // to prune. Its supervisor reads them to know when it is idle.
+        let kinded = if out.tmux.is_some() { crew_core::backend::tmux::TmuxBackend::default().kinded_ids() } else { HashSet::new() };
         for pane in crew_core::status::all(dir) {
+            if kinded.contains(&pane.ws.to_ascii_uppercase()) {
+                continue;
+            }
             // On the app's tmux a record carries `live` (a claude process on
             // the pane's terminal) and no pid. A pane file still working there
             // with no Claude is marked ended, not removed: the pane is still
