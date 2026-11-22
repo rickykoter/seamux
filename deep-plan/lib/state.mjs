@@ -467,12 +467,39 @@ export function treeOf(root, scope = null) {
     }
     const failed = why => ({ head: head.stdout.trim(), content: "", scope, error: why });
     // Literal paths, fed on stdin (no argv limit). A tracked file deleted from
-    // the work tree is still listed, and add records its removal.
+    // the work tree is still listed, and add records its removal. -f because a
+    // tracked file can sit under a directory .gitignore names (`cfg/`,
+    // committed before the rule or force-added), and add refuses that literal
+    // path without it. The list holds only tracked files and untracked ones
+    // git does not ignore, so -f lets nothing ignored in, except through a
+    // tracked file that is now a directory: add would take that path whole,
+    // ignored files inside included. Such a path never reaches add. Its old
+    // entry is dropped from the index, and the files in it that git does not
+    // ignore are on the list by their own names.
     if (whole) { if (git(["add", "-A"], env).status !== 0) return failed("git could not stage the work tree"); }
     else if (specs.length) {
-      const add = spawnSync("git", ["--literal-pathspecs", "-C", root, "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
-        { encoding: "utf8", env: { ...process.env, ...env }, input: specs.join("\0") });
-      if (add.status !== 0) return failed(`git could not stage the scope: ${(add.stderr || "").trim().split("\n")[0]}`);
+      // A submodule is a directory too, but its gitlink (mode 160000) belongs
+      // in the tree, and add stages it; so is an untracked nested repo, which
+      // has no entry. Only a path the index holds as a file is set aside.
+      const isDir = f => { try { return fs.lstatSync(path.join(root, f)).isDirectory(); } catch { return false; } };
+      const asDir = specs.filter(isDir);
+      let dirs = new Set();
+      if (asDir.length) {
+        const st = git(["ls-files", "-s", "-z", "--", ...asDir.map(f => `:(literal)${f}`)], env);
+        if (st.status !== 0) return failed(`git could not list the scope: ${(st.stderr || "").trim().split("\n")[0]}`);
+        const asFile = new Set(st.stdout.split("\0").filter(e => e && !e.startsWith("160000 ")).map(e => e.slice(e.indexOf("\t") + 1)));
+        dirs = new Set(asDir.filter(f => asFile.has(f)));
+      }
+      const files = specs.filter(f => !dirs.has(f));
+      if (dirs.size) {
+        const rm = git(["update-index", "-z", "--force-remove", "--stdin"], env, [...dirs].map(f => f + "\0").join(""));
+        if (rm.status !== 0) return failed(`git could not stage the scope: ${(rm.stderr || "").trim().split("\n")[0]}`);
+      }
+      if (files.length) {
+        const add = spawnSync("git", ["--literal-pathspecs", "-C", root, "add", "-A", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+          { encoding: "utf8", env: { ...process.env, ...env }, input: files.join("\0") });
+        if (add.status !== 0) return failed(`git could not stage the scope: ${(add.stderr || "").trim().split("\n")[0]}`);
+      }
     }
     // Only the scope's entries, into an index of their own, make the tree.
     const ls = git(["ls-files", "-s", "-z"], env);

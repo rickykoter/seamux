@@ -7911,6 +7911,56 @@ if (want("the go is the human's; what a pass covers; and friends")) {
     ok("b1: …and covers a one-letter one", qm() !== q1);
     for (const f of ["[x].ts", "x.ts", "q.ts", "qq.ts"]) fs.rmSync(path.join(AR, "src", f), { force: true });
   }
+  // A tracked file under a directory .gitignore names (`cfg/`, committed
+  // before the rule) is in the scope like any other: git add refuses that
+  // literal path without -f, and the tree must not fail on it. A repo of its
+  // own, so the ignore rule touches nothing else here.
+  {
+    const IG = fs.mkdtempSync(path.join(os.tmpdir(), "dp-ignored-dir-"));
+    const g = a => execSync(`git ${a}`, { cwd: IG, encoding: "utf8", stdio: "pipe" });
+    g("init -q"); fs.mkdirSync(path.join(IG, "cfg"));
+    fs.writeFileSync(path.join(IG, "cfg", "x.json"), "1\n"); fs.writeFileSync(path.join(IG, "a.ts"), "1\n");
+    g("add ."); g("-c user.email=p@p -c user.name=p commit -qm init");
+    fs.writeFileSync(path.join(IG, ".gitignore"), "cfg/\n");
+    const t0 = lib.treeOf(IG, ["cfg/**", "a.ts"]);
+    ok("b1: a tracked file under an ignored directory does not fail the scope's tree", t0 && /^[0-9a-f]{40}$/.test(t0.content) && !t0.error, JSON.stringify(t0));
+    fs.writeFileSync(path.join(IG, "cfg", "x.json"), "2\n");
+    ok("b1: …and an edit to it moves the tree", lib.treeOf(IG, ["cfg/**", "a.ts"]).content !== t0.content);
+    fs.writeFileSync(path.join(IG, "cfg", "new.json"), "1\n");
+    const t1 = lib.treeOf(IG, ["cfg/**", "a.ts"]);
+    fs.rmSync(path.join(IG, "cfg", "new.json"));
+    ok("b1: …while an untracked file there stays out of it", t1.content === lib.treeOf(IG, ["cfg/**", "a.ts"]).content, JSON.stringify(t1));
+    // A tracked file turned into a directory: the ignored file inside stays
+    // out (-f would take the whole directory), the one git sees goes in.
+    fs.writeFileSync(path.join(IG, ".gitignore"), "cfg/\n*.log\n");
+    fs.rmSync(path.join(IG, "a.ts")); fs.mkdirSync(path.join(IG, "a.ts"));
+    fs.writeFileSync(path.join(IG, "a.ts", "x.log"), "ignored\n"); fs.writeFileSync(path.join(IG, "a.ts", "k.ts"), "1\n");
+    const t2 = lib.treeOf(IG, ["cfg/**", "a.ts", "a.ts/**"]);
+    const names = t2.content ? g(`ls-tree -r --name-only ${t2.content}`).trim().split("\n") : [];
+    ok("b1: a tracked file now a directory keeps its ignored files out of the tree",
+      !t2.error && names.includes("a.ts/k.ts") && !names.includes("a.ts/x.log") && !names.includes("a.ts"), JSON.stringify({ t2, names }));
+    // …and one under the ignored directory as well: no error, and its old
+    // entry leaves the tree (what is in it now is ignored).
+    fs.rmSync(path.join(IG, "cfg", "x.json")); fs.mkdirSync(path.join(IG, "cfg", "x.json"));
+    fs.writeFileSync(path.join(IG, "cfg", "x.json", "k.ts"), "1\n");
+    const t3 = lib.treeOf(IG, ["cfg/**"]);
+    const names3 = t3.content ? g(`ls-tree -r --name-only ${t3.content}`).trim().split("\n").filter(Boolean) : null;
+    ok("b1: a tracked file now a directory under an ignored directory does not fail the tree",
+      !t3.error && names3 && !names3.some(n => n.startsWith("cfg/x.json")), JSON.stringify({ t3, names3 }));
+    // A submodule is a directory as well, but its pointer stays in the tree:
+    // a commit inside it moves the tree.
+    const SUB = path.join(IG, "sub");
+    fs.mkdirSync(SUB); fs.writeFileSync(path.join(SUB, "s.txt"), "1\n");
+    const gs = a => execSync(`git ${a}`, { cwd: SUB, encoding: "utf8", stdio: "pipe" });
+    gs("init -q"); gs("add ."); gs("-c user.email=p@p -c user.name=p commit -qm s");
+    g("add sub"); g("-c user.email=p@p -c user.name=p commit -qm sub");
+    const s0 = lib.treeOf(IG, ["sub"]);
+    fs.writeFileSync(path.join(SUB, "s.txt"), "2\n"); gs("-c user.email=p@p -c user.name=p commit -qam s2");
+    const s1 = lib.treeOf(IG, ["sub"]);
+    ok("b1: a submodule's pointer stays in the scope's tree, and a commit inside it moves the tree",
+      !s0.error && !s1.error && /^[0-9a-f]{40}$/.test(s0.content) && s0.content !== s1.content, JSON.stringify({ s0, s1 }));
+    fs.rmSync(IG, { recursive: true, force: true });
+  }
   // A pass recorded before scopes compares the whole tree, as it did.
   {
     const st = stOf("b1-tree"), v = st.increments[0].checks["test-unit-suite"];
