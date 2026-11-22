@@ -2744,10 +2744,6 @@ if (want("github: many PRs in one read")) {
   ok("prs: a number past the safe range is no PR", JSON.stringify(huge.j.prs) === "[]" && log().every(l => !/1e\+20/.test(l.argv.join(" "))), huge.r.stdout);
 }
 
-// ---------------------------------------------------------------- engine pointer
-// Only the copy the pointer names, a run with no usable pointer, or setup
-// writes it: a worktree's lookout run for a probe or a check must not move
-// every session and the app onto itself.
 if (want("github: listen for a PR's state change")) {
   // Its own map file, so a section running beside it never sees this one's.
   const map = path.join(TMP, "gh-map-listen.json");
@@ -2774,6 +2770,10 @@ if (want("github: listen for a PR's state change")) {
   ok("listen: an issue URL is refused", r.status === 1 && /gh listen <https/.test(r.stderr), r.stderr);
 }
 
+// ---------------------------------------------------------------- engine pointer
+// Only the copy the pointer names, a run with no usable pointer, or setup
+// writes it: a worktree's lookout run for a probe or a check must not move
+// every session and the app onto itself.
 if (want("engine pointer")) {
   const file = path.join(TMP, "pointer", "engine.json");
   const env = { ...ENV, LOOKOUT_ENGINE_FILE: file };

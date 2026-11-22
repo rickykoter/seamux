@@ -198,13 +198,10 @@ pub fn known_urls(list: &[Value]) -> Vec<String> {
 pub fn refresh_known(cwd: &str, ttl: i64, force: bool) -> bool {
     let now = py::now();
     let Some(prev) = crew_core::prs::read(cwd) else { return false };
-    if now - last_read(&prev) < ttl as f64 {
+    if !known_due(&prev, ttl, now) {
         return false;
     }
     let prev_list: Vec<Value> = prev.get("prs").and_then(Value::as_array).cloned().unwrap_or_default();
-    if !has_open(&prev_list) {
-        return false;
-    }
     let Some(bin) = lookout_bin() else { return false };
     let Some((list, complete)) = gather(&known_urls(&prev_list), &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns, force)) else {
         return false;
@@ -233,6 +230,13 @@ fn known_body(prev: &Value, list: Vec<Value>, complete: bool, now: f64) -> Value
         body["fast_at"] = f;
     }
     body
+}
+
+/// Whether a list file is due a fast re-read: read (by either stamp) at
+/// least `ttl` seconds ago, and holding a PR that can still merge.
+fn known_due(file: &Value, ttl: i64, now: f64) -> bool {
+    let prs = file.get("prs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    now - last_read(file) >= ttl as f64 && has_open(prs)
 }
 
 /// Whether the file still holds what was read before asking lookout.
@@ -352,25 +356,14 @@ mod tests {
 
     #[test]
     fn a_known_refresh_waits_for_its_ttl_and_needs_an_open_pr() {
-        let dir = std::env::temp_dir().join(format!("prs-known-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // Lists live under a temp CREW_PRS_DIR, never the person's cache (L10),
-        // and no lookout answers: CREW_LOOKOUT names a file that is not there.
-        std::env::set_var("CREW_PRS_DIR", &dir);
-        std::env::set_var("CREW_LOOKOUT", dir.join("no-lookout"));
-        let cwd = "/tmp/prs-known-worktree";
-        assert!(!refresh_known(cwd, 60, false), "no list: nothing to re-read");
-        assert!(write_list(cwd, &json!({"at": py::now(), "prs": [pr(7, "open")]})));
-        assert!(!refresh_known(cwd, 60, false), "younger than its ttl");
-        assert!(write_list(cwd, &json!({"at": py::now() - 400.0, "fast_at": py::now(), "prs": [pr(7, "open")]})));
-        assert!(!refresh_known(cwd, 60, false), "a fast re-read just ran");
-        assert!(write_list(cwd, &json!({"at": py::now() - 120.0, "prs": [pr(7, "open")]})));
-        assert!(!refresh_known(cwd, 60, false), "due, but with no lookout the file stands");
-        assert_eq!(crew_core::prs::list(cwd).len(), 1);
-        std::env::remove_var("CREW_PRS_DIR");
-        std::env::remove_var("CREW_LOOKOUT");
-        let _ = std::fs::remove_dir_all(&dir);
+        // Pure: no env and no files, so it cannot touch a test beside it.
+        let open = json!({"at": 1000.0, "prs": [pr(7, "open")]});
+        assert!(!known_due(&open, 60, 1030.0), "younger than its ttl");
+        assert!(known_due(&open, 60, 1060.0));
+        let fast = json!({"at": 600.0, "fast_at": 1000.0, "prs": [pr(7, "open")]});
+        assert!(!known_due(&fast, 60, 1030.0), "a fast re-read just ran");
+        assert!(!known_due(&json!({"at": 0.0, "prs": [pr(1, "merged"), pr(2, "closed")]}), 60, 1e9), "nothing left to merge");
+        assert!(known_due(&open, 0, 1000.0), "a heard change re-reads at once");
     }
 
     #[test]

@@ -6434,6 +6434,9 @@ if (want("land: recipes that run after a merge")) {
   // The second stage's error names it, not "step 1" of its one-step exec.
   ok("land: a failing stage's error names the stage, once", /^exit 1 at deploy: test -f /.test(e.error) &&
     !/step 1/.test(e.error) && !/deploy: exit 1 at deploy/.test(r.stdout), e.error + " | " + r.stdout);
+  ok("land: a stage note that does not name its stage gets the name in front, once",
+    L.namedError("wait gave up after 5s (2 polls): curl x", "live") === "live: wait gave up after 5s (2 polls): curl x" &&
+    L.namedError("exit 1 at deploy: y", "deploy") === "exit 1 at deploy: y");
   fs.writeFileSync(flag, "");
   const firstStart = e.stages[0].start;
   r = land("run", "--merge", m3, "--recipe", "flaky");

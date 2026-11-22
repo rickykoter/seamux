@@ -153,6 +153,10 @@ export function changedFiles(root, merge) {
 }
 
 const stageName = (s, k) => s.stage || `step ${k + 1}`;
+// A failed stage's error, naming the stage once: runExec's run and timeout
+// notes say "at <stage>" already; a wait's give-up, a claim's or a browser
+// step's note does not, so the name goes in front.
+export const namedError = (note, stage) => String(note).includes(`at ${stage}:`) ? String(note) : `${stage}: ${note}`;
 
 // The land recipes a merge lands: every one whose match covers a file it
 // changed, each once (by its key, so two projects' same-named recipes stay
@@ -314,7 +318,7 @@ function runLocked(root, { recipe, key, sp, merge, pr, home, fresh }) {
     e.stages[k] = { ...e.stages[k], end: Date.now(), status: r.status === "pass" ? "done" : "failed" };
     if (r.status !== "pass") {
       e.status = "failed";
-      e.error = r.note || r.status;
+      e.error = namedError(r.note || r.status, step.stage);
       e.tail = (r.ran && r.ran.tail) || "";
       save();
       return { status: "failed", note: e.error };
