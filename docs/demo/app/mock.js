@@ -712,10 +712,11 @@ function reclaimReport(id) {
     sandbox: null,
     checks,
     blockers: checks.filter((c) => c.kind === "fail").length,
+    // In crew-reclaim's order and words (crew/bin/crew-reclaim, "removes").
     remove: [
-      { what: "workspace", target: `${w.title} (${w.ref})`, note: "closed in cmux" },
-      { what: "worktree", target: treeOf(w), note: merged ? "184 MB" : "" },
-      { what: "branch", target: w.branch, note: "merged; origin keeps its copy" },
+      { what: "worktree", target: treeOf(w), note: merged ? "184 MB" : "212 MB" },
+      { what: "branch", target: w.branch, note: "safe delete; kept if git declines" },
+      { what: "workspace", target: w.title, note: "closed first, with whatever runs in it" },
     ],
   };
 }
@@ -1105,6 +1106,8 @@ const handlers = {
     return `${verb === "resume" ? "resumed Claude in" : verb === "remove" ? "removed the pane file for" : `${verb}d`} ${f.title || f.subject}`;
   },
   doctor_fix_safe: () => {
+    // No tmux workspaces on cmux, so nothing for the doctor to fix.
+    if (backend !== "tmux") return [];
     const safe = doctorFindings.filter((f) => f.class === "safe" && f.fixes.length);
     doctorFindings = doctorFindings.filter((f) => !safe.includes(f));
     return safe.map((f) => ({ id: f.id, ok: true, message: "" }));
