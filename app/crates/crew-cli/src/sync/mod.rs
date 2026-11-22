@@ -652,15 +652,19 @@ pub fn main(args: &[String]) -> i32 {
     // never costs a workspace its signals. Each list keeps its own TTL.
     // Outside the run lock (the next sync need not wait on GitHub), and no
     // new worktree starts past PRS_BUDGET: a hung GitHub costs one run a
-    // minute at most. lookout's own floor keeps two runs from asking twice.
+    // minute at most, and the lists read longest ago go first, so the ones
+    // a run did not reach lead the next. Snoozed and tucked worktrees are
+    // skipped (the app's land watcher still re-reads any list with an open
+    // PR). lookout's own floor keeps two runs from asking twice.
     drop(_lock);
     if !dry {
         let started = Instant::now();
-        let jobs: Vec<(String, Map<String, Value>)> = targets
-            .iter()
-            .filter(|(_, _, repo)| *repo)
-            .map(|(ws, cwd, _)| (cwd.clone(), probes.get(ws).map(|(_, raw, _)| raw.clone()).unwrap_or_default()))
-            .collect();
+        let hidden = hidden_roots();
+        let order = prs_order(&targets, |ws| hidden.contains(&crew_store::wskey(roots.get(ws).map_or("", String::as_str))), |cwd| {
+            crew_core::prs::read(cwd).and_then(|v| v.get("at").and_then(Value::as_f64)).unwrap_or(0.0)
+        });
+        let jobs: Vec<(String, Map<String, Value>)> =
+            order.into_iter().map(|(ws, cwd)| (cwd, probes.get(&ws).map(|(_, raw, _)| raw.clone()).unwrap_or_default())).collect();
         let next = AtomicUsize::new(0);
         std::thread::scope(|s| {
             for _ in 0..4.min(jobs.len()) {
@@ -686,6 +690,26 @@ pub fn main(args: &[String]) -> i32 {
     0
 }
 
+/// The roots the person hid from view in the app (tucked.json): snoozed or
+/// tucked, keyed as tuck.rs keys them (crew_store::wskey of git's top level).
+/// A muted worktree is not among them: it still shows when it needs you.
+fn hidden_roots() -> HashSet<String> {
+    let file = Path::new(&crew_store::Paths::from_env().crew_home).join("tucked.json");
+    let text = fs::read_to_string(file).unwrap_or_default();
+    crew_core::tucked::levels(&text, crew_core::history::now_ms()).into_iter().filter(|(_, q)| q.hidden()).map(|(root, _)| root).collect()
+}
+
+/// The PR-list pass's (ws, cwd) order: each repo target whose workspace is
+/// not `hidden`, oldest list first by `at` (crew-sync's last full read; 0
+/// for none). `at`, not the app's fast_at: a fast re-read asks only the PRs
+/// a list holds, and only this pass finds a worktree's new ones.
+fn prs_order(targets: &[(String, String, bool)], hidden: impl Fn(&str) -> bool, at: impl Fn(&str) -> f64) -> Vec<(String, String)> {
+    let mut jobs: Vec<(f64, String, String)> =
+        targets.iter().filter(|(ws, _, repo)| *repo && !hidden(ws)).map(|(ws, cwd, _)| (at(cwd), ws.clone(), cwd.clone())).collect();
+    jobs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    jobs.into_iter().map(|(_, ws, cwd)| (ws, cwd)).collect()
+}
+
 /// lookout's reviews: LOOKOUT_REVIEWS_DIR, else ~/.claude/plans/reviews
 /// (crew-board's review::reviews_dir).
 fn reviews_dir() -> std::path::PathBuf {
@@ -705,6 +729,22 @@ fn claude_gone_on_tmux(pane: &crew_core::status::Pane, rec: Option<&Value>) -> b
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prs_order_puts_the_oldest_lists_first_and_skips_hidden_workspaces() {
+        let t = |ws: &str, repo: bool| (ws.to_string(), format!("/w/{ws}"), repo);
+        let targets = vec![t("fresh", true), t("never", true), t("old", true), t("hid", true), t("plain", false), t("mid", true)];
+        let at = |cwd: &str| match cwd { "/w/fresh" => 900.0, "/w/old" => 100.0, "/w/mid" => 500.0, "/w/hid" => 1.0, _ => 0.0 };
+        let got: Vec<String> = super::prs_order(&targets, |ws| ws == "hid", at).into_iter().map(|(ws, _)| ws).collect();
+        assert_eq!(got, vec!["never", "old", "mid", "fresh"], "no list first, then by age; hidden and non-repo left out");
+        // The budget let that run reach only "never" and "old": both now read
+        // at 1000, so the next run starts with the two it missed.
+        let next = |cwd: &str| match cwd { "/w/never" | "/w/old" => 1000.0, c => at(c) };
+        let got: Vec<String> = super::prs_order(&targets, |ws| ws == "hid", next).into_iter().map(|(ws, _)| ws).collect();
+        assert_eq!(got, vec!["mid", "fresh", "never", "old"], "the lists a run missed lead the next");
+        let first_run: Vec<String> = super::prs_order(&targets, |_| false, |_| 0.0).into_iter().map(|(ws, _)| ws).collect();
+        assert_eq!(first_run, vec!["fresh", "never", "old", "hid", "mid"], "ties keep crew's order");
+    }
+
     use super::*;
 
     #[test]
