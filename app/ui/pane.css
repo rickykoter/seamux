@@ -215,3 +215,28 @@
 .ph-btn[aria-disabled="true"]:hover { border-color: var(--line); }
 .ph-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
 .ph-close:hover { color: var(--fg); background: var(--strip); }
+
+/* ⌥⌘L: the scroll lab (scrolllab.ts). How the pane draws and scrolls, and
+   what the last scroll cost. Top right, under the find bar's place. */
+.scroll-lab {
+  position: absolute; z-index: 6; top: 44px; right: 14px; width: 232px;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-radius: 10px;
+  font: var(--fs-2)/1.35 -apple-system, system-ui, sans-serif;
+  background: var(--bg); color: var(--fg); box-shadow: 0 6px 24px var(--shade), 0 0 0 1px color-mix(in srgb, var(--fg) 14%, transparent);
+}
+.scroll-lab[hidden] { display: none; }
+.sl-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
+.sl-close { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent; color: inherit; opacity: 0.6; cursor: pointer; }
+.sl-close:hover { opacity: 1; background: color-mix(in srgb, var(--fg) 10%, transparent); }
+.sl-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sl-row > span { color: var(--muted); }
+.sl-seg { display: flex; padding: 2px; border-radius: 7px; background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.sl-seg button { border: 0; border-radius: 5px; padding: 2px 9px; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.sl-seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 30%, var(--card)); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px var(--shade); }
+.sl-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sl-hint { margin: 2px 0 0; color: var(--muted); }
+.sl-hint[hidden], .sl-stats[hidden] { display: none; }
+.sl-stats { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; margin: 4px 0 0; padding-top: 6px; border-top: 1px solid var(--line); }
+.sl-stats dt { color: var(--muted); }
+.sl-stats dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.sl-stats dd.bad { color: var(--bad-t); }

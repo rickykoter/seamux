@@ -5,6 +5,7 @@ pub mod actions;
 pub mod build_stamp;
 pub mod backend;
 pub mod codeowners;
+pub mod frames;
 pub mod ghostty;
 pub mod pane;
 pub mod pty;
