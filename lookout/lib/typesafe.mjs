@@ -62,7 +62,11 @@ export function ask(state, questions, { timeout = 60000 } = {}) {
   if (a.status !== 0) return { ok: false, why: "TypeSafe is not configured (no API key)" };
   const r = spawnSync(cmd, [...pre, "ask"],
     { input: JSON.stringify({ state, questions }), encoding: "utf8", timeout });
-  if (r.error) return { ok: false, why: "TypeSafe did not answer in time" };
+  // Only a real timeout has no answer. A client that exits before reading
+  // the whole request (a large one breaks the pipe: EPIPE) still left its
+  // exit status and its stderr, which say why (plan flaky-probes).
+  if (r.error && r.error.code === "ETIMEDOUT") return { ok: false, why: "TypeSafe did not answer in time" };
+  if (r.error && r.status === null) return { ok: false, why: `could not run the TypeSafe client: ${r.error.code || r.error.message}` };
   if (r.status !== 0 || !r.stdout) {
     const why = (r.stderr || "").trim().split("\n").pop();
     return { ok: false, why: "TypeSafe request failed" + (why ? ": " + why.replace(/^typesafe:\s*/, "") : "") };
