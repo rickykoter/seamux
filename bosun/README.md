@@ -1,0 +1,39 @@
+# bosun: one read-only session for questions across your repos
+
+Part of [seamux](../README.md). Install and setup are in the [main README](../README.md#setup).
+
+The Bosun is a Claude session the seamux app keeps running over your code
+root, off the board, read-only on files. It is for questions that need no
+code: is a claim true, where does a project stand, what do Snowflake,
+Datadog, Splunk or Jira say. The app's `seamux bosun` CLI starts it and
+carries questions in and answers out. This plugin is the skill that tells
+each session what to do.
+
+In the Bosun, the skill covers four jobs:
+
+- **Sitrep**: branches in flight, open PRs, live workspaces and recent
+  deploys for every repo under the root, each line with its source.
+- **Answers**: every fact cites a file and line, a command, a query, a
+  ticket or a link. A queued question is answered with
+  `seamux bosun answer <id>`, and every answer is logged with
+  `seamux bosun log add`, which feeds the app's answer log.
+- **Dispatch**: when an answer turns into real work, the Bosun writes a
+  brief and runs `seamux bosun dispatch <repo> <branch> --brief <file>`.
+  You approve each one at a permission prompt. The new worktree's folder,
+  and so its card on the board, ends in the log entry's id.
+
+In any other session, the skill covers asking: `seamux bosun ask "<question>"`
+in the background, with `ask --id <id>` to pick up an answer that came late.
+
+The Bosun runs on the seamux app's tmux backend only. Its sandbox lets out
+only the hosts and folders listed in `~/.claude/crew/bosun/bosun.json`
+(`sandbox.allowedDomains`, `sandbox.allowWrite`). Add `api.github.com` there
+for `gh`, and the folders a CLI keeps its cache in.
+
+| file | what |
+|---|---|
+| `SKILL.md` | which session this is, the rules, and which reference to read |
+| `references/sitrep.md` | what a sitrep reads and how it reports |
+| `references/answers.md` | citing, answering a queued ask, and the log entry |
+| `references/dispatch.md` | naming, the brief, the bare dispatch command, logging it |
+| `references/ask.md` | asking from a workspace without blocking |

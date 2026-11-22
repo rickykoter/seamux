@@ -1,0 +1,10 @@
+{
+  "name": "bosun",
+  "version": "0.1.0",
+  "description": "The Bosun's skill: sitreps across your repos, answers that cite every fact, dispatch of real work to a new workspace, and asking the Bosun from any other session. Needs the seamux app on its tmux backend.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/bosun",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["bosun", "questions", "sitrep", "citations", "workspaces"]
+}
