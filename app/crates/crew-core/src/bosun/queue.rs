@@ -92,9 +92,32 @@ pub fn waiting(dir: &Path) -> Vec<Item> {
     names.iter().filter_map(|p| read_item(p)).collect()
 }
 
-/// The item has been typed: it leaves the queue.
+/// The Bosun started on the item: it leaves the queue.
 pub fn done(item: &Item) {
     let _ = fs::remove_file(&item.path);
+}
+
+/// How many times an item may be typed without the Bosun starting on it.
+pub const MAX_TRIES: u32 = 3;
+
+/// The item was typed and the Bosun stayed idle: one more try counted in its
+/// file. The new count.
+pub fn bump(item: &Item) -> u32 {
+    let mut v: Value = fs::read_to_string(&item.path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
+    let n = v.get("tries").and_then(Value::as_u64).unwrap_or(0) as u32 + 1;
+    v["tries"] = json!(n);
+    let _ = write_atomic(&item.path, &v.to_string());
+    n
+}
+
+/// Out of tries: the item moves to queue/failed/, where a person can see it,
+/// instead of being lost.
+pub fn fail(item: &Item) {
+    let Some(name) = item.path.file_name() else { return };
+    let failed = item.path.with_file_name("failed");
+    if fs::create_dir_all(&failed).is_ok() {
+        let _ = fs::rename(&item.path, failed.join(name));
+    }
 }
 
 /// Write the answer to ask `id`.
@@ -156,6 +179,18 @@ mod tests {
         assert_eq!(w[1].source, "loop:daily");
         done(&a);
         assert_eq!(waiting(&d).len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn tries_are_counted_and_a_spent_item_is_kept_aside() {
+        let d = tmp("tries");
+        let i = enqueue_as(&d, "t1", "text", "send").unwrap();
+        assert_eq!((bump(&i), bump(&i)), (1, 2));
+        assert_eq!(waiting(&d).len(), 1, "still waiting between tries");
+        fail(&i);
+        assert!(waiting(&d).is_empty());
+        assert!(queue_dir(&d).join("failed").join(i.path.file_name().unwrap()).is_file());
         let _ = fs::remove_dir_all(&d);
     }
 
