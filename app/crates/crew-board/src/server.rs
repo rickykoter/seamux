@@ -405,15 +405,23 @@ fn http_date() -> String {
 const MAX_LINE: u64 = 65536;
 const MAX_HEADERS: usize = 100;
 
-/// One line of at most MAX_LINE bytes: Ok(None) at EOF, Err(()) when longer.
-fn read_capped(reader: &mut BufReader<Conn>) -> Result<Option<String>, ()> {
+/// Why a line could not be read: it ran past MAX_LINE (answered 414 or 431),
+/// or the read failed or hit the head deadline (closed with no answer).
+#[derive(Debug, PartialEq)]
+enum LineErr {
+    TooLong,
+    Gone,
+}
+
+/// One line of at most MAX_LINE bytes: Ok(None) at EOF.
+fn read_capped(reader: &mut BufReader<Conn>) -> Result<Option<String>, LineErr> {
     let mut buf = Vec::new();
-    let n = reader.by_ref().take(MAX_LINE + 1).read_until(b'\n', &mut buf).map_err(|_| ())?;
+    let n = reader.by_ref().take(MAX_LINE + 1).read_until(b'\n', &mut buf).map_err(|_| LineErr::Gone)?;
     if n == 0 {
         return Ok(None);
     }
     if buf.len() as u64 > MAX_LINE {
-        return Err(());
+        return Err(LineErr::TooLong);
     }
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
@@ -489,7 +497,12 @@ fn handle(stream: TcpStream, port: u16, token: String) {
     let line = match read_capped(&mut reader) {
         Ok(Some(l)) => l,
         Ok(None) => return,
-        Err(()) => return refuse(reader, 414, "request line too long"),
+        Err(LineErr::TooLong) => return refuse(reader, 414, "request line too long"),
+        // A connection that sends nothing before the deadline is closed
+        // without an answer. A browser opens spare connections ahead of need,
+        // and a 414 written to one would be read as the reply to whatever it
+        // later sends there.
+        Err(LineErr::Gone) => return,
     };
     let parts: Vec<&str> = line.split_whitespace().collect();
     let mut headers = Vec::new();
@@ -497,7 +510,8 @@ fn handle(stream: TcpStream, port: u16, token: String) {
         let h = match read_capped(&mut reader) {
             Ok(Some(h)) => h,
             Ok(None) => break,
-            Err(()) => return refuse(reader, 431, "header line too long"),
+            Err(LineErr::TooLong) => return refuse(reader, 431, "header line too long"),
+            Err(LineErr::Gone) => return,
         };
         let h = h.trim_end_matches(['\r', '\n']);
         if h.is_empty() {
@@ -1237,9 +1251,31 @@ mod tests {
         let (s, _) = l.accept().unwrap();
         let mut r = BufReader::new(Conn { s, deadline: Some(std::time::Instant::now() + Duration::from_millis(300)) });
         let t = std::time::Instant::now();
-        assert!(read_capped(&mut r).is_err());
+        assert_eq!(read_capped(&mut r), Err(LineErr::Gone));
         assert!(t.elapsed() < Duration::from_millis(600), "held for {:?}", t.elapsed());
         client.join().unwrap();
+    }
+
+    #[test]
+    fn an_idle_connection_is_gone_and_only_a_long_line_is_too_long() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        // A spare connection that never sends: the deadline passes, nothing to answer.
+        let idle = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (s, _) = l.accept().unwrap();
+        let mut r = BufReader::new(Conn { s, deadline: Some(std::time::Instant::now() + Duration::from_millis(100)) });
+        assert_eq!(read_capped(&mut r), Err(LineErr::Gone));
+        drop(idle);
+        // A line past MAX_LINE is the one case that earns a 414.
+        let long = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = c.write_all(&vec![b'a'; MAX_LINE as usize + 10]);
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let (s, _) = l.accept().unwrap();
+        let mut r = BufReader::new(Conn { s, deadline: Some(std::time::Instant::now() + Duration::from_secs(5)) });
+        assert_eq!(read_capped(&mut r), Err(LineErr::TooLong));
+        long.join().unwrap();
     }
 
     #[test]
