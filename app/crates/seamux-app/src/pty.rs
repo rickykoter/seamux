@@ -465,8 +465,10 @@ impl Pty {
     /// Attach to `t` at cols x rows. The child is the PTY's session leader,
     /// so a resize's SIGWINCH reaches it.
     /// `-T hyperlinks`: xterm.js draws OSC 8 links, so tmux passes Claude's on
-    /// (it strips them for a client it thinks cannot).
-    pub fn attach(t: &Target, cols: u16, rows: u16) -> Result<Pty, String> {
+    /// (it strips them for a client it thinks cannot). `sync` adds tmux's
+    /// `sync` feature: each redraw comes wrapped in `ESC [?2026h` … `l`, for
+    /// the reader's FrameGate (frames.rs) to pass on whole.
+    pub fn attach(t: &Target, cols: u16, rows: u16, sync: bool) -> Result<Pty, String> {
         // History kept for the wheel to scroll back through: tmux sets it
         // when a pane is made, so this reaches sessions started from now on.
         // Raised, never lowered: a tmux.conf may keep more.
@@ -484,7 +486,8 @@ impl Pty {
         // A slot of its own in the hook's list, so a tmux.conf's own bell
         // hooks keep running, and setting it again changes nothing.
         let _ = tmux_ok(&t.socket, &["set-hook", "-g", BELL_HOOK, "set-option @seamux_bell 1"]);
-        Self::spawn(&tmux_bin(), &["-T", "hyperlinks", "-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
+        let features = if sync { "hyperlinks,sync" } else { "hyperlinks" };
+        Self::spawn(&tmux_bin(), &["-T", features, "-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
     }
 
     /// Run `program args` with a new PTY as its controlling terminal.
@@ -756,7 +759,7 @@ mod tests {
         }
         let open = |n: &str| {
             let t = Target { socket: sock.clone(), session: n.to_string() };
-            std::thread::spawn(move || Pty::attach(&t, 80, 24).unwrap())
+            std::thread::spawn(move || Pty::attach(&t, 80, 24, true).unwrap())
         };
         let (ta, tb) = (open("a"), open("b"));
         let (mut a, b) = (ta.join().unwrap(), tb.join().unwrap());
@@ -854,7 +857,7 @@ mod tests {
         let sock = dir.join("s.sock").to_string_lossy().into_owned();
         tmux(&sock, &["-f", "/dev/null", "new-session", "-d", "-s", "t1", "-x", "80", "-y", "24", "sh"]);
         let t = Target { socket: sock.clone(), session: "t1".into() };
-        let mut p = Pty::attach(&t, 100, 30).expect("attach");
+        let mut p = Pty::attach(&t, 100, 30, true).expect("attach");
         let mut r = p.reader().unwrap();
         // Bytes arrive: tmux draws its client.
         assert!(!read_until(&mut r, "\u{1b}", 5).is_empty(), "no output from the client");
@@ -882,6 +885,32 @@ mod tests {
         }
         assert_eq!(tmux(&sock, &["list-clients"]), "", "the client is still attached");
         assert_eq!(tmux(&sock, &["list-sessions", "-F", "#{session_name}"]), "t1");
+        tmux(&sock, &["kill-server"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Live: with `sync`, tmux wraps its redraws in the 2026 markers the
+    /// reader's FrameGate waits on; without, it sends none.
+    #[test]
+    fn a_sync_client_gets_its_redraws_wrapped_in_frame_markers() {
+        if Command::new(tmux_bin()).arg("-V").output().is_err() {
+            eprintln!("no tmux: skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("seamux-sync-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("s.sock").to_string_lossy().into_owned();
+        tmux(&sock, &["-f", "/dev/null", "new-session", "-d", "-s", "t1", "-x", "80", "-y", "24", "sh"]);
+        let t = Target { socket: sock.clone(), session: "t1".into() };
+        for sync in [true, false] {
+            let mut p = Pty::attach(&t, 80, 24, sync).expect("attach");
+            let mut r = p.reader().unwrap();
+            p.write(b"clear; echo drawn-$((6*7))\r").unwrap();
+            let got = read_until(&mut r, "drawn-42", 5);
+            assert!(got.contains("drawn-42"), "the client drew the pane");
+            assert_eq!(got.contains("\x1b[?2026h"), sync, "markers only for a sync client (sync={sync})");
+            p.close();
+        }
         tmux(&sock, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

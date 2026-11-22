@@ -3,7 +3,6 @@
 //! keys, sizes and the detach back.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -42,14 +41,17 @@ pub async fn pty_native(surface_id: String) -> Result<bool, String> {
 }
 
 /// Attach to the session behind `surface_id` at cols x rows. Its bytes go to
-/// `on_data` as they come; when the client ends, one last JSON message
-/// `{"exit": true}` says so. Returns the terminal's id.
+/// `on_data`: with `frames` "whole" (the default) each of tmux's redraws
+/// goes as one message (frames.rs), with "raw" each read as it came. When
+/// the client ends, one last JSON message `{"exit": true}` says so. Returns
+/// the terminal's id.
 #[tauri::command]
-pub async fn pty_attach(surface_id: String, cols: u16, rows: u16, on_data: Channel) -> Result<u32, String> {
+pub async fn pty_attach(surface_id: String, cols: u16, rows: u16, frames: Option<String>, on_data: Channel) -> Result<u32, String> {
+    let whole = frames.as_deref() != Some("raw");
     tauri::async_runtime::spawn_blocking(move || {
         let t = target_for(&surface_id)?.ok_or("this pane is not a local-tmux session")?;
-        let pty = Pty::attach(&t, cols, rows)?;
-        let mut r = pty.reader()?;
+        let pty = Pty::attach(&t, cols, rows, whole)?;
+        let r = pty.reader()?;
         let mut w = pty.writer()?;
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let pid = pty.pid();
@@ -66,17 +68,8 @@ pub async fn pty_attach(surface_id: String, cols: u16, rows: u16, on_data: Chann
         });
         ptys().lock().unwrap().insert(id, Arc::new(Live { pty: Mutex::new(pty), pid, target: t, keys: Mutex::new(tx) }));
         std::thread::spawn(move || {
-            let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                match r.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if on_data.send(InvokeResponseBody::Raw(buf[..n].to_vec())).is_err() {
-                            break; // the page went away
-                        }
-                    }
-                }
-            }
+            // Stops early when the page went away.
+            seamux_app::frames::pump(r, whole, |b| on_data.send(InvokeResponseBody::Raw(b)).is_ok());
             let _ = on_data.send(InvokeResponseBody::Json(r#"{"exit":true}"#.into()));
             ptys().lock().unwrap().remove(&id);
         });

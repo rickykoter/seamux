@@ -63,7 +63,7 @@ async function load(page, url, query = "") {
 /** Each view: how to get there from a fresh load. */
 export const VIEWS = {
   async dock(page) {
-    await page.locator(".dockview .sheet .native-term .xterm-rows").first().waitFor();
+    await page.locator(".dockview .sheet .native-term .xterm-screen").first().waitFor();
     // The board frame, rendered.
     await page.frameLocator(".dock-board iframe").locator("#rows .row").first().waitFor();
     await settle(page, 1500);

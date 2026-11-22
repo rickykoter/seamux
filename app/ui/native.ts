@@ -12,6 +12,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon, type ClipboardSelectionType } from "@xterm/addon-clipboard";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import "./pane.css";
 import { findPrompt, type Prompt } from "./bang";
@@ -21,6 +22,7 @@ import { StopBanner } from "./stopbanner";
 import { HeldBanner, type HeldAct } from "./heldbanner";
 import { bangLinks, follow, HoverCard, pathLinks, screenRows, type Hovered } from "./panelinks";
 import { PaneCat } from "./panecat";
+import { LabPanel, labStore, ScrollStats, type LabStore } from "./scrolllab";
 
 // A page that starts (or reloads) owns no terminal yet: any its last life
 // left attached would keep its tmux client, and its size, for nothing.
@@ -255,8 +257,24 @@ export class NativeTerm {
    *  `row`), and when the next read is due. */
   private promptNow: Prompt & { abs?: number } = { kind: "none" };
   private promptTimer = 0;
+  /** How this pane draws and scrolls (scrolllab.ts), what its last scroll
+   *  cost, and ⌥⌘L's panel of both. */
+  private lab: LabStore;
+  private stats = new ScrollStats();
+  private labPanel: LabPanel;
+  /** The GPU renderer, while it draws (none: xterm.js's DOM rows). */
+  private webgl: WebglAddon | null = null;
+  /** The mode's colours, before the cursor takes Claude's state. */
+  private baseTheme: ITheme | null = null;
+  private cursorKey = "";
+  /** Wheel reports gathering for one write, until the write before it is done. */
+  private mouseLink: string[] | null = null;
 
-  constructor() {
+  constructor(opts: { lab?: LabStore; labTitle?: string } = {}) {
+    this.lab = opts.lab ?? labStore;
+    this.labPanel = new LabPanel(this.lab, { title: opts.labTitle, closable: !opts.labTitle });
+    this.labPanel.toggle(!!opts.labTitle);
+    this.stats.onBurst = (b) => this.labPanel.show(b);
     const open = (uri: string, e?: MouseEvent) => void follow(uri, this.id, e);
     const hovered = (e: MouseEvent, uri: string, y: number, label: string) => {
       this.link = { uri, y, label, go: (ev) => open(uri, ev) };
@@ -299,7 +317,7 @@ export class NativeTerm {
       say: (t) => this.say(t),
     });
     this.heldBanner.onChange = () => this.placeHeld();
-    this.el.append(this.screen, this.bg.el, this.bg.list, this.stopBanner.el, this.heldBanner.el, this.pill, this.note, this.cat.el, this.bashChip);
+    this.el.append(this.screen, this.bg.el, this.bg.list, this.stopBanner.el, this.heldBanner.el, this.pill, this.note, this.cat.el, this.bashChip, this.labPanel.el);
     this.bang = new BangMenu(this.el, {
       chat: (cmd) => this.runInChat(cmd),
       shell: (cmd) => this.runInShell(cmd),
@@ -401,6 +419,7 @@ export class NativeTerm {
     );
     // Claude's prompt, read again a moment after the screen changes.
     this.term.onRender(() => {
+      this.stats.render();
       if (this.promptTimer) return;
       this.promptTimer = window.setTimeout(() => {
         this.promptTimer = 0;
@@ -441,6 +460,58 @@ export class NativeTerm {
     }).observe(this.el);
     // Attach while on screen, let go a moment after it is not.
     setInterval(() => this.check(), 400);
+    // The lab's switches take effect at once: a new frames mode needs a
+    // client attached with (or without) tmux's sync feature.
+    this.lab.on((now, was) => {
+      if (now.renderer !== was.renderer) this.applyRenderer();
+      if (now.frames !== was.frames && (this.id !== null || this.attaching)) {
+        this.detach();
+        if (this.opened) this.term.reset();
+        this.check();
+      }
+    });
+  }
+
+  /** Draw with the GPU or with DOM rows, as the lab says. A lost GPU
+   *  context falls back to DOM rows for this pane. */
+  private applyRenderer(): void {
+    if (!this.opened) return;
+    const want = this.lab.get().renderer === "webgl";
+    if (want && !this.webgl) {
+      try {
+        const gl = new WebglAddon();
+        gl.onContextLoss(() => {
+          gl.dispose();
+          if (this.webgl === gl) this.webgl = null;
+          this.paintCursor();
+          this.say("GPU drawing stopped: back to DOM rows");
+        });
+        this.term.loadAddon(gl);
+        this.webgl = gl;
+      } catch {
+        this.webgl = null;
+        this.say("No GPU drawing here: DOM rows");
+      }
+    } else if (!want && this.webgl) {
+      this.webgl.dispose();
+      this.webgl = null;
+    }
+    this.paintCursor();
+  }
+
+  /** The cursor shows Claude's state: steady while Claude waits for you,
+   *  blinking otherwise. With DOM rows pane.css also tints and breathes it;
+   *  the GPU draws no DOM cursor, so there the theme tints it amber. */
+  private paintCursor(): void {
+    const base = this.baseTheme;
+    if (!base) return;
+    const waits = this.el.dataset.agent === "needs_input";
+    const amber = waits && !!this.webgl;
+    const key = `${waits}|${amber}|${base.background}`;
+    if (key === this.cursorKey) return;
+    this.cursorKey = key;
+    this.term.options.theme = amber ? { ...base, cursor: "#e69875", cursorAccent: "#1e2326" } : base;
+    this.term.options.cursorBlink = !waits;
   }
 
   /** Bytes to the pane, in order. A typed key after a wheel scroll first
@@ -448,6 +519,28 @@ export class NativeTerm {
   private send(k: { data?: string; raw?: number[] }, typed = false): void {
     const id = this.id;
     if (id === null) return;
+    const report = !typed && k.data !== undefined && isMouseReport(k.data);
+    if (report && this.lab.get().wheel === "batch") {
+      // Reports that come while the write before is in flight join one
+      // write: Claude reads them at once and redraws once, not per report.
+      if (this.mouseLink) {
+        this.mouseLink.push(k.data!);
+        return;
+      }
+      const link = [k.data!];
+      this.mouseLink = link;
+      this.keys = this.keys
+        .then(() => {
+          if (this.mouseLink === link) this.mouseLink = null;
+          this.stats.wrote(link.length);
+          return invoke("pty_write", { id, data: link.join("") });
+        })
+        .catch(() => {});
+      return;
+    }
+    // Anything else ends the gathering: later reports go after it.
+    this.mouseLink = null;
+    if (report) this.stats.wrote(1);
     if (typed && this.scrolled) {
       this.scrolled = false;
       this.keys = this.keys.then(() => invoke("pty_leave_scroll", { id })).catch(() => {});
@@ -747,6 +840,7 @@ export class NativeTerm {
    *  not one per event. A short flick still sends one. */
   private wheel(e: WheelEvent): boolean {
     if (paced.has(e)) return true;
+    this.stats.wheel();
     if (this.term.modes.mouseTrackingMode === "none" || !e.deltaY) return true;
     e.preventDefault();
     this.scrolled = true;
@@ -808,6 +902,7 @@ export class NativeTerm {
   agentState(state: string, since: number): void {
     this.el.dataset.agent = state;
     this.cat.update(state, since);
+    this.paintCursor();
   }
 
   focus(): void {
@@ -836,6 +931,7 @@ export class NativeTerm {
           void invoke("notify_looking", { pane: null }).catch(() => {});
         });
         this.opened = true;
+        this.applyRenderer();
       }
       if (this.id === null && !this.attaching) void this.attach();
     } else if (this.id !== null) {
@@ -855,11 +951,13 @@ export class NativeTerm {
   private theme(): void {
     const theme = colours();
     if (theme) {
-      this.term.options.theme = theme;
+      this.baseTheme = theme;
       this.el.style.background = theme.background;
-    } else if (!this.term.options.theme?.background) {
-      this.term.options.theme = { background: "#1e1e1e", foreground: "#dddddd", cursor: "#dddddd", selectionBackground: "#5a6a7a" };
+    } else if (!this.baseTheme?.background) {
+      this.baseTheme = { background: "#1e1e1e", foreground: "#dddddd", cursor: "#dddddd", selectionBackground: "#5a6a7a" };
     }
+    this.cursorKey = "";
+    this.paintCursor();
     void configFont().then((f) => {
       if (f?.fontFamily) this.term.options.fontFamily = `"${f.fontFamily.replace(/"/g, "")}", ${FONT}`;
       if (f?.fontSize) this.baseFont = Math.min(f.fontSize, 13);
@@ -877,7 +975,7 @@ export class NativeTerm {
       this.fit.fit();
       const [cols, rows] = [this.term.cols, this.term.rows];
       const ch = new Channel<unknown>((m) => this.data(m, gen));
-      const id = await invoke<number>("pty_attach", { surfaceId: surface, cols, rows, onData: ch });
+      const id = await invoke<number>("pty_attach", { surfaceId: surface, cols, rows, frames: this.lab.get().frames, onData: ch });
       if (gen !== this.gen || surface !== this.surface || !this.visible()) {
         void invoke("pty_detach", { id });
         return;
@@ -895,6 +993,7 @@ export class NativeTerm {
 
   private data(m: unknown, gen: number): void {
     if (gen !== this.gen) return;
+    if (!(m && typeof m === "object" && "exit" in m)) this.stats.piece();
     if (m instanceof ArrayBuffer) this.term.write(new Uint8Array(m));
     else if (m instanceof Uint8Array) this.term.write(m);
     else if (Array.isArray(m)) this.term.write(Uint8Array.from(m as number[]));
@@ -906,6 +1005,7 @@ export class NativeTerm {
 
   private detach(): void {
     this.gen++;
+    this.mouseLink = null;
     if (this.id !== null) void invoke("pty_detach", { id: this.id }).catch(() => {});
     this.id = null;
     this.hiddenSince = 0;
@@ -925,6 +1025,12 @@ export class NativeTerm {
     }
     if (e.metaKey) {
       if (e.key === "Escape") this.term.blur();
+      if (e.altKey && !e.ctrlKey && !e.shiftKey && e.code === "KeyL") {
+        // ⌥⌘L: the scroll lab, shown or hidden.
+        e.preventDefault();
+        this.labPanel.toggle();
+        return false;
+      }
       const plain = !e.ctrlKey && !e.altKey;
       if (plain && e.shiftKey && e.key === "Enter") {
         // ⇧⌘↩: a bash-mode command runs in the ⌘J shell instead.
