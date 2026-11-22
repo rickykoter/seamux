@@ -1832,7 +1832,8 @@ if (live && Array.isArray(live.rows)) {
     return el;
   };
   const chip = mk("span", { class: "chip" }, [], "reclaim");
-  const row = mk("div", { class: "row done open", "data-id": "WS-1" }, [mk("span", { class: "nm" }, [], "shipped-one"), mk("div", { class: "chips" }, [chip])]);
+  const diffChip = mk("span", { class: "chip" }, [], "diff");
+  const row = mk("div", { class: "row done open", "data-id": "WS-1" }, [mk("span", { class: "nm" }, [], "shipped-one"), mk("div", { class: "chips" }, [chip, diffChip])]);
   const host = mk("div", { id: "rows", "data-fold": "{}" }, [row]);
   const fetched = [], posted = [], winListeners = [], timers = [];
   // Each post as [message, targetOrigin]: nothing that names a workspace may go to "*".
@@ -1885,6 +1886,17 @@ if (live && Array.isArray(live.rows)) {
     fetched.length === 2 && m && m[0].ws === "WS-1" && m[0].name === "shipped-one"]);
   checks.push(["intent: what names a workspace goes to the app's origin only",
     !!m && m[1] === APP && posted.every(([, o]) => o !== "*")]);
+  // The diff chip (plan board-tmux-chips): the server's until the app says it
+  // can diff, then the app's, naming the row, to the app's origin only.
+  const nDiff = fetched.length;
+  click(diffChip);
+  checks.push(["intent: framed by an app that can reclaim but not diff, the diff chip still asks the server",
+    fetched.length === nDiff + 1 && /a=diff/.test(fetched[fetched.length - 1]) && !posted.some(([x]) => x.crew === "diff")]);
+  winListeners.forEach((fn) => fn({ source: parent, origin: APP, data: { crew: "selected", ws: "", can: ["reclaim", "diff"] } }));
+  click(diffChip);
+  const dm = posted.find(([x]) => x.crew === "diff");
+  checks.push(["intent: once the app says can: [diff], the diff chip goes to the app, naming the row, and not to the server",
+    fetched.length === nDiff + 1 && !!dm && dm[0].ws === "WS-1" && dm[0].name === "shipped-one" && dm[1] === APP]);
   // The shelf: a button for the app's Tray only once the app says it can pick
   // sprites, and the sprite the app's selected message names goes on #cat.
   {

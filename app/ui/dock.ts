@@ -176,6 +176,10 @@ export class DockView {
         else if (!cwd) say("Couldn't find that workspace's folder", undefined, true);
         else void invoke<string>("land_act", { cwd, merge, recipe, act }).then((m) => say(m), (err) => say(`Couldn't: ${err}`, undefined, true));
       }
+      // The board's diff chip: the app makes the review, then shows that
+      // workspace with the review beside its terminal.
+      const dn = d as { name?: unknown } | null;
+      if (d?.crew === "diff" && typeof d.ws === "string" && d.ws) void this.openDiff(d.ws, typeof dn?.name === "string" ? dn.name : d.ws);
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;
       if (d?.crew === "reclaim" && typeof d.ws === "string" && d.ws) this.reclaim.open(d.ws, typeof r?.name === "string" ? r.name : d.ws);
@@ -308,7 +312,26 @@ export class DockView {
   private tell(): void {
     const peek = !!this.peek && this.peek === this.ws;
     if (this.frame?.contentWindow && this.origin)
-      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs", "held", "land"], peek, sprite: sprite.get() }, this.origin);
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim", "sprites", "agents", "prs", "held", "land", "diff"], peek, sprite: sprite.get() }, this.origin);
+  }
+
+  /** The board's diff chip: a lookout review of the workspace's worktree,
+   *  made through crew-board (diff_app.rs), opened in the side column with
+   *  the workspace in front. Says why when there is no folder or no review. */
+  private async openDiff(ws: string, name: string): Promise<void> {
+    const cwd = this.tiles.find((t) => t.workspace === ws && t.cwd)?.cwd ?? "";
+    if (!cwd) {
+      say(`Couldn't find ${name}'s folder`, undefined, true);
+      return;
+    }
+    say(`Reviewing ${name}…`);
+    try {
+      const id = await invoke<string>("board_diff", { cwd, ws });
+      this.select(ws, true);
+      await this.sheet.open({ path: `/review/${id}`, title: `${name} review`, workspace: ws });
+    } catch (err) {
+      say(`Couldn't review ${name}: ${err}`, undefined, true);
+    }
   }
 
   private draw(): void {

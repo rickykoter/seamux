@@ -554,6 +554,14 @@ function __boardIntent(cfg) {
         tell({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid });
         return;
       }
+      // Diff, framed by an app that makes the review itself (the seamux app
+      // on its own tmux): it opens the review beside that workspace's
+      // terminal in its Dock. Anywhere else the server runs lookout.
+      if (framed() && t.a === "diff" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" diff ") >= 0) {
+        var dn = row.querySelector ? row.querySelector(".nm") : null;
+        tell({ crew: "diff", ws: rid, name: dn ? dn.textContent : rid });
+        return;
+      }
       // A PR pill, framed by an app whose Wake lists PRs: that workspace's
       // Wake, on the pill's group. Anywhere else the prs action opens the Wake.
       if (framed() && t.a === "prs" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" prs ") >= 0) {

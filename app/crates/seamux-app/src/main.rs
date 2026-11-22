@@ -18,6 +18,7 @@ mod pr_watch;
 mod pty_app;
 mod radar_app;
 mod doctor_app;
+mod diff_app;
 mod reclaim_app;
 mod resume;
 mod resume_app;
@@ -297,6 +298,7 @@ fn main() {
             doctor_app::doctor_restore,
             doctor_app::doctor_forget,
             doctor_app::doctor_resume,
+            diff_app::board_diff,
             reclaim_app::reclaim_check,
             reclaim_app::reclaim_run,
             reclaim_app::reclaim_fix,
