@@ -5422,7 +5422,15 @@ async function shipWait(st, root) {
     }
     if (v.action !== "merge-when-green") return shipStop(slug, `stopped: ${v.waits.join("; ") || v.say || v.action}`);
     if (Date.now() > end) return shipStop(slug, `the checks did not finish within ${SHIP_WAIT_S()}s`);
-    await new Promise(r => setTimeout(r, SHIP_INTERVAL_S() * 1000));
+    // Wake on the PR's next event (a check suite done, a push, a conflict,
+    // a merge or close) instead of the full interval; the interval stays the
+    // longest wait, so the local gates (policy, plan) are still looked at.
+    await CI.pause({ url: v.pr && v.pr.url, cwd: root, maxS: SHIP_INTERVAL_S(), fallbackS: SHIP_INTERVAL_S(),
+      events: [...CI.PR_EVENTS, CI.MERGE_CONFLICT_EVENT],
+      // When the stream attaches, a check that finished since this look ends
+      // the pause, since gh does not replay it.
+      recheck: () => { const c = CI.checksNow(root); return !c.error && c.total > 0 && !c.pending.length; },
+      say: m => console.log(`${new Date().toISOString()} ${m.replace(/^ci: /, "")}`) });
   }
 }
 function shipStop(slug, note, status = "stopped", bad = true) {

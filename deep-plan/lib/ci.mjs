@@ -13,14 +13,37 @@
 // CI verdict": no PR, not pushed, gh failing, or the wait timed out. It
 // fails the check but does not count toward the retry cap, since no CI run
 // went red.
+// Between looks it waits on `gh event listen` (gh 2.105+, GitHub Event
+// Streams) for the PR's next check suite, push or state change, and looks
+// again at once. The regular interval stays the longest wait: a listener that
+// connects but never delivers, or hangs, costs no more than polling did, so
+// events only make a wait faster. When the listener cannot run (an older gh,
+// the account not in the preview, GHES, or DEEP_PLAN_GH_EVENTS=0) it says so
+// once and polls on the interval as before.
 // gh is DEEP_PLAN_GH, so the probe can stand a fake in.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const GH = () => process.env.DEEP_PLAN_GH || "gh";
 export const CI_TIMEOUT_S = 1800;
 const INTERVAL_S = 30, LOG_LINES = 60, LOGS_CAP = 3;
 export const NO_VERDICT = 3;
+// The pull request events a wait on checks cares about: a check suite
+// finished, the head moved (a push), or the PR was merged, closed or drafted.
+const EV = e => `com.github.pull_request.${e}.v1`;
+export const PR_EVENTS = [EV("check_suite.status.changed"), EV("head.changed"), EV("state.changed")];
+export const MERGE_CONFLICT_EVENT = EV("merge_conflict");
+// Why the listener is off for the rest of this process, once gh refused it
+// for good; a failure that may pass (a dropped stream, a 5xx) only polls the
+// one pause, until TRANSIENT_MAX of them in a row turn it off too.
+let listenOff = process.env.DEEP_PLAN_GH_EVENTS === "0" ? "DEEP_PLAN_GH_EVENTS=0" : "";
+let transient = 0;
+const TRANSIENT_MAX = 3;
+// gh's refusals that will not change within a wait: an older gh with no
+// `gh event`, an account outside the preview, a host without Event Streams.
+const REFUSED = /unknown command|not enabled|HTTP 40[134]|not available|Enterprise|GHE\.com/i;
+// A stderr line that reports an error rather than the stream attaching.
+const ERROR_LINE = /error|failed|HTTP \d{3}|not enabled|unknown command/i;
 
 function gh(args, cwd) {
   const r = spawnSync(GH(), args, { encoding: "utf8", cwd, timeout: 120000, stdio: ["ignore", "pipe", "pipe"] });
@@ -102,12 +125,63 @@ function jobTail(link, cwd) {
     .map(l => l.split("\t").slice(2).join("\t") || l).join("\n");
 }
 
+// Wait for the PR at url to change, up to maxS: "event" when one arrived,
+// "timeout" when none did, "settled" when recheck() said the wait is over,
+// "poll" when the listener could not run and fallbackS was slept instead.
+// gh delivers only events after its stream attaches (it says so on stderr),
+// so recheck runs on each such line, once per line: a check that finished
+// between the caller's look and the attach is not missed, and a reconnect
+// looks again too. Error lines do not run it.
+export function pause({ url, cwd, maxS, fallbackS, events = PR_EVENTS, recheck = () => false, say = console.log }) {
+  const sleep = () => new Promise(r => setTimeout(() => r("poll"), Math.max(0, fallbackS) * 1000));
+  if (listenOff || !url || !(maxS >= 1)) return sleep();
+  return new Promise(resolve => {
+    let done = false, errText = "", partial = "";
+    const child = spawn(GH(), ["event", "listen", "--resource", url, "--event", events.join(","), "--timeout", `${Math.ceil(maxS)}s`],
+      { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    // gh's own --timeout ends the listen; this ends it if gh does not.
+    const watchdog = setTimeout(() => finish("timeout"), (Math.ceil(maxS) + 15) * 1000);
+    const finish = how => {
+      if (done) return;
+      done = true; clearTimeout(watchdog);
+      if (how !== "settled") transient = 0;
+      try { child.kill(); } catch { /* gone */ }
+      resolve(how);
+    };
+    const failed = (why, refused) => {
+      if (done) return;
+      done = true; clearTimeout(watchdog);
+      if (refused || ++transient >= TRANSIENT_MAX) {
+        listenOff = why;
+        say(`ci: gh event listen is unavailable (${why}); polling every ${fallbackS}s instead`);
+      } else say(`ci: gh event listen failed (${why}); polling this once and listening again after`);
+      sleep().then(resolve);
+    };
+    child.on("error", e => failed(e.code === "ENOENT" ? `${GH()} is not installed` : e.message, e.code === "ENOENT"));
+    child.stdout.on("data", () => finish("event"));
+    child.stderr.on("data", d => {
+      errText += d;
+      const lines = (partial + d).split("\n");
+      partial = lines.pop();
+      for (const l of lines) if (!done && l.trim() && !ERROR_LINE.test(l) && recheck()) return finish("settled");
+    });
+    child.on("close", code => {
+      if (code === 0) return finish("event");
+      if (code === 8) return finish("timeout");
+      const why = errText.trim().split("\n").pop() || `gh event listen exited ${code === null ? "on a signal" : code}`;
+      failed(why, REFUSED.test(errText));
+    });
+  });
+}
+
 export async function wait({ cwd = process.cwd(), timeoutS = CI_TIMEOUT_S, intervalS = INTERVAL_S, say = console.log } = {}) {
   const p = prState(cwd);
   if (p.error) { say(`ci: ${p.error}`); return NO_VERDICT; }
   say(`ci: PR #${p.pr.number} ${p.pr.url} at ${String(p.pr.headRefOid).slice(0, 8)}`);
   const end = Date.now() + timeoutS * 1000;
-  for (let first = true; ; first = false) {
+  let first = true;
+  // One look: an exit code when the wait is over, null while checks pend.
+  const look = () => {
     const c = checksNow(cwd);
     if (c.error) { say(`ci: ${c.error}`); return NO_VERDICT; }
     if (!c.pending.length && c.total) {
@@ -125,7 +199,16 @@ export async function wait({ cwd = process.cwd(), timeoutS = CI_TIMEOUT_S, inter
       return NO_VERDICT;
     }
     if (first) say(`ci: waiting on ${c.pending.length || "not yet reported"} check(s)…`);
-    await new Promise(r => setTimeout(r, intervalS * 1000));
+    first = false;
+    return null;
+  };
+  for (;;) {
+    let v = look();
+    if (v !== null) return v;
+    const left = Math.ceil((end - Date.now()) / 1000);
+    const how = await pause({ url: p.pr.url, cwd, maxS: Math.min(intervalS, left), fallbackS: intervalS, say,
+      recheck: () => (v = look()) !== null });
+    if (how === "settled") return v;
   }
 }
 
