@@ -1564,15 +1564,22 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
   fi
   # Computer Use is optional (crew works without it) — report, never fail.
   local _cua="$HOME/Library/Application Support/cmux/cmux-cua"
-  if [ -d "$_cua" ] && find "$_cua" -name "cmux-cua" -type f 2>/dev/null | grep -c . >/dev/null; then
+  if [ "$_backend" = tmux ]; then
+    # cmux's own helper: nothing on the app's tmux uses it, so its onboarding
+    # is not advice to give there.
+    note "Computer Use is cmux's helper; the seamux app's tmux does not use it"
+  elif [ -d "$_cua" ] && find "$_cua" -name "cmux-cua" -type f 2>/dev/null | grep -c . >/dev/null; then
     ok "Computer Use helper installed (agents can drive the browser/UI)"
   else
     warn "Computer Use not set up — optional; finish the onboarding in cmux (README: Computer Use)"
   fi
 
   head_ "context"
-  [ -n "${CMUX_WORKSPACE_ID:-}" ] && ok "CMUX_WORKSPACE_ID set (hooks will fire)" \
-    || warn "no CMUX_WORKSPACE_ID — hooks no-op outside cmux terminals"
+  # The ids the hooks read (crew_core::ident): SEAMUX_WORKSPACE_ID, which
+  # the app's tmux and cmux's native sessions set, else CMUX_WORKSPACE_ID.
+  if [ -n "${SEAMUX_WORKSPACE_ID:-}" ]; then ok "SEAMUX_WORKSPACE_ID set (hooks will fire)"
+  elif [ -n "${CMUX_WORKSPACE_ID:-}" ]; then ok "CMUX_WORKSPACE_ID set (hooks will fire)"
+  else warn "no SEAMUX_WORKSPACE_ID or CMUX_WORKSPACE_ID — hooks no-op outside the seamux app's panes and cmux terminals"; fi
 
   printf '\n'
   [ "${FAIL:-0}" -eq 0 ] && { printf '\033[32mall good\033[0m\n'; return 0; }

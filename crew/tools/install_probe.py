@@ -23,7 +23,9 @@ What is asserted:
     thing that was never there;
   - crew status and crew adopt in a seamux app pane read the pane file and
     the app's registry, a native cmux session stays on cmux's path, and a
-    shell in neither says so.
+    shell in neither says so;
+  - crew doctor's context line passes on either id and warns with neither,
+    and on the app's tmux Computer Use is a note.
 
     python3 crew/tools/install_probe.py      exit 0 when all hold
 """
@@ -120,7 +122,10 @@ case "$1" in
   --tools) printf '%s\\n' crew-color crew-digest crew-feed crew-resume crew-sweep crew-sync crew-listen crew-artifacts crew-board ;;
   crew-plugin-root) exit 1 ;;
   crew-board-intent) exec {sys.executable} {INTENT} crew-board-intent ;;
-  workspaces) [ "$2" = list-json ] && cat {os.path.join(FAKE, "ws.json")!r} 2>/dev/null; exit 0 ;;
+  workspaces) case "$2" in
+      list-json) cat {os.path.join(FAKE, "ws.json")!r} 2>/dev/null ;;
+      backend) [ -n "${{FAKE_BACKEND:-}}" ] && echo "$FAKE_BACKEND" ;;
+    esac; exit 0 ;;
   crew-hook) {{ printf '%s ' "$2"; cat; echo; }} >> {os.path.join(FAKE, "hooks.log")!r} ;;
   *) exit 0 ;;
 esac
@@ -552,6 +557,27 @@ check("crew adopt runs in an app pane and replays the session and task hooks wit
 r = crew("adopt")
 check("…and with neither id it refuses, naming both kinds of pane",
       r.returncode == 1 and "not in a seamux app pane or a cmux terminal" in r.stdout + r.stderr, r.stdout + r.stderr)
+
+# --- crew doctor's context and Computer Use lines (plan crew-status-tmux) ----
+def doctor_lines(**env):
+    r = crew("doctor", **env)
+    out = r.stdout + r.stderr
+    return out, [l for l in out.splitlines() if "Computer Use" in l or "hooks will fire" in l or "hooks no-op" in l]
+
+
+out, lines = doctor_lines(FAKE_BACKEND="tmux", **APP)
+check("on the app's tmux, doctor's context line passes on SEAMUX_WORKSPACE_ID",
+      any("✓" in l and "SEAMUX_WORKSPACE_ID set (hooks will fire)" in l for l in lines), "\n".join(lines) or out[-600:])
+check("…and Computer Use is a note there, not a warning",
+      any("Computer Use is cmux's helper" in l and "!" not in l for l in lines)
+      and not any("Computer Use not set up" in l for l in lines), "\n".join(lines))
+out, lines = doctor_lines(FAKE_BACKEND="cmux", CMUX_WORKSPACE_ID=W1)
+check("in a cmux terminal it passes on CMUX_WORKSPACE_ID, and Computer Use reads as before",
+      any("CMUX_WORKSPACE_ID set (hooks will fire)" in l for l in lines)
+      and any("Computer Use not set up" in l for l in lines), "\n".join(lines))
+out, lines = doctor_lines()
+check("with neither id it warns that hooks no-op outside the app's panes and cmux terminals",
+      any("no SEAMUX_WORKSPACE_ID or CMUX_WORKSPACE_ID" in l for l in lines), "\n".join(lines))
 
 # --- cleanup -----------------------------------------------------------------
 try:
