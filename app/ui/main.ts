@@ -163,10 +163,12 @@ document.addEventListener("keydown", (e) => {
   // Not an Escape something below already took: the Dock's terminal catches
   // a second Esc in a row (native.ts, so Claude's Rewind does not open) and
   // only blurs, but xterm lets the key it declined go on up to here.
-  // With the Bosun dropped down, Escape puts it away instead.
+  // With the Bosun dropped down, Escape puts it away instead; ⇧Esc is the
+  // Bosun's own (bosun.ts lets it through to its terminal), so it leaves both alone.
   if (e.key === "Escape" && !e.defaultPrevented) {
-    if (bosunView.isDown()) bosunView.setDrop(false);
-    else hide();
+    if (bosunView.isDown()) {
+      if (!e.shiftKey) bosunView.setDrop(false);
+    } else hide();
   }
   // ⌘1…⌘4 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {

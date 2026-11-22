@@ -2,7 +2,7 @@
 // rail's days and cards, the whistle's mood and what ⌘B does. A pure
 // module, which Node runs as TypeScript.
 import {
-  ago, askText, card, chipTitle, chips, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matchedWhere, matches,
+  ago, askText, card, chipTitle, chips, hits, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matchedWhere, matches,
   mdBlocks, mdInline, mood, newerAnswers, olderDays, pendingNote, rail, recheck, reviewAsk, sameQuestion, sourceRow, sourceTarget, tilde, workspaceAsk,
   type Entry, type LogPage,
 } from "./bosun_model.ts";
@@ -156,7 +156,12 @@ ok("a link leaves its closing full stop out", sp.find((x) => x.t === "url")?.s =
 ok("html in an answer stays text", mdInline("<b>hi</b>").every((x) => x.t === "text"));
 
 // ---- where a source goes ----
-ok("a web source names its host", JSON.stringify(sourceRow({ kind: "gh", ref: "https://www.github.com/o/r/pull/8", label: "PR 8" })) === '{"to":"web","name":"PR 8","where":"github.com"}');
+ok("a web source names its host", sourceRow({ kind: "dd", ref: "https://app.datadoghq.com/d/1", label: "board" }).where === "app.datadoghq.com");
+ok("a GitHub source names its repo too", JSON.stringify(sourceRow({ kind: "gh", ref: "https://www.github.com/o/r/pull/8", label: "PR 8" })) === '{"to":"web","name":"PR 8","where":"github.com/o/r"}');
+ok("a labelled file still shows its file and line", sourceRow({ kind: "file", ref: "shop/app/retry.rb:42", label: "retry cap" }, "/Users/me/code").where === "retry.rb:42 · ~/code/shop/app");
+ok("a filter's words are marked where they start a word", JSON.stringify(hits("Retries cap; retry.rb and preretry", "retry")) === JSON.stringify([{ s: "Retries cap; ", hit: false }, { s: "retry", hit: true }, { s: ".rb and preretry", hit: false }]), hits("Retries cap; retry.rb and preretry", "retry"));
+ok("no filter, nothing marked", hits("abc", " ").length === 1 && !hits("abc", " ")[0].hit);
+ok("a match past the card's two lines says where it is", matchedWhere(e("c", "2026-11-22T10:00:00Z", "q?", "Yes: it needs the payments contract change first, and then it can go. Retries cap at 5 (shop/app/retry.rb:42)."), "retry.rb").startsWith("answer: "));
 ok("a file source names its file and folder", JSON.stringify(sourceRow({ kind: "file", ref: "/Users/me/code/shop/contracts/payments.json", label: "" })) === '{"to":"file","name":"payments.json","where":"~/code/shop/contracts"}');
 ok("a file:line source keeps its line in the name", sourceRow({ kind: "file", ref: "/u/a/b.ts:88", label: "" }).name === "b.ts:88");
 ok("a ticket opens nowhere and shows its key", JSON.stringify(sourceRow({ kind: "jira", ref: "PROJ-311", label: "" })) === '{"to":"none","name":"PROJ-311","where":""}');

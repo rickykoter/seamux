@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TermSlot } from "./native";
 import { follow, openFile } from "./panelinks";
 import {
-  ago, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, kindLabel, landed, matchedWhere, mdBlocks, mood, newerAnswers, olderDays,
+  ago, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, hits, kindLabel, landed, matchedWhere, mdBlocks, mood, newerAnswers, olderDays,
   pendingNote, rail, recheck, sourceRow, sourceTarget, tilde,
   type Card, type Chip, type Entry, type LogPage, type Mood, type Span, type Status,
 } from "./bosun_model";
@@ -99,6 +99,8 @@ type Pending = { state: "sending" | "waiting" | "failed"; since: number; questio
 
 /** How long a re-check may take to reach the Bosun's queue before it counts as failed. */
 const SEND_MS = 15000;
+/** After an answer lands and the rail moves, how long a click on it is held back (it may have been aimed at the card that moved). */
+const SETTLE_MS = 600;
 
 /** The ⌘4 tab and the ⌘B drop-down: one Bosun, two places to see it. */
 export class BosunView {
@@ -140,6 +142,10 @@ export class BosunView {
   /** The answer in the reading pane, by id (kept, so a filter that hides its card does not close it). */
   private reading: Entry | null = null;
   private pending = new Map<string, Pending>();
+  /** A re-checked answer's id, to the answer it came back as (however the Bosun worded it). */
+  private answered = new Map<string, string>();
+  private settleUntil = 0;
+  private dropNew = el("span", "bosun-drop-new");
   /** A card to bring into view on the next draw (a re-check's answer, or a newer answer asked for). */
   private scrollTo = "";
   private railKey = "";
@@ -229,9 +235,10 @@ export class BosunView {
     this.drop.hidden = true;
     this.dim.hidden = true;
     const answers = button("bosun-drop-btn", "", "Show the Bosun's answers (⌘4)");
-    answers.append(document.createTextNode("Answers"), el("kbd", "", "⌘4"));
+    this.dropNew.hidden = true;
+    answers.append(document.createTextNode("Answers"), this.dropNew, el("kbd", "", "⌘4"));
     answers.addEventListener("click", () => this.onAnswers());
-    const close = button("bosun-drop-btn bosun-drop-x", "", "Put the Bosun away (Esc or ⌘B)");
+    const close = button("bosun-drop-btn bosun-drop-x", "", "Put the Bosun away (Esc or ⌘B). ⇧Esc sends Esc to the Bosun");
     close.append(el("kbd", "", "Esc"), icon("x"));
     close.addEventListener("click", () => this.setDrop(false));
     this.dropHead.append(this.mark(), el("span", "bosun-name", "Bosun"), this.stateEl(), el("span", "bosun-root"), answers, close);
@@ -370,29 +377,41 @@ export class BosunView {
     window.clearTimeout(this.timer);
     const g = ++this.ticks;
     const shown = this.visible();
-    void (shown ? this.read() : this.readState()).finally(() => {
-      if (g === this.ticks) this.timer = window.setTimeout(() => this.tick(), this.visible() ? EVERY : EVERY_HIDDEN);
+    // A re-check waiting on its answer is read for at the shown pace even from another tab, so the tab can say it landed.
+    const waiting = [...this.pending.values()].some((p) => p.state === "waiting");
+    void (shown ? this.read() : this.readState(waiting)).finally(() => {
+      if (g === this.ticks) this.timer = window.setTimeout(() => this.tick(), this.visible() || waiting ? EVERY : EVERY_HIDDEN);
     });
   }
 
-  /** The state alone, for the tab's dot: no ensure, no log, nothing drawn. */
-  private async readState(): Promise<void> {
+  /** The state, for the tab's dot (and the log too while a re-check waits): no ensure, nothing drawn. */
+  private async readState(log = false): Promise<void> {
     const s = await invoke<Status>("bosun_status").catch(() => null);
     if (!s) return;
+    if (log) {
+      this.status = s;
+      await this.readLog();
+    }
     this.tabDot(s.live ? s.state ?? "" : "");
   }
 
-  /** The tab's dot: working, or waiting on the person. */
+  /** The tab's dot: working, waiting on the person, or a new answer not yet seen there. */
   private tabDot(state: string): void {
-    document.body.dataset.bosun = state === "working" ? "working" : state === "needs_input" ? "needs" : "";
+    const fresh = !this.tabShown && this.fresh.size > 0;
+    document.body.dataset.bosun = state === "working" ? "working" : state === "needs_input" ? "needs" : fresh ? "new" : "";
     // The dot says it in words too, for a tooltip and a screen reader.
     const tab = document.querySelector<HTMLElement>('.tab[data-tab="bosun"]');
     if (tab) {
-      const said = state === "working" ? "Bosun: working" : state === "needs_input" ? "Bosun: needs you" : "";
+      const n = this.fresh.size;
+      const said =
+        state === "working" ? "Bosun: working" : state === "needs_input" ? "Bosun: needs you" : fresh ? `Bosun: ${n} new answer${n === 1 ? "" : "s"}` : "";
       if (said) tab.setAttribute("aria-label", said);
       else tab.removeAttribute("aria-label");
-      tab.title = said || "Bosun (⌘4)";
+      tab.title = `${said || "Bosun (⌘4)"} · ⌘B drops it over any tab`;
     }
+    // The drop-down's Answers button counts them too.
+    this.dropNew.textContent = this.fresh.size ? `${this.fresh.size} new` : "";
+    this.dropNew.hidden = !this.fresh.size;
   }
 
   private async read(): Promise<void> {
@@ -433,18 +452,30 @@ export class BosunView {
     if (fresh.length) this.trillUntil = performance.now() + TRILL_MS;
     for (const id of fresh) this.fresh.add(id);
     this.seen = new Set([...(this.seen ?? []), ...all.map((e) => e.id)]);
-    // A waiting re-check whose answer is logged: the answer is new, and comes into view.
+    // A re-check whose answer is logged (even one that timed out on the
+    // way): the answer is new, comes into view, and the old card links to it.
     for (const [id, p] of this.pending) {
-      if (p.state !== "waiting") continue;
+      if (p.state === "sending") continue;
       const got = landed(p.question, p.since, all, p.qid);
       if (got && got !== id) {
         this.pending.delete(id);
         this.fresh.add(got);
+        this.answered.set(id, got);
         this.scrollTo = got;
-      } else if (Date.now() - p.since > PENDING_MS) {
+        this.settleUntil = performance.now() + SETTLE_MS;
+        const q = all.find((x) => x.id === got)?.question.trim() ?? "";
+        this.live.textContent = `New answer: ${q}`;
+      } else if (p.state === "waiting" && Date.now() - p.since > PENDING_MS) {
         Object.assign(p, { state: "failed", err: "No new answer was logged in 30 minutes." });
       }
     }
+  }
+
+  /** Each answer's newer one: asked again with the same words, or the answer its re-check came back as. */
+  private newer(): Map<string, string> {
+    const m = newerAnswers(this.entries());
+    for (const [old, got] of this.answered) if (!m.has(old)) m.set(old, got);
+    return m;
   }
 
   /** Every entry read so far. */
@@ -542,18 +573,18 @@ export class BosunView {
   private canAsk(): { ok: boolean; why: string } {
     if (!this.status) return { ok: false, why: "Looking for the Bosun…" };
     if (!this.status.tmux) return { ok: false, why: "Re-check needs the Bosun, which runs on the tmux backend" };
-    if (this.ensureErr) return { ok: false, why: "The Bosun didn't start: use Try again on the right first" };
+    if (this.ensureErr) return { ok: false, why: "Re-check is off: the Bosun didn't start. Use Try again beside its terminal" };
     return { ok: true, why: "Ask the Bosun the same question again; its new answer lands at the top" };
   }
 
   /** The rail, drawn again only when something it shows changed: a poll
    *  that read nothing new leaves focus, selection and scroll alone. */
   private drawRail(): void {
-    const newer = newerAnswers(this.entries());
+    const newer = this.newer();
     const { days, shown, total } = filterRail(rail(this.shownPages()), this.query);
     const key = JSON.stringify([
       days.map((d) => [d.day, d.label, d.cards.map((c) => c.id)]), this.query, this.reading?.id ?? "", [...this.fresh], [...this.pending],
-      [...newer], this.status?.tmux ?? null, this.status?.live ?? null, this.status?.state ?? "", this.span, this.days.length,
+      [...newer], this.status?.tmux ?? null, this.status?.live ?? null, this.status?.state ?? "", this.span, this.days.length, total, this.ensureErr,
     ]);
     this.foldDot.hidden = !this.fresh.size;
     if (key === this.railKey && !this.scrollTo) return;
@@ -584,6 +615,9 @@ export class BosunView {
       this.railList.append(p);
       return;
     }
+    // Re-check is off on every card for one reason: say it once, where it shows.
+    const can = this.canAsk();
+    if (this.status?.tmux && !can.ok) this.railList.append(el("p", "bosun-railnote", `${can.why}.`));
     for (const d of days) {
       if (!d.cards.length) continue;
       const g = el("section", "bosun-day");
@@ -631,6 +665,9 @@ export class BosunView {
     for (const ch of cs) {
       const c = el("span", `bosun-chip k-${ch.label}`, ch.n > 1 ? `${ch.label} ${ch.n}` : ch.label);
       c.title = chipTitle(ch);
+      // Its full name for a screen reader too, not only for a mouse.
+      c.setAttribute("role", "img");
+      c.setAttribute("aria-label", chipTitle(ch));
       row.append(c);
     }
     return row;
@@ -651,13 +688,13 @@ export class BosunView {
     top.append(el("span", "bosun-time", c.time));
     if (c.from) top.append(el("span", "bosun-from", c.from));
     if (fresh) top.append(el("span", "bosun-new", "new"));
-    const q = el("span", "bosun-q", c.question);
+    const q = this.marked(el("span", "bosun-q"), c.question);
     q.title = c.question;
     open.append(top, q);
-    open.append(c.first ? el("span", "bosun-first", c.first) : el("span", "bosun-first none", "No answer text logged."));
+    open.append(c.first ? this.marked(el("span", "bosun-first"), c.first) : el("span", "bosun-first none", "The Bosun logged no answer text."));
     // While filtering, say where a card matched when what it shows doesn't.
     const why = this.query.trim() ? matchedWhere(c.entry, this.query) : "";
-    if (why) open.append(el("span", "bosun-why", `Matched in ${why}`));
+    if (why) open.append(this.marked(el("span", "bosun-why"), `Matched in ${why}`));
     a.append(open);
 
     const foot = el("div", "bosun-card-foot");
@@ -669,8 +706,23 @@ export class BosunView {
     if (line) a.append(line);
     // A loop asks the same thing on purpose: its older runs don't each point at the newest.
     if (newer && !c.entry.asker.startsWith("loop:")) a.append(this.newerLink(newer));
-    open.addEventListener("click", () => (reading ? this.closeReader(false) : this.openReader(c.entry)));
+    open.addEventListener("click", () => {
+      if (this.settling()) return;
+      if (reading) this.closeReader(false);
+      else this.openReader(c.entry);
+    });
     return a;
+  }
+
+  /** Text with the filter's words marked. */
+  private marked<T extends HTMLElement>(into: T, text: string): T {
+    for (const h of hits(text, this.query.trim())) into.append(h.hit ? el("mark", "bosun-hit", h.s) : document.createTextNode(h.s));
+    return into;
+  }
+
+  /** The rail just moved under the pointer (an answer landed): a click now was aimed at something else. */
+  private settling(): boolean {
+    return performance.now() < this.settleUntil;
   }
 
   private recheckButton(e: Entry, cls: string): HTMLButtonElement {
@@ -684,7 +736,7 @@ export class BosunView {
     const off = busy || !can.ok;
     b.setAttribute("aria-disabled", String(off));
     b.addEventListener("click", () => {
-      if (!off) void this.recheck(e);
+      if (!off && !this.settling()) void this.recheck(e);
     });
     return b;
   }
@@ -783,8 +835,11 @@ export class BosunView {
   /** The reading pane, drawn again only when what it shows changed (so a poll leaves a selection alone). */
   private drawReader(): void {
     const e = this.reading;
-    const newer = e ? newerAnswers(this.entries()).get(e.id) : undefined;
-    const key = JSON.stringify([e?.id ?? "", e?.answer.length ?? 0, e ? this.pending.get(e.id) ?? null : null, newer ?? "", this.status?.tmux ?? null, this.status?.live ?? null, this.status?.state ?? ""]);
+    const newer = e ? this.newer().get(e.id) : undefined;
+    const key = JSON.stringify([
+      e?.id ?? "", e?.answer.length ?? 0, e ? this.pending.get(e.id) ?? null : null, newer ?? "",
+      this.status?.tmux ?? null, this.status?.live ?? null, this.status?.state ?? "", this.ensureErr,
+    ]);
     if (key === this.readerKey) return;
     this.readerKey = key;
     this.tabHost.classList.toggle("reading", !!e);
@@ -801,10 +856,17 @@ export class BosunView {
     const back = button("bosun-back", "", "Back to the terminal (Esc)");
     back.append(icon("left"), document.createTextNode("Terminal"), el("kbd", "", "Esc"));
     back.addEventListener("click", () => this.closeReader(true));
-    const copy = button("bosun-tool", "", "Copy the answer as text");
-    copy.append(icon("copy"), el("span", "bosun-tool-t", "Copy"));
-    copy.addEventListener("click", () => void this.copy(copy, e.answer));
-    bar.append(back, el("span", "bosun-bar-gap"), copy, this.recheckButton(e, "bosun-tool primary"));
+    bar.append(back, el("span", "bosun-bar-gap"));
+    // Nothing to copy, nothing offered.
+    if (e.answer.trim()) {
+      const copy = button("bosun-tool", "", "Copy the answer as text");
+      copy.append(icon("copy"), el("span", "bosun-tool-t", "Copy"));
+      copy.addEventListener("click", () => void this.copy(copy, e.answer));
+      bar.append(copy);
+    }
+    // Where the Bosun can never run, no Re-check (as on the cards). Once a
+    // newer answer exists, reading that comes first: Re-check steps down.
+    if (this.status?.tmux !== false) bar.append(this.recheckButton(e, newer ? "bosun-tool" : "bosun-tool primary"));
 
     const body = el("div", "bosun-reader-body");
     body.tabIndex = -1;
@@ -813,13 +875,24 @@ export class BosunView {
     const c = toCard(e);
     const meta = el("p", "bosun-reader-meta");
     meta.append([page ? dayLabel(page.day, page.today) : "", c.time].filter(Boolean).join(" "));
-    meta.append(el("span", "bosun-age", ` (${ago(e.at, Date.now())})`));
+    // Past a day, the age says the answer may be out of date.
+    const old = Date.now() - e.at > 86400e3;
+    meta.append(el("span", `bosun-age${old ? " old" : ""}`, ` (${ago(e.at, Date.now())}${old ? ", may be out of date" : ""})`));
     if (c.from) meta.append(` · asked by ${c.from}`);
     col.append(meta, el("h2", "bosun-reader-q", e.question.trim()));
     const line = this.pendingLine(e);
     if (line) col.append(line);
     const can = this.canAsk();
-    if (!can.ok && this.status) col.append(el("p", "bosun-pending s-off", `${can.why}.`));
+    if (!can.ok && this.status) {
+      const off = el("p", "bosun-pending s-off", `${can.why}.`);
+      // Try again sits beside the terminal, under this pane: a way to it.
+      if (this.ensureErr) {
+        const go = button("bosun-inline", "Show Try again");
+        go.addEventListener("click", () => this.closeReader(false));
+        off.append(go);
+      }
+      col.append(off);
+    }
     if (newer) col.append(this.newerLink(newer));
     col.append(this.answerText(e.answer));
 

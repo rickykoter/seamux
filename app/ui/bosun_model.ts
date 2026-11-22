@@ -168,7 +168,8 @@ export function matches(e: Entry, query: string): boolean {
  *  what shows is reason enough. */
 export function matchedWhere(e: Entry, query: string): string {
   const words = wordsOf(query);
-  const shown = `${e.question}\n${firstLine(e.answer)}\n${fromLabel(e.asker)}`;
+  // What a card shows of its answer: about two lines of the rail, not the whole first line.
+  const shown = `${e.question}\n${firstLine(e.answer, 80)}\n${fromLabel(e.asker)}`;
   const hidden = words.filter((w) => !w.test(shown));
   if (!hidden.length) return "";
   for (const s of e.sources ?? []) {
@@ -181,6 +182,24 @@ export function matchedWhere(e: Entry, query: string): string {
   const line = e.answer.split("\n").find((l) => hidden.some((w) => w.test(l)));
   if (line) return `answer: ${firstLine(line, 70)}`;
   return "";
+}
+
+/** Text cut into runs that match a filter word (at a word start) and runs
+ *  that don't, for the rail to mark what it found. */
+export function hits(text: string, query: string): { s: string; hit: boolean }[] {
+  const words = query.split(/\s+/).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!words.length || !text) return [{ s: text, hit: false }];
+  const re = new RegExp(`(?<=^|[^\\p{L}\\p{N}])(?:${words.join("|")})`, "giu");
+  const out: { s: string; hit: boolean }[] = [];
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (!m[0]) continue;
+    if (m.index! > last) out.push({ s: text.slice(last, m.index), hit: false });
+    out.push({ s: m[0], hit: true });
+    last = m.index! + m[0].length;
+  }
+  if (last < text.length) out.push({ s: text.slice(last), hit: false });
+  return out;
 }
 
 /** How long ago, for the reading pane: "just now", "12 min ago", "3 h ago", "2 days ago". */
@@ -237,7 +256,7 @@ export function pendingNote(live: boolean, state: string | undefined): string {
   if (!live) return "Queued. The Bosun answers once it is running.";
   if (state === "needs_input") return "Queued. It waits until you answer the Bosun's prompt.";
   if (state === "working") return "Queued. The Bosun answers after its current turn.";
-  return "Re-checking. The new answer lands at the top.";
+  return "Queued. The new answer lands at the top.";
 }
 
 /** The whistle: resting, piping while the Bosun works, waiting on you, or one trill for a new answer. */
@@ -350,12 +369,20 @@ export function sourceRow(s: Source, root = ""): { to: "web" | "file" | "none"; 
     } catch {
       /* not a URL after all: no host */
     }
-    return { to: "web", name: s.label || t.url, where: host };
+    // A GitHub link names its repo too: "PR 812" alone doesn't say where.
+    let where = host;
+    if (host === "github.com") {
+      const repo = new URL(t.url).pathname.split("/").filter(Boolean).slice(0, 2).join("/");
+      if (repo) where = `${host}/${repo}`;
+    }
+    return { to: "web", name: s.label || t.url, where };
   }
   if (t) {
     const base = t.path.split("/").pop() || t.path;
+    const file = t.line ? `${base}:${t.line}` : base;
     const dir = tilde(t.path.slice(0, t.path.length - base.length).replace(/\/$/, ""));
-    return { to: "file", name: s.label || (t.line ? `${base}:${t.line}` : base), where: dir };
+    // A label ("retry cap") stands for a file: the file still shows beside it.
+    return { to: "file", name: s.label || file, where: s.label && s.label !== file ? `${file} · ${dir}` : dir };
   }
   return { to: "none", name: s.label || s.ref, where: "" };
 }

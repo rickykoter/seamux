@@ -12,7 +12,7 @@
 
 .bosun-ico { flex: none; display: block; }
 .bosun kbd, .bosun-drop kbd {
-  font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px;
+  font: var(--fs-1) var(--ef-mono); color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px;
   line-height: 15px;
 }
 /* A key inside a button is already boxed by the button. */
@@ -41,7 +41,7 @@
 }
 .folded .bosun-fold-side:hover { background: var(--on); }
 .bosun-fold-word { writing-mode: vertical-rl; font-size: var(--fs-2); font-weight: 600; letter-spacing: 0.04em; }
-.bosun-fold-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.bosun-fold-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
 .bosun-fold-dot[hidden] { display: none; }
 
 .bosun-find {
@@ -70,7 +70,7 @@
   position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
   display: flex; flex-direction: column; font-size: var(--fs-2);
 }
-.bosun-card:hover { border-color: var(--line2); }
+.bosun-card:hover { border-color: var(--line2); background: color-mix(in srgb, var(--card) 70%, var(--on)); }
 .bosun-card.reading { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .bosun-card.new::before {
   content: ""; position: absolute; left: -1px; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--good);
@@ -107,16 +107,17 @@
 }
 .bosun-chip.k-gh { color: var(--accent-t); }
 .bosun-chip.k-jira { color: var(--ef-text-blue); }
-.bosun-chip.k-sql, .bosun-chip.k-dd, .bosun-chip.k-splunk, .bosun-chip.k-dash { color: var(--ef-text-purple); }
+.bosun-chip.k-dd, .bosun-chip.k-splunk, .bosun-chip.k-dash { color: var(--ef-text-purple); }
+.bosun-chip.k-sql { color: var(--ef-text-aqua); }
 .bosun-chip.k-ws { color: var(--ef-text-orange); }
 /* A quiet outlined button at rest, its colour on hover. */
 .bosun-act {
   flex: none; font: inherit; font-size: var(--fs-1); border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--muted);
-  padding: 2px 8px; min-height: 24px; cursor: pointer;
+  padding: 2px 8px; min-height: 26px; cursor: pointer;
 }
 .bosun-card:hover .bosun-act:not([aria-disabled="true"]), .bosun-act:focus-visible { color: var(--accent-t); border-color: var(--line2); }
 .bosun-act:hover:not([aria-disabled="true"]) { background: var(--on); }
-.bosun-act[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; border-style: dashed; }
+.bosun-act[aria-disabled="true"] { opacity: 0.75; cursor: not-allowed; border-style: dashed; border-color: var(--line2); }
 .bosun-act:focus-visible, .bosun-newer:focus-visible, .bosun-older:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .bosun-pending {
@@ -130,7 +131,7 @@
   flex: none; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-1); padding: 1px 6px; margin: -1px 0;
   border: 1px solid var(--line); border-radius: 5px; background: none; color: var(--accent-t); cursor: pointer;
 }
-.bosun-inline.x { color: var(--muted); padding: 2px 4px; }
+.bosun-inline.x { color: var(--muted); min-width: 24px; min-height: 24px; justify-content: center; padding: 0; margin: -4px 0; }
 .bosun-inline:hover { background: var(--on); }
 .bosun-inline:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bosun-spin {
@@ -209,10 +210,13 @@
 .bosun-reader-col { max-width: 760px; margin: 0 auto; padding: 22px 28px 48px; }
 .bosun-reader-meta { margin: 0 0 4px; font-size: var(--fs-2); color: var(--muted); }
 .bosun-age { color: var(--fg); }
+.bosun-age.old { color: var(--ef-text-warn); }
 .bosun-reader-q { margin: 0 0 14px; font-size: var(--fs-5, 18px); line-height: 1.3; color: var(--fg); }
 .bosun-reader-col > .bosun-pending, .bosun-reader-col > .bosun-newer {
   border: 1px solid var(--line); border-radius: 8px; margin: 0 0 14px; font-size: var(--fs-2);
 }
+/* Why Re-check is off is a note, not a box (a box reads as a field). */
+.bosun-reader-col > .bosun-pending.s-off { border: 0; padding: 0; font-style: italic; align-items: center; }
 .bosun-md { font-size: var(--fs-3); line-height: 1.55; color: var(--fg); }
 .bosun-md p { margin: 0 0 10px; white-space: pre-wrap; }
 .bosun-md-h { margin: 16px 0 6px; font-size: var(--fs-3); font-weight: 600; color: var(--fg); }
@@ -230,8 +234,12 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 .bosun-quiet { color: var(--muted); }
 .bosun-reader-src { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line); }
 .bosun-reader-h { margin: 0 0 8px; font-size: var(--fs-1); font-weight: 600; color: var(--section); text-transform: uppercase; letter-spacing: 0.06em; }
-.bosun-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.bosun-src-row { display: grid; grid-template-columns: 44px minmax(0, auto) minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: var(--fs-2); }
+/* One grid for every row, so a long kind (splunk, pagerduty) widens the column for all. */
+.bosun-sources {
+  list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: max-content minmax(0, max-content) minmax(0, 1fr);
+  column-gap: 10px; row-gap: 8px; align-items: baseline; font-size: var(--fs-2);
+}
+.bosun-src-row { display: contents; }
 .bosun-src-row > .bosun-chip { justify-self: start; }
 .bosun-src {
   display: inline-flex; align-items: center; gap: 4px; min-width: 0; text-decoration: none;
@@ -241,7 +249,8 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 .bosun-src-where { color: var(--muted); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .bosun-src-ref { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .bosun-src-ref .bosun-src-name { color: var(--fg); }
-.bosun-src-val { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.bosun-src-val { display: flex; align-items: flex-start; gap: 6px; min-width: 0; max-width: 100%; }
+.bosun-src-val code { flex: 0 1 auto; }
 .bosun-src-ref code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 .bosun-src { text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
 
@@ -253,14 +262,19 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 }
 .bosun-drop.down { transform: translateY(0); }
 .bosun-drop[hidden], .bosun-dim[hidden] { display: none; }
-.bosun-drop .bosun-head { background: var(--strip); }
+.bosun-head { background: var(--strip); }
 .bosun-drop-btn {
-  flex: none; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 2px 10px; min-height: 26px;
+  flex: none; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 2px 10px; min-height: 28px;
   box-sizing: border-box; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
 }
 .bosun-drop-btn:hover { background: var(--on); }
 .bosun-drop-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bosun-drop-x { padding: 2px 6px; }
+.bosun-drop-new {
+  font-size: var(--fs-1); font-weight: 600; padding: 0 6px; border-radius: 999px; background: var(--good); color: var(--on-primary);
+  line-height: 16px;
+}
+.bosun-drop-new[hidden] { display: none; }
 .bosun-dim { position: absolute; inset: 0; z-index: 39; background: var(--bosun-scrim); opacity: 0; transition: opacity 180ms; }
 .bosun-dim.down { opacity: 1; }
 
@@ -285,19 +299,34 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 @keyframes bw-pipe { 0% { opacity: 0; } 30% { opacity: 0.9; } 100% { opacity: 0; } }
 @keyframes bw-trill { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
 
-/* The tab's own mark: a dot while the Bosun works, a ringed one while it waits on you. */
+/* The tab's own mark, three shapes, not only three colours: a small dot
+   while the Bosun works, a ringed pulsing one while it waits on you, a
+   green one for a new answer not yet seen there. Each says it in words
+   in the tab's title too (bosun.ts tabDot). */
 .tab[data-tab="bosun"] { position: relative; }
-body[data-bosun="working"] .tab[data-tab="bosun"]::after, body[data-bosun="needs"] .tab[data-tab="bosun"]::after {
-  content: ""; position: absolute; top: 5px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--working);
+body[data-bosun] .tab[data-tab="bosun"]::after {
+  position: absolute; top: 5px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--working);
 }
-body[data-bosun="needs"] .tab[data-tab="bosun"]::after { width: 7px; height: 7px; top: 4px; right: 3px; background: var(--ask); }
+body[data-bosun="working"] .tab[data-tab="bosun"]::after, body[data-bosun="needs"] .tab[data-tab="bosun"]::after,
+body[data-bosun="new"] .tab[data-tab="bosun"]::after { content: ""; }
+body[data-bosun="needs"] .tab[data-tab="bosun"]::after {
+  width: 7px; height: 7px; top: 4px; right: 3px; background: var(--ask);
+  box-shadow: 0 0 0 2px var(--strip), 0 0 0 3px var(--ask); animation: bosun-blink 1.6s ease-in-out infinite;
+}
+body[data-bosun="new"] .tab[data-tab="bosun"]::after { width: 6px; height: 6px; top: 4px; right: 3px; background: var(--good); }
+/* ⌘B and its hint mean nothing where the Bosun can't run. */
+body:not([data-backend="tmux"]) .bosun-hint { display: none; }
+
+/* A filter's words, marked where they matched. */
+mark.bosun-hit { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }
+.bosun-railnote { margin: 0 2px; padding: 6px 8px; border-radius: 7px; font-size: var(--fs-1); color: var(--muted); background: var(--on); line-height: 1.4; }
 
 /* A narrow window: a slimmer rail, the reading pane's column fills it. */
 @media (max-width: 720px) {
   .panel.bosun { grid-template-columns: 200px minmax(0, 1fr); }
   .bosun-hint { display: none; }
   .bosun-reader-col { padding: 16px 14px 32px; }
-  .bosun-src-row { grid-template-columns: 44px minmax(0, 1fr); }
+  .bosun-sources { grid-template-columns: max-content minmax(0, 1fr); }
   .bosun-src-where { grid-column: 2; }
   .bosun-src-ref { grid-column: 2; }
   /* The bar keeps Re-check in reach: Copy goes to its icon. */
@@ -341,6 +370,6 @@ body:not([data-backend="tmux"]) .bosun-ask-btn, body:not([data-backend="tmux"]) 
 
 @media (prefers-reduced-motion: reduce) {
   .bosun-drop, .bosun-dim { transition: none; }
-  .bosun-whistle .bw-arc, .bosun-whistle .bw-body, .bosun-spin, .bosun-state-dot { animation: none !important; }
+  .bosun-whistle .bw-arc, .bosun-whistle .bw-body, .bosun-spin, .bosun-state-dot, .tab[data-tab="bosun"]::after { animation: none !important; }
   .bosun-whistle[data-mood="pipe"] .bw-arc { opacity: 0.7; }
 }
