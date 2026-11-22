@@ -94,6 +94,10 @@ pub struct Entry {
     pub recipes: Vec<String>,
     /// The overall status last told in a banner (or "none", "error").
     pub told: String,
+    /// For a told wait, its recipe and stage ("<recipe>@<stage>"), so a
+    /// later wait at another recipe or stage is told too (plan
+    /// landing-latency). Empty for any other status.
+    pub told_wait: String,
     /// Why the last start failed; with `tries` and `next_try` (epoch s).
     pub error: String,
     pub tries: u32,
@@ -232,6 +236,29 @@ pub fn due(idx: &Index, running: &dyn Fn(&Entry) -> bool, now: i64) -> Vec<Strin
 /// How a merge is named in a banner: #PR, else its short commit.
 fn label(e: &Entry) -> String {
     if e.pr > 0 { format!("#{}", e.pr) } else { e.merge.chars().take(7).collect() }
+}
+
+/// A wait's place: its recipe and stage.
+fn wait_key(o: &landing::Overall) -> String {
+    format!("{}@{}", o.recipe, o.stage)
+}
+
+/// Whether a landing's status now is news against what was last told. A
+/// running landing never is. A wait is news when its recipe and stage
+/// differ from the last wait told, even when no tick saw the landing run
+/// between the two; any other status is news once.
+pub fn is_news(e: &Entry, o: &landing::Overall) -> bool {
+    match o.status {
+        "landing" => false,
+        "awaiting" => e.told != "awaiting" || e.told_wait != wait_key(o),
+        s => s != e.told,
+    }
+}
+
+/// Record that `o` was told.
+pub fn mark_told(e: &mut Entry, o: &landing::Overall) {
+    e.told = o.status.to_string();
+    e.told_wait = if o.status == "awaiting" { wait_key(o) } else { String::new() };
 }
 
 /// What a finished telling looks like: a banner's title and body for an
@@ -418,20 +445,21 @@ fn tick(app: &AppHandle, keys: &mut HashMap<String, (String, String)>) {
             notify_app::post_note(app, &n);
         }
     }
-    // Tell what changed: once per overall status, and never while it runs.
+    // Tell what changed: once per overall status, once per wait, and never
+    // while it runs.
     let home2 = home.clone();
     let notes: Vec<notify_app::Note> = with_index(&home, |idx| {
         let mut out = Vec::new();
         for e in idx.values_mut().filter(|e| e.started > 0 && e.pid > 0 && e.told != "none") {
             let state = landing::read(&home2, &e.key, &e.merge);
             let o = status_of(e, state.as_ref(), ours(e.pid));
-            if o.status == e.told || o.status == "landing" {
+            if !is_news(e, &o) {
                 continue;
             }
             if let Some((title, body)) = banner(e, &o) {
                 out.push(notify_app::landing_note(&e.ws, title, body));
             }
-            e.told = o.status.to_string();
+            mark_told(e, &o);
         }
         out
     });
@@ -577,6 +605,7 @@ pub fn act(cwd: &str, merge: &str, recipe: &str, what: &str) -> Result<String, S
                 // Tracked like the watcher's own, told afresh, and back on the card.
                 x.pid = pid;
                 x.told.clear();
+                x.told_wait.clear();
                 x.dismissed = false;
             }
             Ok(label.to_string())
@@ -739,6 +768,33 @@ mod tests {
         assert_eq!(status_of(&e, None, false).status, "stopped", "died before writing anything");
         let done = json!({"recipes": {"seamux": {"key": "seamux", "status": "done", "stages": []}}});
         assert_eq!(status_of(&e, Some(&done), false).status, "done");
+    }
+
+    #[test]
+    fn every_new_wait_is_told_once_and_a_running_landing_never() {
+        let o = |status: &'static str, recipe: &str, stage: &str| landing::Overall { status, stage: stage.into(), recipe: recipe.into(), live: false };
+        let mut e = Entry { pr: 9, ..Default::default() };
+        let mut told = Vec::new();
+        // Ticks: A waits, A still waits, B waits (A ran and finished between
+        // two ticks, so no tick saw it run), B runs, B waits at a recut
+        // stage, done, done again.
+        for x in [o("awaiting", "a", "notebook"), o("awaiting", "a", "notebook"), o("awaiting", "b", "deploy"), o("landing", "b", "deploy"),
+                  o("awaiting", "b", "live"), o("done", "", ""), o("done", "", "")] {
+            if is_news(&e, &x) {
+                told.push(format!("{} {}", x.status, wait_key(&x)));
+                mark_told(&mut e, &x);
+            }
+        }
+        assert_eq!(told, vec!["awaiting a@notebook", "awaiting b@deploy", "awaiting b@live", "done @"]);
+        assert!(e.told_wait.is_empty(), "only a wait keeps its place");
+    }
+
+    #[test]
+    fn an_older_index_entry_reads_with_no_told_wait() {
+        let e: Entry = serde_json::from_value(json!({"merge": "m", "told": "awaiting"})).unwrap();
+        assert_eq!((e.told.as_str(), e.told_wait.as_str()), ("awaiting", ""));
+        let o = landing::Overall { status: "awaiting", stage: "nb".into(), recipe: "r".into(), live: false };
+        assert!(is_news(&e, &o), "an entry from before told_wait tells its wait once more, then keeps it");
     }
 
     #[test]
