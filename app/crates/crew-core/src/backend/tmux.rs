@@ -166,6 +166,30 @@ fn list(reg: &Value, key: &str) -> Vec<Value> {
     reg.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
+/// The ids (upper case) of workspaces with a `kind` (the Bosun's): the
+/// lists every reader takes (workspaces, panes, gone) leave them out, and
+/// only `kind_row` and `target` find them (docs/adr, the bosun plan).
+fn hidden_ids(reg: &Value) -> std::collections::HashSet<String> {
+    list(reg, "workspaces").iter().filter(|w| has_kind(w)).map(|w| s(w, "id").to_ascii_uppercase()).collect()
+}
+
+/// Whether a registry workspace row carries a `kind` (the Bosun's): the one
+/// rule every reader of workspaces.json uses to leave it out.
+pub fn has_kind(w: &Value) -> bool {
+    !s(w, "kind").is_empty()
+}
+
+/// A workspace of one `kind`, as `kind_row` finds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KindRow {
+    pub ws: String,
+    pub cwd: String,
+    /// Its pane whose session runs, if any.
+    pub live: Option<String>,
+    /// Its pane lost with the tmux server, kept for a restart, if any.
+    pub gone: Option<String>,
+}
+
 /// The variables a tmux call drops: cmux's, and an outer tmux's.
 pub fn scrubbed(name: &str) -> bool {
     name.starts_with("CMUX_") || name == "TMUX" || name == "TMUX_PANE"
@@ -372,7 +396,12 @@ impl TmuxBackend {
     /// workspace id, cwd).
     pub fn gone(&self) -> Result<Vec<(String, String, String)>, String> {
         let reg = self.snapshot()?;
-        Ok(list(&reg, "gone").iter().map(|p| (s(p, "id"), s(p, "ws"), s(p, "cwd"))).collect())
+        let hidden = hidden_ids(&reg);
+        Ok(list(&reg, "gone")
+            .iter()
+            .filter(|p| !hidden.contains(&s(p, "ws").to_ascii_uppercase()))
+            .map(|p| (s(p, "id"), s(p, "ws"), s(p, "cwd")))
+            .collect())
     }
 
     /// Start a gone pane again, running `claude` in a new session that keeps
@@ -594,9 +623,61 @@ impl TmuxBackend {
         })
     }
 
+    /// The workspace marked `kind`, with its live and gone panes; None when
+    /// the registry has none. Read under the lock, dead panes moved to gone.
+    pub fn kind_row(&self, kind: &str) -> Result<Option<KindRow>, String> {
+        let reg = self.snapshot()?;
+        let Some(w) = list(&reg, "workspaces").into_iter().find(|w| s(w, "kind") == kind) else { return Ok(None) };
+        let ws = s(&w, "id");
+        let mine = |key: &str| list(&reg, key).into_iter().find(|p| s(p, "ws").eq_ignore_ascii_case(&ws)).map(|p| s(&p, "id"));
+        Ok(Some(KindRow { live: mine("panes"), gone: mine("gone"), cwd: s(&w, "cwd"), ws }))
+    }
+
+    /// The `kind` of the workspace pane `pane` belongs to ("" for an
+    /// ordinary one, or a pane the registry does not know).
+    pub fn kind_of_pane(&self, pane: &str) -> String {
+        let Ok(reg) = self.read() else { return String::new() };
+        let ws = list(&reg, "panes")
+            .into_iter()
+            .chain(list(&reg, "gone"))
+            .find(|p| s(p, "id").eq_ignore_ascii_case(pane))
+            .map(|p| s(&p, "ws"))
+            .unwrap_or_default();
+        list(&reg, "workspaces").iter().find(|w| s(w, "id").eq_ignore_ascii_case(&ws)).map(|w| s(w, "kind")).unwrap_or_default()
+    }
+
+    /// The `kind` of workspace `ws` ("" for an ordinary or unknown one).
+    pub fn kind_of_ws(&self, ws: &str) -> String {
+        let Ok(reg) = self.read() else { return String::new() };
+        list(&reg, "workspaces").iter().find(|w| s(w, "id").eq_ignore_ascii_case(ws)).map(|w| s(w, "kind")).unwrap_or_default()
+    }
+
+    /// A new workspace marked `kind` and titled `title` at `cwd`, with one
+    /// pane running `cmd`: (workspace id, pane id). Refused when one of that
+    /// kind is already there.
+    pub fn open_kind(&self, cwd: &Path, cmd: &str, kind: &str, title: &str) -> Result<(String, String), String> {
+        let cwd = cwd.to_string_lossy().into_owned();
+        let mut made = None;
+        self.update(|reg| {
+            if list(reg, "workspaces").iter().any(|w| s(w, "kind") == kind) {
+                return Err(format!("a {kind} workspace is already here"));
+            }
+            let ws = self.add_workspace(reg, &cwd)?;
+            if let Some(w) = reg["workspaces"].as_array_mut().and_then(|a| a.iter_mut().find(|w| s(w, "id") == ws)) {
+                w["kind"] = json!(kind);
+                w["title"] = json!(title);
+            }
+            let pane = self.start(reg, &ws, &cwd, cmd, &mut made)?;
+            Ok((ws, pane))
+        })
+        .map_err(|e| self.unmake(made.take(), e))
+    }
+
     /// Whether the registry holds a live pane: someone uses this backend now.
     pub fn in_use(&self) -> bool {
-        self.panes(None).map(|p| !p.is_empty()).unwrap_or(false)
+        // Every live pane counts, the Bosun's too: the lists leave it out,
+        // but a machine running only the Bosun still runs on tmux.
+        self.snapshot().map(|r| !list(&r, "panes").is_empty()).unwrap_or(false)
     }
 
     /// A workspace record at `cwd`, titled by its folder: its id.
@@ -631,13 +712,19 @@ impl Backend for TmuxBackend {
 
     fn workspaces(&self) -> Result<Vec<WorkspaceRow>, String> {
         let reg = self.snapshot()?;
-        Ok(list(&reg, "workspaces").iter().map(|w| WorkspaceRow { id: s(w, "id"), title: s(w, "title"), cwd: s(w, "cwd") }).collect())
+        Ok(list(&reg, "workspaces")
+            .iter()
+            .filter(|w| !has_kind(w))
+            .map(|w| WorkspaceRow { id: s(w, "id"), title: s(w, "title"), cwd: s(w, "cwd") })
+            .collect())
     }
 
     fn panes(&self, ws: Option<&str>) -> Result<Vec<PaneRow>, String> {
         let reg = self.snapshot()?;
+        let hidden = hidden_ids(&reg);
         Ok(list(&reg, "panes")
             .iter()
+            .filter(|p| !hidden.contains(&s(p, "ws").to_ascii_uppercase()))
             .filter(|p| ws.is_none_or(|w| s(p, "ws").eq_ignore_ascii_case(w)))
             .map(|p| PaneRow { id: s(p, "id"), workspace: s(p, "ws"), cwd: s(p, "cwd"), label: "Claude".into() })
             .collect())
@@ -870,6 +957,32 @@ mod tests {
         assert_ne!(a, b);
         assert!(::cmux::is_uuid(&a), "{a}");
         assert_eq!(&a[14..15], "4");
+    }
+
+    #[test]
+    fn a_kind_workspace_is_left_out_of_every_list_but_its_own() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("kind");
+        let b = &f.0;
+        let (plain, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let (ws, pane) = b.open_kind(&f.1, "sleep 600", "bosun", "Bosun").unwrap();
+        assert!(b.open_kind(&f.1, "sleep 600", "bosun", "Bosun").is_err(), "one of a kind");
+        assert_eq!(b.workspaces().unwrap().iter().map(|w| w.id.clone()).collect::<Vec<_>>(), vec![plain.clone()]);
+        assert!(b.panes(None).unwrap().iter().all(|p| p.workspace == plain), "its pane is not listed");
+        assert!(b.panes(Some(&ws)).unwrap().is_empty());
+        assert!(b.target(&pane).unwrap().is_some(), "attach still finds it");
+        assert_eq!(b.kind_of_pane(&pane), "bosun");
+        let row = b.kind_row("bosun").unwrap().unwrap();
+        assert_eq!((row.ws.as_str(), row.live.as_deref(), row.gone), (ws.as_str(), Some(pane.as_str()), None));
+        let reg = b.registry().unwrap();
+        let rec = list(&reg, "workspaces").into_iter().find(|w| s(w, "id") == ws).unwrap();
+        assert_eq!((s(&rec, "kind").as_str(), s(&rec, "title").as_str()), ("bosun", "Bosun"));
+        // Lost with the server: kept for its own restart, never offered as gone.
+        let _ = tmux(&b.socket(), &["kill-server"]);
+        assert!(b.gone().unwrap().iter().all(|(_, w, _)| *w != ws));
+        assert_eq!(b.kind_row("bosun").unwrap().unwrap().gone.as_deref(), Some(pane.as_str()));
     }
 
     #[test]

@@ -74,11 +74,18 @@ impl Watch {
     }
 }
 
-/// The workspace ids in a registry's text; None when it does not parse.
+/// The workspace ids in a registry's text; None when it does not parse. A
+/// workspace with a `kind` (the Bosun's) is no workspace crew-sync keeps.
 fn ids_of(text: &str) -> Option<BTreeSet<String>> {
     let v: Value = serde_json::from_str(text).ok()?;
     let rows = v.get("workspaces")?.as_array()?;
-    Some(rows.iter().filter_map(|w| w.get("id").and_then(Value::as_str)).map(str::to_string).collect())
+    Some(
+        rows.iter()
+            .filter(|w| !crew_core::backend::tmux::has_kind(w))
+            .filter_map(|w| w.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// The registry's ids when its mtime moved since `seen`, else None. A
@@ -218,6 +225,8 @@ mod tests {
         assert_eq!(ids_of(t), Some(set(&["W1", "W2"])));
         assert_eq!(ids_of("{not json"), None);
         assert_eq!(ids_of(r#"{"version":1}"#), None);
+        let bosun = r#"{"version":1,"workspaces":[{"id":"W1"},{"id":"B","kind":"bosun"}],"panes":[]}"#;
+        assert_eq!(ids_of(bosun), Some(set(&["W1"])), "the Bosun's row is no workspace crew-sync keeps");
     }
 
     #[test]
