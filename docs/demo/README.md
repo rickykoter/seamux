@@ -24,6 +24,13 @@ That records all of it. Name videos to record fewer (`node demo.mjs v1 v5`).
 look around after a take. The app screenshots come from
 [app/shoot.mjs](app/shoot.mjs).
 
+The app's pages run against [app/mock.js](app/mock.js), which must answer
+every command app/ui invokes. `node docs/demo/app/mock_probe.mjs` checks that:
+it compares the commands with the mock's handlers, then opens each view on
+both backends and fails on a page error or a command the mock does not know.
+The demo-mock recipe runs it on any change to app/ui or docs/demo/app, so a
+new command needs its mock answer in the same change.
+
 Each video stages its own world with [stage.sh](stage.sh): a small shop repo
 from [world/shop](world/shop), a bare remote beside it, and deep-plan, lookout
 and restack state in the same folder. `SEAMUX_HOST=terminal` makes the plugins
@@ -54,7 +61,7 @@ title card and the cue cards from `cards.mjs`.
 | `reel/term.html` | plays a cast back in xterm.js for filming |
 | `reel/stitch.mjs`, `cards.mjs`, `cut.mjs` | the canvas, cue cards and editing, shared with the README Tour |
 | `reel/record.mjs`, `take.md` | the README Tour's own scenes |
-| `app/` | the seamux app's pages in a browser with a mocked Tauri backend |
+| `app/` | the seamux app's pages in a browser with a mocked Tauri backend; `mock_probe.mjs` keeps the mock up with the app |
 | `board-preview.py` | the crew board from this checkout on a fixed cast |
 | `live/` | the README Tour's two videos: the real seamux app, filmed with live Claude sessions ([live/README.md](live/README.md)) |
 
