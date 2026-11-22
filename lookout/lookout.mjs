@@ -56,7 +56,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro", "--dimension", "--reviewer", "--cwd"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro", "--dimension", "--reviewer", "--cwd", "--timeout"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -764,6 +764,9 @@ function usage() {
                             post those items as one GitHub review and keep each comment's id.
                             This sends text to GitHub: only when the person asks.
   lookout gh status <id> [--json]   what the last sync saw
+  lookout gh listen <pr-url> [--timeout S] [--cwd DIR] [--json]
+                            wait for the PR's next state change (gh event listen, gh 2.105+):
+                            exit 0 changed, 2 no change by the timeout (600s), 3 gh cannot listen here
   lookout gh prs <owner/repo> <n>… [--cwd DIR] [--force] [--json]
                             those PRs' state and checks (fail, running, pass, gate) in one read;
                             a gate is a check waiting on people (.seamux/prs.json gates)
@@ -865,7 +868,8 @@ function cmdTurns() {
 function cmdGh() {
   const [sub, id, ...more] = positional();
   if (sub === "prs") return cmdGhPrs(id, more);
-  if (!["link", "sync", "post", "status"].includes(sub || "")) die("gh link|sync|post|status <review-id> …, or gh prs <owner/repo> <n>…");
+  if (sub === "listen") return cmdGhListen(id);
+  if (!["link", "sync", "post", "status"].includes(sub || "")) die("gh link|sync|post|status <review-id> …, gh prs <owner/repo> <n>…, or gh listen <pr-url>");
   if (!id || !S.ID_OK.test(id) || !S.exists(id)) die(`gh ${sub} wants a review id (lookout list)`);
   const json = flag("json");
   const out = v => { if (json) process.stdout.write(JSON.stringify(v, null, 2) + "\n"); };
@@ -901,6 +905,20 @@ function cmdGh() {
     out(r);
     if (!json) say(`posted ${r.posted.join(", ")}${r.folded ? " (in one body: GitHub refused a line)" : ""}: ${r.url || "(no URL returned)"}`);
   } catch (e) { die(e.message); }
+}
+
+// `lookout gh listen <pr-url>`: wait for the PR's next state change (lib/
+// github.mjs listen). Exit 0 on an event (with --json, the event as one
+// line), 2 when none came before --timeout (600s), 3 when gh cannot listen
+// here for good, 1 on any other failure. The reason goes to stderr.
+async function cmdGhListen(url) {
+  if (!url || !GH.PR_URL.test(url)) die("gh listen <https://github.com/owner/repo/pull/N> [--timeout S] [--cwd DIR] [--json]");
+  const r = await GH.listen(url, { timeoutS: Number(opt("timeout")) || 600, cwd: opt("cwd") || undefined });
+  if (r.code === GH.LISTEN.EVENT) {
+    if (flag("json")) say(JSON.stringify({ url, event: r.event ?? null }));
+    else say(`lookout gh listen: ${url} changed state`);
+  } else if (r.why) process.stderr.write(`lookout gh listen: ${r.why}\n`);
+  process.exit(r.code);
 }
 
 // `lookout gh prs <owner/repo> <n>…`: those PRs' state and checks in one
