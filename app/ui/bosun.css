@@ -15,10 +15,17 @@
   font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px;
   line-height: 15px;
 }
+/* A key inside a button is already boxed by the button. */
+.bosun button kbd, .bosun-drop button kbd { border: 0; padding: 0; }
+.bosun-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* ---- the rail ---- */
 .bosun-rail { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--strip); }
-.bosun-rail-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 6px 14px; }
+/* The same height as the header beside it, so the two run as one line. */
+.bosun-rail-head {
+  display: flex; align-items: center; gap: 6px; padding: 0 8px 0 14px; min-height: 30px; box-sizing: border-box;
+  border-bottom: 1px solid var(--line); margin-bottom: 8px;
+}
 .bosun-rail-title { flex: 1; margin: 0; font-size: var(--fs-3); font-weight: 600; color: var(--fg); }
 .bosun-fold, .bosun-fold-side {
   flex: none; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--muted);
@@ -29,9 +36,11 @@
 .bosun-fold-side { display: none; }
 .folded .bosun-rail-head, .folded .bosun-find, .folded .bosun-found, .folded .bosun-list { display: none; }
 .folded .bosun-fold-side {
-  display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; height: auto; padding: 12px 0; border-radius: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; height: auto; padding: 10px 0 14px; border-radius: 0;
+  color: var(--fg);
 }
-.bosun-fold-word { writing-mode: vertical-rl; font-size: var(--fs-2); letter-spacing: 0.04em; }
+.folded .bosun-fold-side:hover { background: var(--on); }
+.bosun-fold-word { writing-mode: vertical-rl; font-size: var(--fs-2); font-weight: 600; letter-spacing: 0.04em; }
 .bosun-fold-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .bosun-fold-dot[hidden] { display: none; }
 
@@ -42,6 +51,7 @@
 .bosun-find:focus-within { border-color: var(--accent); }
 .bosun-find-q { flex: 1; min-width: 0; border: 0; background: none; color: var(--fg); font: inherit; font-size: var(--fs-2); outline: none; }
 .bosun-find-q::placeholder { color: var(--muted); }
+.bosun-find:focus-within .bosun-find-key, .bosun-find:has(.bosun-find-q:not(:placeholder-shown)) .bosun-find-key { display: none; }
 .bosun-found { margin: -2px 14px 4px; font-size: var(--fs-1); color: var(--muted); }
 .bosun-found[hidden] { display: none; }
 
@@ -69,7 +79,9 @@
   display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 8px 10px 4px; border: 0; background: none; color: inherit;
   font: inherit; text-align: left; cursor: pointer; border-radius: 8px 8px 0 0;
 }
-.bosun-card-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Focus rings the whole card, not just its top. */
+.bosun-card-main:focus-visible { outline: none; }
+.bosun-card:has(.bosun-card-main:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bosun-card-top { display: flex; gap: 6px; align-items: baseline; color: var(--muted); font-size: var(--fs-1); min-width: 0; }
 .bosun-time { flex: none; font-variant-numeric: tabular-nums; }
 .bosun-from { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
@@ -82,6 +94,10 @@
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .bosun-first { color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.bosun-first.none { font-style: italic; }
+.bosun-why {
+  font-size: var(--fs-1); color: var(--accent-t); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* Chips on the left, Re-check on the right: one line. */
 .bosun-card-foot { display: flex; align-items: center; gap: 6px; padding: 2px 6px 6px 10px; min-height: 26px; }
 .bosun-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
@@ -93,13 +109,14 @@
 .bosun-chip.k-jira { color: var(--ef-text-blue); }
 .bosun-chip.k-sql, .bosun-chip.k-dd, .bosun-chip.k-splunk, .bosun-chip.k-dash { color: var(--ef-text-purple); }
 .bosun-chip.k-ws { color: var(--ef-text-orange); }
+/* A quiet outlined button at rest, its colour on hover. */
 .bosun-act {
-  flex: none; font: inherit; font-size: var(--fs-1); border: 1px solid transparent; border-radius: 6px; background: none; color: var(--muted);
-  padding: 3px 8px; cursor: pointer;
+  flex: none; font: inherit; font-size: var(--fs-1); border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--muted);
+  padding: 2px 8px; min-height: 24px; cursor: pointer;
 }
-.bosun-card:hover .bosun-act:not(:disabled), .bosun-act:focus-visible { color: var(--accent-t); border-color: var(--line); }
-.bosun-act:hover:not(:disabled) { background: var(--on); }
-.bosun-act:disabled { opacity: 0.5; cursor: not-allowed; }
+.bosun-card:hover .bosun-act:not([aria-disabled="true"]), .bosun-act:focus-visible { color: var(--accent-t); border-color: var(--line2); }
+.bosun-act:hover:not([aria-disabled="true"]) { background: var(--on); }
+.bosun-act[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; border-style: dashed; }
 .bosun-act:focus-visible, .bosun-newer:focus-visible, .bosun-older:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .bosun-pending {
@@ -107,6 +124,15 @@
   font-size: var(--fs-1); color: var(--muted); line-height: 1.4;
 }
 .bosun-pending.s-failed { color: var(--bad-t); }
+.bosun-pending.s-off { color: var(--muted); }
+.bosun-pending-t { flex: 1; min-width: 0; }
+.bosun-inline {
+  flex: none; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-1); padding: 1px 6px; margin: -1px 0;
+  border: 1px solid var(--line); border-radius: 5px; background: none; color: var(--accent-t); cursor: pointer;
+}
+.bosun-inline.x { color: var(--muted); padding: 2px 4px; }
+.bosun-inline:hover { background: var(--on); }
+.bosun-inline:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bosun-spin {
   flex: none; width: 9px; height: 9px; margin-top: 2px; border-radius: 50%; border: 1.5px solid var(--line2); border-top-color: var(--accent);
   animation: bosun-spin 0.9s linear infinite;
@@ -118,9 +144,10 @@
 }
 .bosun-newer:hover { background: var(--on); }
 .bosun-older {
-  margin: 4px 0 0; padding: 6px 8px; border: 1px dashed var(--line2); border-radius: 8px; background: none; color: var(--muted);
+  margin: 4px 0 0; padding: 4px 10px; min-height: 28px; border: 1px solid var(--line2); border-radius: 7px; background: none; color: var(--fg);
   font: inherit; font-size: var(--fs-2); cursor: pointer;
 }
+.bosun-empty .bosun-older { margin: 4px 0 0; }
 .bosun-older:hover { color: var(--fg); background: var(--on); }
 
 /* ---- the terminal's side, and the header both places share ---- */
@@ -153,28 +180,35 @@
 .bosun-note { margin: 14vh auto 0; max-width: 440px; text-align: center; color: var(--muted); padding: 0 16px; line-height: 1.5; }
 .bosun-note[hidden] { display: none; }
 .bosun-note-t { color: var(--fg); font-weight: 600; }
+.bosun-note-how code { font: var(--fs-1) var(--ef-mono); padding: 0 4px; border-radius: 4px; background: var(--on); }
 .bosun-err { font: var(--fs-1) var(--ef-mono); color: var(--bad-t); overflow-wrap: anywhere; }
 
 /* ---- the reading pane: over the terminal, which stays live beneath ---- */
 .bosun-reader { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; background: var(--bg); }
 .bosun-reader[hidden] { display: none; }
-.bosun-reader-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.bosun-reader-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .bosun-bar-gap { flex: 1; }
+/* One button size across the tab: the reader's bar, the drop-down's header, Show older. */
 .bosun-back, .bosun-tool {
-  display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 4px 10px; border-radius: 6px;
-  border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 3px 10px; min-height: 28px;
+  box-sizing: border-box; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
 }
 .bosun-back { border-color: transparent; background: none; padding-left: 6px; }
-.bosun-back:hover, .bosun-tool:hover:not(:disabled) { background: var(--on); }
+.bosun-back:hover, .bosun-tool:hover:not([aria-disabled="true"]) { background: var(--on); }
 .bosun-tool.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
-.bosun-tool.primary:hover:not(:disabled) { background: var(--primary); filter: brightness(1.08); }
-.bosun-tool:disabled { opacity: 0.55; cursor: not-allowed; }
-.bosun-tool.small { padding: 3px 6px; flex: none; align-self: flex-start; }
+.bosun-tool.primary:hover:not([aria-disabled="true"]) { background: var(--primary); filter: brightness(1.08); }
+/* A Re-check that can't go out is an outline, never the filled primary. */
+.bosun-tool[aria-disabled="true"], .bosun-tool.primary[aria-disabled="true"] {
+  background: none; color: var(--muted); border: 1px dashed var(--line2); cursor: not-allowed;
+}
+.bosun-tool.small { padding: 1px 6px; min-height: 22px; flex: none; font-size: var(--fs-1); }
 .bosun-tool.done { color: var(--good-t); border-color: var(--good); }
+.bosun-tool.bad { color: var(--bad-t); border-color: var(--bad); }
 .bosun-back:focus-visible, .bosun-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .bosun-reader-body { flex: 1; min-height: 0; overflow-y: auto; outline: none; }
 .bosun-reader-col { max-width: 760px; margin: 0 auto; padding: 22px 28px 48px; }
 .bosun-reader-meta { margin: 0 0 4px; font-size: var(--fs-2); color: var(--muted); }
+.bosun-age { color: var(--fg); }
 .bosun-reader-q { margin: 0 0 14px; font-size: var(--fs-5, 18px); line-height: 1.3; color: var(--fg); }
 .bosun-reader-col > .bosun-pending, .bosun-reader-col > .bosun-newer {
   border: 1px solid var(--line); border-radius: 8px; margin: 0 0 14px; font-size: var(--fs-2);
@@ -197,7 +231,7 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 .bosun-reader-src { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line); }
 .bosun-reader-h { margin: 0 0 8px; font-size: var(--fs-1); font-weight: 600; color: var(--section); text-transform: uppercase; letter-spacing: 0.06em; }
 .bosun-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.bosun-src-row { display: grid; grid-template-columns: 52px minmax(0, auto) minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: var(--fs-2); }
+.bosun-src-row { display: grid; grid-template-columns: 44px minmax(0, auto) minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: var(--fs-2); }
 .bosun-src-row > .bosun-chip { justify-self: start; }
 .bosun-src {
   display: inline-flex; align-items: center; gap: 4px; min-width: 0; text-decoration: none;
@@ -207,7 +241,9 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 .bosun-src-where { color: var(--muted); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .bosun-src-ref { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .bosun-src-ref .bosun-src-name { color: var(--fg); }
-.bosun-src-ref code { align-self: flex-start; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.bosun-src-val { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.bosun-src-ref code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.bosun-src { text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
 
 /* ---- the ⌘B drop-down: slides from under the strip onto the top 60% ---- */
 .bosun-drop {
@@ -219,8 +255,8 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 .bosun-drop[hidden], .bosun-dim[hidden] { display: none; }
 .bosun-drop .bosun-head { background: var(--strip); }
 .bosun-drop-btn {
-  flex: none; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 2px 8px; border-radius: 6px;
-  border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
+  flex: none; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 2px 10px; min-height: 26px;
+  box-sizing: border-box; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
 }
 .bosun-drop-btn:hover { background: var(--on); }
 .bosun-drop-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -261,8 +297,11 @@ body[data-bosun="needs"] .tab[data-tab="bosun"]::after { width: 7px; height: 7px
   .panel.bosun { grid-template-columns: 200px minmax(0, 1fr); }
   .bosun-hint { display: none; }
   .bosun-reader-col { padding: 16px 14px 32px; }
-  .bosun-src-row { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .bosun-src-row { grid-template-columns: 44px minmax(0, 1fr); }
   .bosun-src-where { grid-column: 2; }
+  .bosun-src-ref { grid-column: 2; }
+  /* The bar keeps Re-check in reach: Copy goes to its icon. */
+  .bosun-reader-bar .bosun-tool:not(.primary) .bosun-tool-t, .bosun-reader-bar .bosun-back kbd { display: none; }
 }
 
 /* ---- Ask the Bosun (bosun_ask.ts), on Radar rows and Lookout reviews ---- */

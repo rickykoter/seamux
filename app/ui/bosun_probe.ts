@@ -2,7 +2,7 @@
 // rail's days and cards, the whistle's mood and what ⌘B does. A pure
 // module, which Node runs as TypeScript.
 import {
-  askText, card, chipTitle, chips, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matches,
+  ago, askText, card, chipTitle, chips, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matchedWhere, matches,
   mdBlocks, mdInline, mood, newerAnswers, olderDays, pendingNote, rail, recheck, reviewAsk, sameQuestion, sourceRow, sourceTarget, tilde, workspaceAsk,
   type Entry, type LogPage,
 } from "./bosun_model.ts";
@@ -81,6 +81,11 @@ ok("a URL source opens as a URL", JSON.stringify(sourceTarget({ kind: "gh", ref:
 ok("a file:line source opens the file at its line", JSON.stringify(sourceTarget({ kind: "file", ref: "/u/code/r/src/a.rs:42", label: "" })) === '{"path":"/u/code/r/src/a.rs","line":42}');
 ok("a file:line:col source keeps its line", JSON.stringify(sourceTarget({ kind: "file", ref: "/u/code/r/a.rs:42:7", label: "" })) === '{"path":"/u/code/r/a.rs","line":42}');
 ok("a query or ticket key opens nowhere", sourceTarget({ kind: "sql", ref: "select 1", label: "" }) === null && sourceTarget({ kind: "jira", ref: "PROJ-9", label: "" }) === null);
+ok("a file from the code root opens under the root", JSON.stringify(sourceTarget({ kind: "file", ref: "shop/app/retry.rb:42", label: "" }, "/Users/me/code/")) === '{"path":"/Users/me/code/shop/app/retry.rb","line":42}');
+ok("a relative file with no root known opens nowhere", sourceTarget({ kind: "file", ref: "shop/app/retry.rb:42", label: "" }) === null);
+ok("a command or a query with a slash is not taken for a file", sourceTarget({ kind: "command", ref: "gh pr list -R acme/shop", label: "" }, "/r") === null && sourceTarget({ kind: "query", ref: "a/b", label: "" }, "/r") === null);
+ok("a command has its own label", kindLabel("command").label === "cmd" && kindLabel("command").name === "Command");
+ok("a question the person typed reads as theirs", fromLabel("person") === "you");
 
 // ---- Ask the Bosun ----
 const w = workspaceAsk({
@@ -112,6 +117,12 @@ ok("the filter finds words in the question", matches(fe, "proj-311"));
 ok("…and in the answer, the asker and a source", matches(fe, "815") && matches(fe, "checkout") && matches(fe, "orders board") && matches(fe, "datadog"));
 ok("every word must match", matches(fe, "blocked 815") && !matches(fe, "blocked latency"));
 ok("an empty filter matches all", matches(fe, "   "));
+ok("a word matches only at the start of a word", !matches(e("w", "2026-11-22T10:00:00Z", "q", "it was added"), "dd") && matches(e("w", "2026-11-22T10:00:00Z", "q", "the dd board"), "dd"));
+ok("a match the card shows needs no reason", matchedWhere(fe, "blocked") === "");
+ok("a match in a source says which", matchedWhere(fe, "orders") === "source: dd orders board", matchedWhere(fe, "orders"));
+ok("a match deep in the answer quotes its line", matchedWhere(e("m", "2026-11-22T10:00:00Z", "q?", "first line\nsecond: retry cap is 5"), "retry") === "answer: second: retry cap is 5");
+const now = at("2026-11-22T12:00:00Z");
+ok("ages read in plain words", ago(now - 20e3, now) === "just now" && ago(now - 12 * 60e3, now) === "12 min ago" && ago(now - 3 * 3600e3, now) === "3 h ago" && ago(now - 2 * 86400e3, now) === "2 days ago");
 const fr = filterRail(r, "PROJ");
 ok("the filter keeps matching cards in their days and counts them", fr.shown === 1 && fr.total === 3 && fr.days.length === 1 && fr.days[0].cards[0].id === "t1", fr);
 ok("no words: the rail as it was", filterRail(r, "").shown === 3 && filterRail(r, "").days === r);
@@ -131,6 +142,7 @@ ok("an older answer points at the newest one to the same question", nw.get("o1")
 ok("the newest answer and a lone one have nothing newer", !nw.has("o2") && !nw.has("x1"));
 ok("a re-check lands on the answer logged after it was sent", landed("Is CI green?", at("2026-11-22T08:30:00Z"), asked) === "o2");
 ok("a re-check waits while nothing newer is logged", landed("Is CI green?", at("2026-11-22T09:10:00Z"), asked) === null);
+ok("a re-check lands by its queue id, however the Bosun worded the question", landed("Is CI green?", at("2026-11-22T09:10:00Z"), [...asked, e("q7", "2026-11-22T09:40:00Z", "CI status on main", "green")], "q7") === "q7");
 ok("a waiting re-check says why it waits", pendingNote(true, "needs_input").includes("answer the Bosun's prompt") && pendingNote(false, "").includes("once it is running") && pendingNote(true, "idle").includes("lands at the top"));
 
 // ---- the answer's text ----

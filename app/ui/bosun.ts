@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TermSlot } from "./native";
 import { follow, openFile } from "./panelinks";
 import {
-  card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, kindLabel, landed, mdBlocks, mood, newerAnswers, olderDays,
+  ago, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, kindLabel, landed, matchedWhere, mdBlocks, mood, newerAnswers, olderDays,
   pendingNote, rail, recheck, sourceRow, sourceTarget, tilde,
   type Card, type Chip, type Entry, type LogPage, type Mood, type Span, type Status,
 } from "./bosun_model";
@@ -54,7 +54,7 @@ function button(cls: string, text = "", title = ""): HTMLButtonElement {
 
 /** Small line icons, drawn in currentColor: a chevron, a cross, an arrow
  *  leaving a box (a web page), a page (a file), a magnifier, two sheets (copy). */
-type Icon = "left" | "right" | "x" | "web" | "file" | "find" | "copy" | "up";
+type Icon = "left" | "right" | "x" | "web" | "file" | "find" | "copy" | "up" | "check";
 function icon(name: Icon, size = 12): SVGSVGElement {
   const s = svg("svg", { viewBox: "0 0 12 12", width: size, height: size, class: `bosun-ico i-${name}`, "aria-hidden": "true" });
   const line = { fill: "none", stroke: "currentColor", "stroke-width": 1.3, "stroke-linecap": "round", "stroke-linejoin": "round" };
@@ -67,6 +67,7 @@ function icon(name: Icon, size = 12): SVGSVGElement {
     file: ["M3 1.5h4l2.5 2.5v6.5H3z", "M7 1.5V4h2.5"],
     find: ["M5.2 8.6a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8Z", "M7.7 7.7 10.5 10.5"],
     copy: ["M4 4h6v6.5H4z", "M2 8V1.5h6"],
+    check: ["M2.5 6.3 5 8.8l4.5-5.3"],
   };
   for (const p of d[name]) svg("path", { d: p, ...line }, s);
   return s;
@@ -92,8 +93,12 @@ export function whistle(): SVGSVGElement {
   return s;
 }
 
-/** A re-check on its way: being sent, sent and waiting for its answer, or refused. */
-type Pending = { state: "sending" | "waiting" | "failed"; since: number; question: string; err?: string };
+/** A re-check on its way: being sent, sent and waiting for its answer (by
+ *  its queue id), or stopped, with what to say about it. */
+type Pending = { state: "sending" | "waiting" | "failed"; since: number; question: string; qid?: string; err?: string };
+
+/** How long a re-check may take to reach the Bosun's queue before it counts as failed. */
+const SEND_MS = 15000;
 
 /** The ⌘4 tab and the ⌘B drop-down: one Bosun, two places to see it. */
 export class BosunView {
@@ -107,6 +112,8 @@ export class BosunView {
   private railList = el("div", "bosun-list");
   private find = el("input", "bosun-find-q");
   private found = el("p", "bosun-found");
+  /** Said to a screen reader, not shown: a copy's result. */
+  private live = el("p", "bosun-live");
   private foldDot = el("span", "bosun-fold-dot");
   private tabHost = el("div", "bosun-host");
   private tabHead = el("div", "bosun-head");
@@ -161,7 +168,7 @@ export class BosunView {
     fold.addEventListener("click", () => this.fold(!this.panel.classList.contains("folded")));
     // Folded, the rail is a strip: its name on its side, and a dot when an answer is new.
     const side = button("bosun-fold-side", "", "Show the answer rail");
-    side.append(el("span", "bosun-fold-word", "Answers"), this.foldDot);
+    side.append(icon("right"), el("span", "bosun-fold-word", "Answers"), this.foldDot);
     side.addEventListener("click", () => this.fold(false));
     railHead.append(title, fold);
 
@@ -182,7 +189,9 @@ export class BosunView {
         this.railList.querySelector<HTMLElement>(".bosun-card-main")?.focus();
       }
     });
-    findRow.append(icon("find"), this.find);
+    const slash = el("kbd", "bosun-find-key", "/");
+    slash.title = "Press / on this tab to filter";
+    findRow.append(icon("find"), this.find, slash);
     this.found.setAttribute("aria-live", "polite");
     this.rail.append(railHead, side, findRow, this.found, this.railList);
     this.rail.setAttribute("aria-label", "The Bosun's answers");
@@ -198,7 +207,8 @@ export class BosunView {
     this.reader.setAttribute("aria-label", "The answer");
     this.tabHost.append(this.reader);
     main.append(this.tabHead, this.tabHost);
-    panel.append(this.rail, main);
+    this.live.setAttribute("aria-live", "polite");
+    panel.append(this.rail, main, this.live);
     // Esc in the reading pane goes back to the terminal (not to main.ts, which would hide the window).
     panel.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || e.defaultPrevented || !this.reading) return;
@@ -214,6 +224,7 @@ export class BosunView {
 
     // The drop-down: over the top of the stage, the rest dimmed.
     this.drop.setAttribute("role", "dialog");
+    this.drop.setAttribute("aria-modal", "true");
     this.drop.setAttribute("aria-label", "The Bosun");
     this.drop.hidden = true;
     this.dim.hidden = true;
@@ -280,6 +291,11 @@ export class BosunView {
 
   /** The tab shows (true) or another view does. */
   setShown(on: boolean): void {
+    // Leaving the tab: what was new there has been seen.
+    if (!on && this.tabShown) {
+      this.fresh.clear();
+      this.railKey = "";
+    }
     this.tabShown = on;
     if (on && this.dropOpen) this.setDrop(false);
     if (on) this.ask();
@@ -304,6 +320,8 @@ export class BosunView {
   setDrop(open: boolean): void {
     if (open === this.dropOpen) return;
     this.dropOpen = open;
+    // What lies under the drop-down takes no keys or clicks while it is down.
+    for (const c of this.drop.parentElement?.children ?? []) if (c !== this.drop && c !== this.dim) (c as HTMLElement).inert = open;
     if (open) {
       this.before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       this.drop.hidden = this.dim.hidden = false;
@@ -367,6 +385,14 @@ export class BosunView {
   /** The tab's dot: working, or waiting on the person. */
   private tabDot(state: string): void {
     document.body.dataset.bosun = state === "working" ? "working" : state === "needs_input" ? "needs" : "";
+    // The dot says it in words too, for a tooltip and a screen reader.
+    const tab = document.querySelector<HTMLElement>('.tab[data-tab="bosun"]');
+    if (tab) {
+      const said = state === "working" ? "Bosun: working" : state === "needs_input" ? "Bosun: needs you" : "";
+      if (said) tab.setAttribute("aria-label", said);
+      else tab.removeAttribute("aria-label");
+      tab.title = said || "Bosun (⌘4)";
+    }
   }
 
   private async read(): Promise<void> {
@@ -401,20 +427,23 @@ export class BosunView {
     for (const p of more) if (p) this.pages.set(p.day, p);
 
     const all = this.entries();
-    const ids = all.map((e) => e.id);
-    const fresh = freshIds(this.seen, ids);
+    // New answers land only in today's log: an older day read for the first
+    // time (Show older, a filter) holds nothing new, only things not yet seen.
+    const fresh = freshIds(this.seen, first.entries.map((e) => e.id));
     if (fresh.length) this.trillUntil = performance.now() + TRILL_MS;
     for (const id of fresh) this.fresh.add(id);
-    this.seen = new Set([...(this.seen ?? []), ...ids]);
+    this.seen = new Set([...(this.seen ?? []), ...all.map((e) => e.id)]);
     // A waiting re-check whose answer is logged: the answer is new, and comes into view.
     for (const [id, p] of this.pending) {
       if (p.state !== "waiting") continue;
-      const got = landed(p.question, p.since, all);
+      const got = landed(p.question, p.since, all, p.qid);
       if (got && got !== id) {
         this.pending.delete(id);
         this.fresh.add(got);
         this.scrollTo = got;
-      } else if (Date.now() - p.since > PENDING_MS) this.pending.delete(id);
+      } else if (Date.now() - p.since > PENDING_MS) {
+        Object.assign(p, { state: "failed", err: "No new answer was logged in 30 minutes." });
+      }
     }
   }
 
@@ -487,8 +516,11 @@ export class BosunView {
     if (!s.tmux) {
       this.note.append(
         el("p", "bosun-note-t", "The Bosun needs the tmux backend."),
-        el("p", "", `It runs on the app's own tmux sessions, and this app is on ${s.backend || "another backend"}. Its past answers still show on the left. To run it, start the app with SEAMUX_BACKEND=tmux.`),
+        el("p", "", `It runs on the app's own tmux sessions, and this app is on ${s.backend || "another backend"}. ${this.dropOpen ? "Its past answers are on the Bosun tab (⌘4)." : "Its past answers still show on the left."}`),
       );
+      const how = el("p", "bosun-note-how");
+      how.append("To run it, start the app on the tmux backend: ", el("code", "", "SEAMUX_BACKEND=tmux"), ".");
+      this.note.append(how);
       return;
     }
     if (this.ensuring) {
@@ -510,6 +542,7 @@ export class BosunView {
   private canAsk(): { ok: boolean; why: string } {
     if (!this.status) return { ok: false, why: "Looking for the Bosun…" };
     if (!this.status.tmux) return { ok: false, why: "Re-check needs the Bosun, which runs on the tmux backend" };
+    if (this.ensureErr) return { ok: false, why: "The Bosun didn't start: use Try again on the right first" };
     return { ok: true, why: "Ask the Bosun the same question again; its new answer lands at the top" };
   }
 
@@ -541,7 +574,7 @@ export class BosunView {
     if (q && !shown) {
       const p = el("div", "bosun-empty");
       p.append(el("p", "", `No answers match “${q}”.`));
-      const clear = button("bosun-act", "Clear the filter");
+      const clear = button("bosun-older", "Clear the filter");
       clear.addEventListener("click", () => {
         this.find.value = "";
         this.setQuery("");
@@ -613,23 +646,29 @@ export class BosunView {
     open.type = "button";
     open.dataset.act = "open";
     open.setAttribute("aria-pressed", String(reading));
-    open.title = reading ? "Showing in the reading pane" : "Read the answer and its sources";
+    open.title = reading ? "Close the reading pane" : "Read the answer and its sources";
     const top = el("span", "bosun-card-top");
     top.append(el("span", "bosun-time", c.time));
     if (c.from) top.append(el("span", "bosun-from", c.from));
     if (fresh) top.append(el("span", "bosun-new", "new"));
     const q = el("span", "bosun-q", c.question);
+    q.title = c.question;
     open.append(top, q);
-    if (c.first) open.append(el("span", "bosun-first", c.first));
+    open.append(c.first ? el("span", "bosun-first", c.first) : el("span", "bosun-first none", "No answer text logged."));
+    // While filtering, say where a card matched when what it shows doesn't.
+    const why = this.query.trim() ? matchedWhere(c.entry, this.query) : "";
+    if (why) open.append(el("span", "bosun-why", `Matched in ${why}`));
     a.append(open);
 
     const foot = el("div", "bosun-card-foot");
     foot.append(this.chipRow(c.chips));
-    foot.append(this.recheckButton(c.entry, "bosun-act"));
+    // Where the Bosun can never run, Re-check is left off the cards (the reading pane says why).
+    if (this.status?.tmux !== false) foot.append(this.recheckButton(c.entry, "bosun-act"));
     a.append(foot);
     const line = this.pendingLine(c.entry);
     if (line) a.append(line);
-    if (newer) a.append(this.newerLink(newer));
+    // A loop asks the same thing on purpose: its older runs don't each point at the newest.
+    if (newer && !c.entry.asker.startsWith("loop:")) a.append(this.newerLink(newer));
     open.addEventListener("click", () => (reading ? this.closeReader(false) : this.openReader(c.entry)));
     return a;
   }
@@ -641,21 +680,42 @@ export class BosunView {
     const b = button(cls, busy ? "Re-checking" : p?.state === "failed" ? "Retry" : "Re-check");
     b.dataset.act = "recheck";
     b.title = busy ? "Already asked again; the new answer lands at the top" : can.why;
-    b.disabled = busy || !can.ok;
-    b.addEventListener("click", () => void this.recheck(e));
+    // aria-disabled, not disabled: the button keeps focus across a redraw, and its reason stays reachable.
+    const off = busy || !can.ok;
+    b.setAttribute("aria-disabled", String(off));
+    b.addEventListener("click", () => {
+      if (!off) void this.recheck(e);
+    });
     return b;
   }
 
-  /** A re-check's line on its card: on its way, waiting, or refused (with why). */
+  /** A re-check's line on its card: on its way, waiting (and why), or stopped (and why, with a dismiss). */
   private pendingLine(e: Entry): HTMLElement | null {
     const p = this.pending.get(e.id);
     if (!p) return null;
-    const line = el("p", `bosun-pending s-${p.state}`);
+    const line = el("div", `bosun-pending s-${p.state}`);
     line.setAttribute("role", "status");
-    if (p.state === "failed") line.textContent = `Couldn't re-check: ${p.err ?? "the Bosun refused it"}.`;
+    const text = el("span", "bosun-pending-t");
+    if (p.state === "failed") text.textContent = p.err ?? "Couldn't re-check.";
     else {
       line.append(el("span", "bosun-spin"));
-      line.append(p.state === "sending" ? "Sending to the Bosun…" : pendingNote(!!this.status?.live, this.status?.state));
+      text.textContent = p.state === "sending" ? "Sending to the Bosun…" : pendingNote(!!this.status?.live, this.status?.state);
+    }
+    line.append(text);
+    // Waiting on the person's answer while the reading pane covers the prompt: a way to it.
+    if (p.state === "waiting" && this.status?.state === "needs_input" && this.reading) {
+      const go = button("bosun-inline", "Show the prompt");
+      go.addEventListener("click", () => this.closeReader(true));
+      line.append(go);
+    }
+    if (p.state === "failed") {
+      const x = button("bosun-inline x", "", "Dismiss");
+      x.append(icon("x", 10));
+      x.addEventListener("click", () => {
+        this.pending.delete(e.id);
+        this.redraw();
+      });
+      line.append(x);
     }
     return line;
   }
@@ -663,7 +723,8 @@ export class BosunView {
   private newerLink(id: string): HTMLElement {
     const b = button("bosun-newer", "", "Show the newer answer to this question");
     b.dataset.act = "newer";
-    b.append(icon("up", 10), document.createTextNode("Newer answer"));
+    const n = this.entries().find((x) => x.id === id);
+    b.append(icon("up", 10), document.createTextNode(n ? `Newer answer · ${ago(n.at, Date.now())}` : "Newer answer"));
     b.addEventListener("click", () => {
       const e = this.entries().find((x) => x.id === id);
       if (!e) return;
@@ -676,18 +737,25 @@ export class BosunView {
   private async recheck(e: Entry): Promise<void> {
     if (!this.canAsk().ok) return;
     // Its answer is logged after this moment; a little slack for the two clocks.
-    this.pending.set(e.id, { state: "sending", since: Date.now() - 5000, question: e.question });
+    const mine: Pending = { state: "sending", since: Date.now() - 5000, question: e.question };
+    this.pending.set(e.id, mine);
     this.redraw();
+    let slow = 0;
     try {
-      await invoke<string>("bosun_send", { text: recheck(e) });
-      const p = this.pending.get(e.id);
-      if (p) p.state = "waiting";
+      const qid = await Promise.race([
+        invoke<string>("bosun_send", { text: recheck(e) }),
+        new Promise<never>((_, no) => (slow = window.setTimeout(() => no("timeout"), SEND_MS))),
+      ]);
+      Object.assign(mine, { state: "waiting", qid });
     } catch (err) {
-      const p = this.pending.get(e.id);
-      if (p) Object.assign(p, { state: "failed", err: String(err) });
+      const why = err === "timeout" ? "The Bosun's queue didn't answer in 15 seconds." : `Couldn't send it: ${String(err).replace(/\.$/, "")}.`;
+      Object.assign(mine, { state: "failed", err: why });
       console.error("bosun re-check", err);
+    } finally {
+      window.clearTimeout(slow);
     }
-    this.redraw();
+    // Only if this is still the re-check on that card (a dismiss or a retry may have replaced it).
+    if (this.pending.get(e.id) === mine) this.redraw();
   }
 
   private redraw(): void {
@@ -704,13 +772,12 @@ export class BosunView {
     this.reader.querySelector<HTMLElement>(".bosun-reader-body")?.focus({ preventScroll: true });
   }
 
-  /** Back to the terminal; `focus` puts the keys there too. */
+  /** Back to the terminal; `focus` puts the keys there too (Esc, the Terminal button). */
   private closeReader(focus: boolean): void {
     if (!this.reading) return;
-    const id = this.reading.id;
     this.reading = null;
     this.redraw();
-    if (focus) this.railList.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"] .bosun-card-main`)?.focus({ preventScroll: true });
+    if (focus) this.term.focus();
   }
 
   /** The reading pane, drawn again only when what it shows changed (so a poll leaves a selection alone). */
@@ -735,7 +802,7 @@ export class BosunView {
     back.append(icon("left"), document.createTextNode("Terminal"), el("kbd", "", "Esc"));
     back.addEventListener("click", () => this.closeReader(true));
     const copy = button("bosun-tool", "", "Copy the answer as text");
-    copy.append(icon("copy"), document.createTextNode("Copy"));
+    copy.append(icon("copy"), el("span", "bosun-tool-t", "Copy"));
     copy.addEventListener("click", () => void this.copy(copy, e.answer));
     bar.append(back, el("span", "bosun-bar-gap"), copy, this.recheckButton(e, "bosun-tool primary"));
 
@@ -745,10 +812,14 @@ export class BosunView {
     const page = [...this.pages.values()].find((p) => p.entries.some((x) => x.id === e.id));
     const c = toCard(e);
     const meta = el("p", "bosun-reader-meta");
-    meta.textContent = [page ? dayLabel(page.day, page.today) : "", c.time, c.from ? `asked by ${c.from}` : ""].filter(Boolean).join(" · ");
+    meta.append([page ? dayLabel(page.day, page.today) : "", c.time].filter(Boolean).join(" "));
+    meta.append(el("span", "bosun-age", ` (${ago(e.at, Date.now())})`));
+    if (c.from) meta.append(` · asked by ${c.from}`);
     col.append(meta, el("h2", "bosun-reader-q", e.question.trim()));
     const line = this.pendingLine(e);
     if (line) col.append(line);
+    const can = this.canAsk();
+    if (!can.ok && this.status) col.append(el("p", "bosun-pending s-off", `${can.why}.`));
     if (newer) col.append(this.newerLink(newer));
     col.append(this.answerText(e.answer));
 
@@ -809,12 +880,13 @@ export class BosunView {
     const k = el("span", `bosun-chip k-${label}`, label);
     k.title = name;
     li.append(k);
-    const row = sourceRow(s);
-    const t = sourceTarget(s);
+    const root = this.status?.root ?? "";
+    const row = sourceRow(s, root);
+    const t = sourceTarget(s, root);
     if (t) {
       const link = el("a", "bosun-src");
       link.href = "url" in t ? t.url : "#";
-      link.title = "url" in t ? `Open ${t.url}` : `Open ${tilde(s.ref)} (⇧-click: in the editor)`;
+      link.title = "url" in t ? `Open ${t.url}` : `Open ${tilde(t.path)}${t.line ? `:${t.line}` : ""} (⇧-click: in the editor)`;
       link.append(el("span", "bosun-src-name", row.name), icon(row.to === "web" ? "web" : "file", 11));
       link.addEventListener("click", (ev) => {
         ev.preventDefault();
@@ -827,29 +899,37 @@ export class BosunView {
       // A ticket key, a query, a workspace: shown whole, with a copy.
       const box = el("div", "bosun-src-ref");
       if (s.label && s.label !== s.ref) box.append(el("span", "bosun-src-name", s.label));
-      box.append(el("code", "", s.ref));
-      li.append(box);
-      const cp = button("bosun-tool small", "", `Copy ${name.toLowerCase()}`);
-      cp.append(icon("copy"));
+      // The copy sits right after what it copies.
+      const val = el("span", "bosun-src-val");
+      const short = s.ref.length > 24 ? `${s.ref.slice(0, 23)}…` : s.ref;
+      const cp = button("bosun-tool small", "", `Copy “${short}”`);
+      cp.append(icon("copy"), el("span", "bosun-tool-t", "Copy"));
       cp.addEventListener("click", () => void this.copy(cp, s.ref));
-      li.append(cp);
+      val.append(el("code", "", s.ref), cp);
+      box.append(val);
+      li.append(box);
     }
     return li;
   }
 
+  /** Copy, and say so on the button itself for a moment: a check and "Copied", or "Couldn't copy". */
   private async copy(b: HTMLButtonElement, text: string): Promise<void> {
-    const was = b.title;
+    const was = [...b.childNodes];
+    let ok = true;
     try {
       await navigator.clipboard.writeText(text);
-      b.classList.add("done");
-      b.title = "Copied";
     } catch {
-      b.title = "Couldn't copy";
+      ok = false;
     }
+    b.classList.toggle("done", ok);
+    b.classList.toggle("bad", !ok);
+    b.replaceChildren(icon(ok ? "check" : "x"), el("span", "bosun-tool-t", ok ? "Copied" : "Couldn't copy"));
+    this.live.textContent = ok ? "Copied." : "Couldn't copy.";
     window.setTimeout(() => {
-      b.classList.remove("done");
-      b.title = was;
-    }, 1200);
+      b.classList.remove("done", "bad");
+      b.replaceChildren(...was);
+      this.live.textContent = "";
+    }, 1400);
   }
 
   /** ↑/↓ move between cards, Enter opens one (the buttons' own). */

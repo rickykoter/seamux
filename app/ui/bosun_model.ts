@@ -57,13 +57,13 @@ export function firstLine(answer: string, max = 120): string {
 const KIND_LABEL: Record<string, string> = {
   file: "file", github: "gh", gh: "gh", pr: "gh", jira: "jira", ticket: "jira",
   snowflake: "sql", query: "sql", sql: "sql", datadog: "dd", dashboard: "dash", splunk: "splunk",
-  workspace: "ws", url: "link", link: "link",
+  workspace: "ws", url: "link", link: "link", command: "cmd", cmd: "cmd",
 };
 
 /** The full name behind each short label, for its tooltip. */
 const LABEL_NAME: Record<string, string> = {
   file: "File", gh: "GitHub", jira: "Jira", sql: "SQL query", dd: "Datadog", dash: "Dashboard",
-  splunk: "Splunk search", ws: "Workspace", link: "Link",
+  splunk: "Splunk search", ws: "Workspace", link: "Link", cmd: "Command",
 };
 
 /** A source kind's short label ("gh") and full name ("GitHub"): the chip and the source list say the same. */
@@ -102,6 +102,7 @@ export function fromLabel(asker: string): string {
   const a = asker.trim();
   if (!a) return "";
   if (a === "app") return "the app";
+  if (a === "person") return "you";
   if (a.startsWith("loop:")) return `${a.slice(5)} loop`;
   if (a.startsWith("ask:")) return a.slice(4);
   return a;
@@ -145,15 +146,52 @@ export function sameQuestion(q: string): string {
   return q.toLowerCase().replace(/\s+/g, " ").trim().replace(/[\s?.!]+$/, "");
 }
 
-/** Whether an answer matches the filter: every word of it, anywhere in the
- *  question, the answer, who asked, or a source's label, ref or kind. */
+/** The filter's words, each to be found at the start of a word (so "dd" does not find "added"). */
+function wordsOf(query: string): RegExp[] {
+  return query
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => new RegExp(`(?:^|[^\\p{L}\\p{N}])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "iu"));
+}
+
+/** Whether an answer matches the filter: every word of it, at the start of
+ *  a word in the question, the answer, who asked, or a source's label, ref or kind. */
 export function matches(e: Entry, query: string): boolean {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = wordsOf(query);
   if (!words.length) return true;
-  const hay = [e.question, e.answer, e.asker, fromLabel(e.asker), ...(e.sources ?? []).flatMap((s) => [s.label, s.ref, s.kind, kindLabel(s.kind).name])]
-    .join("\n")
-    .toLowerCase();
-  return words.every((w) => hay.includes(w));
+  const hay = [e.question, e.answer, e.asker, fromLabel(e.asker), ...(e.sources ?? []).flatMap((s) => [s.label, s.ref, s.kind, kindLabel(s.kind).name])].join("\n");
+  return words.every((w) => w.test(hay));
+}
+
+/** Why a card matched, when the card does not show it: the first source or
+ *  answer line holding a word that its question and first line lack. "" when
+ *  what shows is reason enough. */
+export function matchedWhere(e: Entry, query: string): string {
+  const words = wordsOf(query);
+  const shown = `${e.question}\n${firstLine(e.answer)}\n${fromLabel(e.asker)}`;
+  const hidden = words.filter((w) => !w.test(shown));
+  if (!hidden.length) return "";
+  for (const s of e.sources ?? []) {
+    const t = `${s.label} ${s.ref}`;
+    if (hidden.some((w) => w.test(t) || w.test(s.kind) || w.test(kindLabel(s.kind).name))) {
+      const what = s.label && s.label !== s.ref ? s.label : s.ref;
+      return `source: ${kindLabel(s.kind).label} ${what.length > 60 ? what.slice(0, 59) + "…" : what}`;
+    }
+  }
+  const line = e.answer.split("\n").find((l) => hidden.some((w) => w.test(l)));
+  if (line) return `answer: ${firstLine(line, 70)}`;
+  return "";
+}
+
+/** How long ago, for the reading pane: "just now", "12 min ago", "3 h ago", "2 days ago". */
+export function ago(at: number, now: number): string {
+  const m = Math.floor((now - at) / 60e3);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
 }
 
 /** The rail narrowed to the answers that match, with how many show of how many. */
@@ -182,9 +220,12 @@ export function newerAnswers(entries: Entry[]): Map<string, string> {
   return out;
 }
 
-/** The answer a re-check of `question`, sent at `since`, came back as: the
- *  newest entry asking the same that was logged at or after it. Null until it lands. */
-export function landed(question: string, since: number, entries: Entry[]): string | null {
+/** The answer a re-check came back as. A queued ask is logged under its
+ *  queue id (bosun/references/answers.md), so the id `bosun_send` gave back
+ *  finds it; failing that, the newest entry asking the same question that
+ *  was logged at or after `since`. Null until it lands. */
+export function landed(question: string, since: number, entries: Entry[], qid = ""): string | null {
+  if (qid && entries.some((e) => e.id === qid)) return qid;
   const k = sameQuestion(question);
   let best: Entry | null = null;
   for (const e of entries) if (e.at >= since && sameQuestion(e.question) === k && (!best || e.at > best.at)) best = e;
@@ -300,8 +341,8 @@ export function tilde(p: string): string {
 
 /** Where a source goes, for its row: a web page (by host), a file (by
  *  folder), or nowhere (a ticket key, a query), with a short name to show. */
-export function sourceRow(s: Source): { to: "web" | "file" | "none"; name: string; where: string } {
-  const t = sourceTarget(s);
+export function sourceRow(s: Source, root = ""): { to: "web" | "file" | "none"; name: string; where: string } {
+  const t = sourceTarget(s, root);
   if (t && "url" in t) {
     let host = "";
     try {
@@ -379,13 +420,21 @@ export function askText(ctx: AskContext, question: string): string {
   return `${q}\n\nContext (asked from the app's ${ctx.from}): ${facts.join("; ")}.`;
 }
 
-/** Where a source opens: a URL, an absolute file at a line, or nowhere (a query's text, a ticket key). */
+/** Where a source opens: a URL, a file at a line, or nowhere (a query's text, a ticket key). */
 export type Target = { url: string } | { path: string; line?: number } | null;
 
-export function sourceTarget(s: Source): Target {
+/** A file source the Bosun wrote from the code root (`shop/app/retry.rb:42`,
+ *  bosun/references/answers.md) opens under `root`; an absolute one as is. */
+export function sourceTarget(s: Source, root = ""): Target {
   const r = s.ref.trim();
   if (/^https?:\/\//.test(r)) return { url: r };
   const m = /^(\/[^:]+)(?::(\d+))?(?::\d+)?$/.exec(r);
   if (m) return m[2] ? { path: m[1], line: Number(m[2]) } : { path: m[1] };
+  // Relative: no spaces (a query has them), a folder in it (a key or a name has none), no scheme.
+  const rel = /^([\w.@-][^\s:]*\/[^\s:]+)(?::(\d+))?(?::\d+)?$/.exec(r);
+  if (rel && root && (s.kind || "file").toLowerCase() === "file") {
+    const path = `${root.replace(/\/$/, "")}/${rel[1].replace(/^\.\//, "")}`;
+    return rel[2] ? { path, line: Number(rel[2]) } : { path };
+  }
   return null;
 }
