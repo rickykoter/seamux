@@ -124,10 +124,13 @@ pub fn lookout_bin() -> Option<String> {
     dirs.into_iter().filter(|d| !d.is_empty()).map(|d| format!("{d}/lookout")).find(|p| Path::new(p).is_file())
 }
 
-fn ask_lookout(bin: &str, cwd: &str, repo: &str, ns: &[u64]) -> Option<Value> {
+fn ask_lookout(bin: &str, cwd: &str, repo: &str, ns: &[u64], force: bool) -> Option<Value> {
     let mut argv: Vec<String> = vec![bin.into(), "gh".into(), "prs".into(), repo.into()];
     argv.extend(ns.iter().map(u64::to_string));
     argv.extend(["--cwd".into(), cwd.into(), "--json".into()]);
+    if force {
+        argv.push("--force".into());
+    }
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let chunks = ns.len().div_ceil(25).max(1) as u64;
     let r = proc::run(&args, Some(cwd), &[], Some(Duration::from_secs(30 * chunks)))?;
@@ -157,17 +160,103 @@ pub fn refresh(cwd: &str, ttl: i64, gh: &Map<String, Value>) {
         return;
     }
     let Some(bin) = lookout_bin() else { return };
-    let Some((list, complete)) = gather(&wanted, &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns)) else { return };
+    let Some((list, complete)) = gather(&wanted, &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns, false)) else { return };
+    write_list(cwd, &json!({"at": if complete { now } else { prev_at.unwrap_or(0.0) }, "prs": list}));
+}
+
+/// Whether a list (the file's `prs`) holds a PR that can still merge: one
+/// that is open or a draft.
+pub fn has_open(list: &[Value]) -> bool {
+    list.iter().any(|p| matches!(p.get("state").and_then(Value::as_str), Some("open" | "draft")))
+}
+
+/// The URLs of a list's PRs that can still merge (open or a draft): what
+/// the land watcher listens on.
+pub fn open_urls(list: &[Value]) -> Vec<String> {
+    list.iter()
+        .filter(|p| matches!(p.get("state").and_then(Value::as_str), Some("open" | "draft")))
+        .filter_map(|p| p.get("url").and_then(Value::as_str))
+        .filter(|u| parse_url(u).is_some())
+        .map(String::from)
+        .collect()
+}
+
+/// The PR URLs a list holds, in its order: what refresh_known asks about.
+pub fn known_urls(list: &[Value]) -> Vec<String> {
+    list.iter().filter_map(|p| p.get("url").and_then(Value::as_str)).filter(|u| parse_url(u).is_some()).map(String::from).collect()
+}
+
+/// Refresh worktree `cwd`'s list from the PRs it already holds, when one of
+/// them is open or a draft and the list is older than `ttl` seconds (the
+/// land watcher's minute re-read, plan landing-latency). It asks about the
+/// list's own PRs, since gather keeps only what it asks about: a refresh
+/// without crew-sync's gh facts would drop the branch's PR. crew-sync's run
+/// still adds newly made PRs: this re-read stamps `fast_at` and leaves
+/// `at`, crew-sync's stamp, alone, so crew-sync's refresh still comes due
+/// (review f4). `force` asks past lookout's 45s floor: the land watcher's
+/// listener heard this list's PR change state. True when it wrote the list.
+pub fn refresh_known(cwd: &str, ttl: i64, force: bool) -> bool {
+    let now = py::now();
+    let Some(prev) = crew_core::prs::read(cwd) else { return false };
+    if !known_due(&prev, ttl, now) {
+        return false;
+    }
+    let prev_list: Vec<Value> = prev.get("prs").and_then(Value::as_array).cloned().unwrap_or_default();
+    let Some(bin) = lookout_bin() else { return false };
+    let Some((list, complete)) = gather(&known_urls(&prev_list), &prev_list, &mut |repo, ns| ask_lookout(&bin, cwd, repo, ns, force)) else {
+        return false;
+    };
+    // crew-sync may have written while lookout answered (a PR it just
+    // added): its list stands, and the next tick re-reads that one.
+    if !unchanged(&prev, crew_core::prs::read(cwd).as_ref()) {
+        return false;
+    }
+    write_list(cwd, &known_body(&prev, list, complete, now))
+}
+
+/// When a list's PRs were last read, by crew-sync (`at`) or by a fast
+/// re-read (`fast_at`): the later of the two, 0 for neither.
+pub fn last_read(file: &Value) -> f64 {
+    let at = |k: &str| file.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+    at("at").max(at("fast_at"))
+}
+
+/// A fast re-read's file: crew-sync's `at` as it was, `fast_at` moved to
+/// `now` only by a complete read (a partial one is retried next tick).
+fn known_body(prev: &Value, list: Vec<Value>, complete: bool, now: f64) -> Value {
+    let mut body = json!({"at": prev.get("at").cloned().unwrap_or(json!(0.0)), "prs": list});
+    let fast = if complete { Some(json!(now)) } else { prev.get("fast_at").cloned() };
+    if let Some(f) = fast {
+        body["fast_at"] = f;
+    }
+    body
+}
+
+/// Whether a list file is due a fast re-read: read (by either stamp) at
+/// least `ttl` seconds ago, and holding a PR that can still merge.
+fn known_due(file: &Value, ttl: i64, now: f64) -> bool {
+    let prs = file.get("prs").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    now - last_read(file) >= ttl as f64 && has_open(prs)
+}
+
+/// Whether the file still holds what was read before asking lookout.
+fn unchanged(before: &Value, now: Option<&Value>) -> bool {
+    now == Some(before)
+}
+
+/// Write `cwd`'s list whole: a temp file, then a rename, so crew-sync and
+/// the app writing at once never leave half of either. The temp name is
+/// this process's and this write's, so two threads never share one.
+fn write_list(cwd: &str, body: &Value) -> bool {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = crew_core::prs::path(cwd);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let at = if complete { now } else { prev_at.unwrap_or(0.0) };
-    let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
-    let body = crew_core::pyjson::dumps(&json!({"at": at, "prs": list}));
-    if std::fs::write(&tmp, body).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp-{}-{seq}", std::process::id()));
+    let body = crew_core::pyjson::dumps(body);
+    std::fs::write(&tmp, body).is_ok() && std::fs::rename(&tmp, &path).is_ok()
 }
 
 #[cfg(test)]
@@ -247,6 +336,54 @@ mod tests {
         })
         .unwrap();
         assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn a_known_refresh_asks_every_pr_the_list_holds_and_keeps_them_all() {
+        let prev = vec![pr(7, "open"), pr(1, "merged"), pr(3, "draft")];
+        assert!(has_open(&prev));
+        assert!(!has_open(&[pr(1, "merged"), pr(2, "closed")]), "nothing left to merge: no fast re-read");
+        let mut asked: Vec<Vec<u64>> = Vec::new();
+        let (got, complete) = gather(&known_urls(&prev), &prev, &mut |_, ns| {
+            asked.push(ns.to_vec());
+            Some(json!({"prs": [pr(7, "merged"), pr(3, "draft")], "missing": [], "unread": []}))
+        })
+        .unwrap();
+        assert_eq!(asked, vec![vec![7, 3]], "the merged one is not asked again");
+        assert_eq!(states(&got), vec!["merged", "merged", "draft"], "the branch PR (first) stays, in the list's order");
+        assert!(complete);
+    }
+
+    #[test]
+    fn a_known_refresh_waits_for_its_ttl_and_needs_an_open_pr() {
+        // Pure: no env and no files, so it cannot touch a test beside it.
+        let open = json!({"at": 1000.0, "prs": [pr(7, "open")]});
+        assert!(!known_due(&open, 60, 1030.0), "younger than its ttl");
+        assert!(known_due(&open, 60, 1060.0));
+        let fast = json!({"at": 600.0, "fast_at": 1000.0, "prs": [pr(7, "open")]});
+        assert!(!known_due(&fast, 60, 1030.0), "a fast re-read just ran");
+        assert!(!known_due(&json!({"at": 0.0, "prs": [pr(1, "merged"), pr(2, "closed")]}), 60, 1e9), "nothing left to merge");
+        assert!(known_due(&open, 0, 1000.0), "a heard change re-reads at once");
+    }
+
+    #[test]
+    fn a_fast_re_read_moves_fast_at_and_never_crew_syncs_at() {
+        let prev = json!({"at": 1000.0, "prs": [pr(7, "open")]});
+        let done = known_body(&prev, vec![pr(7, "merged")], true, 1400.0);
+        assert_eq!((done["at"].as_f64(), done["fast_at"].as_f64()), (Some(1000.0), Some(1400.0)), "crew-sync's refresh still comes due at at + ttl");
+        assert_eq!(last_read(&done), 1400.0);
+        let part = known_body(&done, vec![pr(7, "open")], false, 1500.0);
+        assert_eq!(part["fast_at"].as_f64(), Some(1400.0), "a partial read is retried next tick");
+        assert_eq!(last_read(&json!({"prs": []})), 0.0);
+    }
+
+    #[test]
+    fn a_list_crew_sync_wrote_meanwhile_is_not_overwritten() {
+        let before = json!({"at": 1000.0, "prs": [pr(7, "open")]});
+        assert!(unchanged(&before, Some(&before.clone())));
+        let added = json!({"at": 1290.0, "prs": [pr(7, "open"), pr(8, "open")]});
+        assert!(!unchanged(&before, Some(&added)), "crew-sync added #8: its list stands");
+        assert!(!unchanged(&before, None), "the list went away: write nothing");
     }
 
     #[test]

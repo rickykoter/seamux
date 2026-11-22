@@ -153,6 +153,10 @@ export function changedFiles(root, merge) {
 }
 
 const stageName = (s, k) => s.stage || `step ${k + 1}`;
+// A failed stage's error, naming the stage once: runExec's run and timeout
+// notes say "at <stage>" already; a wait's give-up, a claim's or a browser
+// step's note does not, so the name goes in front.
+export const namedError = (note, stage) => String(note).includes(`at ${stage}:`) ? String(note) : `${stage}: ${note}`;
 
 // The land recipes a merge lands: every one whose match covers a file it
 // changed, each once (by its key, so two projects' same-named recipes stay
@@ -290,7 +294,10 @@ function runLocked(root, { recipe, key, sp, merge, pr, home, fresh }) {
   let vars = { ...exports, MERGE_SHA: merge, PR: prNow, REPO: root };
   const cwd = path.posix.join(recipe.project || ".", recipe.cwd || ".");
   for (let k = start; k < recipe.steps.length; k++) {
-    const { stage, writes, ...step } = recipe.steps[k];
+    // The step keeps its stage, so runExec's notes name it ("exit 1 at
+    // install: …") rather than counting within this one-step exec.
+    const { writes, ...rest } = recipe.steps[k];
+    const step = { ...rest, stage: stageName(recipe.steps[k], k) };
     if (k === recrashed) {
       e.status = "awaiting";
       e.stages[k] = { name: e.stages[k].name, status: "awaiting", cut: true };
@@ -311,10 +318,10 @@ function runLocked(root, { recipe, key, sp, merge, pr, home, fresh }) {
     e.stages[k] = { ...e.stages[k], end: Date.now(), status: r.status === "pass" ? "done" : "failed" };
     if (r.status !== "pass") {
       e.status = "failed";
-      e.error = r.note || r.status;
+      e.error = namedError(r.note || r.status, step.stage);
       e.tail = (r.ran && r.ran.tail) || "";
       save();
-      return { status: "failed", note: `${e.stages[k].name}: ${e.error}` };
+      return { status: "failed", note: e.error };
     }
     vars = r.vars || vars;
     e.exports = Object.fromEntries(Object.entries(vars).filter(([n]) => !LAND_VARS.includes(n) && !(n in (recipe.env || {}))));
