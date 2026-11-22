@@ -11,20 +11,20 @@
 #   crew-diff range <a> <b>    a..b inclusive of b, exclusive of a
 #   crew-diff <n>              the nth commit in the picker list
 #
-# cmux diff renders a unified patch in a browser split, so anything git can
-# emit as a patch can be piped straight in. That is what makes per-commit work:
-# cmux has --unstaged/--staged/--branch/--last-turn built in, but no per-commit
-# source, and `git show <sha> | cmux diff -` covers it exactly.
+# Every source opens as a lookout review (plan cmux-shell-tools), on cmux and
+# on the seamux app's own tmux alike: beside the pane it is run from, with
+# files ranked by risk and threads on their lines. lookout's own sources cover
+# most of them (--turn, --range); unstaged, staged and the PR go in as a patch
+# file kept in crew's cache, so a second run refreshes the same review.
 
 set -uo pipefail
 
-CMUX="$(command -v cmux || true)"
-# One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
-# driving the OLD cli against the NEW app after the switch to the nightly build --
-# version skew that fails silently, because the old bundle is still on disk.
+LOOKOUT="${LOOKOUT_BIN:-$(command -v lookout 2>/dev/null || true)}"
+[ -n "$LOOKOUT" ] || LOOKOUT="$HOME/.local/bin/lookout"
+[ -x "$LOOKOUT" ] || { echo "crew-diff: lookout not found (./install.sh installs it)" >&2; exit 1; }
+# cmux only closes the tab one of its actions opened (ephemeral_close below).
+CMUX="${CREW_CMUX:-$(command -v cmux || true)}"
 [ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
-[ -n "$CMUX" ] || CMUX=cmux
-[ -x "$CMUX" ] || { echo "crew-diff: cmux not found" >&2; exit 1; }
 
 REPO="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$REPO" ] || { echo "crew-diff: not inside a git repository" >&2; exit 1; }
@@ -42,52 +42,74 @@ base_ref() {
   printf 'HEAD~1'
 }
 
-# `cmux diff --last-turn` is scoped to the *calling surface's* turn baseline. Run
-# from a Dock pane or a second split, that surface has no baseline. Resolve the
-# workspace's Claude session from the hook store and scope explicitly.
+# The Claude session whose last turn to show. lookout --turn reads only
+# CLAUDE_CODE_SESSION_ID, which a shell beside Claude does not have: on the
+# app's tmux the pane file names the pane's session, and on cmux its hook
+# store names the workspace's.
 turn_session() {
-  [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
-  local store="$HOME/.cmuxterm/claude-hook-sessions.json"
-  [ -f "$store" ] || return 0
-  python3 - "$store" "$CMUX_WORKSPACE_ID" <<'PY' 2>/dev/null
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then printf '%s' "$CLAUDE_CODE_SESSION_ID"; return; fi
+  python3 - "${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/pane-${SEAMUX_PANE_ID:-}.json" \
+    "$HOME/.cmuxterm/claude-hook-sessions.json" "${CMUX_WORKSPACE_ID:-}" "${SEAMUX_PANE_ID:-}" <<'PY' 2>/dev/null
 import json, sys
-try:
-    with open(sys.argv[1]) as fh:
-        d = json.load(fh)
-    e = (d.get("activeSessionsByWorkspace") or {}).get(sys.argv[2]) or {}
-    print(e.get("sessionId") or "")
-except Exception:
-    pass
+pane_file, store, ws, pane = sys.argv[1:5]
+def load(p):
+    try:
+        with open(p) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+sid = (load(pane_file) or {}).get("session") if pane else ""
+if not sid and ws:
+    e = (load(store).get("activeSessionsByWorkspace") or {}).get(ws) or {}
+    sid = e.get("sessionId")
+print(sid or "", end="")
 PY
 }
 
 show_turn() {
   local sid; sid="$(turn_session)"
-  if [ -n "$sid" ]; then
-    "$CMUX" diff --last-turn --session "$sid" --repo "$REPO" \
-      --title "last turn · $BRANCH" --focus true
-  else
-    "$CMUX" diff --last-turn --repo "$REPO" --title "last turn · $BRANCH" --focus true
-  fi
-}
-
-show_patch() {  # <title> — patch on stdin
-  local title="$1" tmp
-  tmp="$(mktemp -t crew-diff)"
-  cat > "$tmp"
-  if [ ! -s "$tmp" ]; then
-    rm -f "$tmp"
-    echo "crew-diff: no changes for '$title'" >&2
+  if [ -z "$sid" ]; then
+    echo "crew-diff: no Claude session here (no CLAUDE_CODE_SESSION_ID, no pane file for SEAMUX_PANE_ID, no cmux session for this workspace); run it from the workspace's own pane" >&2
     return 1
   fi
-  "$CMUX" diff "$tmp" --title "$title" --focus true
-  # cmux reads the file when the split opens; give it a moment before cleanup.
-  ( sleep 30; rm -f "$tmp" ) >/dev/null 2>&1 &
+  "$LOOKOUT" open --turn "$sid/last" --title "last turn · $BRANCH"
 }
 
-# cmux's built-in git sources happily open an empty viewer when there is
-# nothing to show. Check first so a clean tree says so instead of opening a
-# blank split you then have to close.
+# A range as a lookout review: real commits, so threads anchor to them.
+show_range() {  # <A..B or A...B> <title>
+  "$LOOKOUT" open --range "$1" --title "$2"
+}
+
+# One commit: its parent to it; a root commit has no parent, so its patch.
+show_commit() {  # <sha>
+  if git rev-parse --verify --quiet "$1~1^{commit}" >/dev/null 2>&1; then
+    show_range "$1~1..$1" "$(subject_of "$1")"
+  else
+    git show "$1" | show_patch "commit-$(git rev-parse --short "$1")" "$(subject_of "$1")"
+  fi
+}
+
+# A patch on stdin as a lookout review. The file stays in crew's cache under
+# a name for this checkout, branch and source: lookout reads it again when the
+# review is rebuilt, and the same path is the same review next time. A hash
+# of the checkout's path keeps two checkouts with one name apart.
+show_patch() {  # <source> <title>
+  local dir file
+  dir="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/crew-diff"
+  mkdir -p "$dir"
+  local tag; tag="$(printf '%s' "$REPO" | shasum 2>/dev/null | cut -c1-8)"
+  file="$dir/$(printf '%s-%s-%s-%s' "$(basename "$REPO")" "$tag" "$BRANCH" "$1" | tr -c 'A-Za-z0-9._-' '-').patch"
+  cat > "$file"
+  if [ ! -s "$file" ]; then
+    rm -f "$file"
+    echo "crew-diff: no changes for '$2'" >&2
+    return 1
+  fi
+  "$LOOKOUT" open --patch "$file" --title "$2"
+}
+
+# A clean tree says so instead of opening an empty review you then have to
+# close.
 guard_nonempty() {  # <description> <git-diff-args...>
   local what="$1"; shift
   if [ -z "$(git diff --name-only "$@" 2>/dev/null | head -1)" ]; then
@@ -151,13 +173,13 @@ picker() {
       sa="$(commit_at "$a")"; sb="$(commit_at "$b")"
       # The list is newest-first, so a higher index is an older commit.
       [ -n "$sa" ] && [ -n "$sb" ] || { echo "crew-diff: bad range '$choice'" >&2; exit 1; }
-      git diff "$sb~..$sa" | show_patch "$(subject_of "$sb") … $(subject_of "$sa")"
+      show_range "$sb~..$sa" "$(subject_of "$sb") … $(subject_of "$sa")"
       ;;
     ''|*[!0-9]*) echo "crew-diff: '$choice' is not a choice" >&2; exit 1 ;;
     *)
       sha="$(commit_at "$choice")"
       [ -n "$sha" ] || { echo "crew-diff: no commit $choice" >&2; exit 1; }
-      git show "$sha" | show_patch "$(subject_of "$sha")"
+      show_commit "$sha"
       ;;
   esac
 }
@@ -169,29 +191,30 @@ dispatch() {
     branch|b)
       local b; b="$(base_ref "${2:-}")"
       guard_nonempty "on $BRANCH that $b does not have" "$b...HEAD"
-      "$CMUX" diff --branch --base "$b" --repo "$REPO" \
-        --title "$BRANCH vs $b" --focus true ;;
+      # The merge base to HEAD: committed work only, as cmux diff --branch
+      # showed. Uncommitted work is unstaged and staged.
+      show_range "$b...HEAD" "$BRANCH vs $b" ;;
     unstaged|u)
       guard_nonempty "unstaged"
-      "$CMUX" diff --unstaged --repo "$REPO" --title "unstaged · $BRANCH" --focus true ;;
+      git diff | show_patch unstaged "unstaged · $BRANCH" ;;
     staged|s)
       guard_nonempty "staged" --cached
-      "$CMUX" diff --staged --repo "$REPO" --title "staged · $BRANCH" --focus true ;;
+      git diff --cached | show_patch staged "staged · $BRANCH" ;;
     pr)
       command -v gh >/dev/null 2>&1 || { echo "crew-diff: gh not installed" >&2; exit 1; }
       local num; num="$(gh pr view --json number --jq .number 2>/dev/null || true)"
       [ -n "$num" ] || { echo "crew-diff: no open PR for $BRANCH" >&2; exit 1; }
-      gh pr diff "$num" | show_patch "PR #$num · $BRANCH"
+      gh pr diff "$num" | show_patch "pr-$num" "PR #$num · $BRANCH"
       ;;
     commit|c)
       [ -n "${2:-}" ] || { echo "crew-diff commit <ref>" >&2; exit 1; }
       need_ref "$2"
-      git show "$2" | show_patch "$(subject_of "$2")"
+      show_commit "$(git rev-parse "$2^{commit}")"
       ;;
     range|r)
       [ -n "${3:-}" ] || { echo "crew-diff range <from> <to>" >&2; exit 1; }
       need_ref "$2"; need_ref "$3"
-      git diff "$2..$3" | show_patch "$(subject_of "$2") … $(subject_of "$3")"
+      show_range "$2..$3" "$(subject_of "$2") … $(subject_of "$3")"
       ;;
     ''|pick)     picker ;;
     -h|--help)   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
@@ -199,7 +222,7 @@ dispatch() {
     *)
       local sha; sha="$(commit_at "$1")"
       [ -n "$sha" ] || { echo "crew-diff: no commit $1" >&2; exit 1; }
-      git show "$sha" | show_patch "$(subject_of "$sha")"
+      show_commit "$sha"
       ;;
   esac
 }
@@ -216,7 +239,7 @@ dispatch() {
 # and a failure leaves the tab up with the error in it.
 ephemeral_close() {
   [ "${CREW_EPHEMERAL:-}" = "1" ] || return 0
-  [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  [ -n "${CMUX_SURFACE_ID:-}" ] && [ -n "$CMUX" ] || return 0
   "$CMUX" close-surface --surface "$CMUX_SURFACE_ID" >/dev/null 2>&1 || true
 }
 

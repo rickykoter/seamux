@@ -37,6 +37,12 @@ What is asserted:
     it would delete (not on node_modules, nor on a copy of the primary
     checkout's) and on a cmux it cannot find, and otherwise force-closes and
     removes the worktree.
+  - crew-worktree opens its worktree through seamux workspace-open --command
+    on the app's tmux, says why and prints the command when that fails, and
+    keeps crew-native on cmux;
+  - crew-diff opens every source in lookout without cmux: the branch as the
+    merge base to HEAD, commits and ranges as ranges, staged and unstaged as
+    patch files kept under one name, a turn through the pane file's session.
 
     python3 crew/tools/workspaces_probe.py      exit 0 when all hold
 """
@@ -1091,6 +1097,168 @@ os.remove(os.path.join(reg_dir, "workspaces.json"))
 rc, out = reclaim("--yes", "ws-l")
 check("an idle agent is force-closed and the worktree removed",
       rc == 0 and "workspace close ws-l --force" in log() and not rows() and not os.path.isdir(landed), out)
+
+# --- crew-worktree, on each backend (plan cmux-shell-tools) -----------------
+# A temp repo with a local bare origin, a stub seamux that logs its calls and
+# answers `workspaces backend` from STUB_BACKEND, and a stub cmux. HOME is a
+# temp dir: nothing here reaches the real stores (L8).
+print("crew-worktree")
+WTOOL = os.path.join(CREW, "bin", "crew-worktree")
+wt_root = os.path.join(T, "wt")
+wt_code = os.path.join(wt_root, "code")
+wt_origin = os.path.join(wt_root, "shop.git")
+os.makedirs(wt_code)
+subprocess.run(["git", "init", "-q", "--bare", "-b", "main", wt_origin], check=True, env=ENV)
+wt_main = os.path.join(wt_code, "shop")
+subprocess.run(["git", "clone", "-q", wt_origin, wt_main], check=True, env=ENV, capture_output=True)
+subprocess.run(["git", "-C", wt_main, "-c", "user.name=p", "-c", "user.email=p@example.invalid",
+                "commit", "-q", "--allow-empty", "-m", "first"], check=True, env=ENV)
+subprocess.run(["git", "-C", wt_main, "push", "-q", "origin", "HEAD:main"], check=True, env=ENV, capture_output=True)
+subprocess.run(["git", "-C", wt_main, "remote", "set-head", "origin", "main"], check=True, env=ENV, capture_output=True)
+WT_LOG = os.path.join(wt_root, "calls.jsonl")
+STUB_SEAMUX = os.path.join(wt_root, "seamux")
+with open(STUB_SEAMUX, "w") as fh:
+    fh.write("#!%s\n" % sys.executable + r"""import json, os, sys
+a = sys.argv[1:]
+open(os.environ["WT_LOG"], "a").write(json.dumps(["seamux"] + a) + "\n")
+if a[:2] == ["workspaces", "backend"]:
+    print(os.environ.get("STUB_BACKEND", "")); sys.exit(0 if os.environ.get("STUB_BACKEND") else 1)
+if a[:1] == ["workspace-open"]:
+    if os.environ.get("STUB_OPEN_RC", "0") != "0":
+        print("workspace-open: tmux refused", file=sys.stderr); sys.exit(1)
+    print("opened W9 for %s (tmux)" % a[1]); sys.exit(0)
+sys.exit(0)
+""")
+STUB_CMUX = os.path.join(wt_root, "cmux")
+with open(STUB_CMUX, "w") as fh:
+    fh.write("#!%s\n" % sys.executable + r"""import json, os, sys
+open(os.environ["WT_LOG"], "a").write(json.dumps(["cmux"] + sys.argv[1:]) + "\n")
+""")
+os.chmod(STUB_SEAMUX, 0o755)
+os.chmod(STUB_CMUX, 0o755)
+
+
+def worktree(branch, *argv, **extra):
+    open(WT_LOG, "w").close()
+    env = dict(ENV, HOME=os.path.join(wt_root, "home"), CREW_CODE_ROOT=wt_code, SEAMUX_BIN=STUB_SEAMUX,
+               CREW_CMUX=STUB_CMUX, CREW_REMOTE="1", WT_LOG=WT_LOG, **extra)
+    r = subprocess.run(["bash", WTOOL, "--repo", "shop"] + list(argv) + [branch], cwd=wt_root, env=env,
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    calls = [json.loads(l) for l in open(WT_LOG) if l.strip()]
+    return r.returncode, r.stdout + r.stderr, calls
+
+
+wt_path = os.path.join(wt_code, "shop.worktrees", "on-tmux")
+rc, out, calls = worktree("on-tmux", STUB_BACKEND="tmux")
+opens = [c for c in calls if c[1:2] == ["workspace-open"]]
+check("on tmux, crew-worktree opens the worktree through seamux workspace-open --command",
+      rc == 0 and opens == [["seamux", "workspace-open", wt_path, "--command", 'claude --remote-control "shop/dev/on-tmux"']]
+      and os.path.isdir(wt_path) and "dev/on-tmux ready at" in out and "open it yourself" not in out, f"{out}\n{calls}")
+check("…and never calls cmux or crew-native there",
+      not [c for c in calls if c[0] == "cmux" or c[1:2] == ["crew-native"]], str(calls))
+rc, out, calls = worktree("refused", STUB_BACKEND="tmux", STUB_OPEN_RC="1")
+check("when workspace-open fails, crew-worktree says why and prints the command to start it with",
+      rc == 0 and "did not open it: workspace-open: tmux refused" in out
+      and "start it with: cd " in out and 'claude --remote-control "shop/dev/refused"' in out, out)
+rc, out, calls = worktree("on-cmux", STUB_BACKEND="cmux")
+check("on cmux, crew-worktree still opens a native session through crew-native",
+      rc == 0 and any(c[1:3] == ["crew-native", "workspace"] for c in calls)
+      and not [c for c in calls if c[1:2] == ["workspace-open"]], f"{out}\n{calls}")
+
+# --- crew-diff, every source as a lookout review (plan cmux-shell-tools) ----
+# A stub lookout logs its argv, and for --patch the file's text. No cmux.
+print("crew-diff")
+DTOOL = os.path.join(CREW, "bin", "crew-diff")
+df = os.path.join(T, "df")
+df_origin = os.path.join(df, "app.git")
+df_repo = os.path.join(df, "app")
+os.makedirs(df)
+GIT_ID = ["-c", "user.name=p", "-c", "user.email=p@example.invalid"]
+subprocess.run(["git", "init", "-q", "--bare", "-b", "main", df_origin], check=True, env=ENV)
+subprocess.run(["git", "clone", "-q", df_origin, df_repo], check=True, env=ENV, capture_output=True)
+def dgit(*argv):
+    return subprocess.run(["git", "-C", df_repo] + GIT_ID + list(argv), check=True, env=ENV,
+                          capture_output=True, text=True).stdout.strip()
+with open(os.path.join(df_repo, "a.txt"), "w") as fh:
+    fh.write("one\n")
+dgit("add", "a.txt"); dgit("commit", "-q", "-m", "root")
+ROOT_SHA = dgit("rev-parse", "HEAD")
+dgit("push", "-q", "origin", "HEAD:main"); dgit("remote", "set-head", "origin", "main")
+dgit("checkout", "-q", "-b", "dev/x")
+for n, text in ((1, "two\n"), (2, "three\n")):
+    with open(os.path.join(df_repo, "a.txt"), "a") as fh:
+        fh.write(text)
+    dgit("commit", "-q", "-am", f"change {n}")
+C2 = dgit("rev-parse", "HEAD")
+DF_LOG = os.path.join(df, "lookout.jsonl")
+STUB_LOOKOUT = os.path.join(df, "lookout")
+with open(STUB_LOOKOUT, "w") as fh:
+    fh.write("#!%s\n" % sys.executable + r"""import json, os, sys
+a = sys.argv[1:]
+rec = {"argv": a}
+if "--patch" in a:
+    rec["patch"] = open(a[a.index("--patch") + 1]).read()
+open(os.environ["DF_LOG"], "a").write(json.dumps(rec) + "\n")
+""")
+os.chmod(STUB_LOOKOUT, 0o755)
+
+
+def crew_diff(*argv, **extra):
+    open(DF_LOG, "w").close()
+    env = dict(ENV, HOME=os.path.join(df, "home"), LOOKOUT_BIN=STUB_LOOKOUT, DF_LOG=DF_LOG,
+               CREW_CMUX=os.path.join(df, "no-such-cmux"), **extra)
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
+    env.update({k: v for k, v in extra.items()})
+    r = subprocess.run(["bash", DTOOL] + list(argv), cwd=df_repo, env=env, capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL, timeout=60)
+    return r.returncode, r.stdout + r.stderr, [json.loads(l) for l in open(DF_LOG) if l.strip()]
+
+
+rc, out, calls = crew_diff("branch")
+check("without cmux, crew-diff branch opens lookout on the merge base to HEAD, committed only",
+      rc == 0 and [c["argv"] for c in calls] == [["open", "--range", "origin/main...HEAD", "--title", "dev/x vs origin/main"]], f"{out}\n{calls}")
+rc, out, calls = crew_diff("commit", C2)
+check("a commit opens as its parent to it",
+      rc == 0 and calls and calls[0]["argv"][:3] == ["open", "--range", f"{C2}~1..{C2}"], f"{out}\n{calls}")
+rc, out, calls = crew_diff("commit", ROOT_SHA)
+check("a root commit, which has no parent, opens as its patch",
+      rc == 0 and calls and calls[0]["argv"][1] == "--patch" and "+one" in calls[0].get("patch", ""), f"{out}\n{calls}")
+rc, out, calls = crew_diff("range", ROOT_SHA, C2)
+check("a range opens as that range", rc == 0 and calls and calls[0]["argv"][:3] == ["open", "--range", f"{ROOT_SHA}..{C2}"], f"{out}\n{calls}")
+rc, out, calls = crew_diff("1")
+c2s = dgit("rev-parse", "--short", "HEAD")  # the picker lists short shas
+check("a picker number opens that commit", rc == 0 and calls and calls[0]["argv"][:3] == ["open", "--range", f"{c2s}~1..{c2s}"], f"{out}\n{calls}")
+rc, out, calls = crew_diff("unstaged")
+check("a clean tree says so and opens nothing", rc == 1 and "nothing unstaged" in out and not calls, f"{out}\n{calls}")
+with open(os.path.join(df_repo, "a.txt"), "a") as fh:
+    fh.write("staged line\n")
+dgit("add", "a.txt")
+with open(os.path.join(df_repo, "a.txt"), "a") as fh:
+    fh.write("unstaged line\n")
+rc, out, calls = crew_diff("staged")
+staged = calls[0] if calls else {}
+check("staged opens a patch of the index only, titled for the branch",
+      rc == 0 and staged.get("argv", [None])[1:2] == ["--patch"] and staged["argv"][-2:] == ["--title", "staged · dev/x"]
+      and "+staged line" in staged.get("patch", "") and "unstaged line" not in staged.get("patch", ""), f"{out}\n{calls}")
+rc, out, calls = crew_diff("staged")
+check("…and a second run writes the same patch file, so lookout keeps one review",
+      calls and calls[0]["argv"][2] == staged.get("argv", [None, None, None])[2]
+      and calls[0]["argv"][2].startswith(os.path.join(ENV["XDG_CACHE_HOME"], "cmux-crew", "crew-diff")), f"{calls}")
+rc, out, calls = crew_diff("unstaged")
+check("unstaged opens a patch of the working tree against the index",
+      rc == 0 and calls and "+unstaged line" in calls[0].get("patch", "") and "+staged line" not in calls[0].get("patch", ""), f"{out}\n{calls}")
+pane_id = "DF000000-0000-4000-8000-000000000001"
+os.makedirs(os.path.join(ENV["XDG_CACHE_HOME"], "cmux-crew"), exist_ok=True)
+with open(os.path.join(ENV["XDG_CACHE_HOME"], "cmux-crew", f"pane-{pane_id}.json"), "w") as fh:
+    json.dump({"ws": "W", "surface": pane_id, "session": "sess-from-pane", "state": "idle"}, fh)
+rc, out, calls = crew_diff("turn", SEAMUX_PANE_ID=pane_id)
+check("on tmux, turn finds the pane's Claude session in its pane file",
+      rc == 0 and calls and calls[0]["argv"][:3] == ["open", "--turn", "sess-from-pane/last"], f"{out}\n{calls}")
+rc, out, calls = crew_diff("turn", SEAMUX_PANE_ID=pane_id, CLAUDE_CODE_SESSION_ID="sess-env")
+check("…CLAUDE_CODE_SESSION_ID comes first", calls and calls[0]["argv"][2] == "sess-env/last", f"{calls}")
+rc, out, calls = crew_diff("turn")
+check("…and with no session known, crew-diff says so and opens nothing",
+      rc == 1 and "no Claude session here" in out and not calls, f"{out}\n{calls}")
 
 bad = results.count(False)
 print(f"\nworkspaces probe: {len(results) - bad} passed, {bad} failed")
