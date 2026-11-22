@@ -1,81 +1,213 @@
-/* The Bosun (bosun.ts): the ⌘4 tab, a rail of answers beside its terminal,
-   and the ⌘B drop-down over the top of any view. */
+/* The Bosun (bosun.ts): the ⌘4 tab, a rail of answers beside its terminal
+   with a reading pane over the terminal, and the ⌘B drop-down over the top
+   of any view. */
 
-.panel.bosun { display: grid; grid-template-columns: 264px minmax(0, 1fr); overflow: hidden; }
+:root { --bosun-scrim: rgba(40, 34, 20, 0.18); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bosun-scrim: rgba(0, 0, 0, 0.5); } }
+:root[data-theme="dark"] { --bosun-scrim: rgba(0, 0, 0, 0.5); }
+
+.panel.bosun { display: grid; grid-template-columns: 272px minmax(0, 1fr); overflow: hidden; }
 .panel.bosun[hidden] { display: none; }
 .panel.bosun.folded { grid-template-columns: 30px minmax(0, 1fr); }
 
+.bosun-ico { flex: none; display: block; }
+.bosun kbd, .bosun-drop kbd {
+  font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px;
+  line-height: 15px;
+}
+
 /* ---- the rail ---- */
 .bosun-rail { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--strip); }
-.bosun-rail-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px 12px; }
-.bosun-rail-title { flex: 1; font-size: var(--fs-2); color: var(--section); font-variant: all-small-caps; letter-spacing: 0.04em; }
-.bosun-fold {
-  flex: none; width: 22px; height: 22px; border: 0; border-radius: 5px; background: none; color: var(--muted);
-  font: inherit; cursor: pointer; line-height: 1;
+.bosun-rail-head { display: flex; align-items: center; gap: 6px; padding: 10px 8px 6px 14px; }
+.bosun-rail-title { flex: 1; margin: 0; font-size: var(--fs-3); font-weight: 600; color: var(--fg); }
+.bosun-fold, .bosun-fold-side {
+  flex: none; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--muted);
+  font: inherit; cursor: pointer; padding: 0;
 }
-.bosun-fold:hover { background: var(--on); color: var(--fg); }
-.bosun-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.folded .bosun-rail-head { padding: 8px 4px; }
-.folded .bosun-rail-title, .folded .bosun-list { display: none; }
-.bosun-list { flex: 1; overflow-y: auto; padding: 0 8px 16px; display: flex; flex-direction: column; gap: 10px; }
-.bosun-empty { color: var(--muted); font-size: var(--fs-2); padding: 8px 4px; margin: 0; }
+.bosun-fold:hover, .bosun-fold-side:hover { background: var(--on); color: var(--fg); }
+.bosun-fold:focus-visible, .bosun-fold-side:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bosun-fold-side { display: none; }
+.folded .bosun-rail-head, .folded .bosun-find, .folded .bosun-found, .folded .bosun-list { display: none; }
+.folded .bosun-fold-side {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; height: auto; padding: 12px 0; border-radius: 0;
+}
+.bosun-fold-word { writing-mode: vertical-rl; font-size: var(--fs-2); letter-spacing: 0.04em; }
+.bosun-fold-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.bosun-fold-dot[hidden] { display: none; }
+
+.bosun-find {
+  display: flex; align-items: center; gap: 6px; margin: 2px 8px 6px; padding: 0 8px; height: 28px; border-radius: 7px;
+  background: var(--field); border: 1px solid var(--line); color: var(--muted);
+}
+.bosun-find:focus-within { border-color: var(--accent); }
+.bosun-find-q { flex: 1; min-width: 0; border: 0; background: none; color: var(--fg); font: inherit; font-size: var(--fs-2); outline: none; }
+.bosun-find-q::placeholder { color: var(--muted); }
+.bosun-found { margin: -2px 14px 4px; font-size: var(--fs-1); color: var(--muted); }
+.bosun-found[hidden] { display: none; }
+
+.bosun-list { flex: 1; overflow-y: auto; padding: 0 8px 16px; display: flex; flex-direction: column; gap: 8px; }
+.bosun-empty { color: var(--muted); font-size: var(--fs-2); padding: 8px 6px; line-height: 1.45; }
+.bosun-empty p { margin: 0 0 6px; }
+.bosun-empty-t { color: var(--fg); font-weight: 600; }
 .bosun-day { display: flex; flex-direction: column; gap: 6px; }
-.bosun-day-t { margin: 4px 4px 0; font-size: var(--fs-1); font-weight: 600; color: var(--section); text-transform: uppercase; letter-spacing: 0.06em; }
+/* The day stays over its cards while they scroll. */
+.bosun-day-t {
+  position: sticky; top: 0; z-index: 1; margin: 0 -8px; padding: 6px 14px 4px; background: var(--strip);
+  font-size: var(--fs-1); font-weight: 600; color: var(--section); text-transform: uppercase; letter-spacing: 0.06em;
+}
 
 .bosun-card {
-  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 6px;
-  display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-2);
+  position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  display: flex; flex-direction: column; font-size: var(--fs-2);
 }
-.bosun-card.open { border-color: var(--line2); }
-.bosun-card-top { color: var(--muted); font-size: var(--fs-1); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bosun-q { margin: 0; color: var(--fg); font-weight: 600; line-height: 1.35; }
-.bosun-first { margin: 0; color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.bosun-answer { white-space: pre-wrap; color: var(--fg); line-height: 1.45; max-height: 40vh; overflow-y: auto; padding: 2px 0; }
-.bosun-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.bosun-card:hover { border-color: var(--line2); }
+.bosun-card.reading { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.bosun-card.new::before {
+  content: ""; position: absolute; left: -1px; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--good);
+}
+.bosun-card-main {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 8px 10px 4px; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer; border-radius: 8px 8px 0 0;
+}
+.bosun-card-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bosun-card-top { display: flex; gap: 6px; align-items: baseline; color: var(--muted); font-size: var(--fs-1); min-width: 0; }
+.bosun-time { flex: none; font-variant-numeric: tabular-nums; }
+.bosun-from { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bosun-from::before { content: "· "; }
+.bosun-new {
+  flex: none; margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--good-t); text-transform: uppercase; letter-spacing: 0.05em;
+}
+.bosun-q {
+  color: var(--fg); font-weight: 600; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bosun-first { color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Chips on the left, Re-check on the right: one line. */
+.bosun-card-foot { display: flex; align-items: center; gap: 6px; padding: 2px 6px 6px 10px; min-height: 26px; }
+.bosun-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
 .bosun-chip {
-  font-size: var(--fs-1); padding: 0 6px; border-radius: 4px; line-height: 17px;
-  background: var(--on); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line);
+  font-size: var(--fs-1); padding: 0 6px; border-radius: 4px; line-height: 17px; white-space: nowrap;
+  background: var(--on); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); cursor: default;
 }
 .bosun-chip.k-gh { color: var(--accent-t); }
 .bosun-chip.k-jira { color: var(--ef-text-blue); }
 .bosun-chip.k-sql, .bosun-chip.k-dd, .bosun-chip.k-splunk, .bosun-chip.k-dash { color: var(--ef-text-purple); }
-.bosun-chip.k-file { color: var(--good-t); }
-.bosun-sources { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.bosun-sources li { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
-.bosun-src-k { flex: none; font-size: var(--fs-1); color: var(--muted); min-width: 34px; }
-.bosun-src { color: var(--accent-t); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bosun-src:hover { text-decoration: underline; }
-.bosun-src-ref { font: var(--fs-1) var(--ef-mono); color: var(--fg); overflow-wrap: anywhere; }
-/* Reopen and Re-check: quiet until the card is hovered or holds focus. */
-.bosun-acts { display: flex; justify-content: flex-end; gap: 2px; opacity: 0.55; transition: opacity 120ms; }
-.bosun-card:hover .bosun-acts, .bosun-card:focus-within .bosun-acts, .bosun-card.open .bosun-acts { opacity: 1; }
+.bosun-chip.k-ws { color: var(--ef-text-orange); }
 .bosun-act {
-  font: inherit; font-size: var(--fs-1); border: 0; border-radius: 5px; background: none; color: var(--accent-t);
-  padding: 2px 6px; cursor: pointer;
+  flex: none; font: inherit; font-size: var(--fs-1); border: 1px solid transparent; border-radius: 6px; background: none; color: var(--muted);
+  padding: 3px 8px; cursor: pointer;
 }
+.bosun-card:hover .bosun-act:not(:disabled), .bosun-act:focus-visible { color: var(--accent-t); border-color: var(--line); }
 .bosun-act:hover:not(:disabled) { background: var(--on); }
-.bosun-act:disabled { color: var(--muted); cursor: default; }
-.bosun-act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bosun-act:disabled { opacity: 0.5; cursor: not-allowed; }
+.bosun-act:focus-visible, .bosun-newer:focus-visible, .bosun-older:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.bosun-pending {
+  display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 6px 10px; border-top: 1px solid var(--line);
+  font-size: var(--fs-1); color: var(--muted); line-height: 1.4;
+}
+.bosun-pending.s-failed { color: var(--bad-t); }
+.bosun-spin {
+  flex: none; width: 9px; height: 9px; margin-top: 2px; border-radius: 50%; border: 1.5px solid var(--line2); border-top-color: var(--accent);
+  animation: bosun-spin 0.9s linear infinite;
+}
+@keyframes bosun-spin { to { transform: rotate(360deg); } }
+.bosun-newer {
+  display: flex; align-items: center; gap: 5px; margin: 0; padding: 5px 10px; border: 0; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px;
+  background: none; color: var(--accent-t); font: inherit; font-size: var(--fs-1); cursor: pointer; text-align: left;
+}
+.bosun-newer:hover { background: var(--on); }
+.bosun-older {
+  margin: 4px 0 0; padding: 6px 8px; border: 1px dashed var(--line2); border-radius: 8px; background: none; color: var(--muted);
+  font: inherit; font-size: var(--fs-2); cursor: pointer;
+}
+.bosun-older:hover { color: var(--fg); background: var(--on); }
 
 /* ---- the terminal's side, and the header both places share ---- */
 .bosun-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .bosun-head {
   flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line);
-  font-size: var(--fs-2); color: var(--muted); user-select: none; -webkit-user-select: none;
+  font-size: var(--fs-2); color: var(--muted); user-select: none; -webkit-user-select: none; min-width: 0;
 }
-.bosun-name { color: var(--fg); font-weight: 600; }
-.bosun-root { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.bosun-state { margin-left: auto; font-size: var(--fs-1); }
+.bosun-name { color: var(--fg); font-weight: 600; flex: none; }
+.bosun-root { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+/* What the Bosun is doing: a dot and a word, beside its name. */
+.bosun-state {
+  flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 6px; border-radius: 999px;
+  font-size: var(--fs-1); background: var(--on); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line);
+}
+.bosun-state[hidden] { display: none; }
+.bosun-state-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
 .bosun-state[data-state="working"] { color: var(--role-working-t); }
-.bosun-state[data-state="needs_input"] { color: var(--ask-t); }
-.bosun-key { font-size: var(--fs-1); padding: 0 5px; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--line2); }
+.bosun-state[data-state="working"] .bosun-state-dot { background: var(--working); animation: bosun-blink 1.2s ease-in-out infinite; }
+.bosun-state[data-state="needs_input"] { color: var(--ask-t); box-shadow: inset 0 0 0 1px var(--ask); }
+.bosun-state[data-state="needs_input"] .bosun-state-dot { background: var(--ask); }
+.bosun-state[data-state="off"] { color: var(--bad-t); }
+.bosun-state[data-state="off"] .bosun-state-dot { background: var(--bad); }
+.bosun-state[data-state="starting"] .bosun-state-dot { background: var(--muted); }
+@keyframes bosun-blink { 50% { opacity: 0.35; } }
+.bosun-hint { flex: none; font-size: var(--fs-1); color: var(--muted); }
 .bosun-host { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--term); }
 .bosun-host > .term-slot { flex: 1; min-height: 0; }
 .bosun-host > .term-slot[hidden] { display: none; }
-.bosun-note { margin: 14vh auto 0; max-width: 420px; text-align: center; color: var(--muted); padding: 0 16px; }
+.bosun-note { margin: 14vh auto 0; max-width: 440px; text-align: center; color: var(--muted); padding: 0 16px; line-height: 1.5; }
 .bosun-note[hidden] { display: none; }
 .bosun-note-t { color: var(--fg); font-weight: 600; }
 .bosun-err { font: var(--fs-1) var(--ef-mono); color: var(--bad-t); overflow-wrap: anywhere; }
+
+/* ---- the reading pane: over the terminal, which stays live beneath ---- */
+.bosun-reader { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; background: var(--bg); }
+.bosun-reader[hidden] { display: none; }
+.bosun-reader-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.bosun-bar-gap { flex: 1; }
+.bosun-back, .bosun-tool {
+  display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 4px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
+}
+.bosun-back { border-color: transparent; background: none; padding-left: 6px; }
+.bosun-back:hover, .bosun-tool:hover:not(:disabled) { background: var(--on); }
+.bosun-tool.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
+.bosun-tool.primary:hover:not(:disabled) { background: var(--primary); filter: brightness(1.08); }
+.bosun-tool:disabled { opacity: 0.55; cursor: not-allowed; }
+.bosun-tool.small { padding: 3px 6px; flex: none; align-self: flex-start; }
+.bosun-tool.done { color: var(--good-t); border-color: var(--good); }
+.bosun-back:focus-visible, .bosun-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bosun-reader-body { flex: 1; min-height: 0; overflow-y: auto; outline: none; }
+.bosun-reader-col { max-width: 760px; margin: 0 auto; padding: 22px 28px 48px; }
+.bosun-reader-meta { margin: 0 0 4px; font-size: var(--fs-2); color: var(--muted); }
+.bosun-reader-q { margin: 0 0 14px; font-size: var(--fs-5, 18px); line-height: 1.3; color: var(--fg); }
+.bosun-reader-col > .bosun-pending, .bosun-reader-col > .bosun-newer {
+  border: 1px solid var(--line); border-radius: 8px; margin: 0 0 14px; font-size: var(--fs-2);
+}
+.bosun-md { font-size: var(--fs-3); line-height: 1.55; color: var(--fg); }
+.bosun-md p { margin: 0 0 10px; white-space: pre-wrap; }
+.bosun-md-h { margin: 16px 0 6px; font-size: var(--fs-3); font-weight: 600; color: var(--fg); }
+h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: uppercase; letter-spacing: 0.05em; }
+.bosun-md ul, .bosun-md ol { margin: 0 0 10px; padding-left: 22px; }
+.bosun-md li { margin: 2px 0; }
+.bosun-md code, .bosun-src-ref code {
+  font: 0.92em var(--ef-mono); padding: 0 4px; border-radius: 4px; background: var(--on); box-shadow: inset 0 0 0 1px var(--line);
+}
+.bosun-md pre {
+  margin: 0 0 10px; padding: 8px 10px; border-radius: 7px; background: var(--term); color: var(--term-fg);
+  font: var(--fs-2) var(--ef-mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.bosun-link, .bosun-src { color: var(--accent-t); }
+.bosun-quiet { color: var(--muted); }
+.bosun-reader-src { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line); }
+.bosun-reader-h { margin: 0 0 8px; font-size: var(--fs-1); font-weight: 600; color: var(--section); text-transform: uppercase; letter-spacing: 0.06em; }
+.bosun-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.bosun-src-row { display: grid; grid-template-columns: 52px minmax(0, auto) minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: var(--fs-2); }
+.bosun-src-row > .bosun-chip { justify-self: start; }
+.bosun-src {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0; text-decoration: none;
+}
+.bosun-src:hover .bosun-src-name { text-decoration: underline; }
+.bosun-src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bosun-src-where { color: var(--muted); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bosun-src-ref { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.bosun-src-ref .bosun-src-name { color: var(--fg); }
+.bosun-src-ref code { align-self: flex-start; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 
 /* ---- the ⌘B drop-down: slides from under the strip onto the top 60% ---- */
 .bosun-drop {
@@ -86,11 +218,19 @@
 .bosun-drop.down { transform: translateY(0); }
 .bosun-drop[hidden], .bosun-dim[hidden] { display: none; }
 .bosun-drop .bosun-head { background: var(--strip); }
-.bosun-dim { position: absolute; inset: 0; z-index: 39; background: rgba(0, 0, 0, 0.32); opacity: 0; transition: opacity 180ms; }
+.bosun-drop-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 2px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
+}
+.bosun-drop-btn:hover { background: var(--on); }
+.bosun-drop-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.bosun-drop-x { padding: 2px 6px; }
+.bosun-dim { position: absolute; inset: 0; z-index: 39; background: var(--bosun-scrim); opacity: 0; transition: opacity 180ms; }
 .bosun-dim.down { opacity: 1; }
 
 /* ---- the whistle: a brass bosun's call that pipes while the Bosun works ---- */
-.bosun-whistle { width: 38px; height: 23px; margin: -3px 0; flex: none; overflow: visible; }
+.bosun-whistle { width: 38px; height: 23px; margin: -3px 0; flex: none; overflow: visible; transition: filter 200ms; }
+.bosun-whistle.off { filter: grayscale(1) opacity(0.55); }
 .bw-gun, .bw-buoy, .bw-mouth { fill: var(--ef-yellow); stroke: var(--ef-text-orange); stroke-width: 0.7; }
 .bw-keel { fill: none; stroke: var(--ef-text-orange); stroke-width: 1.4; stroke-linecap: round; }
 .bw-ring { fill: none; stroke: var(--ef-text-orange); stroke-width: 0.9; }
@@ -101,15 +241,28 @@
 .bosun-whistle[data-mood="pipe"] .bw-arc { animation: bw-pipe 1.2s ease-out infinite; }
 .bosun-whistle[data-mood="pipe"] .bw-arc1 { animation-delay: 0.2s; }
 .bosun-whistle[data-mood="pipe"] .bw-arc2 { animation-delay: 0.4s; }
+/* Waiting on the person: the call tips up and holds one arc in the ask colour. */
+.bosun-whistle[data-mood="wait"] .bw-body { transform: rotate(-8deg); }
+.bosun-whistle[data-mood="wait"] .bw-arc0 { stroke: var(--ask); opacity: 0.9; }
 .bosun-whistle[data-mood="trill"] .bw-body { animation: bw-trill 0.35s ease-in-out 3; }
 .bosun-whistle[data-mood="trill"] .bw-arc { stroke: var(--good); animation: bw-pipe 0.45s ease-out 3; }
 @keyframes bw-pipe { 0% { opacity: 0; } 30% { opacity: 0.9; } 100% { opacity: 0; } }
 @keyframes bw-trill { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
 
-/* The tab's own mark while the Bosun works: a small dot after its name. */
+/* The tab's own mark: a dot while the Bosun works, a ringed one while it waits on you. */
 .tab[data-tab="bosun"] { position: relative; }
-body[data-bosun="working"] .tab[data-tab="bosun"]::after {
+body[data-bosun="working"] .tab[data-tab="bosun"]::after, body[data-bosun="needs"] .tab[data-tab="bosun"]::after {
   content: ""; position: absolute; top: 5px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--working);
+}
+body[data-bosun="needs"] .tab[data-tab="bosun"]::after { width: 7px; height: 7px; top: 4px; right: 3px; background: var(--ask); }
+
+/* A narrow window: a slimmer rail, the reading pane's column fills it. */
+@media (max-width: 720px) {
+  .panel.bosun { grid-template-columns: 200px minmax(0, 1fr); }
+  .bosun-hint { display: none; }
+  .bosun-reader-col { padding: 16px 14px 32px; }
+  .bosun-src-row { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .bosun-src-where { grid-column: 2; }
 }
 
 /* ---- Ask the Bosun (bosun_ask.ts), on Radar rows and Lookout reviews ---- */
@@ -149,6 +302,6 @@ body:not([data-backend="tmux"]) .bosun-ask-btn, body:not([data-backend="tmux"]) 
 
 @media (prefers-reduced-motion: reduce) {
   .bosun-drop, .bosun-dim { transition: none; }
-  .bosun-whistle .bw-arc, .bosun-whistle .bw-body { animation: none !important; }
+  .bosun-whistle .bw-arc, .bosun-whistle .bw-body, .bosun-spin, .bosun-state-dot { animation: none !important; }
   .bosun-whistle[data-mood="pipe"] .bw-arc { opacity: 0.7; }
 }

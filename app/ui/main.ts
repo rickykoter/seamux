@@ -102,6 +102,8 @@ radarView.onJump = (ws, pane) => {
   tabs.select("dock");
   dockView.jump(ws, pane);
 };
+// The drop-down's Answers button: the Bosun's own tab (which puts the drop-down away).
+bosunView.onAnswers = () => tabs.select("bosun");
 tabs.select(DEFAULT_TAB);
 
 // Every summon (the hotkey, the tray) lands on the Dock view.

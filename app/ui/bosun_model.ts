@@ -1,5 +1,6 @@
 // The Bosun tab's model (bosun.ts draws it): the answer rail's day groups
-// and cards, the whistle's mood, and what ⌘B does. A pure module, so
+// and cards, its filter, re-checks and newer answers, the reading pane's
+// text, the whistle's mood, and what ⌘B does. A pure module, so
 // bosun_probe.ts runs it in Node.
 
 /** One source behind an answer, as `seamux bosun log add` keeps it. */
@@ -18,8 +19,8 @@ export type Status = {
 export type Day = { day: string; label: string; cards: Card[] };
 /** What a rail card shows. */
 export type Card = { id: string; time: string; from: string; question: string; first: string; chips: Chip[]; entry: Entry };
-/** One chip per source kind, with how many of that kind. */
-export type Chip = { kind: string; label: string; n: number };
+/** One chip per source kind, with how many of that kind; `name` is its full name, for a tooltip. */
+export type Chip = { kind: string; label: string; name: string; n: number };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -41,9 +42,14 @@ export function dayLabel(day: string, today: string): string {
   return `${wd} ${d} ${MONTHS[m - 1]}${year}`;
 }
 
-/** The answer's first line that says something, cut to `max` characters. */
+/** The answer's first line that says something, cut to `max` characters,
+ *  without its markdown marks (heading, quote, bullet, code ticks, bold). */
 export function firstLine(answer: string, max = 120): string {
-  const line = answer.split("\n").map((l) => l.replace(/^[#>*\-\s]+/, "").trim()).find((l) => l.length > 0) ?? "";
+  const line =
+    answer
+      .split("\n")
+      .map((l) => l.replace(/\*\*(.+?)\*\*/g, "$1").replace(/^[#>*\-\s]+/, "").replace(/`/g, "").trim())
+      .find((l) => l.length > 0) ?? "";
   return line.length > max ? line.slice(0, max - 1).trimEnd() + "…" : line;
 }
 
@@ -54,17 +60,35 @@ const KIND_LABEL: Record<string, string> = {
   workspace: "ws", url: "link", link: "link",
 };
 
+/** The full name behind each short label, for its tooltip. */
+const LABEL_NAME: Record<string, string> = {
+  file: "File", gh: "GitHub", jira: "Jira", sql: "SQL query", dd: "Datadog", dash: "Dashboard",
+  splunk: "Splunk search", ws: "Workspace", link: "Link",
+};
+
+/** A source kind's short label ("gh") and full name ("GitHub"): the chip and the source list say the same. */
+export function kindLabel(kind: string): { label: string; name: string } {
+  const k = (kind || "link").toLowerCase();
+  const label = KIND_LABEL[k] ?? k;
+  return { label, name: LABEL_NAME[label] ?? label };
+}
+
 /** One chip per source kind, in the order they first appear. */
 export function chips(sources: Source[]): Chip[] {
   const out: Chip[] = [];
   for (const s of sources) {
     const kind = (s.kind || "link").toLowerCase();
-    const label = KIND_LABEL[kind] ?? kind;
+    const { label, name } = kindLabel(kind);
     const have = out.find((c) => c.label === label);
     if (have) have.n++;
-    else out.push({ kind, label, n: 1 });
+    else out.push({ kind, label, name, n: 1 });
   }
   return out;
+}
+
+/** A chip's tooltip: "GitHub, 2 sources". */
+export function chipTitle(c: Chip): string {
+  return `${c.name}, ${c.n} source${c.n === 1 ? "" : "s"}`;
 }
 
 /** "10:42" in local time. */
@@ -72,14 +96,15 @@ export function clock(at: number, tz?: string): string {
   return new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz });
 }
 
-/** Who asked, for the card's top line: a workspace's name, a loop, or the app. */
+/** Who asked, for the card's top line, all in one shape: a workspace's
+ *  name, "sitrep loop", or "the app". */
 export function fromLabel(asker: string): string {
   const a = asker.trim();
   if (!a) return "";
-  if (a === "app") return "from the app";
-  if (a.startsWith("loop:")) return `loop ${a.slice(5)}`;
-  if (a.startsWith("ask:")) return `from ${a.slice(4)}`;
-  return `from ${a}`;
+  if (a === "app") return "the app";
+  if (a.startsWith("loop:")) return `${a.slice(5)} loop`;
+  if (a.startsWith("ask:")) return a.slice(4);
+  return a;
 }
 
 export function card(e: Entry, tz?: string): Card {
@@ -108,11 +133,78 @@ export function daysToLoad(today: string, days: string[], n = 4): string[] {
   return [today, ...rest];
 }
 
-/** The whistle: resting, piping while the Bosun works, or one trill for a new answer. */
-export type Mood = "rest" | "pipe" | "trill";
+/** How many logged days are older than the ones `daysToLoad` asks for: what "Show older" would add. */
+export function olderDays(today: string, days: string[], n = 4): number {
+  return Math.max(0, days.filter((d) => d !== today && d < today).length - Math.max(0, n - 1));
+}
+
+// ---- the filter ----
+
+/** A question as compared with another: case, spacing and a closing "?" do not count. */
+export function sameQuestion(q: string): string {
+  return q.toLowerCase().replace(/\s+/g, " ").trim().replace(/[\s?.!]+$/, "");
+}
+
+/** Whether an answer matches the filter: every word of it, anywhere in the
+ *  question, the answer, who asked, or a source's label, ref or kind. */
+export function matches(e: Entry, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = [e.question, e.answer, e.asker, fromLabel(e.asker), ...(e.sources ?? []).flatMap((s) => [s.label, s.ref, s.kind, kindLabel(s.kind).name])]
+    .join("\n")
+    .toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
+/** The rail narrowed to the answers that match, with how many show of how many. */
+export function filterRail(days: Day[], query: string): { days: Day[]; shown: number; total: number } {
+  const total = days.reduce((n, d) => n + d.cards.length, 0);
+  if (!query.trim()) return { days, shown: total, total };
+  const out = days.map((d) => ({ ...d, cards: d.cards.filter((c) => matches(c.entry, query)) })).filter((d) => d.cards.length);
+  return { days: out, shown: out.reduce((n, d) => n + d.cards.length, 0), total };
+}
+
+// ---- newer answers and re-checks ----
+
+/** For each answer that a later one asked again, the newest such answer's id. */
+export function newerAnswers(entries: Entry[]): Map<string, string> {
+  const newest = new Map<string, Entry>();
+  for (const e of entries) {
+    const k = sameQuestion(e.question);
+    const had = newest.get(k);
+    if (!had || e.at > had.at) newest.set(k, e);
+  }
+  const out = new Map<string, string>();
+  for (const e of entries) {
+    const n = newest.get(sameQuestion(e.question))!;
+    if (n.id !== e.id && n.at > e.at) out.set(e.id, n.id);
+  }
+  return out;
+}
+
+/** The answer a re-check of `question`, sent at `since`, came back as: the
+ *  newest entry asking the same that was logged at or after it. Null until it lands. */
+export function landed(question: string, since: number, entries: Entry[]): string | null {
+  const k = sameQuestion(question);
+  let best: Entry | null = null;
+  for (const e of entries) if (e.at >= since && sameQuestion(e.question) === k && (!best || e.at > best.at)) best = e;
+  return best?.id ?? null;
+}
+
+/** What a waiting re-check says, by what the Bosun is doing. */
+export function pendingNote(live: boolean, state: string | undefined): string {
+  if (!live) return "Queued. The Bosun answers once it is running.";
+  if (state === "needs_input") return "Queued. It waits until you answer the Bosun's prompt.";
+  if (state === "working") return "Queued. The Bosun answers after its current turn.";
+  return "Re-checking. The new answer lands at the top.";
+}
+
+/** The whistle: resting, piping while the Bosun works, waiting on you, or one trill for a new answer. */
+export type Mood = "rest" | "pipe" | "wait" | "trill";
 
 export function mood(state: string | undefined, fresh: boolean): Mood {
   if (fresh) return "trill";
+  if (state === "needs_input") return "wait";
   return state === "working" ? "pipe" : "rest";
 }
 
@@ -135,9 +227,96 @@ export function recheck(e: Entry): string {
   return e.question.trim();
 }
 
+// ---- the answer's text ----
+
+/** A run of text inside a line: plain, `code`, **bold**, or a bare URL. */
+export type Span = { t: "text" | "code" | "b" | "url"; s: string };
+/** A block of an answer: a heading, a paragraph, a list, or fenced code. */
+export type Block =
+  | { t: "h"; level: number; spans: Span[] }
+  | { t: "p"; spans: Span[] }
+  | { t: "ul" | "ol"; items: Span[][] }
+  | { t: "pre"; s: string };
+
+/** The inline marks the Bosun writes: code ticks, bold, and bare links. */
+export function mdInline(line: string): Span[] {
+  const out: Span[] = [];
+  const re = /`([^`]+)`|\*\*(.+?)\*\*|(https?:\/\/[^\s<>()\]]*[^\s<>()\].,;:!?'"])/g;
+  let last = 0;
+  for (const m of line.matchAll(re)) {
+    if (m.index! > last) out.push({ t: "text", s: line.slice(last, m.index) });
+    if (m[1] !== undefined) out.push({ t: "code", s: m[1] });
+    else if (m[2] !== undefined) out.push({ t: "b", s: m[2] });
+    else out.push({ t: "url", s: m[3] });
+    last = m.index! + m[0].length;
+  }
+  if (last < line.length) out.push({ t: "text", s: line.slice(last) });
+  return out;
+}
+
+/** An answer's markdown as blocks, for the reading pane to draw as plain
+ *  elements (never as HTML): headings, paragraphs, lists, fenced code. */
+export function mdBlocks(text: string): Block[] {
+  const out: Block[] = [];
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  let para: string[] = [];
+  const flush = () => {
+    if (para.length) out.push({ t: "p", spans: mdInline(para.join("\n")) });
+    para = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\s*```/.test(l)) {
+      flush();
+      const code: string[] = [];
+      while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
+      out.push({ t: "pre", s: code.join("\n") });
+      continue;
+    }
+    const h = /^(#{1,6})\s+(.*)$/.exec(l);
+    const ul = /^\s*[-*+]\s+(.*)$/.exec(l);
+    const ol = /^\s*\d+[.)]\s+(.*)$/.exec(l);
+    if (h) {
+      flush();
+      out.push({ t: "h", level: h[1].length, spans: mdInline(h[2].trim()) });
+    } else if (ul || ol) {
+      flush();
+      const t = ul ? "ul" : "ol";
+      const prev = out[out.length - 1];
+      const item = mdInline((ul ?? ol)![1]);
+      if (prev && prev.t === t) prev.items.push(item);
+      else out.push({ t, items: [item] });
+    } else if (!l.trim()) flush();
+    else para.push(l.replace(/^\s*>\s?/, ""));
+  }
+  flush();
+  return out;
+}
+
 /** ~ for the home folder in a path. */
 export function tilde(p: string): string {
   return p.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+}
+
+/** Where a source goes, for its row: a web page (by host), a file (by
+ *  folder), or nowhere (a ticket key, a query), with a short name to show. */
+export function sourceRow(s: Source): { to: "web" | "file" | "none"; name: string; where: string } {
+  const t = sourceTarget(s);
+  if (t && "url" in t) {
+    let host = "";
+    try {
+      host = new URL(t.url).host.replace(/^www\./, "");
+    } catch {
+      /* not a URL after all: no host */
+    }
+    return { to: "web", name: s.label || t.url, where: host };
+  }
+  if (t) {
+    const base = t.path.split("/").pop() || t.path;
+    const dir = tilde(t.path.slice(0, t.path.length - base.length).replace(/\/$/, ""));
+    return { to: "file", name: s.label || (t.line ? `${base}:${t.line}` : base), where: dir };
+  }
+  return { to: "none", name: s.label || s.ref, where: "" };
 }
 
 // ---- Ask the Bosun (bosun_ask.ts) ----
