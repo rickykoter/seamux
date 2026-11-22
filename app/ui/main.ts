@@ -89,9 +89,35 @@ tabs.onSelect = (id) => {
   if (id === "doctor") doctorView.shown();
   bosunView.setShown(id === "bosun");
   if (id === "bosun") bosunView.focusMain();
+  focusMain(id);
   // The focus log (focus_log.rs) names the tab each loss happened on.
   void invoke("focus_tab", { tab: id }).catch(() => {});
 };
+
+/** Each view's main area, which takes the keys when its tab is selected. */
+const mains: Record<string, { focusMain(): boolean }> = { dock: dockView, review: reviewView, radar: radarView, doctor: doctorView };
+let focusGen = 0;
+/** Keys to the selected tab's main area: now, or once the view has drawn it
+ *  (Doctor and Lookout draw after a scan, the Dock's terminal after it
+ *  attaches), for up to 3 s. A later select, or focus the person or a caller
+ *  put anywhere but the tab strip, ends the wait: they win. */
+function focusMain(id: string): void {
+  const view = mains[id];
+  if (!view) return;
+  const gen = ++focusGen;
+  const until = performance.now() + 3000;
+  // Free: nowhere, on the strip, or on something the switch just hid (the
+  // last tab's button, under ⌘1…⌘3).
+  const free = () => {
+    const a = document.activeElement;
+    return !a || a === document.body || !!a.closest("#strip") || a.getClientRects().length === 0;
+  };
+  const attempt = () => {
+    if (gen !== focusGen || tabs.current !== id || !free() || view.focusMain()) return;
+    if (performance.now() < until) window.setTimeout(attempt, 100);
+  };
+  attempt();
+}
 // Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
 // at the end of the strip. Choosing a session shows it in the Dock.
 const palette = new Palette();

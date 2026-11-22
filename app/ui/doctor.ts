@@ -86,6 +86,16 @@ export class DoctorView {
     void invoke<string>("home_dir").then((h) => (this.home = h), () => {});
   }
 
+  /** main.ts: the tab was selected. Keys go to the first fix under Needs
+   *  you, else the first workspace row's action. False until a scan draws one. */
+  focusMain(): boolean {
+    const b =
+      this.root.querySelector<HTMLElement>(".doc-needs .doc-acts button:not(:disabled)") ??
+      this.root.querySelector<HTMLElement>(".doc-ws .doc-acts button:not(:disabled)");
+    b?.focus();
+    return !!b && document.activeElement === b;
+  }
+
   /** The tab was selected: look again. */
   shown(): void {
     void this.scan();

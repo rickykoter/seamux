@@ -239,6 +239,11 @@ export class DockView {
   }
 
   /** A click on a notification: show its workspace and pane. */
+  /** The tab was selected: keys go to the shown pane's terminal (main.ts). */
+  focusMain(): boolean {
+    return this.sheet.focusMain();
+  }
+
   jump(ws: string, pane: string): void {
     if (ws) this.select(ws, true, "any", pane);
   }
