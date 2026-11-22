@@ -161,6 +161,9 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
   const signalled = r => r && r.signal && ["SIGINT", "SIGTERM", "SIGHUP"].includes(r.signal) ? r.signal : "";
   for (let k = 0; k < steps.length; k++) {
     const s = steps[k];
+    // A step's place in a note: its stage when it has one (a land recipe's),
+    // else its number within this exec.
+    const where = s.stage || `step ${k + 1}`;
     if (s.kind === "acquire") continue;
     const at = { step: k + 1, kind: s.kind, command: s.command };
     if (s.kind === "claim") {
@@ -182,7 +185,7 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
         polls++;
         const left = Math.max(1, Math.ceil((until - Date.now()) / 1000));
         last = sh(cwd, s.command, { timeout: left, log, env: vars });
-        if (signalled(last)) return done("fail", `terminated by ${last.signal} at step ${k + 1}: ${s.command}`, { ...at, code: -1, signal: last.signal });
+        if (signalled(last)) return done("fail", `terminated by ${last.signal} at ${where}: ${s.command}`, { ...at, code: -1, signal: last.signal });
         if (last.ok && (!s.export || last.value)) break;
         if (Date.now() + every >= until)
           return done("fail", `wait gave up after ${s.timeout || 1200}s (${polls} polls): ${s.command}`,
@@ -196,19 +199,19 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
     const r = s.kind === "browser"
       ? runBrowser(s, { cwd, env: vars, log, timeout: s.timeout || exec.timeout || 900, browser: { ...browser, root } })
       : sh(cwd, s.command, { timeout: s.timeout || exec.timeout || 900, log, env: vars });
-    if (signalled(r)) return done("fail", `terminated by ${r.signal} at step ${k + 1}: ${s.command}`, { ...at, code: -1, signal: r.signal });
+    if (signalled(r)) return done("fail", `terminated by ${r.signal} at ${where}: ${s.command}`, { ...at, code: -1, signal: r.signal });
     // No browser driver on this machine: the check needs a variant (a
     // person installs Playwright, or records it as a manual check).
     if (s.kind === "browser" && r.needsVariant)
       return { ...done("needs-variant", r.out, { ...at, code: -1 }), status: "needs-variant" };
     if (s.kind === "browser" && !r.ok)
       return done("fail", r.timedOut ? `timed out after ${s.timeout || exec.timeout || 900}s in the browser script ${s.command}`
-        : r.failedAt ? `${r.failedAt} (${s.command})` : `exit ${r.code} at step ${k + 1}: browser ${s.command}`,
+        : r.failedAt ? `${r.failedAt} (${s.command})` : `exit ${r.code} at ${where}: browser ${s.command}`,
       { ...at, code: r.code, timedOut: r.timedOut, tail: r.out });
     if (!r.ok)
       return done("fail", r.timedOut
-        ? `timed out after ${s.timeout || exec.timeout || 900}s at step ${k + 1}: ${s.command}`
-        : `exit ${r.code} at step ${k + 1}: ${s.command}`,
+        ? `timed out after ${s.timeout || exec.timeout || 900}s at ${where}: ${s.command}`
+        : `exit ${r.code} at ${where}: ${s.command}`,
       { ...at, code: r.code, timedOut: r.timedOut, tail: r.out });
     if (s.export) { vars[s.export] = r.value; append(log, `[${s.export}=${r.value}]\n`); }
   }

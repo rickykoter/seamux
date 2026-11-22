@@ -6431,6 +6431,9 @@ if (want("land: recipes that run after a merge")) {
   e = state(m3).recipes.flaky;
   ok("land: a failing stage fails the recipe and says where", r.status === 1 && e.status === "failed" &&
     e.stages.map(s => s.status).join() === "done,failed" && /deploy/.test(r.stdout), r.stdout + JSON.stringify(e.stages));
+  // The second stage's error names it, not "step 1" of its one-step exec.
+  ok("land: a failing stage's error names the stage, once", /^exit 1 at deploy: test -f /.test(e.error) &&
+    !/step 1/.test(e.error) && !/deploy: exit 1 at deploy/.test(r.stdout), e.error + " | " + r.stdout);
   fs.writeFileSync(flag, "");
   const firstStart = e.stages[0].start;
   r = land("run", "--merge", m3, "--recipe", "flaky");

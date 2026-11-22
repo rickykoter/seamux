@@ -290,7 +290,10 @@ function runLocked(root, { recipe, key, sp, merge, pr, home, fresh }) {
   let vars = { ...exports, MERGE_SHA: merge, PR: prNow, REPO: root };
   const cwd = path.posix.join(recipe.project || ".", recipe.cwd || ".");
   for (let k = start; k < recipe.steps.length; k++) {
-    const { stage, writes, ...step } = recipe.steps[k];
+    // The step keeps its stage, so runExec's notes name it ("exit 1 at
+    // install: …") rather than counting within this one-step exec.
+    const { writes, ...rest } = recipe.steps[k];
+    const step = { ...rest, stage: stageName(recipe.steps[k], k) };
     if (k === recrashed) {
       e.status = "awaiting";
       e.stages[k] = { name: e.stages[k].name, status: "awaiting", cut: true };
@@ -314,7 +317,7 @@ function runLocked(root, { recipe, key, sp, merge, pr, home, fresh }) {
       e.error = r.note || r.status;
       e.tail = (r.ran && r.ran.tail) || "";
       save();
-      return { status: "failed", note: `${e.stages[k].name}: ${e.error}` };
+      return { status: "failed", note: e.error };
     }
     vars = r.vars || vars;
     e.exports = Object.fromEntries(Object.entries(vars).filter(([n]) => !LAND_VARS.includes(n) && !(n in (recipe.env || {}))));
