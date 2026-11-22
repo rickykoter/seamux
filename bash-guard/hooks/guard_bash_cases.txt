@@ -165,23 +165,31 @@ allow git reset --mixed
 allow git reset
 
 # ---- checkout / restore / switch that discard uncommitted changes
-block git checkout -- file.txt
+allow git checkout -- file.txt
 block git checkout .
 block git checkout -- .
-block git checkout HEAD -- src/a.py
+allow git checkout HEAD -- src/a.py
 block git checkout main -- .
 block git checkout -f main
 block git checkout --force main
 block git restore .
-block git restore -- file.txt
-block git restore file.txt
+allow git restore -- file.txt
+allow git restore file.txt
 block git restore --worktree .
 block git restore --staged --worktree .
 block git restore -SW .
 block git restore -WS .
-block git restore -s HEAD~1 file.txt
-block git restore --source=HEAD file.txt
+allow git restore -s HEAD~1 file.txt
+allow git restore --source=HEAD file.txt
 block git restore -p .
+block git restore :/
+block git restore -- '*'
+block git checkout -- :/
+block git checkout HEAD -- '*'
+block git checkout HEAD~1 -- ./
+allow git checkout main -- src/a.py src/b.py
+allow git checkout -- src/
+allow git restore --staged --worktree src/a.py
 block git restore --staged --no-staged .
 block git restore --staged . && git restore .
 block cat <<EOF\ndon't\nEOF\ngit restore --staged a && git restore .

@@ -663,25 +663,31 @@ check_segment() {
     fi
   fi
 
-  # hard reset / destructive checkout that wipes uncommitted work
+  # hard reset / destructive checkout that wipes uncommitted work. A checkout
+  # or restore that names its files goes through: it discards only those, and
+  # `git show HEAD:f > f` does the same unguarded. One that takes the whole
+  # tree (`.`, `:/`, `*`) or forces a branch switch is blocked.
   if git_args "$seg" reset && has "$args" '--ha[a-z]*'; then
     block "git reset --hard"
   fi
-  if git_args "$seg" checkout && has "$args" '--|\.|--f[a-z]*|-[[:alnum:]]*f[[:alnum:]]*'; then
+  whole_tree="${danger_target}|:/[.*]*|:\(top\)[.*]*"
+  if git_args "$seg" checkout && has "$args" "--f[a-z]*|-[[:alnum:]]*f[[:alnum:]]*|${whole_tree}"; then
     block "git checkout/restore -- (discards uncommitted changes)"
   fi
   if git_args "$seg" switch && has "$args" '--di[a-z-]*|--f[a-z]*|-[[:alnum:]]*f[[:alnum:]]*'; then
     block "git switch --discard-changes (discards uncommitted changes)"
   fi
   # restore writes the worktree unless it is told --staged (-S) alone; that
-  # only unstages, so it goes through. Flag letters are case-sensitive here:
-  # -s is --source. A separator in its words means an unclosed quote merged
-  # commands into this one, and then no --staged here vouches for them.
+  # only unstages, so it goes through, and so does one that names its files.
+  # Flag letters are case-sensitive here: -s is --source. A separator in its
+  # words means an unclosed quote merged commands into this one, and then no
+  # --staged or file name here vouches for them.
   if git_args "$seg" restore; then
     shopt -u nocasematch
     if [[ "$args" == *[\;\&\|]* || "$args" == *"$NL"* ]] ||
-      ! has "$args" '--st[a-z]*|-[pqm23]*S[pqm23S]*' ||
-      has "$args" '--w[a-z]*|-[pqm23S]*W[pqm23SW]*|--no-st[a-z]*'; then
+      { { ! has "$args" '--st[a-z]*|-[pqm23]*S[pqm23S]*' ||
+        has "$args" '--w[a-z]*|-[pqm23S]*W[pqm23SW]*|--no-st[a-z]*'; } &&
+        has "$args" "$whole_tree"; }; then
       shopt -s nocasematch
       block "git checkout/restore -- (discards uncommitted changes)"
     fi
