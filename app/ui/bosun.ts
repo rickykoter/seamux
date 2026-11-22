@@ -219,8 +219,7 @@ export class BosunView {
     return this.tabShown || this.dropOpen;
   }
 
-  /** Read now, and on a timer while either place shows. */
-  /** One polling chain: a tick that a newer one overtook schedules nothing. While
+  /** Read now, then again on a timer. One polling chain: a tick that a newer one overtook schedules nothing. While
    *  neither place shows, only the state is read, slowly, so the tab's working
    *  dot goes out when the Bosun stops. */
   private tick(): void {
