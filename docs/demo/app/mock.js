@@ -7,6 +7,11 @@
 // crew-board wake.rs wake_data, review_app.rs jobs, reclaim.rs Report,
 // newws_app.rs Options, sessions.rs SessionRow, shell.rs IntentServer.
 //
+// The scroll lab's page (/scroll-lab, vite.config.mjs) draws surfaces named
+// SCROLL-LAB-*: each is a fake fullscreen Claude (scrollclaude.mjs). A write
+// to one reaches it ?ipc= ms later (2 by default), as a Tauri invoke does,
+// and each wheel report scrolls it ?speed= lines (1 by default).
+//
 // Query parameters (on the app's URL):
 //   ?intent=http://127.0.0.1:PORT  frame plans, reviews and asks from that
 //                                  server (proxied by the stand-in, which
@@ -19,6 +24,7 @@
 //                                  Dock shows Move to native for them
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { QUESTION, HOME, REPO, TREES, GH, WORKSPACES, byKey, treeOf } from "./world.mjs";
+import { FakeClaude } from "./scrollclaude.mjs";
 
 const T0 = Date.now();
 const MIN = 60_000;
@@ -632,6 +638,29 @@ function input(surface, text) {
 
 // ── native terminals: a pane's screen as bytes for xterm.js ─────────────────
 
+/** The scroll lab's fake Claudes, by terminal id. */
+const labPtys = new Map();
+const isLab = (surface) => typeof surface === "string" && surface.startsWith("SCROLL-LAB-");
+const ipcMs = Math.max(0, Number(params.get("ipc") ?? 2) || 0);
+const labSpeed = Math.max(1, Number(params.get("speed") ?? 1) || 1);
+
+function labAttach(cols, rows, frames, ch) {
+  const id = 9000 + nextPty++;
+  labPtys.set(id, new FakeClaude({ cols, rows, frames: frames === "raw" ? "raw" : "whole", speed: labSpeed, send: (b) => ch?.onmessage?.(b) }));
+  return id;
+}
+
+/** A write to a lab pane: it gets there a moment later, and the page's
+ *  invoke answers then, so writes sent one after another wait their turn. */
+function labWrite(id, data) {
+  return new Promise((ok) =>
+    setTimeout(() => {
+      labPtys.get(id)?.write(data);
+      ok(null);
+    }, ipcMs),
+  );
+}
+
 const ptys = new Map();
 let nextPty = 1;
 const enc = new TextEncoder();
@@ -794,12 +823,12 @@ const handlers = {
   term_look: ({ dark } = {}) => (dark === false ? LIGHT_LOOK : LOOK),
 
   // Native panes: every demo pane is one, its ANSI lines redrawn as they change.
-  pty_native: ({ surfaceId }) => panes.has(surfaceId) && !plainPanes.has(surfaceId),
+  pty_native: ({ surfaceId }) => isLab(surfaceId) || (panes.has(surfaceId) && !plainPanes.has(surfaceId)),
   pty_reset: () => null,
-  pty_attach: ({ surfaceId, cols, onData }) => attach(surfaceId, cols, onData),
-  pty_detach: ({ id }) => (detach(id), null),
-  pty_write: ({ id, data }) => (write(id, data ?? ""), null),
-  pty_resize: ({ id, cols }) => (resize(id, cols), null),
+  pty_attach: ({ surfaceId, cols, rows, frames, onData }) => (isLab(surfaceId) ? labAttach(cols, rows, frames, onData) : attach(surfaceId, cols, onData)),
+  pty_detach: ({ id }) => (labPtys.get(id)?.close(), labPtys.delete(id), detach(id), null),
+  pty_write: ({ id, data }) => (labPtys.has(id) ? labWrite(id, data ?? "") : (write(id, data ?? ""), null)),
+  pty_resize: ({ id, cols, rows }) => (labPtys.has(id) ? labPtys.get(id).resize(cols, rows) : resize(id, cols), null),
   pty_scroll: () => null,
   pty_leave_scroll: () => null,
   pty_line_key: () => null,

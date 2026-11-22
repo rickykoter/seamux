@@ -10,6 +10,7 @@
 // serves the Dock's board (board.mjs) and, when the page is opened with
 // ?intent=http://127.0.0.1:PORT, proxies every other page (plans, reviews,
 // asks, usage) to that server.
+import fs from "node:fs";
 import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,35 @@ import { boardPage } from "./board.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..", "..");
 const APP = join(REPO, "app");
+
+/** /scroll-lab's body: two panes side by side, and the flicks that drive them. */
+const SCROLL_LAB_BODY = `<body class="lab">
+  <style>
+    body.lab { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: var(--fs-2)/1.4 -apple-system, system-ui, sans-serif; }
+    .lab-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+    .lab-bar h1 { margin: 0; font-size: var(--fs-3, 14px); }
+    .lab-bar p { margin: 0; color: var(--muted); flex: 1 1 22em; }
+    .lab-bar button, .lab-bar select { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 3px 10px; cursor: pointer; }
+    .lab-bar button:hover { border-color: var(--accent); }
+    .lab-bar label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+    #lab-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+    .lab-side { min-width: 0; min-height: 0; display: flex; background: var(--term); }
+    .lab-side .native-term { flex: 1; min-width: 0; }
+    @media (max-width: 720px) { #lab-grid { grid-template-columns: 1fr; } }
+  </style>
+  <header class="lab-bar">
+    <h1>Scroll lab</h1>
+    <p>Both panes scroll the same fake fullscreen Claude. Scroll each by hand to feel it, or flick one at a time to compare numbers: a flick on both shares one page, so each side's slow frames count the other's too.</p>
+    <button id="flick-before" type="button">Flick before</button>
+    <button id="flick-after" type="button">Flick after</button>
+    <button id="flick-both" type="button">Flick both</button>
+    <label>Write delay <select id="lab-ipc"><option value="0">0 ms</option><option value="2" selected>2 ms</option><option value="5">5 ms</option></select></label>
+    <label>Lines per report <select id="lab-speed"><option value="1" selected>1</option><option value="3">3</option></select></label>
+  </header>
+  <main id="lab-grid"></main>
+  <script type="module" src="/@fs${join(HERE, "scrolllab-page.mjs")}"></script>
+</body>
+</html>`;
 
 /** The stand-in intent server: its port, and where it proxies pages to. */
 const intent = { port: 0, target: "" };
@@ -96,6 +126,18 @@ function demo() {
         res.writeHead(404);
         res.end();
       });
+      // The scroll lab, side by side (scrolllab-page.mjs): the app's own
+      // head (its tokens and styles), its own body.
+      server.middlewares.use("/scroll-lab", async (req, res, next) => {
+        try {
+          const head = fs.readFileSync(join(APP, "ui", "index.html"), "utf8").split("<body>")[0];
+          const html = await server.transformIndexHtml(req.originalUrl ?? "/scroll-lab", head + SCROLL_LAB_BODY);
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+          res.end(html);
+        } catch (e) {
+          next(e);
+        }
+      });
     },
     transformIndexHtml() {
       return [
@@ -120,6 +162,6 @@ export default {
     strictPort: false,
     fs: { allow: [REPO] },
   },
-  optimizeDeps: { include: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-web-links", "@xterm/addon-clipboard"] },
+  optimizeDeps: { include: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-web-links", "@xterm/addon-clipboard", "@xterm/addon-webgl"] },
   plugins: [demo()],
 };
