@@ -23,6 +23,9 @@ it. Use `gh` for what is on GitHub instead.
 | a web page | its URL | `{"kind": "url", "ref": "<url>", "label": "<page title>"}` |
 
 Put the citation right after the fact it backs, not in a list at the end.
+An aside from general knowledge ("Bundler refuses to run under another
+Ruby") needs a source like any other fact, such as a link to the tool's
+docs. Without one, leave it out: the asker asked about this code root.
 When something could not be checked, say so in the answer ("not checked:
 the Splunk index was unreachable from the sandbox") rather than leaving it
 out. When sources disagree, give both and say which is newer.

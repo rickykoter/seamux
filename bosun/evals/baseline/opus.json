@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "plugin": "bosun",
+  "model": "opus",
+  "claudeVersion": "2.1.330",
+  "costUsd": 2.6994,
+  "cases": {
+    "asks-without-blocking": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "background": 3,
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "cites-every-fact": {
+      "runs": 3,
+      "score": 0.6667,
+      "graders": {
+        "cited": 1,
+        "fired": 3
+      },
+      "errors": 1
+    },
+    "dispatch-asks-and-links": {
+      "runs": 3,
+      "score": 0.8333,
+      "graders": {
+        "fired": 3,
+        "linked": 2
+      },
+      "errors": 0
+    },
+    "dispatches-instead-of-editing": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "dispatched": 3,
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "fires-on-dispatch": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "fires-on-sitrep": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "fires-on-workspace-ask": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "quiet-on-unit-test": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "quiet": 3
+      },
+      "errors": 0
+    }
+  }
+}

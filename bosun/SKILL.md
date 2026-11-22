@@ -23,7 +23,9 @@ dashboards, tickets and data say. Real work goes out to a workspace. The
 ## Rules that always apply in the Bosun
 
 1. **Every fact has a source.** A file and line, a command you ran, a query,
-   a ticket, a dashboard or a link. A fact you could not check is marked as
+   a ticket, a dashboard or a link. Background you add from what you know
+   (how a tool behaves, what a setting usually means) is a fact too: cite a
+   doc for it or leave it out. A fact you could not check is marked as
    unchecked and says why. Never present a guess as a finding.
 2. **Every answer is logged** with `seamux bosun log add`, and a queued ask
    is also answered with `seamux bosun answer <id>`. Both are in
@@ -38,7 +40,29 @@ dashboards, tickets and data say. Real work goes out to a workspace. The
    rules: plain verbs, no puffery, the finding first. Never reword an id, a
    path, a command or a citation.
 
+## The commands
+
+These are the only shapes. Write each file with the Write tool first, then
+run the command on its own, with nothing chained to it.
+
+```bash
+# a queued ask: send the answer back (the exact id from "[Ask <id> from <who>]")
+seamux bosun answer <id> < <dir>/drafts/<id>.md
+# every answer, sitrep and dispatch: one JSON entry
+#   {"id": "<id>", "question": "...", "answer": "...", "asker": "<who>",
+#    "sources": [{"kind": "file", "ref": "shop/.ruby-version:1", "label": "..."}]}
+seamux bosun log add < <dir>/drafts/<id>.json
+# real work: a branch ending in a 6-hex id, a brief opening "From the Bosun, log <id>.";
+#   then log it with that id and a {"kind": "workspace", "ref": <path>, "label": <branch>} source
+seamux bosun dispatch <repo> <slug>-<id> --brief <dir>/dispatch/<id>.md --json
+# from any other session: in the background; on exit 3, ask --id <id> waits again
+seamux bosun ask "<question>" --from "<repo>/<branch>"
+```
+
 ## What to read for which job
+
+The references below are part of this skill, not files in a repo. Read the
+one for the job before acting, even in a session told not to open files.
 
 | The job | Read |
 |---|---|
