@@ -9049,6 +9049,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios gate: a trailing ** that ends at the folder still names it; a **/ that walks still reaches",
     sgate("Bash", { command: `ls ${path.dirname(SEALED)}//**` }).status === 2 &&
     sgate("Bash", { command: `cat ${path.dirname(TMP)}/**/scenarios.json` }).status === 2);
+  ok("scenarios gate: a ** that may walk from the data root is still refused: with a slash after it, or under globstar (inc6 f8, f9)",
+    sgate("Bash", { command: `for d in ${path.dirname(SEALED)}/**/; do cat $d/scenarios.json; done` }).status === 2 &&
+    sgate("Bash", { command: `shopt -s globstar; cat ${path.dirname(SEALED)}/**` }).status === 2 &&
+    sgate("Bash", { command: `bash -O globstar -c 'cat ${path.dirname(SEALED)}/**'` }).status === 2);
   ok("scenarios gate: a glob inside a quoted inner shell, a $( ) or a heredoc program is still read (inc6 f1, f2, f5)",
     sgate("Bash", { command: `bash -c 'cat ${path.dirname(TMP)}/*/s*/*/scenarios.json'` }).status === 2 &&
     sgate("Bash", { command: `echo "$(cat ${path.dirname(TMP)}/*/s*/*/scenarios.json)"` }).status === 2 &&

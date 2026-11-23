@@ -443,16 +443,28 @@ function globHits(p, at) {
   return all.some(one => segHits(one.replace(/^~(?=\/|$)/, HOME).replace(/^\$\{?HOME\}?(?=\/|$)/, HOME), at));
 }
 function segHits(s, at) {
+  // A ** that ends the glob, or ends it with a slash (zsh's **/ walks).
+  const slashEnd = /\*\*\/+$/.test(s);
   const segs = path.resolve(at, s).split("/").filter(Boolean);
+  // Whether a ** at segment i walks any depth. It does with more after it,
+  // with a slash after it, or when its base (the segments before it) holds a
+  // glob or lies at or below the data root: a command can set globstar
+  // (bash) or globstarshort (zsh) itself. Only a last ** whose base is above
+  // the data root (/**, ~/**, a JSDoc opener) is read as one level: a
+  // recursive search from there skips the hidden .claude by default, as
+  // reaches() says.
+  const floors = [FLOOR(), canon(FLOOR())];
+  const walks = i => {
+    if (i < segs.length - 1 || slashEnd) return true;
+    const base = "/" + segs.slice(0, i).join("/");
+    return GLOB.test(base) || floors.some(f => within(base, f));
+  };
   return roots().some(r => {
     const rs = r.split("/").filter(Boolean);
     const m = (i, j) => {
       if (j === rs.length) return true;
       if (i === segs.length) return false;
-      // ** walks any depth only with more after it (**/x); a last ** is one
-      // level, as * is: zsh recurses on **/ alone, and bash only with
-      // globstar set. A bare /** (a JSDoc opener) reaches nothing.
-      if (segs[i] === "**" && i < segs.length - 1) return m(i + 1, j) || m(i, j + 1);
+      if (segs[i] === "**" && walks(i)) return m(i + 1, j) || m(i, j + 1);
       let re; try { re = segRe(segs[i]); } catch { return false; }
       return re.test(rs[j]) && m(i + 1, j + 1);
     };
