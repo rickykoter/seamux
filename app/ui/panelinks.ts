@@ -236,6 +236,19 @@ async function intentOrigin(): Promise<string | null> {
   return origin;
 }
 
+/** A framed seamux page handing over a link ({ seamux: "open", url, shift?,
+ *  meta? }): followed as a pane's link is, but only from the intent server's
+ *  origin, so a dev server in a web tab cannot open files or pages. Says
+ *  whether it was taken. */
+export async function openFramed(d: object, from: string): Promise<boolean> {
+  const m = d as { url?: unknown; shift?: unknown; meta?: unknown };
+  if (typeof m.url !== "string" || m.url.length > 4096) return false;
+  const o = await intentOrigin();
+  if (!o || from.replace("//localhost:", "//127.0.0.1:") !== o) return false;
+  await follow(m.url, null, new MouseEvent("click", { shiftKey: m.shift === true, metaKey: m.meta === true }));
+  return true;
+}
+
 /** Follow a link the pane shows (see the top of this file). `id` names its
  *  terminal, for the workspace a page belongs to; `e` is the click. */
 export async function follow(uri: string, id: number | null, e?: MouseEvent): Promise<void> {

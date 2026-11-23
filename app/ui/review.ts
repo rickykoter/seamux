@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { follow, openPage } from "./panelinks";
+import { follow, openFramed, openPage } from "./panelinks";
 import { openAsk } from "./bosun_ask";
 import { reviewAsk, type AskContext } from "./bosun_model";
 import { listen } from "@tauri-apps/api/event";
@@ -429,8 +429,10 @@ export class ReviewView {
     window.addEventListener("message", (e) => {
       const f = this.frameBox.querySelector("iframe");
       if (!f || e.source !== f.contentWindow || e.origin !== this.pageOrigin) return;
-      const d = e.data as { lookout?: string; gate?: unknown; mode?: unknown } | null;
+      const d = e.data as { lookout?: string; seamux?: string; gate?: unknown; mode?: unknown } | null;
       if (!d || typeof d !== "object") return;
+      // Its other links, as any seamux page hands them over (panelinks.ts).
+      if (d.seamux === "open") return void openFramed(d, e.origin);
       if (d.lookout === "hello") {
         // A page that says hello is new (or reloaded itself): it holds no
         // picks, so the next render sends them again.

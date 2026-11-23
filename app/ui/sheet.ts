@@ -8,7 +8,7 @@ import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 import { face, GROUPS, groupOf, jump, ordered, round, WAKE, type GroupId } from "./sheetgroups";
 import { placeFor } from "./linkroute";
-import { awayLabel, openElsewhere, type Away } from "./panelinks";
+import { awayLabel, openElsewhere, openFramed, type Away } from "./panelinks";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -754,6 +754,15 @@ export class Sheet {
       const f = [...this.stack.querySelectorAll("iframe")].find((x) => x.contentWindow === e.source);
       if (!f || e.origin !== new URL(f.src, location.href).origin) return;
       void invoke("open_url", { url: d.url }).catch((err) => (this.say.textContent = String(err)));
+    });
+    // Any seamux page framed here hands over its other links (deep-plan's
+    // plan page: its trace and proof): a frame of this sheet, and
+    // openFramed takes it only from the intent server's origin.
+    window.addEventListener("message", (e) => {
+      const d = e.data as { seamux?: unknown } | null;
+      if (!d || typeof d !== "object" || d.seamux !== "open") return;
+      if (![...this.stack.querySelectorAll("iframe")].some((x) => x.contentWindow === e.source)) return;
+      void openFramed(d, e.origin);
     });
     this.noteEl.className = "sheet-tabs-note";
     this.noteEl.setAttribute("role", "status");

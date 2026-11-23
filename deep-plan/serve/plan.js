@@ -136,6 +136,15 @@
 
   document.addEventListener("click", function(ev){
     if (!ev.target.closest) return;
+    // Framed in the seamux app, whose webview opens no windows: a new-tab link
+    // (trace, proof) goes to the app, which opens it as a pane's link. In a
+    // browser tab of its own the link opens as it is.
+    var nt = window.parent !== window && ev.target.closest('a[target="_blank"][href]');
+    if (nt) {
+      ev.preventDefault();
+      window.parent.postMessage({ seamux: "open", url: nt.href, shift: ev.shiftKey, meta: ev.metaKey }, "*");
+      return;
+    }
     var f = ev.target.closest(".dp-path[data-file]");
     if (f) { ev.preventDefault(); return openPath(f); }
     var b = ev.target.closest(".dp-act[data-a][data-n]");
