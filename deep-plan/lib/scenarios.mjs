@@ -627,7 +627,7 @@ export function markStale(slug, amendment) {
   const a = { at: amendment.at || Date.now(), why: String(amendment.why || ""), changed: (amendment.changed || []).map(String) };
   const dropped = ((r.stale && r.stale.dropped) || 0) + ((r.stale && r.proposals) || []).length;
   const stale = r.stale ? { ...r.stale, seq: (r.stale.seq || (r.stale.amendments || []).length) + 1, amendments: [...(r.stale.amendments || []), a].slice(-20) }
-    : { since: a.at, seq: 1, amendments: [a] };
+    : { since: a.at, epoch: crypto.randomBytes(6).toString("hex"), seq: 1, amendments: [a] };
   if (dropped) stale.dropped = dropped;
   return writeRevisions(slug, { ...r, stale, proposals: null });
 }
@@ -689,6 +689,11 @@ export function revisePrompt({ approved, live, amendments, scenarios, harness })
   ].join("\n");
 }
 
+// The same stale mark, with no amend since: its epoch (new each time the
+// mark is set after a clear) and its count of amends.
+const sameEpisode = (a, b) => !!a && !!b && (a.epoch || "") === (b.epoch || "") &&
+  (a.seq || (a.amendments || []).length) === (b.seq || (b.amendments || []).length);
+
 // Run the writer on stale scenarios. Returns {changes: n} (0 clears the
 // mark) or {error}. Not stale is {changes: 0, notStale: true}.
 export function reviseScenarios(slug, { root, model } = {}) {
@@ -722,8 +727,7 @@ export function reviseScenarios(slug, { root, model } = {}) {
     const writer = { model: m, at: Date.now(), cost: out.cost ?? null };
     // Read again: an amend that landed while the writer ran is not lost.
     const now = readRevisions(slug);
-    const seq = x => (x && (x.seq || (x.amendments || []).length)) || 0;
-    if (!now.stale || seq(now.stale) !== seq(r.stale)) return { error: "the plan was amended again while the writer ran: run it again" };
+    if (!sameEpisode(now.stale, r.stale)) return { error: "the plan was amended again while the writer ran: run it again" };
     // Changes it asked for that could not be used are not "nothing to change".
     if (!proposals.length && asked) return { error: `the writer's ${asked} proposed change(s) could not be used (an unknown id, or no text), so they stay stale: run it again` };
     if (!proposals.length && now.stale.dropped) {
@@ -753,6 +757,9 @@ export function resolveProposal(slug, pid, accept) {
   }
   const rest = ps.filter(x => x.pid !== pid);
   const fresh = readRevisions(slug);
+  // An amend while the person answered dropped these proposals and owns the
+  // mark now: leave it (the accepted edit, if any, stands as theirs).
+  if (!sameEpisode(fresh.stale, r.stale) || !fresh.proposals) throw new Error("the plan was amended while you answered: reload the page");
   if (!rest.length) return writeRevisions(slug, { ...fresh, stale: null, proposals: null, cleared: { at: Date.now(), by: "person", how: "answered every proposal" } });
   return writeRevisions(slug, { ...fresh, proposals: rest });
 }
