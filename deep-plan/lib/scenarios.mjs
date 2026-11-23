@@ -241,6 +241,7 @@ export const isFull = v => !!v && (v.full === true || (v.full === undefined && (
 // done and ship ask of a plan with a scenarios check (ADR: a retry
 // re-judges only the failing scenarios; a full pass at HEAD gates the merge).
 export function fullPassAt(slug, head) {
+  if (readRevisions(slug).stale) return { ok: false, why: "an amend left the scenarios stale, so they wait on the writer's revisions and the person's answer" };
   const all = readSealedJson(slug, "verdicts.json");
   const v = (all && all.lastFull) || ((all && all.history) || []).find(isFull);
   if (!v) return { ok: false, why: "no full judge run yet" };
@@ -617,10 +618,17 @@ function writeRevisions(slug, r) { writeSealed(slug, "revisions.json", r); retur
 // amend's call. A newer amend drops proposals the person has not resolved:
 // the writer drafts again against every amendment since the scenarios
 // were last current.
+// seq counts every amend (the list keeps the last 20), so a writer can tell
+// one landed while it ran. Proposals dropped unanswered are remembered: a
+// re-draft that then proposes nothing does not clear the mark by itself,
+// or an agent could amend until the writer gives up (the person confirms).
 export function markStale(slug, amendment) {
   const r = readRevisions(slug);
   const a = { at: amendment.at || Date.now(), why: String(amendment.why || ""), changed: (amendment.changed || []).map(String) };
-  const stale = r.stale ? { ...r.stale, amendments: [...(r.stale.amendments || []), a].slice(-20) } : { since: a.at, amendments: [a] };
+  const dropped = ((r.stale && r.stale.dropped) || 0) + ((r.stale && r.proposals) || []).length;
+  const stale = r.stale ? { ...r.stale, seq: (r.stale.seq || (r.stale.amendments || []).length) + 1, amendments: [...(r.stale.amendments || []), a].slice(-20) }
+    : { since: a.at, seq: 1, amendments: [a] };
+  if (dropped) stale.dropped = dropped;
   return writeRevisions(slug, { ...r, stale, proposals: null });
 }
 
@@ -637,7 +645,7 @@ export function revisionState(slug) {
   const doc = readScenarios(slug);
   const title = id => { const s = doc && doc.scenarios.find(x => x.id === id); return s ? s.title : id; };
   const ps = r.proposals || [];
-  return { stale: true, waiting: ps.length, written: !!r.proposals, adds: ps.filter(p => p.action === "add").length,
+  return { stale: true, waiting: ps.length, written: !!r.proposals, dropped: r.stale.dropped || 0, adds: ps.filter(p => p.action === "add").length,
     touches: ps.filter(p => p.action !== "add").map(p => ({ id: p.id, title: title(p.id), action: p.action })) };
 }
 
@@ -700,6 +708,7 @@ export function reviseScenarios(slug, { root, model } = {}) {
     if (!out.ok) return { error: `the writer did not finish: ${out.error}` };
     const ids = new Set(doc.scenarios.map(s => s.id));
     const proposals = [];
+    const asked = (out.value.changes || []).length;
     for (const c of out.value.changes || []) {
       if (!c || !["edit", "remove", "add"].includes(c.action)) continue;
       if (c.action !== "add" && !ids.has(c.id)) continue;
@@ -713,7 +722,14 @@ export function reviseScenarios(slug, { root, model } = {}) {
     const writer = { model: m, at: Date.now(), cost: out.cost ?? null };
     // Read again: an amend that landed while the writer ran is not lost.
     const now = readRevisions(slug);
-    if ((now.stale && (now.stale.amendments || []).length) !== (r.stale.amendments || []).length) return { error: "the plan was amended again while the writer ran: run it again" };
+    const seq = x => (x && (x.seq || (x.amendments || []).length)) || 0;
+    if (!now.stale || seq(now.stale) !== seq(r.stale)) return { error: "the plan was amended again while the writer ran: run it again" };
+    // Changes it asked for that could not be used are not "nothing to change".
+    if (!proposals.length && asked) return { error: `the writer's ${asked} proposed change(s) could not be used (an unknown id, or no text), so they stay stale: run it again` };
+    if (!proposals.length && now.stale.dropped) {
+      writeRevisions(slug, { ...now, proposals: [], writer });
+      return { changes: 0, confirm: true, cost: out.cost };
+    }
     if (!proposals.length) { writeRevisions(slug, { ...now, stale: null, proposals: null, writer, cleared: { at: Date.now(), by: "writer", how: "nothing the amendments move" } }); return { changes: 0, cost: out.cost }; }
     writeRevisions(slug, { ...now, proposals, writer });
     return { changes: proposals.length, cost: out.cost };
@@ -728,7 +744,8 @@ export function resolveProposal(slug, pid, accept) {
   const ps = r.proposals || [];
   const p = ps.find(x => x.pid === pid);
   if (!p) throw new Error(`no proposal ${pid} waits for ${slug}`);
-  if (accept) {
+  const gone = p.action !== "add" && !((readScenarios(slug) || {}).scenarios || []).some(x => x.id === p.id);
+  if (accept && !gone) {
     const fields = Object.fromEntries(["title", "body", "expect"].filter(k => p[k] !== undefined).map(k => [k, p[k]]));
     if (p.action === "edit") editScenario(slug, p.id, fields, "person");
     else if (p.action === "remove") editScenario(slug, p.id, { delete: true }, "person");
@@ -767,7 +784,8 @@ export function scenariosPage(slug, key) {
   const revHtml = !rev.stale ? "" : `<section class="rev">
 <h2 style="font-size:16px">The plan changed after these were written</h2>
 <ul>${(rev.stale.amendments || []).map(a => `<li><span class="dim">${esc(new Date(a.at).toISOString().slice(0, 16).replace("T", " "))}</span> ${esc(a.why)}</li>`).join("")}</ul>
-${rev.proposals ? `<p class="sub">The writer proposed ${rev.proposals.length} revision(s). A scenarios check gives no verdict until you answer each one.</p>${rev.proposals.map(proposal).join("\n")}`
+${rev.proposals && !rev.proposals.length ? `<p class="sub">A later amend dropped the writer's earlier proposals, and its new draft proposes none. Confirm the scenarios as they are, or edit them, then keep them.</p>`
+    : rev.proposals ? `<p class="sub">The writer proposed ${rev.proposals.length} revision(s). A scenarios check gives no verdict until you answer each one.</p>${rev.proposals.map(proposal).join("\n")}`
     : `<p class="sub">The writer has not proposed revisions yet: the next scenarios check runs it (or <code>deep-plan scenarios revise ${esc(slug)}</code>).</p>`}
 <p><button data-do="current" class="quiet">Keep them all as they are</button> <span class="msg"></span></p>
 </section>`;

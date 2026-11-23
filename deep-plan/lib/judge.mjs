@@ -130,6 +130,8 @@ export function judgePrompt({ scenarios, exports, worktree }) {
 // What the builder is told while revisions wait: the existing titles they
 // touch and how many are new, never their text.
 export function staleLines(slug, rs) {
+  if (!rs.waiting) return [`scenarios: the plan was amended after they were written; the writer's earlier revisions were dropped by a later amend, and its new draft proposes none,`,
+    `  so the person confirms the scenarios as they are on the scenarios page (deep-plan scenarios show ${slug}, in their own shell); until then a check run gives no verdict and does not count`];
   return [`scenarios: the plan was amended after they were written, and ${rs.waiting} proposed revision(s) wait for the person:`,
     ...rs.touches.map(t => `  ${t.action}  ${t.id}  ${t.title}`),
     ...(rs.adds ? [`  add  ${rs.adds} new scenario(s)`] : []),
@@ -159,7 +161,7 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
     if (!revisionState(slug).written) {
       const rv = reviseScenarios(slug, { root });
       if (rv.error) return { code: NO_VERDICT, lines: [`scenarios: the plan was amended after they were written, and ${rv.error}`] };
-      if (!rv.changes) lines.push("scenarios: the plan was amended after they were written; the writer found nothing the amendments move, so they are current again");
+      if (!rv.changes && !rv.confirm) lines.push("scenarios: the plan was amended after they were written; the writer found nothing the amendments move, so they are current again");
     }
     const rs = revisionState(slug);
     if (rs.stale) return { code: NO_VERDICT, lines: [...lines, ...staleLines(slug, rs)] };

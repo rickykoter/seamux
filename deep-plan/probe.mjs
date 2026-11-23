@@ -9261,7 +9261,7 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
     !/NEW-STEPS|NEWTITLE|WHY-ONE|no-such/.test(r.stdout + JSON.stringify(chk("scn-a"))) && calls().length === nCalls + 1, r.stdout);
   nCalls = calls().length;
   r = sc("scenarios", "judge", "scn-a");
-  const r2 = sc("scenarios", "revise", "scn-a");
+  const r2 = sc("scenarios", "revise", "scn-a", "--force");
   ok("scenarios revise: while proposals wait, neither the judge nor revise runs a model again",
     r.status === 3 && /wait for the person/.test(r2.stdout) && calls().length === nCalls &&
     /stale: 2 proposed revision\(s\) after an amend wait for the person/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout + r2.stdout);
@@ -9280,10 +9280,22 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios page: rejecting the last proposal drops it and clears the mark",
     g.status === 200 && rev().stale === null && sealedDoc().scenarios.length === 2 && !/stale:/.test(sc("scenarios", "list", "scn-a").stdout), JSON.stringify(rev()));
   amendA("AMEND-THREE");
+  ok("scenarios: stale scenarios are not a full pass, so the last done, deliver and ship wait on the answer (f4)",
+    fpa(execSync("git rev-parse HEAD", { cwd: SR, encoding: "utf8" }).trim()).ok === false && /an amend left the scenarios stale/.test(fpa("x").why));
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [{ action: "edit", id: "no-such", body: "x", why: "typo" }] }));
+  r = sc("scenarios", "revise", "scn-a");
+  ok("scenarios revise: a writer whose changes are all unusable leaves them stale, as an error, not as nothing to change (f3)",
+    r.status !== 0 && /could not be used/.test(r.stderr) && rev().stale && rev().proposals === null, r.stdout + r.stderr);
   fs.writeFileSync(FREVISE, JSON.stringify({ changes: [{ action: "remove", id: "s1", why: "gone" }] }));
   r = sc("scenarios", "revise", "scn-a");
   ok("scenarios revise: deep-plan scenarios revise runs the writer now and names what its proposals touch",
     r.status === 0 && /remove {2}s1 {2}A retry is sent exactly once/.test(r.stdout) && rev().proposals.length === 1, r.stdout + r.stderr);
+  amendA("AMEND-FOUR");
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [] }));
+  r = sc("scenarios", "judge", "scn-a");
+  ok("scenarios revise: an amend that drops waiting proposals, then a draft with none, still waits for the person to confirm (f1)",
+    r.status === 3 && /earlier revisions were dropped by a later amend/.test(r.stdout) && rev().stale && rev().stale.dropped === 1 &&
+    JSON.stringify(rev().proposals) === "[]" && rev().stale.seq === 2 && /the person confirms them as they are/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout);
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=current&id=-`);
   ok("scenarios page: keep-them-all clears the mark and the proposals, and changes no scenario",
     g.status === 200 && rev().stale === null && rev().proposals === null && sealedDoc().scenarios.length === 2, JSON.stringify(rev()));

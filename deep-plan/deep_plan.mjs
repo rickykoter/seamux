@@ -5615,7 +5615,8 @@ function scenariosCmd(args, flags) {
       (v.took ? `, in ${SCN.took(v.took.total)}` : ""));
     if (access) say(`the access log holds ${access} refused attempt(s) to read them`);
     const rs = SCN.revisionState(slug);
-    if (rs.stale) say(rs.written ? `stale: ${rs.waiting} proposed revision(s) after an amend wait for the person (deep-plan scenarios show ${slug}, in their own shell)`
+    if (rs.stale) say(rs.written ? (rs.waiting ? `stale: ${rs.waiting} proposed revision(s) after an amend wait for the person (deep-plan scenarios show ${slug}, in their own shell)`
+      : `stale: after an amend, the person confirms them as they are (deep-plan scenarios show ${slug}, in their own shell)`)
       : `stale: the plan was amended after they were written; the next scenarios check has the writer propose revisions (or deep-plan scenarios revise ${slug})`);
     return;
   }
@@ -5624,7 +5625,9 @@ function scenariosCmd(args, flags) {
     if (!SCN.readScenarios(slug)) die(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug}`);
     const before = SCN.revisionState(slug);
     if (!before.stale) { say(`${slug}'s scenarios are current: no amend since they were last written or answered`); return; }
-    if (before.written && !flags.force) {
+    // Proposals already wait: they are the person's to answer, never redrawn
+    // from a session (a redraw that proposed nothing would clear them).
+    if (before.written) {
       for (const l of staleLines(slug, before)) say(l);
       return;
     }
@@ -5633,7 +5636,7 @@ function scenariosCmd(args, flags) {
     if (r.error) die(r.error);
     const fresh = readState(slug);
     if (fresh) { log1(fresh, `scenarios: the writer proposed ${r.changes} revision(s) after an amend`); writeState(fresh); }
-    if (!r.changes) { say(`the writer found nothing the amendments move: ${slug}'s scenarios are current again`); return; }
+    if (!r.changes && !r.confirm) { say(`the writer found nothing the amendments move: ${slug}'s scenarios are current again`); return; }
     for (const l of staleLines(slug, SCN.revisionState(slug))) say(l);
     return;
   }
@@ -7676,7 +7679,7 @@ switch (cmd) {
                                               attempts to read them
   scenarios judge <slug> [--threshold T]      judge every scenario at HEAD (a check run may
                                               judge only the failing ones)
-  scenarios revise <slug> [--force]           after an amend, the writer proposes revisions
+  scenarios revise <slug>                     after an amend, the writer proposes revisions
                                               for the person to answer on the page
   scenarios show|edit <slug>                  the person's: open the keyed page, or an editor
   intake <link> [--json]                      gather an issue, PR, failed Actions run or Jira

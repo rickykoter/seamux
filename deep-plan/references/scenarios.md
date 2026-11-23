@@ -177,7 +177,11 @@ The person answers on the scenarios page. Accept applies a proposal as
 their own edit, reject drops it, and "Keep them all as they are" drops every
 proposal. Once the last one is answered the mark clears, and the next check
 judges. An amend while proposals wait drops them, and the writer drafts
-again against every amendment since the scenarios were last current.
+again against every amendment since the scenarios were last current. If
+that new draft proposes nothing, the mark still waits for the person to
+confirm the scenarios as they are, so amending again cannot talk a waiting
+revision away. While the mark stands, no full run counts as a pass, so the
+last `done`, `deliver` and ship wait too.
 
 ## When a scenarios check fails
 
