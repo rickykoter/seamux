@@ -9356,6 +9356,11 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=current&id=-`);
   ok("scenarios page: keep-them-all clears the mark and the proposals, and changes no scenario",
     g.status === 200 && rev().stale === null && rev().proposals === null && sealedDoc().scenarios.length === 2, JSON.stringify(rev()));
+  const SVLOG = VENV.DEEP_PLAN_SERVE_FILE.replace(/\.json$/, "") + ".log";
+  const red = spawnSync("node", ["--input-type=module", "-e", `import { redact } from ${JSON.stringify(path.join(HERE, "lib", "serve.mjs"))}; console.log(redact("FAIL GET /scenarios/x?k=${KEY}&op=save: boom"))`],
+    { encoding: "utf8", env: VENV }).stdout.trim();
+  ok("scenarios page: serve's log never holds the page key: it is redacted from every line (delivery f13)",
+    !fs.readFileSync(SVLOG, "utf8").includes(KEY) && red === "FAIL GET /scenarios/x?k=<redacted>&op=save: boom", red);
   spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--stop"], { env: VENV });
 }
 

@@ -43,9 +43,12 @@ export const INC_ACTIONS = ["go", "start", "done", "block", "reset"];
 export const CHECK_VERBS = ["run", "answer", "tab", "evidence", "proof", "attach"];
 const ASKS_DIR = () => path.join(PLANS_DIR, "asks");
 
+// The log is readable to the building session, so no key or token reaches
+// it: a scenarios page's ?k= is the key to the sealed scenarios.
+export const redact = msg => String(msg).replace(/([?&](?:k|t|token)=)[^&\s#]+/gi, "$1<redacted>");
 function log(msg) {
   const p = n => String(n).padStart(2, "0"), d = new Date();
-  try { fs.appendFileSync(LOG_FILE, `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${msg}\n`); }
+  try { fs.appendFileSync(LOG_FILE, `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${redact(msg)}\n`); }
   catch { /* a log we cannot write is not a failure */ }
 }
 
