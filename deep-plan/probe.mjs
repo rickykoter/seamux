@@ -9036,19 +9036,17 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   // Globs count only where the shell expands them (note n1f5cda5d): a JSDoc
   // opener in a heredoc, or a glob in quoted text, is not a path.
   const JSDOC = "python3 - <<'EOF'\nimport re\np = 'app/ui/x.ts'\ns = open(p).read()\nopen(p, 'w').write(s.replace('a', '/** A note. */ a'))\nEOF";
-  ok("scenarios gate: a JSDoc opener in a heredoc that edits a file is not a read of the folder",
-    sgate("Bash", { command: JSDOC }).status === 0, sgate("Bash", { command: JSDOC }).stderr);
-  ok("scenarios gate: a trailing ** in a note or an echo is one level, so it is not a path into the folder",
-    sgate("Bash", { command: 'deep-plan note "the guard read Read(//Users/someone/code/**) as a path"' }).status === 0 &&
-    sgate("Bash", { command: "echo 'skip /** in quotes' && echo \"and /** here\"" }).status === 0);
+  ok("scenarios gate: a JSDoc opener in a heredoc still counts as a glob from the root, and the refusal says to make the edit with the Edit tool or a script file",
+    (r0 => r0.status === 2 && /make the edit with the Edit tool, or run it from a script file/.test(r0.stderr))(sgate("Bash", { command: JSDOC })), sgate("Bash", { command: JSDOC }).stderr);
   ok("scenarios gate: the same glob unquoted, where the shell expands it, is still refused",
     sgate("Bash", { command: `cat ${path.dirname(TMP)}/*/s*/*/scenarios.json` }).status === 2);
   ok("scenarios gate: a heredoc or a quoted string that names the sealed file literally is still refused",
     sgate("Bash", { command: `python3 - <<'EOF'\nprint(open(${JSON.stringify(path.join(SEALED, "scn-a", "scenarios.json"))}).read())\nEOF` }).status === 2 &&
     sgate("Bash", { command: `cat "${path.join(SEALED, "scn-a", "scenarios.json")}"` }).status === 2);
-  ok("scenarios gate: a trailing ** that ends at the folder still names it; a **/ that walks still reaches",
-    sgate("Bash", { command: `ls ${path.dirname(SEALED)}//**` }).status === 2 &&
-    sgate("Bash", { command: `cat ${path.dirname(TMP)}/**/scenarios.json` }).status === 2);
+  ok("scenarios gate: a double star anywhere walks, whatever follows it or whatever options the command sets (inc6 f10, f11)",
+    sgate("Bash", { command: `cat ${path.dirname(TMP)}/**` }).status === 2 &&
+    sgate("Bash", { command: `zsh -c 'setopt globstarshort glob_dots; cat ${path.dirname(TMP)}/**'` }).status === 2 &&
+    sgate("Bash", { command: `cat ${path.dirname(TMP)}/*/**/scenarios.json` }).status === 2);
   ok("scenarios gate: a ** that may walk from the data root is still refused: with a slash after it, or under globstar (inc6 f8, f9)",
     sgate("Bash", { command: `for d in ${path.dirname(SEALED)}/**/; do cat $d/scenarios.json; done` }).status === 2 &&
     sgate("Bash", { command: `shopt -s globstar; cat ${path.dirname(SEALED)}/**` }).status === 2 &&

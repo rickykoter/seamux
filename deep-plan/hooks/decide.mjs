@@ -52,7 +52,8 @@ if (tool === "Read" || tool === "Grep" || tool === "Glob" || tool === "Bash") {
     const slug = t.slugs.length === 1 ? t.slugs[0] : "?";
     process.stderr.write(`deep-plan gate [${slug}]: that names a plan's sealed scenarios, which the building session does not read. ` +
       `It is refused, and the attempt is in the plan's access log. deep-plan scenarios list ${slug === "?" ? "<slug>" : slug} gives their titles; ` +
-      `a check of kind scenarios runs the judge on them.\n`);
+      `a check of kind scenarios runs the judge on them. If this was an edit or text that only mentions a glob ` +
+      `(a JSDoc comment in a heredoc, a pattern in a note), make the edit with the Edit tool, or run it from a script file.\n`);
     process.exit(2);
   }
   if (tool !== "Bash") process.exit(0);
