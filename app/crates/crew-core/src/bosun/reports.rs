@@ -432,8 +432,11 @@ pub fn prepare_with(dir: &Path, item: &queue::Item, found: &Found, now_secs: i64
         Doc::At(u) => json!({"to": true, "ok": true, "url": u}),
     };
     run_v["banner"] = json!(r.banner);
-    write_run(dir, &item.id, &run_v)?;
+    // The queue gets the prompt first: a stop between the two writes leaves
+    // the run unbuilt, so the next try checks and builds it again, rather
+    // than a built run whose queue item still holds the placeholder.
     let built = queue::rewrite_text(item, &text)?;
+    write_run(dir, &item.id, &run_v)?;
     // The note is said once.
     if !k.note.is_empty() {
         if let Err(e) = update_state(dir, id, |k| k.note.clear()) {
@@ -535,10 +538,17 @@ pub fn done(dir: &Path, run: &str, v: &Value, now_secs: i64) -> Result<Value, St
     }
     let entry = json!({"id": run, "question": title, "answer": answer, "sources": sources, "asker": format!("report:{id}"), "report": report});
     // A done that logged and then failed later is tried again without a
-    // second entry: today's log already holds this run's.
-    // log::add files an entry under the real day, whatever `now_secs` says.
+    // second entry: the log already holds this run's report (today's, or
+    // yesterday's for a retry past midnight). log::add files an entry under
+    // the real day, whatever `now_secs` says. An entry with the run's id but
+    // no report (a stray log add) does not count: the card needs the report.
     let today = super::launch::local_day_hour(super::launch::now_secs()).0;
-    let logged = match super::log::list(dir, &today).unwrap_or_default().into_iter().find(|e| e["id"] == run) {
+    let yesterday = super::launch::local_day_hour(super::launch::now_secs() - 86_400).0;
+    let had = [today, yesterday]
+        .iter()
+        .flat_map(|d| super::log::list(dir, d).unwrap_or_default())
+        .find(|e| e["id"] == run && e["report"]["run"] == run);
+    let logged = match had {
         Some(e) => e,
         None => super::log::add_as(dir, &entry, true)?,
     };
@@ -1096,6 +1106,17 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         write_run(&d, &run, &rv).unwrap();
         done(&d, &run, &results, 300).unwrap();
         assert_eq!(super::super::log::list(&d, &super::super::launch::local_day_hour(super::super::launch::now_secs()).0).unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_stray_log_add_under_the_run_id_does_not_stand_in_for_the_report() {
+        let d = tmp("stray");
+        let run = built_run(&d);
+        super::super::log::add(&d, &json!({"id": run, "question": "Morning report", "answer": "logged by hand"})).unwrap();
+        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine"});
+        let e = done(&d, &run, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 200).unwrap();
+        assert_eq!(e["report"]["run"], json!(run), "the report entry is logged");
         let _ = fs::remove_dir_all(&d);
     }
 

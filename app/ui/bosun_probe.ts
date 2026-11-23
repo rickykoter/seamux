@@ -194,6 +194,7 @@ ok("a blank report title falls back to the question", reportOf(run({ ...good, ti
 ok("statuses read as words", statusLabel("needs") === "Needs you" && statusLabel("ok") === "Fine" && statusLabel("unchecked") === "Not checked");
 ok("the filter finds a section's line", matches(run(good), "datadog") && matches(run(good), "Not checked"));
 ok("a match in a shown section line needs no 'matched in'", matchedWhere(run(good), "datadog") === "");
+ok("a match on a status alone says which section", matchedWhere(run(good), "fine") === "status: Fine (Tickets)", matchedWhere(run(good), "fine"));
 ok("Run again queues the report, not its title", JSON.stringify(askAgain(run(good))) === '{"cmd":"bosun_report_run","args":{"id":"morning"}}');
 ok("Re-check on an answer queues its question", JSON.stringify(askAgain(e("a", "2026-11-23T09:00:00Z", " is X? ", "a"))) === '{"cmd":"bosun_send","args":{"text":"is X?"}}');
 ok("a run whose answer is only its section lines adds nothing", reportExtra({ ...run(good), answer: good.sections.map((s) => `- ${s.title}: ${s.line}`).join("\n") }, rr!) === "");

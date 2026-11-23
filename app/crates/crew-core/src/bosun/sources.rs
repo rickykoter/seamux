@@ -121,10 +121,11 @@ fn output_within(mut cmd: Command, limit: Duration, what: &str) -> Result<String
         .map_err(|e| format!("could not run {what}: {e}"))?;
     // Read on a thread, so a long listing can't fill the pipe and hang it.
     let mut out = child.stdout.take().ok_or(format!("{what}: no output"))?;
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut s = String::new();
         let _ = out.read_to_string(&mut s);
-        s
+        let _ = out_tx.send(s);
     });
     let start = Instant::now();
     let status = loop {
@@ -139,7 +140,12 @@ fn output_within(mut cmd: Command, limit: Duration, what: &str) -> Result<String
             Err(e) => return Err(format!("{what}: {e}")),
         }
     };
-    let text = reader.join().unwrap_or_default();
+    // A grandchild can keep the pipe open after claude exits: wait a moment
+    // for the rest of the output, never for good.
+    // An output that never finishes is an error, not an empty listing: empty
+    // would read as "no MCP server named …" for every source.
+    let text = out_rx.recv_timeout(Duration::from_secs(2)).map_err(|_| format!("{what} exited but its output did not finish"))?;
+    drop(reader);
     if !status.success() {
         return Err(format!("{what} exited with {status}"));
     }
@@ -149,7 +155,8 @@ fn output_within(mut cmd: Command, limit: Duration, what: &str) -> Result<String
 /// Whether `name` is an executable file in one of `path`'s folders.
 pub fn on_path(name: &str, path: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(path).any(|d| std::fs::metadata(d.join(name)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+    // An empty entry would mean the current folder: not a place to trust.
+    std::env::split_paths(path).filter(|d| d.is_absolute()).any(|d| std::fs::metadata(d.join(name)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
 /// What one check found: the servers (or why they could not be read) and
@@ -283,6 +290,7 @@ splunk: npx -y splunk-mcp - \u{2717} Failed to connect\n";
         assert_eq!(f.check(&Via::Cmd("gh".into())), Ok(()));
         assert_eq!(f.check(&Via::Cmd("plain".into())), Err("plain is not on PATH".into()), "not executable");
         assert_eq!(f.check(&Via::Cmd("jq".into())), Err("jq is not on PATH".into()));
+        assert!(!on_path("gh", &format!(":{}", "relative/dir")), "empty and relative entries are skipped");
         let _ = std::fs::remove_dir_all(&d);
     }
 

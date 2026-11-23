@@ -222,6 +222,10 @@ export function matchedWhere(e: Entry, query: string): string {
   const shown = report ? `${e.question}\n${report.sections.map((s) => `${s.title} ${s.line}`).join("\n")}` : `${e.question}\n${firstLine(e.answer, 80)}\n${fromLabel(e.asker)}`;
   const hidden = words.filter((w) => !w.test(shown));
   if (!hidden.length) return "";
+  // A report's dots carry its statuses in words the card does not print.
+  for (const s of report?.sections ?? []) {
+    if (hidden.some((w) => w.test(statusLabel(s.status)))) return `status: ${statusLabel(s.status)} (${s.title})`;
+  }
   for (const s of e.sources ?? []) {
     const t = `${s.label} ${s.ref}`;
     if (hidden.some((w) => w.test(t) || w.test(s.kind) || w.test(kindLabel(s.kind).name))) {
