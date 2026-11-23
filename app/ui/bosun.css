@@ -23,7 +23,7 @@
 .bosun-rail { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--strip); }
 /* The same height as the header beside it, so the two run as one line. */
 .bosun-rail-head {
-  display: flex; align-items: center; gap: 6px; padding: 0 8px 0 14px; min-height: 30px; box-sizing: border-box;
+  display: flex; align-items: center; gap: 6px; padding: 0 8px 0 14px; min-height: 32px; box-sizing: border-box;
   border-bottom: 1px solid var(--line); margin-bottom: 8px;
 }
 .bosun-rail-title { flex: 1; margin: 0; font-size: var(--fs-3); font-weight: 600; color: var(--fg); }
@@ -262,7 +262,7 @@ h4.bosun-md-h { font-size: var(--fs-2); color: var(--section); text-transform: u
 }
 .bosun-drop.down { transform: translateY(0); }
 .bosun-drop[hidden], .bosun-dim[hidden] { display: none; }
-.bosun-head { background: var(--strip); }
+.bosun-head { background: var(--strip); min-height: 32px; box-sizing: border-box; }
 .bosun-drop-btn {
   flex: none; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-2); padding: 2px 10px; min-height: 28px;
   box-sizing: border-box; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
@@ -313,7 +313,7 @@ body[data-bosun="needs"] .tab[data-tab="bosun"]::after {
   width: 7px; height: 7px; top: 4px; right: 3px; background: var(--ask);
   box-shadow: 0 0 0 2px var(--strip), 0 0 0 3px var(--ask); animation: bosun-blink 1.6s ease-in-out infinite;
 }
-body[data-bosun="new"] .tab[data-tab="bosun"]::after { width: 6px; height: 6px; top: 4px; right: 3px; background: var(--good); }
+body[data-bosun="new"] .tab[data-tab="bosun"]::after { width: 7px; height: 7px; top: 4px; right: 3px; box-sizing: border-box; background: none; border: 2px solid var(--good); }
 /* ⌘B and its hint mean nothing where the Bosun can't run. */
 body:not([data-backend="tmux"]) .bosun-hint { display: none; }
 

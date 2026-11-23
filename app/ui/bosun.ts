@@ -145,6 +145,8 @@ export class BosunView {
   /** A re-checked answer's id, to the answer it came back as (however the Bosun worded it). */
   private answered = new Map<string, string>();
   private settleUntil = 0;
+  /** An Ask went out from Radar or Lookout: until then, the log is read from any tab so its answer can light the tab. */
+  private watchUntil = 0;
   private dropNew = el("span", "bosun-drop-new");
   /** A card to bring into view on the next draw (a re-check's answer, or a newer answer asked for). */
   private scrollTo = "";
@@ -196,7 +198,7 @@ export class BosunView {
       }
     });
     const slash = el("kbd", "bosun-find-key", "/");
-    slash.title = "Press / on this tab to filter";
+    slash.title = "Press / to filter (from the rail or the reading pane; in the terminal, / goes to the Bosun)";
     findRow.append(icon("find"), this.find, slash);
     this.found.setAttribute("aria-live", "polite");
     this.rail.append(railHead, side, findRow, this.found, this.railList);
@@ -378,7 +380,7 @@ export class BosunView {
     const g = ++this.ticks;
     const shown = this.visible();
     // A re-check waiting on its answer is read for at the shown pace even from another tab, so the tab can say it landed.
-    const waiting = [...this.pending.values()].some((p) => p.state === "waiting");
+    const waiting = [...this.pending.values()].some((p) => p.state === "waiting") || performance.now() < this.watchUntil;
     void (shown ? this.read() : this.readState(waiting)).finally(() => {
       if (g === this.ticks) this.timer = window.setTimeout(() => this.tick(), this.visible() || waiting ? EVERY : EVERY_HIDDEN);
     });
@@ -573,7 +575,7 @@ export class BosunView {
   private canAsk(): { ok: boolean; why: string } {
     if (!this.status) return { ok: false, why: "Looking for the Bosun…" };
     if (!this.status.tmux) return { ok: false, why: "Re-check needs the Bosun, which runs on the tmux backend" };
-    if (this.ensureErr) return { ok: false, why: "Re-check is off: the Bosun didn't start. Use Try again beside its terminal" };
+    if (this.ensureErr) return { ok: false, why: "Re-check is off: the Bosun didn't start. Use Try again, beside the answers" };
     return { ok: true, why: "Ask the Bosun the same question again; its new answer lands at the top" };
   }
 
@@ -632,7 +634,14 @@ export class BosunView {
         more.dataset.act = "older";
         more.addEventListener("click", () => {
           this.span += MORE;
-          void this.readLog().then(() => this.drawRail());
+          // Keys stay on the rail: on the next Show older, or the first card it brought in.
+          const before = new Set(this.entries().map((x) => x.id));
+          void this.readLog().then(() => {
+            this.drawRail();
+            const next = this.railList.querySelector<HTMLElement>('[data-act="older"]');
+            const added = [...this.railList.querySelectorAll<HTMLElement>(".bosun-card")].find((c) => !before.has(c.dataset.id ?? ""));
+            (next ?? added?.querySelector<HTMLElement>(".bosun-card-main"))?.focus();
+          });
         });
         this.railList.append(more);
       }
@@ -799,9 +808,20 @@ export class BosunView {
         new Promise<never>((_, no) => (slow = window.setTimeout(() => no("timeout"), SEND_MS))),
       ]);
       Object.assign(mine, { state: "waiting", qid });
+      this.live.textContent = "Re-check queued.";
     } catch (err) {
-      const why = err === "timeout" ? "The Bosun's queue didn't answer in 15 seconds." : `Couldn't send it: ${String(err).replace(/\.$/, "")}.`;
-      Object.assign(mine, { state: "failed", err: why });
+      if (err === "timeout") {
+        // The queue was slow to say so, but the question may well be in it:
+        // keep waiting (found by its words) rather than offer a Retry that asks twice.
+        mine.state = "waiting";
+        this.live.textContent = "Re-check sent; the queue was slow to confirm it.";
+      } else {
+        const said = String(err).replace(/\.$/, "");
+        // The Bosun's pane is the one thing a person can do something about: say it in their words.
+        const why = /\bpane\b/i.test(said) ? "Couldn't send it: the Bosun stopped. Start it again beside the answers, then Retry." : `Couldn't send it: ${said}.`;
+        Object.assign(mine, { state: "failed", err: why });
+        this.live.textContent = why;
+      }
       console.error("bosun re-check", err);
     } finally {
       window.clearTimeout(slow);
@@ -1019,6 +1039,8 @@ export class BosunView {
   /** An Ask was queued (bosun_ask.ts): drop the Bosun down to watch it answer, or read now on its tab. */
   afterAsk(): void {
     this.asked = true;
+    // Its answer may land after the drop-down is put away: read for it from any tab for a while.
+    this.watchUntil = performance.now() + PENDING_MS;
     if (!this.tabShown) this.setDrop(true);
     else {
       this.closeReader(false);
