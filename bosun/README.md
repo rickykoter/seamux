@@ -34,8 +34,22 @@ in the background, with `ask --id <id>` to pick up an answer that came late.
 
 The Bosun runs on the seamux app's tmux backend only. Its sandbox lets out
 only the hosts and folders listed in `~/.claude/crew/bosun/bosun.json`
-(`sandbox.allowedDomains`, `sandbox.allowWrite`). Add `api.github.com` there
-for `gh`, and the folders a CLI keeps its cache in.
+(`sandbox.allowedDomains`, `sandbox.allowWrite`), and it reads them when it
+starts, so restart it after a change (`seamux bosun stop`, then
+`seamux bosun ensure`). Add the folders a CLI keeps its cache in to
+`sandbox.allowWrite`.
+
+GitHub is off until you add it. Put `api.github.com` in
+`sandbox.allowedDomains` for `gh`; until then a report's `cmd:gh` section
+reads Not checked and names that host. `gh` acts with your token, so once
+GitHub is on, a ticket or page that talks the Bosun into it could have `gh`
+write there too (a gist, a PR comment). The Bosun points `gh` at macOS's
+certificate file (`SSL_CERT_FILE=/etc/ssl/cert.pem`), so `gh` can check
+GitHub's certificate without a sandbox setting. Behind a proxy that swaps in
+your company's certificate, that file lacks it: set `SSL_CERT_FILE` to a
+bundle that includes it where the app will see it (an app opened from the
+Finder doesn't read your shell profile; `launchctl setenv` reaches it), then
+restart the app and the Bosun.
 
 A report in `bosun.json` (the supervisor writes starter ones, `morning` and
 `afternoon`, from the MCP servers you have, the first time it runs):
