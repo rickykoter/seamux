@@ -161,6 +161,15 @@ export function sealedSlugs() {
   catch { return []; }
 }
 
+// Where a refusal is written: the plan it names, else the plan whose root
+// holds the session's folder (when that plan has scenarios), else nowhere
+// but the shared log beside the plans (logAccess with no slugs). Not every
+// sealed plan: one session's slip is not another plan's history.
+export function logSlugs(slugs, ownSlug) {
+  if (slugs.length === 1) return slugs;
+  return ownSlug && slugs.includes(ownSlug) ? [ownSlug] : [];
+}
+
 // One line per refused attempt, in each plan it could have reached. The
 // same attempt again within a minute is not written twice (a page or a loop
 // hitting the server would bury the real ones), and the file is cut back to
@@ -170,6 +179,13 @@ export function logAccess(slugs, entry) {
   const now = new Date();
   const what = String(entry.what || "").slice(0, 400);
   const line = JSON.stringify({ at: now.toISOString(), ...entry, what }) + "\n";
+  if (!slugs.length) {
+    try {
+      fs.mkdirSync(SEALED_DIR, { recursive: true, mode: 0o700 });
+      fs.appendFileSync(path.join(SEALED_DIR, "access.log"), line, { mode: 0o600 });
+    } catch { /* the refusal stands whether or not it was written down */ }
+    return;
+  }
   for (const slug of slugs) {
     try {
       const d = ensureDir(slug), f = path.join(d, "access.log");
@@ -429,6 +445,41 @@ function segHits(s, at) {
 }
 const RECURSIVE = /(^|[\s;&|(`])(rg|ag|fd|find|tar|zip|rsync|du|tree|ls\s+(-\S*\s+)*-\S*R|grep\s+(-\S+\s+)*-\S*[rR]|cp\s+(-\S+\s+)*-\S*[rRa])\b/;
 
+// The part of a Bash command the shell expands globs in: the bodies of
+// heredocs and the insides of single- and double-quoted strings are blanked
+// (the shell expands no glob there), so a JSDoc opener in a heredoc that
+// edits a file, or a glob in a note's quoted text, is not a path. The
+// literal checks (a spelling of the folder, a path that lands in it, a cd)
+// still read the whole command.
+export function globText(cmd) {
+  const lines = String(cmd).split("\n");
+  const out = [];
+  let stop = null, tabs = false;
+  for (const line of lines) {
+    if (stop !== null) {
+      out.push("");
+      if ((tabs ? line.replace(/^\t+/, "") : line) === stop) stop = null;
+      continue;
+    }
+    out.push(line);
+    const m = line.match(/<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
+    if (m) { stop = m[3]; tabs = m[1] === "-"; }
+  }
+  let s = out.join("\n"), r = "", q = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (q === '"' && c === "\\") { r += "  "; i++; continue; }
+      if (c === q) { q = ""; r += c; } else r += c === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (c === "\\") { r += c + (s[i + 1] || ""); i++; continue; }
+    if (c === "'" || c === '"') q = c;
+    r += c;
+  }
+  return r;
+}
+
 // Whether a tool call names the sealed folder: {slugs, what} or null.
 // Read, Grep and Glob by their path fields (a Grep's pattern is a regex, not
 // a path); Bash by any spelling of the folder, a word that resolves into it
@@ -464,16 +515,21 @@ export function sealedTouch(tool, input = {}, cwd = process.cwd()) {
   let at = at0;
   const hit = p => slugsAt(p);
   if (hit(canon(at))) return { slugs: hit(canon(at)), what };
-  const recursive = RECURSIVE.test(cmd);
+  // Globs and recursive reads count only where the shell expands them.
+  const live = globText(cmd);
+  const recursive = RECURSIVE.test(live);
   for (const m of cmd.matchAll(/(?:^|[;&|(\n]\s*)cd\s+(['"]?)([^\s;&|'"()]+)\1/g)) {
     if (m[2] === "-" || /[$`]/.test(m[2].replace(/^\$\{?HOME\}?/, ""))) continue;
     at = expand(m[2], at);
     if (hit(at)) return { slugs: hit(at), what };
   }
-  for (const tok of cmd.split(/[\s;&|()<>'"=`]+/)) {
-    if (!tok || tok.startsWith("-") || /\$(?!\{?HOME\b)/.test(tok)) continue;
+  const toks = text => text.split(/[\s;&|()<>'"=`]+/).filter(t => t && !t.startsWith("-") && !/\$(?!\{?HOME\b)/.test(t));
+  // A path that lands in the folder, wherever it is written.
+  for (const tok of toks(cmd)) { const s = hit(expand(tok, at)); if (s) return { slugs: s, what }; }
+  // A glob or a recursive read that reaches it, where the shell expands.
+  for (const tok of toks(live)) {
     const p = expand(tok, at);
-    const s = hit(p) || (globHits(tok, at) ? sealedSlugs() : null) || (recursive && reaches(p.replace(/\/+$/, "") || "/") ? sealedSlugs() : null);
+    const s = (globHits(tok, at) ? sealedSlugs() : null) || (recursive && reaches(p.replace(/\/+$/, "") || "/") ? sealedSlugs() : null);
     if (s) return { slugs: s, what };
   }
   // A recursive reader run from a folder above it, with no path of its own.
