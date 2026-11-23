@@ -928,6 +928,8 @@ function wordDiff(a, b) {
   return { was, now };
 }
 
+// Reading text: escaped, with `code` spans as code.
+const prose = t => esc(t).replace(/`([^`\n]+)`/g, "<code>$1</code>");
 const when = at => at ? `${esc(String(at).slice(0, 16).replace("T", " "))} UTC` : "";
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -941,11 +943,13 @@ export function scenariosPage(slug, key) {
   const rev = readRevisions(slug);
   const th = v ? (v.threshold ?? DEFAULT_THRESHOLD) : DEFAULT_THRESHOLD;
   const list = doc ? doc.scenarios : [];
-  const score = id => (v && (v.scores || []).find(x => x.id === id)) || null;
+  const score = id => { const w = v && (v.error || v.harness) ? priorVerdict(slug) : v; return (w && (w.scores || []).find(x => x.id === id)) || null; };
   // A verdict that judged nothing: the judge did not answer, or the change
   // never came up under the harness.
   const noRun = v && (v.error || v.harness) ? v : null;
-  const judged = v && !noRun;
+  const prevV = noRun ? priorVerdict(slug) : null;
+  const cv = noRun ? prevV : v;
+  const judged = !!cv;
   // Where one scenario stands: new (not judged yet), edited (its verdict is
   // of other wording), passes or fails.
   const stand = s => {
@@ -965,7 +969,7 @@ export function scenariosPage(slug, key) {
   const proposal = (p, s) => {
     const rows = ["title", "body", "expect"].filter(k => p[k] !== undefined).map(k => {
       const name = k === "body" ? "Steps" : k === "expect" ? "Accept when" : "Title";
-      if (p.action !== "edit") return `<tr><th>${name}</th><td class="txt">${esc(p[k])}</td></tr>`;
+      if (p.action !== "edit") return `<tr><th>${name}</th><td class="txt">${prose(p[k])}</td></tr>`;
       const d = wordDiff(s ? s[k] || "" : "", p[k]);
       return `<tr><th>${name}</th><td class="txt was">${d.was}</td><td class="txt now">${d.now}</td></tr>`;
     }).join("");
@@ -984,7 +988,7 @@ export function scenariosPage(slug, key) {
     if (st === "edited") return `<span class="pill" title="the last verdict judged the text before your edit">edited since judged (was ${Number(sc.score).toFixed(2)})</span>`;
     const carried = sc.carried ? ` <span class="pill" title="a retry judged only the failing scenarios and carried this score">carried from ${esc(String(sc.carried.head || "").slice(0, 8))}</span>` : "";
     return st === "passes" ? `<span class="pill done">passes ${Number(sc.score).toFixed(2)}</span>${carried}`
-      : `<span class="pill broken">fails ${Number(sc.score).toFixed(2)}</span>${carried}`;
+      : `<span class="pill ${sc.cause && sc.cause !== "product" ? "attend" : "broken"}">fails ${Number(sc.score).toFixed(2)}</span>${carried}`;
   };
   const causeRole = c => c === "product" ? "broken" : "attend";
 
@@ -1000,7 +1004,7 @@ export function scenariosPage(slug, key) {
   ${fails && sc.cause && CAUSE_DO[sc.cause] ? `<p class="todo ${role}">${esc(CAUSE_DO[sc.cause])}</p>` : ""}
   ${sc && sc.reason && judged && st !== "new" ? `<details class="reason"${fails ? " open" : ""}><summary>The judge's reason${st === "edited" ? " (on the earlier text)" : ""}</summary><p>${esc(sc.reason)}</p></details>` : ""}
   ${props.map(p => proposal(p, s)).join("\n")}
-  <dl class="read"><dt>Steps</dt><dd class="txt">${esc(s.body)}</dd>${s.expect ? `<dt>Accept when</dt><dd class="txt">${esc(s.expect)}</dd>` : ""}
+  <dl class="read"><dt>Steps</dt><dd class="txt">${prose(s.body)}</dd>${s.expect ? `<dt>Accept when</dt><dd class="txt">${prose(s.expect)}</dd>` : ""}
   ${s.hint ? `<dt>Hint</dt><dd>${esc(s.hint)} <span class="dim">${s.hintApproved ? "(the builder sees it when this fails)" : "(not shown to the builder)"}</span></dd>` : ""}</dl>
   <details class="edit"><summary>Edit</summary>
   <label>Title <input name="title" value="${esc(s.title)}" maxlength="${TEXT_MAX.title}"></label>
@@ -1014,17 +1018,18 @@ export function scenariosPage(slug, key) {
   };
 
   // The status line: what the person most needs first.
-  const rerun = `<span class="dim">Judge every scenario again: <code>deep-plan scenarios judge ${esc(slug)}</code></span>`;
+  const rerun = `<span class="dim">Judge every scenario${v ? " again" : ""}: <code>deep-plan scenarios judge ${esc(slug)}</code></span>`;
   const others = judged ? list.filter(s => stand(s) !== "passes" && stand(s) !== "fails").length : 0;
-  const status = !doc ? `<p class="status">No scenarios yet: run <code>deep-plan scenarios write ${esc(slug)}</code>.</p>`
-    : !v ? `<p class="status">Not judged yet: the next scenarios check runs the judge.<br>${rerun}</p>`
-    : noRun ? `<p class="status attend"><strong>${noRun.harness ? "Nothing was judged: the change did not come up under the harness" : "Nothing was judged: the judge did not answer"}</strong>
+  const status = !doc ? `<div class="status">No scenarios yet: run <code>deep-plan scenarios write ${esc(slug)}</code>.</div>`
+    : !v ? `<div class="status${stale ? " attend" : ""}">${stale ? "Not judged yet, and nothing is judged until the plan's change below is answered." : `Not judged yet: the next scenarios check runs the judge.<br>${rerun}`}</div>`
+    : noRun ? `<div class="status attend"><strong>${noRun.harness ? "Nothing was judged: the change did not come up under the harness" : "Nothing was judged: the judge did not answer"}</strong>
   <span class="dim">${esc(noRun.harness ? noRun.harness.what : noRun.error)} (${when(v.at)}, on <code>${esc(String(v.head || "").slice(0, 8))}</code>)</span>
-  ${noRun.harness && noRun.harness.tail ? `<details><summary>The harness log's last lines</summary><pre>${esc(noRun.harness.tail)}</pre></details>` : ""}${rerun}</p>`
-    : `<p class="status ${stale ? "attend" : failing.length ? "bad" : "good"}"><strong>${failing.length ? `${failing.length} of ${list.length} failing` : `${list.length - others} of ${list.length} passing`}</strong>
+  ${prevV ? `<span class="dim">The scenarios below show the run before it, on <code>${esc(String(prevV.head || "").slice(0, 8))}</code>.</span>` : ""}
+  ${noRun.harness && noRun.harness.tail ? `<details><summary>The harness log's last lines</summary><pre>${esc(noRun.harness.tail)}</pre></details>` : ""}${rerun}</div>`
+    : `<div class="status ${stale ? "attend" : failing.length ? (failing.some(x => (score(x.id) || {}).cause === "product" || !(score(x.id) || {}).cause) ? "bad" : "attend") : "good"}"><strong>${failing.length ? `${failing.length} of ${list.length} failing` : `${list.length - others} of ${list.length} passing`}</strong>
   at threshold ${esc(th)} <span class="aside">(a score below it fails)</span>${failing.length ? `: ${failing.map(s => `<a href="#sc-${esc(s.id)}">${esc(s.id)}</a>`).join(", ")}` : ""}${others ? `; ${others} not judged on ${others === 1 ? "its" : "their"} current text` : ""}.
   ${stale ? `<span class="dim">This verdict is from before the amend below.</span>` : ""}
-  <span class="dim">Last judged ${when(v.at)} on <code>${esc(String(v.head || "").slice(0, 8))}</code>${v.took ? `, in ${esc(took(v.took.total))}` : ""}${v.carried ? `, ${v.carried} carried from an earlier run` : ""}.</span>${rerun}</p>`;
+  <span class="dim">Last judged ${when(v.at)} on <code>${esc(String(v.head || "").slice(0, 8))}</code>${v.took ? `, in ${esc(took(v.took.total))}` : ""}${v.carried ? `, ${v.carried} carried from an earlier run` : ""}.</span>${rerun}</div>`;
 
   const revHtml = !rev.stale ? "" : `<section class="rev" aria-label="Revisions after an amend">
 <h2>The plan changed after these were written</h2>
@@ -1095,7 +1100,7 @@ button:hover{border-color:var(--focus)}button:disabled{opacity:.55;cursor:defaul
 .rev h2{margin-top:10px;color:var(--mark-t);border-bottom:0;padding-bottom:0}.amends{margin:0 0 8px;padding-left:18px;font-size:var(--fs-3)}
 .prop{border:1px dashed var(--mark);border-radius:6px;padding:8px 10px;margin:10px 0}
 .prop-head{margin:0 0 6px;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}.why{font-size:var(--fs-3);color:var(--dim)}
-table{border-collapse:collapse;width:100%;font-size:var(--fs-3)}
+table{border-collapse:collapse;width:100%}.log table{font-size:var(--fs-3)}
 .diff th{color:var(--dim);font-weight:400;text-align:left;vertical-align:top;padding:4px 8px 4px 0;white-space:nowrap}
 .diff td{vertical-align:top;padding:4px 6px;border-top:1px solid var(--line)}.diff td.col{color:var(--dim);border-top:0;font-size:var(--fs-2)}
 .diff td.was{color:var(--dim)}
@@ -1115,7 +1120,7 @@ ${revHtml}
 ${doc ? `<h2>Scenarios</h2>${ordered.map(card).join("\n")}<div class="act">${rev.stale && rev.proposals && !rev.proposals.length ? `<button data-do="current" data-count="0" class="primary">Confirm the scenarios as they are</button> ` : ""}<button data-do="add">Add a scenario</button> <span class="msg" role="status"></span></div>` : ""}
 <h2>Access log</h2>
 ${access.length ? `<details class="log"${access.length <= 5 ? " open" : ""}><summary>${plural(access.length, "refused attempt")} to read the sealed folder${access.length > 50 ? ` (the last 50 shown)` : ""}</summary>
-<table>${shownLog.map(a => `<tr><td>${esc(String(a.at).slice(0, 16).replace("T", " "))}</td><td>${esc(a.via || a.tool || "")}</td><td><code>${esc(a.what)}</code></td></tr>`).join("")}</table></details>`
+<table>${shownLog.map(a => `<tr><td>${when(a.at)}</td><td>${esc(a.via || a.tool || "")}</td><td><code>${esc(a.what)}</code></td></tr>`).join("")}</table></details>`
     : `<p class="dim">No attempt to read the sealed folder was refused.</p>`}
 </main><script>
 const KEY=${JSON.stringify(key)},SLUG=${JSON.stringify(slug)},HERE="scn-place-"+SLUG;
@@ -1123,7 +1128,7 @@ async function call(op,id,fields){const q=new URLSearchParams({k:KEY,op,id,...fi
 // Keep the person's place across the reload an answer needs: the scroll,
 // and the card being edited.
 function reload(open,flash,at){try{sessionStorage.setItem(HERE,JSON.stringify({y:scrollY,open:open||"",flash:flash||"",at:at||""}))}catch(e){}location.reload()}
-try{const p=JSON.parse(sessionStorage.getItem(HERE)||"null");sessionStorage.removeItem(HERE);if(p){if(p.open){const d=document.querySelector('#sc-'+CSS.escape(p.open)+' details.edit');if(d)d.open=true}scrollTo(0,p.y||0);
+try{const p=JSON.parse(sessionStorage.getItem(HERE)||"null");sessionStorage.removeItem(HERE);if(p){if(p.open){const d=document.querySelector('#sc-'+CSS.escape(p.open)+' details.edit');if(d)d.open=true}const anchor=p.at&&document.querySelector('#sc-'+CSS.escape(p.at));if(anchor)anchor.scrollIntoView({block:"start"});else scrollTo(0,p.y||0);
 if(p.flash){const box=p.at&&document.querySelector('#sc-'+CSS.escape(p.at));const m=box&&box.querySelector(".act .msg");if(m&&box.getBoundingClientRect().bottom>0&&box.getBoundingClientRect().top<innerHeight)m.textContent=p.flash;else document.querySelector(".flash").textContent=p.flash}}}catch(e){}
 document.getElementById("mode").addEventListener("click",()=>{const d=document.documentElement,n=d.getAttribute("data-theme")==="light"?"dark":"light";d.setAttribute("data-theme",n);try{localStorage.setItem("dp-theme",n)}catch(e){}});
 const dirty=()=>[...document.querySelectorAll(".sc[data-dirty]")];

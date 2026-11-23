@@ -9219,7 +9219,7 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
     !/#fbfaf7/.test(html));
   ok("scenarios page: after a harness that never came up, it says nothing was judged, with the harness's reason, and paints no card as failing",
     /Nothing was judged: the change did not come up under the harness/.test(html) && /not ready within 2s/.test(html) &&
-    !/class="sc fails/.test(html) && /not judged yet/.test(html) && /deep-plan scenarios judge scn-a/.test(html), html.slice(0, 400));
+    !/class="sc fails/.test(html) && /The scenarios below show the run before it/.test(html) && /passes 0\.90/.test(html) && /deep-plan scenarios judge scn-a/.test(html), html.slice(0, 400));
   const fullHead = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).lastFull.head;
   const fpaBefore = fpa(fullHead);
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);
