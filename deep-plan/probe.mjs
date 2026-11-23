@@ -9384,6 +9384,9 @@ if (want("policy and ship: levels from the base branch")) {
   r = render(mk("pol-paths-on", [["docs/a.md"], ["docs/ui/page.md"]]));
   ok("policy: with scenarios.paths, a plan touching a matching file at the require level is refused without one, naming the paths",
     r.status !== 0 && /needs a scenarios check at auto-pr and above[^\n]*for a change touching docs\/ui\/\*\*/.test(r.stderr), r.stderr);
+  ok("policy: with scenarios.paths, a plan that names only a directory holding matching files is refused too (inc4 f1)",
+    /needs a scenarios check/.test(render(mk("pol-paths-dir", [["docs/a.md"], ["docs/ui"]])).stderr) &&
+    /needs a scenarios check/.test(render(mk("pol-paths-dir2", [["docs/a.md"], ["docs/"]])).stderr));
   r = pc("policy", "show", "docs/ui/page.md", "docs/a.md");
   ok("policy show: scenarios.paths is shown, and each file says whether it alone needs a scenarios check",
     /scenarios required at auto-pr and above for a change touching docs\/ui\/\*\*/.test(r.stdout) &&

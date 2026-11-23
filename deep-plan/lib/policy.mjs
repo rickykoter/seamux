@@ -25,7 +25,8 @@
 // default; a change's level is the lowest of its files'. scenarios.require
 // is the lowest level at which ship acting alone needs a scenarios check;
 // scenarios.paths, when set, limits that to a change touching a matching
-// file (ADR: per-path require lives in scenarios.paths). `fix` (off,
+// file (the ADR in docs/adr titled "Per-path require lives in
+// scenarios.paths", from plan scenarios-true). `fix` (off,
 // diagnose, draft-pr) is the next plan's: validated and shown, never acted on.
 import { spawnSync } from "node:child_process";
 import { matchesGlob } from "./verify.mjs";
@@ -157,6 +158,13 @@ export function scenariosPaths(pol) {
   const s = pol && pol.source === "base" && pol.policy.scenarios;
   return s && Array.isArray(s.paths) && s.paths.length ? s.paths : null;
 }
+// A file matches the glob, or a plan's directory path holds files it would
+// match: "app/ui" or "app" against "app/ui/**".
+function coversGlob(file, glob) {
+  if (matchesGlob(file, glob)) return true;
+  const dir = String(file).replace(/\/+$/, "");
+  return !!dir && (matchesGlob(`${dir}/x`, glob) || glob.startsWith(`${dir}/`));
+}
 // The lowest level that needs a scenarios check for a change of these files:
 // scenariosRequiredAt, unless scenarios.paths is set and no file matches it.
 // Files that could not be read (null) are treated as matching.
@@ -164,7 +172,7 @@ export function scenariosRequiredFor(pol, files) {
   const at = scenariosRequiredAt(pol);
   const globs = scenariosPaths(pol);
   if (!at || !globs || files == null) return at;
-  return files.some(f => globs.some(g => matchesGlob(f, g))) ? at : null;
+  return files.some(f => globs.some(g => coversGlob(f, g))) ? at : null;
 }
 
 export const mergeMethod = pol => (pol && pol.source === "base" && pol.policy.merge && pol.policy.merge.method) || "squash";
