@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L16 -->
+<!-- next: L17 -->
 
 ## L1
 applies: **
@@ -89,3 +89,9 @@ applies: **
 from: bosun-gh-tls (correction c9ae3487e), 2026-11-23
 
 At the start of a plan, run deep-plan notes and read every open note filed under its slug: the session-start hook's note list can be cut off, and a note placed on the plan can go unread until the person asks.
+
+## L16
+applies: **
+from: links-open-in-place (correction cfd5ec4ef), 2026-11-23
+
+The scenarios judge scores every scenario of the plan at each check: put the scenarios check on the last increment only, and prove earlier increments by recipes and a try on the harness.
