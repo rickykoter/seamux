@@ -3,7 +3,7 @@
   "plugin": "bosun",
   "model": "opus",
   "claudeVersion": "2.1.330",
-  "costUsd": 2.8332,
+  "costUsd": 3.2171,
   "cases": {
     "asks-without-blocking": {
       "runs": 3,
@@ -70,6 +70,15 @@
       "score": 1.0,
       "graders": {
         "quiet": 3
+      },
+      "errors": 0
+    },
+    "runs-a-report": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3,
+        "not-checked": 3
       },
       "errors": 0
     }

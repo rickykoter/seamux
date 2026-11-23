@@ -21,6 +21,13 @@ In the Bosun, the skill covers four jobs:
   brief and runs `seamux bosun dispatch <repo> <branch> --brief <file>`.
   You approve each one at a permission prompt. The new worktree's folder,
   and so its card on the board, ends in the log entry's id.
+- **Reports**: timed runs of sections from `bosun.json`'s `reports`. Before
+  each run the supervisor checks every section's sources (`claude mcp list`
+  for `mcp:` ones, PATH for `cmd:` ones), so a section whose source is down
+  reads "Not checked: <why>" instead of a guess. The Bosun adds each run to
+  the report's Claude Doc, newest on top, and sends the results with
+  `seamux bosun report done <run>`. The app's rail shows a card per run, and
+  a run that finds something waiting on you posts a banner.
 
 In any other session, the skill covers asking: `seamux bosun ask "<question>"`
 in the background, with `ask --id <id>` to pick up an answer that came late.
@@ -30,10 +37,25 @@ only the hosts and folders listed in `~/.claude/crew/bosun/bosun.json`
 (`sandbox.allowedDomains`, `sandbox.allowWrite`). Add `api.github.com` there
 for `gh`, and the folders a CLI keeps its cache in.
 
+A report in `bosun.json` (the supervisor writes starter ones, `morning` and
+`afternoon`, from the MCP servers you have, the first time it runs):
+
+```json
+"reports": [{"id": "morning", "title": "Morning report", "at": ["09:00"], "days": "weekdays",
+             "sections": [{"title": "Pull requests", "via": ["cmd:gh"], "ask": "PRs waiting on my review, oldest first"},
+                          {"title": "Monitors", "via": ["mcp:datadog"], "ask": "monitors alerting or warning"}],
+             "to": ["doc", "banner"]}]
+```
+
+`seamux bosun report list` shows each report and its next run,
+`seamux bosun report run <id>` runs one now, and
+`seamux bosun report check [<id>]` says which sources work right now.
+
 | file | what |
 |---|---|
 | `SKILL.md` | which session this is, the rules, and which reference to read |
 | `references/sitrep.md` | what a sitrep reads and how it reports |
 | `references/answers.md` | citing, answering a queued ask, and the log entry |
 | `references/dispatch.md` | naming, the brief, the bare dispatch command, logging it |
+| `references/report.md` | running a report: the checked sections, the doc and `report done` |
 | `references/ask.md` | asking from a workspace without blocking |
