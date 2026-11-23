@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { follow, openPage } from "./panelinks";
 import { openAsk } from "./bosun_ask";
 import { reviewAsk, type AskContext } from "./bosun_model";
 import { listen } from "@tauri-apps/api/event";
@@ -568,6 +569,14 @@ export class ReviewView {
     return !!b && document.activeElement === b;
   }
 
+  /** The ⋯ menu's "Show beside the work": the review in the Dock's side
+   *  column, in its workspace, its other home. */
+  private besideItem(id: string, title: string): HTMLButtonElement {
+    const b = btn("Show beside the work", () => void openPage(`/review/${id}`, title), "r-btn quiet");
+    b.title = "Open this review in the Dock, beside its workspace's terminal";
+    return b;
+  }
+
   /** main.ts: the Lookout tab came into view, or left it. */
   setShown(on: boolean): void {
     this.shown = on;
@@ -945,7 +954,9 @@ export class ReviewView {
       this.stageSel.set(sel, s);
       this.render(true);
     }, can));
-    const open = (url: string) => void invoke("open_url", { url }).catch((err) => (this.err.textContent = String(err)));
+    // Landing and PR links follow a pane link's rules: GitHub and the web to
+    // the browser, a localhost page (a preview) into the Dock.
+    const open = (url: string) => void follow(url, null);
     const panel = stage === "pr" ? prPanel(pr, open)
       : stage === "merge" ? mergePanel(pr, open, this.shipFor(pr))
       : stage === "land" ? landPanel(land, pr.state === "merged", {
@@ -1239,7 +1250,7 @@ export class ReviewView {
     const ask = this.askItem(() => reviewAsk({
       title: o.title, root: o.root, branch: o.branch, repo: g?.repo, pr: g?.pr, url: g?.url, state: g?.state, open: o.open,
     }));
-    this.headOf(o.title, null, meta, g?.url || null, buttons, { key, items: [ask] });
+    this.headOf(o.title, null, meta, g?.url || null, buttons, { key, items: [ask, this.besideItem(o.id, o.title)] });
     // The detail line says what can be done, as the Findings menu can do it.
     const parts = [openSummary(o.open)];
     if (g?.stale) parts.push(`${g.stale} stale`);
@@ -1343,6 +1354,7 @@ export class ReviewView {
       title: this.title(j), repo: j.repo, branch: j.branch, pr: j.pr,
       url: j.repo && j.pr ? `https://github.com/${j.repo}/pull/${j.pr}` : null, open: j.open,
     })));
+    if (j.review_id) items.push(this.besideItem(j.review_id, this.title(j)));
     const more = { key: j.id, items };
     // A fix or post underway says what it is doing on the header row.
     let status: HTMLElement | null = null;

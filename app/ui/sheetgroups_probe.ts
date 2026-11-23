@@ -3,6 +3,7 @@
 // that sheet.ts and shell.rs agree on those keys. Node runs this file as TypeScript.
 import { readFileSync } from "node:fs";
 import { face, GROUPS, groupOf, jump, ordered, WAKE } from "./sheetgroups.ts";
+import { placeFor } from "./linkroute.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
@@ -80,6 +81,32 @@ const tabs = [t(WAKE, WAKE), t("/ask/1", "ask", true), t("/review/a", "review"),
   const tabs = readFileSync(new URL("./tabs.ts", import.meta.url), "utf8");
   ok("names: the top bar has no Wake view; the Dock's strip is the Wake",
     !/\{ id: "wake"/.test(tabs) && !/id="wake"/.test(readFileSync(new URL("./index.html", import.meta.url), "utf8")));
+}
+
+// A link opens in the workspace it belongs to (linkroute.ts placeFor).
+{
+  const panes = [
+    { workspace: "api", cwd: "/t/coupons-api", agent: "claude" },
+    { workspace: "api-shell", cwd: "/t/coupons-api", agent: null },
+    { workspace: "docs", cwd: "/t/coupons-api/docs", agent: null },
+    { workspace: "ui", cwd: "/t/coupons-ui/", agent: "claude" },
+  ];
+  const pages = [
+    { ws: "api", path: "/plan/demo-coupons" },
+    { ws: "search", path: "/review/rv-41" },
+  ];
+  ok("place: a page belongs to the workspace that has it open", placeFor({ page: "/plan/demo-coupons" }, panes, pages) === "api");
+  ok("place: a page's query does not change whose it is", placeFor({ page: "/review/rv-41?t=ab12" }, panes, pages) === "search");
+  ok("place: a page nobody has open belongs to nobody", placeFor({ page: "/plan/elsewhere" }, panes, pages) === undefined);
+  ok("place: a file belongs to the pane whose folder holds it, an agent's first", placeFor({ file: "/t/coupons-api/src/a.ts" }, panes, pages) === "api");
+  ok("place: the deepest folder wins", placeFor({ file: "/t/coupons-api/docs/x.md" }, panes, pages) === "docs");
+  ok("place: a trailing slash on a pane's folder still holds its files", placeFor({ file: "/t/coupons-ui/notes.md" }, panes, pages) === "ui");
+  ok("place: a sibling folder with the same prefix is not inside", placeFor({ file: "/t/coupons-api-old/a.ts" }, panes, pages) === undefined);
+  const sheet = readFileSync(new URL("./sheet.ts", import.meta.url), "utf8");
+  ok("place: linkSheet asks the link's own place before the Dock's, and moves the Dock there",
+    /docked\.placeOfLink\(target\) \?\? place\.workspace/.test(sheet) && /docked\.goTo\(own\)/.test(sheet) && /this\.onPlace\(ws\)/.test(sheet));
+  const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  ok("place: a link that opens puts the Bosun's drop-down away", /seamux:show-dock[\s\S]{0,120}bosunView\.setDrop\(false\)/.test(main));
 }
 
 let failed = 0;

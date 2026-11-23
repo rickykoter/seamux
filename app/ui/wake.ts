@@ -955,6 +955,11 @@ export class Wake {
         requestAnimationFrame(() => this.list.querySelector(".w-row.sel")?.scrollIntoView({ block: "nearest" }));
         return;
       }
+      // Markdown renders in the Dock, as a pane's link to it does.
+      if (file && /\.(md|markdown)$/i.test(r.path)) {
+        const shown = await invoke<Shown>("link_file", { path: r.path }).catch(() => null);
+        if (shown) return this.host.show(shown, { kind: "file", path: r.path }, this.host.here());
+      }
       if (r.path && PREVIEW.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind)) {
         try {
           // A video streams from the app's wakefile: scheme, too big for a data: URL.

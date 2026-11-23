@@ -172,7 +172,18 @@ window.addEventListener("seamux:bosun-asked", () => bosunView.afterAsk());
 
 // A pane's link opens its page in the Dock's side column, and only there
 // (sheet.ts linkSheet): with another view up, the Dock comes forward first.
-window.addEventListener("seamux:show-dock", () => tabs.select("dock"));
+// The Bosun's drop-down goes away first, so what opened is in view.
+window.addEventListener("seamux:show-dock", () => {
+  if (bosunView.isDown()) bosunView.setDrop(false);
+  if (tabs.current !== "dock") tabs.select("dock");
+});
+// A review's two homes: from the Dock's side column to the Lookout tab.
+window.addEventListener("seamux:review-in-lookout", (e) => {
+  const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+  if (!id) return;
+  tabs.select("review");
+  void reviewView.focus(id, "");
+});
 
 // A landing's log (a Dock card's chip): the change in the Lookout tab, at its
 // Land stage.

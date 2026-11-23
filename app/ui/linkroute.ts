@@ -62,3 +62,28 @@ export function joinWrapped(rows: readonly string[], at: number, cols: number): 
   }
   return { text, at: pos };
 }
+
+/** The workspace a link belongs to. A seamux page: the workspace that has it
+ *  open (its path without the query). A file: the pane whose folder holds it,
+ *  the deepest folder first and, between equals, a pane running an agent.
+ *  Undefined when nothing open owns it. */
+export function placeFor(
+  target: { page?: string; file?: string },
+  panes: { workspace: string; cwd: string; agent: string | null }[],
+  pages: { ws: string; path: string }[],
+): string | undefined {
+  if (target.page) {
+    const bare = target.page.split("?")[0].split("#")[0];
+    return pages.find((p) => p.path === bare)?.ws;
+  }
+  if (!target.file) return undefined;
+  const f = target.file;
+  let best: { ws: string; len: number; agent: boolean } | null = null;
+  for (const p of panes) {
+    const c = p.cwd.replace(/\/+$/, "");
+    if (!c || !(f === c || f.startsWith(c + "/"))) continue;
+    const agent = !!p.agent;
+    if (!best || c.length > best.len || (c.length === best.len && agent && !best.agent)) best = { ws: p.workspace, len: c.length, agent };
+  }
+  return best?.ws;
+}

@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { IBufferLine, ILink, ILinkProvider, Terminal } from "@xterm/xterm";
 import { bangAcross } from "./bang";
 import { DOCK_FILE, joinWrapped, route } from "./linkroute";
-import { linkSheet, type Shown } from "./sheet";
+import { linkSheet, peekPlace, type Shown } from "./sheet";
 
 /** Where a side-column tab goes when it is opened elsewhere: a seamux page
  *  (in its workspace), a file (at its line), or a web page. */
@@ -57,10 +57,11 @@ async function placeOf(id: number | null): Promise<string | undefined> {
  *  else (or with Shift) in VS Code at its line. */
 export async function openFile(path: string, at: { line?: number; col?: number }, id: number | null, e?: MouseEvent): Promise<void> {
   const editor = () => invoke("open_in_editor", { path, line: at.line ?? null, col: at.col ?? null }).catch(() => {});
-  if (e?.shiftKey || !DOCK_FILE.test(path)) return void (await editor());
+  // Shift (VS Code) and ⌘ (open elsewhere, which for a file is VS Code too).
+  if (e?.shiftKey || e?.metaKey || !DOCK_FILE.test(path)) return void (await editor());
   const shown = await invoke<Shown>("link_file", { path }).catch(() => null);
   if (!shown) return void (await editor());
-  const to = linkSheet({ workspace: await placeOf(id) });
+  const to = linkSheet({ workspace: await placeOf(id) }, { file: path });
   if (!to) return void (await editor());
   to.sheet.show(shown, { kind: "file", path, line: at.line }, to.place);
 }
@@ -256,19 +257,37 @@ export async function follow(uri: string, id: number | null, e?: MouseEvent): Pr
     }
     return;
   }
-  // ⌘-click or Shift-click: the browser, always.
+  // ⌘: open elsewhere, as the side column's icon does (a page to cmux in its
+  // workspace, or the browser on tmux); Shift: the browser, always.
+  if (how === "page" && e?.metaKey && !e?.shiftKey) {
+    const u = new URL(uri);
+    const path = u.pathname + u.search;
+    const ws = peekPlace({ page: path }) ?? (await placeOf(id));
+    return void (await openElsewhere({ kind: "page", path, workspace: ws }).catch(() => {}));
+  }
   if (how !== "browser" && !e?.shiftKey && !e?.metaKey) {
-    const to = linkSheet({ workspace: await placeOf(id) });
-    if (!to) return void (await invoke("open_url", { url: uri }).catch(() => {}));
     if (how === "page") {
       const u = new URL(uri);
-      await to.sheet.open({ path: u.pathname + u.search, title: decodeURIComponent(u.pathname.split("/")[2] ?? ""), ...to.place });
-      return;
+      return void (await openPage(u.pathname + u.search, decodeURIComponent(u.pathname.split("/")[2] ?? ""), await placeOf(id), uri));
     }
+    const to = linkSheet({ workspace: await placeOf(id) });
+    if (!to) return void (await invoke("open_url", { url: uri }).catch(() => {}));
     to.sheet.openWeb(uri, to.place);
     return;
   }
   await invoke("open_url", { url: uri }).catch(() => {});
+}
+
+/** Open a seamux page in the Dock's side column, in the workspace it belongs
+ *  to (else `from`, the workspace the link came from, else the Dock's). With
+ *  no Dock yet, `fallback` goes to the browser. */
+export async function openPage(path: string, title: string, from?: string, fallback?: string): Promise<void> {
+  const to = linkSheet({ workspace: from }, { page: path });
+  if (!to) {
+    if (fallback) await invoke("open_url", { url: fallback }).catch(() => {});
+    return;
+  }
+  await to.sheet.open({ path, title, ...to.place });
 }
 
 type Card = {

@@ -443,10 +443,10 @@ const PAGE_LIST = [
   ["ui", "plan", "/plan/coupons-ui", "coupons-ui", "working inc 1/2", false],
   ["search", "plan", "/plan/search-index", "search-index", "done", false],
 ];
+// Every workspace's open pages, as views.rs sends them: framed from the
+// stand-in's placeholder unless a real intent server is given (PAGES).
 const pages = () =>
-  PAGES
-    ? PAGE_LIST.filter(([k]) => ws.some((w) => w.key === k)).map(([k, kind, path, label, state, waiting]) => ({ ws: byKey[k].id, kind, path, label, state, waiting, since: ago(10) }))
-    : [];
+  PAGE_LIST.filter(([k]) => ws.some((w) => w.key === k)).map(([k, kind, path, label, state, waiting]) => ({ ws: byKey[k].id, kind, path, label, state, waiting, since: ago(10) }));
 let tucked = [
   { path: `${TREES}/legacy-cart`, level: "tuck", at: ago(60 * 26), name: "legacy-cart", branch: "sam/legacy-cart", workspaces: [], waiting: false, last: ago(60 * 26) },
   { path: `${TREES}/gift-cards`, level: "tuck", at: ago(60 * 50), name: "gift-cards", branch: "sam/gift-cards", workspaces: [], waiting: false, last: ago(60 * 49) },
@@ -816,7 +816,9 @@ function key(surface, k) {
 function input(surface, text) {
   const p = panes.get(surface);
   if (!p) throw "no such surface";
-  if (p.question !== undefined && p.question !== null && /^[1-9]$/.test(text)) {
+  // A digit picks an answer, as Claude's question box takes it, but only
+  // before anything is typed: a message's own digits (a port) stay in it.
+  if (p.question !== undefined && p.question !== null && /^[1-9]$/.test(text) && !p.input) {
     answer(Number(text));
     return;
   }

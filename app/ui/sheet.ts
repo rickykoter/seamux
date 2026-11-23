@@ -7,6 +7,7 @@ import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 import { face, GROUPS, groupOf, jump, ordered, round, WAKE, type GroupId } from "./sheetgroups";
+import { placeFor } from "./linkroute";
 import { awayLabel, openElsewhere, type Away } from "./panelinks";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
@@ -619,6 +620,7 @@ export class Sheet {
   /** Where the shown tab goes elsewhere, and the icon that sends it there. */
   private away: Away | null = null;
   private awayBtn = document.createElement("button");
+  private lookoutBtn = document.createElement("button");
   private tiles: Tile[] = [];
   /** The pane picked in the chat's tabs; "" is the default (an agent's). */
   private picked = "";
@@ -697,7 +699,18 @@ export class Sheet {
     toAway.className = "sheet-btn icon sheet-away";
     toAway.append(mark("M3 7 7 3M4 3h3v3"));
     toAway.addEventListener("click", () => void this.elsewhere());
-    this.chat.adopt([this.say, this.wakeBtn, toAway]);
+    // A review beside the work moves to its other home, the Lookout tab.
+    const inLookout = this.lookoutBtn;
+    inLookout.type = "button";
+    inLookout.className = "sheet-btn quiet sheet-in-lookout";
+    inLookout.textContent = "Show in Lookout";
+    inLookout.title = "Show this review in the Lookout tab";
+    inLookout.hidden = true;
+    inLookout.addEventListener("click", () => {
+      const id = this.page?.path.startsWith("/review/") ? this.page.path.slice("/review/".length).split(/[?#]/)[0] : "";
+      if (id) window.dispatchEvent(new CustomEvent("seamux:review-in-lookout", { detail: { id } }));
+    });
+    this.chat.adopt([this.say, this.wakeBtn, inLookout, toAway]);
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
     this.tabsEl.className = "sheet-tabs";
@@ -780,6 +793,20 @@ export class Sheet {
   /** The place shown: a page opened for it joins its tabs. */
   here(): { workspace?: string; dir?: string } {
     return { ...this.place };
+  }
+
+  /** The workspace a link belongs to, from the panes and pages this sheet
+   *  holds (linkroute.ts placeFor). */
+  placeOfLink(target: { page?: string; file?: string }): string | undefined {
+    return placeFor(target, this.tiles, this.pages);
+  }
+
+  /** Show workspace `ws` in the Dock, as a family chip does: the sheet
+   *  enters it and the Dock follows (onPlace). */
+  goTo(ws: string): void {
+    if (ws === this.workspace() && this.active) return;
+    this.enter({ workspace: ws });
+    this.onPlace(ws);
   }
 
   /** The Dock's tab was selected: keys go to the shown pane (main.ts). */
@@ -1576,6 +1603,7 @@ export class Sheet {
     const tmux = document.body.dataset.backend === "tmux";
     const label = folded ? (tmux ? "" : "Open this pane in cmux") : awayLabel(this.away ?? (this.page ? { kind: "page", path: this.page.path, workspace: this.page.workspace } : null));
     this.awayBtn.hidden = !label;
+    this.lookoutBtn.hidden = folded || !this.page?.path.startsWith("/review/");
     this.awayBtn.title = label;
     this.awayBtn.setAttribute("aria-label", label);
   }
@@ -1647,9 +1675,22 @@ export function setDockSheet(s: Sheet): void {
 /** Where a pane's link opens a page: the Dock's side column, beside the
  *  terminal and in the workspace it shows. With another view up (Lookout)
  *  the Dock comes forward first (main.ts): a page never opens anywhere else. */
-export function linkSheet(place: { workspace?: string; dir?: string }): { sheet: Sheet; place: { workspace?: string; dir?: string } } | null {
+/** The workspace a link belongs to, without moving the Dock. */
+export function peekPlace(target: { page?: string; file?: string }): string | undefined {
+  return docked?.placeOfLink(target);
+}
+
+export function linkSheet(place: { workspace?: string; dir?: string }, target: { page?: string; file?: string } = {}): { sheet: Sheet; place: { workspace?: string; dir?: string } } | null {
   if (!docked) return null;
-  if (docked.el.getClientRects().length === 0) window.dispatchEvent(new CustomEvent("seamux:show-dock"));
+  // The Dock comes forward, and the Bosun's drop-down goes away (main.ts),
+  // before the link opens: what opens is then in view and keeps the focus.
+  window.dispatchEvent(new CustomEvent("seamux:show-dock"));
+  // The link's own workspace, then the pane's it came from; else the Dock's.
+  const own = docked.placeOfLink(target) ?? place.workspace;
+  if (own) {
+    docked.goTo(own);
+    return { sheet: docked, place: { workspace: own } };
+  }
   const here = docked.here();
   return { sheet: docked, place: here.workspace || here.dir ? here : place };
 }
