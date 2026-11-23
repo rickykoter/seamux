@@ -8,6 +8,7 @@
 - [The judge](#the-judge)
 - [The harness](#the-harness)
 - [The person's page](#the-persons-page)
+- [When the plan is amended](#when-the-plan-is-amended)
 - [When a scenarios check fails](#when-a-scenarios-check-fails)
 
 ## What a scenario is
@@ -151,16 +152,41 @@ start. A pack can write this file (`deep-plan pack add`).
 `deep-plan scenarios show <slug>`, run by the person in their own shell,
 opens the scenarios page: each scenario's steps, what to accept, the hint
 and whether the builder may see it, the last scores with the judge's
-reasons and causes and the scores before them, and the access log. They edit and save there, or in an editor with
+reasons and causes and the scores before them, any proposed revisions, and
+the access log. They edit and save there, or in an editor with
 `scenarios edit`. The page is served behind a key kept in the sealed
 folder, not serve's token, and its address is printed only to a terminal.
+
+## When the plan is amended
+
+A sealed scenario keeps testing the plan as the writer first read it. So
+`deep-plan amend`, on a plan with scenarios, marks them stale. The mark
+lives in the sealed folder (`revisions.json`), where the building session
+cannot clear it.
+
+The next scenarios check runs the writer again before it judges anything.
+The writer gets the amendments, the live plan, the approved one and the
+scenarios, each fenced as data, and proposes only the edits, removals and
+additions the amendments force. When it proposes none, the scenarios are
+current again and the judging goes on. When it proposes some, the check
+gives no verdict and does not count toward the retry cap. It prints the
+existing titles the proposals touch and how many are new, never their
+text. `deep-plan scenarios revise <slug>` runs the writer at once.
+
+The person answers on the scenarios page. Accept applies a proposal as
+their own edit, reject drops it, and "Keep them all as they are" drops every
+proposal. Once the last one is answered the mark clears, and the next check
+judges. An amend while proposals wait drops them, and the writer drafts
+again against every amendment since the scenarios were last current.
 
 ## When a scenarios check fails
 
 Read the titles, scores and causes, and any hint. On `product`, fix the
 behavior the title names. On `harness`, file a `deep-plan note` on what the
 harness lacks: `.seamux/scenarios.json` and any mock it serves are the
-developer's. On `scenario`, name the title to the person. Do not ask for the scenario text, and do not weaken the plan's
+developer's. On `scenario`, name the title to the person. When the check
+says revisions wait for the person, tell them and work on something else:
+the check judges again once they have answered. Do not ask for the scenario text, and do not weaken the plan's
 promise to get a pass. A failure counts toward the retry cap like any
 recipe; after three in a row the increment blocks, and you stop and
 re-plan. A scenario that seems wrong is the person's to edit: say which

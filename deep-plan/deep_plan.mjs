@@ -45,7 +45,7 @@ import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
 import * as CI from "./lib/ci.mjs";
 import * as SCN from "./lib/scenarios.mjs";
-import { JUDGE_TIMEOUT_S } from "./lib/judge.mjs";
+import { JUDGE_TIMEOUT_S, staleLines } from "./lib/judge.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
@@ -543,6 +543,13 @@ async function amendCmd(args, flags) {
   await render(specPath, { ...flags, root: st.root, amendment });
   say(`amended ${slug}: ${why}`);
   for (const c of changed) say(`  ${c}`);
+  // Sealed scenarios still test the plan as it was: mark them stale, where
+  // only the writer and the person's page clear it (lib/scenarios.mjs).
+  if (SCN.readScenarios(slug)) {
+    SCN.markStale(slug, amendment);
+    say(`  ${slug}'s sealed scenarios predate this amend: the next scenarios check has the writer propose revisions for the person first ` +
+      `(deep-plan scenarios revise ${slug} runs it now)`);
+  }
   if (st.approved) say("  the plan now differs from its approved snapshot; the working page says so");
 }
 
@@ -5555,7 +5562,7 @@ function policyCmd(args, flags) {
 // them from a session, and so does this); judge runs the judge as a
 // scenarios check would.
 function scenariosCmd(args, flags) {
-  const usage = "scenarios write|list|access|judge|show|edit <slug> [--model M] [--threshold T] [--json]";
+  const usage = "scenarios write|list|access|judge|revise|show|edit <slug> [--model M] [--threshold T] [--json]";
   const [sub, slug, ...more] = args;
   if (!sub || !slug) die(usage);
   if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(slug)) die(`not a plan slug: ${slug}`);
@@ -5607,6 +5614,27 @@ function scenariosCmd(args, flags) {
     if (v) say(`last judged ${String(v.at).slice(0, 16).replace("T", " ")} on ${String(v.head || "").slice(0, 8)}: ${v.pass ? "passed" : "not passed"} at ${v.threshold}` +
       (v.took ? `, in ${SCN.took(v.took.total)}` : ""));
     if (access) say(`the access log holds ${access} refused attempt(s) to read them`);
+    const rs = SCN.revisionState(slug);
+    if (rs.stale) say(rs.written ? `stale: ${rs.waiting} proposed revision(s) after an amend wait for the person (deep-plan scenarios show ${slug}, in their own shell)`
+      : `stale: the plan was amended after they were written; the next scenarios check has the writer propose revisions (or deep-plan scenarios revise ${slug})`);
+    return;
+  }
+  if (sub === "revise") {
+    if (!st) die(`no plan ${slug}`);
+    if (!SCN.readScenarios(slug)) die(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug}`);
+    const before = SCN.revisionState(slug);
+    if (!before.stale) { say(`${slug}'s scenarios are current: no amend since they were last written or answered`); return; }
+    if (before.written && !flags.force) {
+      for (const l of staleLines(slug, before)) say(l);
+      return;
+    }
+    console.error(`deep-plan: the writer revises ${slug}'s scenarios (a headless run, with its own tokens)…`);
+    const r = SCN.reviseScenarios(slug, { root: st.root, model: opt("--model") });
+    if (r.error) die(r.error);
+    const fresh = readState(slug);
+    if (fresh) { log1(fresh, `scenarios: the writer proposed ${r.changes} revision(s) after an amend`); writeState(fresh); }
+    if (!r.changes) { say(`the writer found nothing the amendments move: ${slug}'s scenarios are current again`); return; }
+    for (const l of staleLines(slug, SCN.revisionState(slug))) say(l);
     return;
   }
   if (sub === "access") {
@@ -7646,7 +7674,10 @@ switch (cmd) {
                                               outside the repo (after the grade)
   scenarios list|access <slug> [--json]       their titles and last scores, and the refused
                                               attempts to read them
-  scenarios judge <slug> [--threshold T]      run the judge as a scenarios check does
+  scenarios judge <slug> [--threshold T]      judge every scenario at HEAD (a check run may
+                                              judge only the failing ones)
+  scenarios revise <slug> [--force]           after an amend, the writer proposes revisions
+                                              for the person to answer on the page
   scenarios show|edit <slug>                  the person's: open the keyed page, or an editor
   intake <link> [--json]                      gather an issue, PR, failed Actions run or Jira
                                               key into a seed file to plan a bug from

@@ -33,7 +33,7 @@ import net from "node:net";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readScenarios, saveVerdict, scenariosConfig, readAccess, runClaude, headlessEnv, fence, took, scenarioSha, priorVerdict,
+import { readScenarios, saveVerdict, scenariosConfig, readAccess, runClaude, headlessEnv, fence, took, scenarioSha, priorVerdict, revisionState, reviseScenarios,
   DEFAULT_THRESHOLD, JUDGE_MODEL } from "./scenarios.mjs";
 
 export const NO_VERDICT = 3;
@@ -127,6 +127,15 @@ export function judgePrompt({ scenarios, exports, worktree }) {
   ].join("\n");
 }
 
+// What the builder is told while revisions wait: the existing titles they
+// touch and how many are new, never their text.
+export function staleLines(slug, rs) {
+  return [`scenarios: the plan was amended after they were written, and ${rs.waiting} proposed revision(s) wait for the person:`,
+    ...rs.touches.map(t => `  ${t.action}  ${t.id}  ${t.title}`),
+    ...(rs.adds ? [`  add  ${rs.adds} new scenario(s)`] : []),
+    `  the person answers them on the scenarios page (deep-plan scenarios show ${slug}, in their own shell); until then a check run gives no verdict and does not count`];
+}
+
 // One judging. Returns {code, lines}: what to print, and the exit code.
 //
 // A retry carries passes (full: false): when the newest verdict that judged
@@ -143,6 +152,18 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
     return { code: NO_VERDICT, lines: [`no scenarios for ${slug} yet: deep-plan scenarios write ${slug} drafts them (after the grade)`] };
   const cfg = scenariosConfig(root);
   if (cfg.errors.length) return { code: NO_VERDICT, lines: cfg.errors };
+  // An amend after they were written left them stale: the writer proposes
+  // revisions first, and while any wait for the person nothing is judged
+  // (no verdict, so not counted).
+  if (revisionState(slug).stale) {
+    if (!revisionState(slug).written) {
+      const rv = reviseScenarios(slug, { root });
+      if (rv.error) return { code: NO_VERDICT, lines: [`scenarios: the plan was amended after they were written, and ${rv.error}`] };
+      if (!rv.changes) lines.push("scenarios: the plan was amended after they were written; the writer found nothing the amendments move, so they are current again");
+    }
+    const rs = revisionState(slug);
+    if (rs.stale) return { code: NO_VERDICT, lines: [...lines, ...staleLines(slug, rs)] };
+  }
   const th = typeof threshold === "number" ? threshold : typeof cfg.threshold === "number" ? cfg.threshold : DEFAULT_THRESHOLD;
   const m = model || cfg.judge || JUDGE_MODEL;
   const head = (git(root, "rev-parse", "HEAD").stdout || "").trim();

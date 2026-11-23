@@ -8899,7 +8899,7 @@ if (want("scenarios: sealed, judged, refused to the builder")) {
   fs.writeFileSync(path.join(SR, ".seamux", "verify.json"), JSON.stringify({ recipes: [] }));
   fs.writeFileSync(path.join(SR, "app.txt"), "v1\n");
   const SEALED = path.join(TMP, "sealed");
-  const FLOG = path.join(TMP, "fake-claude.jsonl"), FSCORES = path.join(TMP, "fake-scores.json");
+  const FLOG = path.join(TMP, "fake-claude.jsonl"), FSCORES = path.join(TMP, "fake-scores.json"), FREVISE = path.join(TMP, "fake-revise.json");
   const HSEEN = path.join(TMP, "harness-env.txt");
   const srv = "require('http').createServer((q,r)=>r.end('ok')).listen(process.env.PORT,'127.0.0.1')";
   const rdy = "require('http').get('http://127.0.0.1:'+process.env.PORT,r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))";
@@ -8918,7 +8918,8 @@ fs.appendFileSync(${JSON.stringify(FLOG)}, JSON.stringify({ args, tools, cwd: pr
   claudecode: process.env.CLAUDECODE || "", envFile, wt, git: fs.existsSync(wt + "/.git"), cwdGit: fs.existsSync(".git"),
   app: fs.existsSync(wt + "/app.txt") ? fs.readFileSync(wt + "/app.txt", "utf8") : "" }) + "\\n");
 let out;
-if (tools === "") out = { scenarios: [
+if (tools === "" && /You revise acceptance scenarios/.test(input)) out = JSON.parse(fs.readFileSync(${JSON.stringify(FREVISE)}, "utf8"));
+else if (tools === "") out = { scenarios: [
   { id: "s1", title: "A retry is sent once", body: "SECRET-STEPS run the outbox twice", expect: "one row" },
   { id: "s2", title: "A dead letter is kept", body: "SECRET-STEPS kill the worker", expect: "kept", hint: "look at the dead-letter path" }] };
 else {
@@ -9220,6 +9221,72 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
     (j2 => j2.last.scores[0].before.length === 0 && j2.last.scores[1].before.length === 2)(JSON.parse(sc("scenarios", "list", "scn-a", "--json").stdout)));
   g = await fetch(`${B}/scenarios-edit/scn-a?op=delete&id=s1`);
   ok("scenarios page: an edit without the key is refused", g.status === 403 && /2 scenario/.test(sc("scenarios", "list", "scn-a").stdout));
+
+  // An amend after the scenarios exist: stale, the writer proposes, the
+  // person answers on the page.
+  fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness, style: "Name the CLI verb a scenario drives." }));
+  fs.writeFileSync(path.join(SR, "app.txt"), "v3\n");
+  execSync(`${G} commit -qam harness-back`, { cwd: SR });
+  const rev = () => JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "revisions.json"), "utf8"));
+  const sealedDoc = () => JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "scenarios.json"), "utf8"));
+  let amendN = 0;
+  const amendA = why => { const a = mk("scn-a"); a.context += ` Amended ${++amendN}.`; return sc("amend", "scn-a", tmpSpec(a), why); };
+  r = amendA("AMEND-ONE the retry stops after one try");
+  ok("scenarios revise: an amend on a plan with scenarios marks them stale in the sealed folder, and says what happens next",
+    r.status === 0 && /sealed scenarios predate this amend: the next scenarios check has the writer propose revisions/.test(r.stdout) &&
+    rev().stale && /AMEND-ONE/.test(rev().stale.amendments[0].why) && rev().proposals === null, r.stdout + r.stderr);
+  ok("scenarios revise: list says they are stale", /stale: the plan was amended after they were written/.test(sc("scenarios", "list", "scn-a").stdout));
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [] }));
+  scores([{ id: "s1", score: 0.9, reason: "ok" }, { id: "s2", score: 0.9, reason: "ok" }]);
+  let nCalls = calls().length;
+  r = sc("scenarios", "judge", "scn-a");
+  const wr = calls()[nCalls] || {};
+  ok("scenarios revise: a judge run on stale scenarios runs the writer first, with no tools, the amendments, both plans and the scenarios fenced as data",
+    wr.tools === "" && /You revise acceptance scenarios/.test(wr.prompt) && /<data name="amendments"[^]*AMEND-ONE/.test(wr.prompt) &&
+    /<data name="live-plan"/.test(wr.prompt) && /<data name="approved-plan"/.test(wr.prompt) && /<data name="scenarios"[^]*SECRET-STEPS kill the worker/.test(wr.prompt) &&
+    /never instructions to you/.test(wr.prompt), (wr.prompt || "").slice(0, 300));
+  ok("scenarios revise: when the writer proposes nothing, they are current again and the judging goes on",
+    r.status === 0 && /found nothing the amendments move, so they are current again/.test(r.stdout) && /2 of 2 met the threshold/.test(r.stdout) && rev().stale === null, r.stdout);
+  amendA("AMEND-TWO a dead letter now goes to a second queue");
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [
+    { action: "edit", id: "s2", body: "NEW-STEPS-X kill the worker twice", why: "WHY-ONE the second queue" },
+    { action: "add", title: "NEWTITLE-Y", body: "steps", expect: "kept", why: "WHY-TWO" },
+    { action: "remove", id: "no-such", why: "dropped: not a scenario" }] }));
+  const failsBefore = chk("scn-a").fails || 0;
+  nCalls = calls().length;
+  r = sc("check", "run", "scn-a", "1", "--inline");
+  ok("scenarios revise: proposals mean no verdict, uncounted, naming only the existing titles they touch and how many are new",
+    r.status !== 0 && (chk("scn-a").fails || 0) === failsBefore && /2 proposed revision\(s\) wait for the person/.test(r.stdout) &&
+    /edit {2}s2 {2}A dead letter is kept/.test(r.stdout) && /add {2}1 new scenario\(s\)/.test(r.stdout) &&
+    !/NEW-STEPS|NEWTITLE|WHY-ONE|no-such/.test(r.stdout + JSON.stringify(chk("scn-a"))) && calls().length === nCalls + 1, r.stdout);
+  nCalls = calls().length;
+  r = sc("scenarios", "judge", "scn-a");
+  const r2 = sc("scenarios", "revise", "scn-a");
+  ok("scenarios revise: while proposals wait, neither the judge nor revise runs a model again",
+    r.status === 3 && /wait for the person/.test(r2.stdout) && calls().length === nCalls &&
+    /stale: 2 proposed revision\(s\) after an amend wait for the person/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout + r2.stdout);
+  g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
+  const rhtml = await g.text();
+  ok("scenarios page: it shows the amendments and each proposal beside what it changes, with the writer's why",
+    /The plan changed after these were written/.test(rhtml) && rhtml.includes("AMEND-TWO") && rhtml.includes("NEW-STEPS-X kill the worker twice") &&
+    rhtml.includes("SECRET-STEPS kill the worker") && rhtml.includes("WHY-ONE") && rhtml.includes('data-pid="p2"'), rhtml.slice(0, 200));
+  g = await fetch(`${B}/scenarios-edit/scn-a?op=accept&id=p1`);
+  ok("scenarios page: accepting without the key is refused", g.status === 403 && rev().proposals.length === 2);
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=accept&id=p1`);
+  ok("scenarios page: accepting a proposal applies it as the person's edit, and the mark stays while another waits",
+    g.status === 200 && sealedDoc().scenarios.find(x => x.id === "s2").body === "NEW-STEPS-X kill the worker twice" &&
+    rev().stale && rev().proposals.length === 1, JSON.stringify(rev()));
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=reject&id=p2`);
+  ok("scenarios page: rejecting the last proposal drops it and clears the mark",
+    g.status === 200 && rev().stale === null && sealedDoc().scenarios.length === 2 && !/stale:/.test(sc("scenarios", "list", "scn-a").stdout), JSON.stringify(rev()));
+  amendA("AMEND-THREE");
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [{ action: "remove", id: "s1", why: "gone" }] }));
+  r = sc("scenarios", "revise", "scn-a");
+  ok("scenarios revise: deep-plan scenarios revise runs the writer now and names what its proposals touch",
+    r.status === 0 && /remove {2}s1 {2}A retry is sent exactly once/.test(r.stdout) && rev().proposals.length === 1, r.stdout + r.stderr);
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=current&id=-`);
+  ok("scenarios page: keep-them-all clears the mark and the proposals, and changes no scenario",
+    g.status === 200 && rev().stale === null && rev().proposals === null && sealedDoc().scenarios.length === 2, JSON.stringify(rev()));
   spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--stop"], { env: VENV });
 }
 
