@@ -347,12 +347,19 @@ pub fn companion_key(path: &str) -> String {
     format!("{kind}-{id}").to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).take(96).collect()
 }
 
-/// The intent-server pages the app may hand to cmux: a plan, a review or
-/// an ask, by a plain path (no `..`, no scheme, nothing to escape).
+/// The intent-server pages the app may hand to cmux: a plan, a review, an
+/// ask, a sub-agent's transcript, a run or the runs list, by a plain path
+/// (no `..`, no `//`, no scheme, nothing to escape) and an optional query of
+/// plain `key=value` pairs (lookout's `?t=`, the runs page's `?back=`).
 pub fn cmux_path_ok(path: &str) -> bool {
-    ["/plan/", "/review/", "/ask/"].iter().any(|p| path.starts_with(p) && path.len() > p.len())
-        && !path.contains("..")
-        && path.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+    let (p, q) = path.split_once('?').unwrap_or((path, ""));
+    ["/plan/", "/review/", "/ask/", "/agent/", "/run/", "/runs/"].iter().any(|k| p.starts_with(k) && p.len() > k.len())
+        && !p.contains("..")
+        && !p.contains("//")
+        && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+        && !q.contains("..")
+        && !q.contains("//")
+        && q.chars().all(|c| c.is_ascii_alphanumeric() || "-_.=&%/".contains(c))
 }
 
 /// Open an intent-server page in cmux, in `workspace`'s tab group when one
@@ -1217,18 +1224,32 @@ mod tests {
         assert_eq!(companion_key("/plan/seamux-views"), "plan-seamux-views");
         assert_eq!(companion_key("/review/seamux-views-inc1"), "review-seamux-views-inc1");
         assert_eq!(companion_key("/ask/20261022-031500-AB12"), "ask-20261022-031500-ab12");
+        // Every page open elsewhere can send makes a key cmux takes.
+        for p in ["/agent/3f6c1e2a-8b4d/a91c", "/runs/3f6c", "/review/rv-1?t=ab12CD", "/agent/s/a?back=%2Fruns%2Fs"] {
+            assert!(crew_board::companion::key_ok(&companion_key(p)), "{p} -> {}", companion_key(p));
+        }
     }
 
     #[test]
-    fn only_plan_review_and_ask_pages_go_to_cmux() {
+    fn every_seamux_page_goes_to_cmux_and_nothing_else() {
         assert!(cmux_path_ok("/plan/seamux-views"));
         assert!(cmux_path_ok("/review/seamux-views-inc1"));
         assert!(cmux_path_ok("/ask/a1b2"));
+        assert!(cmux_path_ok("/agent/3f6c1e2a-8b4d/a91c"));
+        assert!(cmux_path_ok("/run/3f6c1e2a-8b4d/b2"));
+        assert!(cmux_path_ok("/runs/3f6c1e2a-8b4d"));
+        // lookout serve's token, and the runs page's way back.
+        assert!(cmux_path_ok("/review/rv-1?t=ab12CD"));
+        assert!(cmux_path_ok("/agent/s/a?back=%2Fruns%2Fs"));
         assert!(!cmux_path_ok("/plan/"));
         assert!(!cmux_path_ok("/usage"));
         assert!(!cmux_path_ok("/plan/../../etc"));
-        assert!(!cmux_path_ok("/plan/x?t=1"));
+        assert!(!cmux_path_ok("/plan/x?back=../../etc"));
+        assert!(!cmux_path_ok("/plan//evil.example"));
+        assert!(!cmux_path_ok("/plan/x?u=//evil.example"));
         assert!(!cmux_path_ok("/plan/x y"));
+        assert!(!cmux_path_ok("/plan/x?t=a b"));
+        assert!(!cmux_path_ok("/plan/x#frag"));
         assert!(!cmux_path_ok("http://evil/plan/x"));
     }
 

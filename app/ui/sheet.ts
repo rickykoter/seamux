@@ -7,6 +7,7 @@ import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 import { face, GROUPS, groupOf, jump, ordered, round, WAKE, type GroupId } from "./sheetgroups";
+import { awayLabel, openElsewhere, type Away } from "./panelinks";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -15,12 +16,10 @@ export type Page = {
   /** /plan/<slug>, /review/<id>, /ask/<id>, /agent/<session>/<id> or /run/<session>/<id>. */
   path: string;
   title: string;
-  /** The cmux workspace it belongs to: its agent's chat shows beside the page, and Open in cmux goes there. */
+  /** The cmux workspace it belongs to: its agent's chat shows beside the page, and open elsewhere goes there. */
   workspace?: string;
   /** A worktree directory, when the workspace is not known (a Wake row): the pane working in it. */
   dir?: string;
-  /** What Open in cmux does instead of open_in_cmux (the Wake opens its rows its own way). */
-  toCmux?: () => Promise<unknown>;
 };
 
 /** A file the sheet shows itself: an image, a sandboxed HTML page or a PDF. */
@@ -584,7 +583,8 @@ type Tab = {
   shown?: Shown;
   /** A local web page's URL, framed as it is (openWeb). */
   web?: string;
-  toCmux?: (() => Promise<unknown>) | null;
+  /** Where the side column's icon sends it (panelinks.ts openElsewhere). */
+  away?: Away | null;
 };
 
 /** Whether the Dock shows the Wake beside the terminal when no page is up.
@@ -616,7 +616,9 @@ export class Sheet {
   private chat = new Chat();
   private say = document.createElement("span");
   private page: Page | null = null;
-  private toCmuxFn: (() => Promise<unknown>) | null = null;
+  /** Where the shown tab goes elsewhere, and the icon that sends it there. */
+  private away: Away | null = null;
+  private awayBtn = document.createElement("button");
   private tiles: Tile[] = [];
   /** The pane picked in the chat's tabs; "" is the default (an agent's). */
   private picked = "";
@@ -689,14 +691,13 @@ export class Sheet {
     // icons so the row stays short: VS Code (the chat's own), the side
     // column (⌘⇧E), and one way to cmux (the page beside its terminal, or
     // this pane; hidden on the tmux backend).
-    const toCmux = document.createElement("button");
-    toCmux.type = "button";
-    toCmux.className = "sheet-btn icon cmux-only";
-    toCmux.title = "Open in cmux: the page beside its terminal, or this pane";
-    toCmux.setAttribute("aria-label", toCmux.title);
-    toCmux.append(mark("M3 7 7 3M4 3h3v3"));
-    toCmux.addEventListener("click", () => void this.toCmux());
-    this.chat.adopt([this.say, this.wakeBtn, toCmux]);
+    // Open elsewhere: its tooltip names where (drawAway), on either backend.
+    const toAway = this.awayBtn;
+    toAway.type = "button";
+    toAway.className = "sheet-btn icon sheet-away";
+    toAway.append(mark("M3 7 7 3M4 3h3v3"));
+    toAway.addEventListener("click", () => void this.elsewhere());
+    this.chat.adopt([this.say, this.wakeBtn, toAway]);
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
     this.tabsEl.className = "sheet-tabs";
@@ -929,12 +930,12 @@ export class Sheet {
   }
 
   /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
-  show(s: Shown, toCmux: () => Promise<unknown>, place: { workspace?: string; dir?: string } = {}): void {
+  show(s: Shown, away: Away | null, place: { workspace?: string; dir?: string } = {}): void {
     this.enter(place, false);
     this.pageHidden = false;
     const key = `file:${s.title}`;
     this.drop(key);
-    this.addTab({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
+    this.addTab({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, away });
     this.select(key, true);
   }
 
@@ -953,7 +954,7 @@ export class Sheet {
     } catch {
       /* shown as written */
     }
-    this.addTab({ key, kind: "web", label, state: "", waiting: false, now: false, el: null, web: url, toCmux: () => invoke("open_url", { url }) });
+    this.addTab({ key, kind: "web", label, state: "", waiting: false, now: false, el: null, web: url, away: { kind: "web", url } });
     this.select(key, true);
   }
 
@@ -961,10 +962,11 @@ export class Sheet {
     this.enter({ workspace: p.workspace, dir: p.dir }, false);
     this.pageHidden = false;
     const t = this.tabs.find((x) => x.key === p.path);
+    const away: Away = { kind: "page", path: p.path, workspace: p.workspace };
     if (t) {
       t.page = p;
-      t.toCmux = p.toCmux ?? null;
-    } else this.addTab({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, toCmux: p.toCmux ?? null });
+      t.away = away;
+    } else this.addTab({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, away });
     this.select(p.path, true);
   }
 
@@ -1050,7 +1052,7 @@ export class Sheet {
         const had = this.tabs.find((t) => t.key === p.path);
         return {
           key: p.path, kind: p.kind, label: p.label, state: p.state, waiting: p.waiting, now: true, el: had?.el ?? null,
-          page: had?.page ?? { path: p.path, title: p.label, workspace: ws }, toCmux: had?.toCmux ?? null,
+          page: had?.page ?? { path: p.path, title: p.label, workspace: ws }, away: had?.away ?? { kind: "page", path: p.path, workspace: ws },
         };
       });
     // A page that left the list (answered, closed) keeps its tab while it is shown.
@@ -1347,6 +1349,7 @@ export class Sheet {
   private fold(): void {
     const folded = this.isFolded();
     this.body.classList.toggle("page-folded", folded);
+    this.drawAway(folded);
     // One button, always there in the Dock: it says what it brings back, or hides.
     const t = this.tabs.find((x) => x.key === this.active);
     const what = this.active === WAKE || !t ? "Wake" : t.kind === "page" ? "page" : t.kind;
@@ -1392,7 +1395,7 @@ export class Sheet {
     this.active = key;
     this.byHand = hand;
     this.page = t.page ?? null;
-    this.toCmuxFn = t.toCmux ?? null;
+    this.away = t.away ?? null;
     this.say.textContent = "";
     // A page that could not load (the server was down) tries again.
     if (t.el?.dataset.failed) {
@@ -1566,13 +1569,27 @@ export class Sheet {
     }, (e) => down(String(e)));
   }
 
-  private async toCmux(): Promise<void> {
-    // The Dock with no page up: the pane itself.
-    if (this.body.classList.contains("page-folded")) return this.chat.jumpToPane();
-    if (!this.page && !this.toCmuxFn) return;
+  /** The icon says where the shown tab goes elsewhere. With the page side
+   *  folded it is the pane, which only cmux can take; on tmux there is then
+   *  nowhere else, and the icon hides. */
+  private drawAway(folded = this.body.classList.contains("page-folded")): void {
+    const tmux = document.body.dataset.backend === "tmux";
+    const label = folded ? (tmux ? "" : "Open this pane in cmux") : awayLabel(this.away ?? (this.page ? { kind: "page", path: this.page.path, workspace: this.page.workspace } : null));
+    this.awayBtn.hidden = !label;
+    this.awayBtn.title = label;
+    this.awayBtn.setAttribute("aria-label", label);
+  }
+
+  private async elsewhere(): Promise<void> {
+    // The Dock with no page up: the pane itself, in cmux.
+    if (this.body.classList.contains("page-folded")) {
+      if (document.body.dataset.backend !== "tmux") return this.chat.jumpToPane();
+      return;
+    }
+    const a = this.away ?? (this.page ? { kind: "page" as const, path: this.page.path, workspace: this.page.workspace } : null);
+    if (!a) return;
     try {
-      if (this.toCmuxFn) await this.toCmuxFn();
-      else if (this.page) await openInCmux(this.page);
+      await openElsewhere(a);
     } catch (e) {
       this.say.textContent = String(e);
     }
@@ -1617,10 +1634,6 @@ export async function openInVSCode(dir: string, say: (m: string) => void): Promi
   } catch (e) {
     say(String(e));
   }
-}
-
-export function openInCmux(p: Page): Promise<void> {
-  return invoke("open_in_cmux", { path: p.path, workspace: p.workspace ?? null });
 }
 
 /** The Dock's own sheet, its side column, once the Dock has made it. */

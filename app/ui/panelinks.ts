@@ -13,6 +13,36 @@ import { bangAcross } from "./bang";
 import { DOCK_FILE, joinWrapped, route } from "./linkroute";
 import { linkSheet, type Shown } from "./sheet";
 
+/** Where a side-column tab goes when it is opened elsewhere: a seamux page
+ *  (in its workspace), a file (at its line), or a web page. */
+export type Away =
+  | { kind: "page"; path: string; workspace?: string }
+  | { kind: "file"; path: string; line?: number }
+  | { kind: "web"; url: string };
+
+/** The backend the app runs on, as main.ts set it from backend_status; cmux
+ *  until it is known. */
+function onTmux(): boolean {
+  return document.body.dataset.backend === "tmux";
+}
+
+/** What "open elsewhere" does for `a`, as the icon's tooltip says it. */
+export function awayLabel(a: Away | null): string {
+  if (!a) return "";
+  if (a.kind === "file") return "Open in VS Code";
+  if (a.kind === "web") return "Open in the browser";
+  return onTmux() ? "Open in the browser" : "Open in cmux, beside its workspace";
+}
+
+/** Open `a` elsewhere: a page in cmux beside its workspace (open_in_cmux,
+ *  which hides the window once cmux has it, and on tmux opens the browser
+ *  and leaves the window up), a file in VS Code, a web page in the browser. */
+export async function openElsewhere(a: Away): Promise<void> {
+  if (a.kind === "file") await invoke("open_in_editor", { path: a.path, line: a.line ?? null, col: null });
+  else if (a.kind === "web") await invoke("open_url", { url: a.url });
+  else await invoke("open_in_cmux", { path: a.path, workspace: a.workspace ?? null });
+}
+
 /** A link under the pointer: the text it shows on its row, and how to
  *  follow it (`e` is the click, for its modifier keys). */
 export type Hovered = { y: number; label: string; uri: string; go: (e?: MouseEvent) => void };
@@ -32,7 +62,7 @@ export async function openFile(path: string, at: { line?: number; col?: number }
   if (!shown) return void (await editor());
   const to = linkSheet({ workspace: await placeOf(id) });
   if (!to) return void (await editor());
-  to.sheet.show(shown, editor, to.place);
+  to.sheet.show(shown, { kind: "file", path, line: at.line }, to.place);
 }
 
 /** Path-like text: led by /, ~/, ./ or ../, or a name with a dot extension,

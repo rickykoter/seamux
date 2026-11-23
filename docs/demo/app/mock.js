@@ -338,6 +338,15 @@ function history() {
   return out.sort((a, b) => a.at - b.at);
 }
 
+// What the app asked to open somewhere else (the browser, VS Code, cmux): kept
+// in order, and said on the console, so a tour can tell where a link went.
+const opened = [];
+function opening(cmd, args) {
+  opened.push({ cmd, ...args });
+  console.info(`[demo] ${cmd}`, JSON.stringify(args ?? {}));
+  return null;
+}
+
 // The Wake: what each workspace left behind.
 const SESS = { checkout: "3f6c1e2a-8b4d-4c7e-9a1f-2d3e4f5a6b70", api: "4a7d2f3b-9c5e-4d8f-8b2a-3e4f5a6b7c81", ui: "5b8e3a4c-ad6f-4e9a-9c3b-4f5a6b7c8d92", search: "6c9f4b5d-be7a-4fab-8d4c-5a6b7c8d9ea3", docs: "" };
 const DP = `${HOME}/.claude/deep-plan/plans`;
@@ -1063,10 +1072,10 @@ const handlers = {
     const r = await fetch(`/__demo/page?path=${encodeURIComponent(path)}`).then((x) => x.json()).catch(() => ({ code: 0 }));
     return r.code;
   },
-  open_in_cmux: () => null,
+  open_in_cmux: (a) => opening("open_in_cmux", a),
   open_in_vscode: ({ dir }) => ({ folder: dir, note: null }),
-  open_in_editor: () => null,
-  open_url: () => null,
+  open_in_editor: (a) => opening("open_in_editor", a),
+  open_url: (a) => opening("open_url", a),
   copy_text: () => null,
   gh_card: ({ url }) => (/\/pull\/41\b/.test(url) ? CARD : null),
 
@@ -1137,7 +1146,15 @@ const handlers = {
     const workspaces = [...trees.values(), { ws: `${TREES}/legacy-cart`, n: 6, last: iso(ago(60 * 26)), name: "legacy-cart", here: false }].sort((a, b) => (a.last < b.last ? 1 : -1));
     return { ws: dir ?? "", rows: rows.map(strip), limit: 500, truncated: false, workspaces };
   },
-  wake_open: () => ({ sheet: null, detail: "opened in cmux" }),
+  // A plan, ask or review row opens as a sheet page, as the app's does with
+  // here: the rest says it went to cmux.
+  wake_open: ({ id, here }) => {
+    const row = WAKE.find(([i]) => i === id);
+    const kind = row?.[2];
+    if (here && row?.[5].locator && ["plan", "ask", "review"].includes(kind)) return { sheet: `/${kind}/${row[5].locator}`, detail: "" };
+    opening("wake_open", { id, here });
+    return { sheet: null, detail: "opened in cmux" };
+  },
   wake_file: ({ id }) => {
     if (id !== 21) throw "the demo has no files to show";
     const page = `<!doctype html><body style="font:15px -apple-system,sans-serif;padding:28px;color:#222"><h2>Coupon totals</h2>
@@ -1321,4 +1338,4 @@ mockIPC(
 // Live: the spinners turn, the wait clocks move, and views keep their frames.
 setInterval(push, 2000);
 setTimeout(push, 300);
-window.__seamuxDemo = { answer, reply, push, ws, panes, handlers };
+window.__seamuxDemo = { answer, reply, push, ws, panes, handlers, opened };
