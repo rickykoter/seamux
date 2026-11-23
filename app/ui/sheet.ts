@@ -699,6 +699,8 @@ export class Sheet {
     toAway.className = "sheet-btn icon sheet-away";
     toAway.append(mark("M3 7 7 3M4 3h3v3"));
     toAway.addEventListener("click", () => void this.elsewhere());
+    // main.ts learns the backend after the first draw: say it right then.
+    window.addEventListener("seamux:backend", () => this.drawAway());
     // A review beside the work moves to its other home, the Lookout tab.
     const inLookout = this.lookoutBtn;
     inLookout.type = "button";
@@ -1006,7 +1008,7 @@ export class Sheet {
     // in the frame's address (page.path).
     const key = bareOf(p.path);
     const t = this.tabs.find((x) => x.key === key);
-    const away: Away = { kind: "page", path: p.path, workspace: p.workspace };
+    const away = pageAway(p);
     if (t) {
       // Another query (a fresh lookout token): the frame loads it again.
       if (t.el && t.page && t.page.path !== p.path) {
@@ -1101,7 +1103,7 @@ export class Sheet {
         const had = this.tabs.find((t) => t.key === p.path);
         return {
           key: p.path, kind: p.kind, label: p.label, state: p.state, waiting: p.waiting, now: true, el: had?.el ?? null,
-          page: had?.page ?? { path: p.path, title: p.label, workspace: ws }, away: had?.away ?? { kind: "page", path: p.path, workspace: ws },
+          page: had?.page ?? { path: p.path, title: p.label, workspace: ws }, away: had?.away ?? pageAway({ path: p.path, workspace: ws }),
         };
       });
     // A page that left the list (answered, closed) keeps its tab while it is shown.
@@ -1636,8 +1638,9 @@ export class Sheet {
    *  folded it is the pane, which only cmux can take; on tmux there is then
    *  nowhere else, and the icon hides. */
   private drawAway(folded = this.body.classList.contains("page-folded")): void {
-    const tmux = document.body.dataset.backend === "tmux";
-    const label = folded ? (tmux ? "" : "Open this pane in cmux") : awayLabel(this.away ?? (this.page ? { kind: "page", path: this.page.path, workspace: this.page.workspace } : null));
+    // The pane goes to cmux only on cmux (not on tmux, nor before the backend is known).
+    const cmux = document.body.dataset.backend === "cmux";
+    const label = folded ? (cmux ? "Open this pane in cmux" : "") : awayLabel(this.away ?? pageAway(this.page));
     this.awayBtn.hidden = !label;
     this.lookoutBtn.hidden = folded || !this.page?.path.startsWith("/review/");
     this.awayBtn.title = label;
@@ -1647,10 +1650,10 @@ export class Sheet {
   private async elsewhere(): Promise<void> {
     // The Dock with no page up: the pane itself, in cmux.
     if (this.body.classList.contains("page-folded")) {
-      if (document.body.dataset.backend !== "tmux") return this.chat.jumpToPane();
+      if (document.body.dataset.backend === "cmux") return this.chat.jumpToPane();
       return;
     }
-    const a = this.away ?? (this.page ? { kind: "page" as const, path: this.page.path, workspace: this.page.workspace } : null);
+    const a = this.away ?? pageAway(this.page);
     if (!a) return;
     try {
       await openElsewhere(a);
@@ -1680,6 +1683,13 @@ function needsYou(n = 1): HTMLElement {
   if (n > 1) dot.textContent = String(n);
   dot.setAttribute("aria-label", n > 1 ? `${n} waiting on you` : "waiting on you");
   return dot;
+}
+
+/** Where a page tab goes elsewhere: the page, beside its workspace. A plan's
+ *  scenarios page goes nowhere else, since only this app holds its key. */
+function pageAway(p: { path: string; workspace?: string } | null): Away | null {
+  if (!p || p.path.startsWith("/scenarios/")) return null;
+  return { kind: "page", path: p.path, workspace: p.workspace };
 }
 
 /** A page path without its query or fragment: the tab it is. */

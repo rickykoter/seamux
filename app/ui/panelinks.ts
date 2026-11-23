@@ -23,18 +23,15 @@ export type Away =
   | { kind: "file"; path: string; line?: number }
   | { kind: "web"; url: string };
 
-/** The backend the app runs on, as main.ts set it from backend_status; cmux
- *  until it is known. */
-function onTmux(): boolean {
-  return document.body.dataset.backend === "tmux";
-}
-
 /** What "open elsewhere" does for `a`, as the icon's tooltip says it. */
 export function awayLabel(a: Away | null): string {
   if (!a) return "";
   if (a.kind === "file") return "Open in VS Code";
   if (a.kind === "web") return "Open in the browser";
-  return onTmux() ? "Open in the browser" : "Open in cmux, beside its workspace";
+  const b = document.body.dataset.backend;
+  if (b === "tmux") return "Open in the browser";
+  if (b === "cmux") return "Open in cmux, beside its workspace";
+  return "Open in cmux, or the browser on tmux";
 }
 
 /** Open `a` elsewhere: a page in cmux beside its workspace (open_in_cmux,
@@ -237,8 +234,8 @@ export function pathLinks(term: Terminal, id: () => number | null, hover: (h: Ho
 
 /** The intent server's origin (seamux's pages), asked once it is up. */
 let origin: string | null = null;
-async function intentOrigin(): Promise<string | null> {
-  if (origin) return origin;
+async function intentOrigin(fresh = false): Promise<string | null> {
+  if (origin && !fresh) return origin;
   const s = await invoke<{ origin: string | null; up: boolean }>("intent_server").catch(() => null);
   if (s?.up && s.origin) origin = s.origin.replace("//localhost:", "//127.0.0.1:");
   return origin;
@@ -253,8 +250,11 @@ export async function openFramed(d: object, from: string): Promise<boolean> {
   // A web link only: a page's script can post without a click, so a framed
   // page never opens a file or the editor (its files go through its own /open).
   if (typeof m.url !== "string" || m.url.length > 4096 || !/^https?:\/\//i.test(m.url)) return false;
-  const o = await intentOrigin();
-  if (!o || from.replace("//localhost:", "//127.0.0.1:") !== o) return false;
+  const at = from.replace("//localhost:", "//127.0.0.1:");
+  // The server may have come back on another port since it was asked.
+  let o = await intentOrigin();
+  if (o !== at) o = await intentOrigin(true);
+  if (!o || at !== o) return false;
   await follow(m.url, null, new MouseEvent("click", { shiftKey: m.shift === true, metaKey: m.meta === true }));
   return true;
 }
