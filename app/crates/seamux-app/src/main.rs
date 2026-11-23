@@ -20,6 +20,7 @@ mod pty_app;
 mod radar_app;
 mod doctor_app;
 mod diff_app;
+mod focus_log;
 mod reclaim_app;
 mod resume;
 mod resume_app;
@@ -238,6 +239,7 @@ fn main() {
             shell::intent_server,
             shell::intent_page,
             shell::hide_overlay,
+            focus_log::focus_tab,
             wall_app::wall_frame,
             wall_app::wall_reply,
             wall_app::wall_jump,

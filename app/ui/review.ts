@@ -558,6 +558,16 @@ export class ReviewView {
     this.render(true);
   }
 
+  /** main.ts: the tab was selected. Keys go to the review list (the one
+   *  selected, else the first), or to its button while the list is folded. */
+  focusMain(): boolean {
+    const b = this.root.classList.contains("folded")
+      ? this.root.querySelector<HTMLElement>(".r-list-btn")
+      : (this.list.querySelector<HTMLElement>(".r-item.on") ?? this.list.querySelector<HTMLElement>(".r-item"));
+    b?.focus();
+    return !!b && document.activeElement === b;
+  }
+
   /** main.ts: the Lookout tab came into view, or left it. */
   setShown(on: boolean): void {
     this.shown = on;
