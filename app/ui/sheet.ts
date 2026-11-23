@@ -969,7 +969,8 @@ export class Sheet {
   show(s: Shown, away: Away | null, place: { workspace?: string; dir?: string } = {}): void {
     this.enter(place, false);
     this.pageHidden = false;
-    const key = `file:${s.title}`;
+    // Keyed by its path, so two README.md files keep a tab each.
+    const key = `file:${away?.kind === "file" ? away.path : s.title}`;
     this.drop(key);
     this.addTab({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, away });
     this.select(key, true);
@@ -997,13 +998,18 @@ export class Sheet {
   async open(p: Page): Promise<void> {
     this.enter({ workspace: p.workspace, dir: p.dir }, false);
     this.pageHidden = false;
-    const t = this.tabs.find((x) => x.key === p.path);
+    // A page's tab is its path without the query (lookout's ?t=, the runs
+    // page's ?back=), so it reuses the workspace's live tab; the query stays
+    // in the frame's address (page.path).
+    const key = bareOf(p.path);
+    const t = this.tabs.find((x) => x.key === key);
     const away: Away = { kind: "page", path: p.path, workspace: p.workspace };
     if (t) {
-      t.page = p;
+      // A frame already drawn keeps the address it loaded from.
+      t.page = t.el && t.page ? { ...p, path: t.page.path } : p;
       t.away = away;
-    } else this.addTab({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, away });
-    this.select(p.path, true);
+    } else this.addTab({ key, kind: kindOf(key), label: p.title, state: "", waiting: false, now: false, el: null, page: p, away });
+    this.select(key, true);
   }
 
   /** Open the sheet for a place: another place starts its tabs afresh. */
@@ -1326,6 +1332,19 @@ export class Sheet {
   /** A quiet word at the end of the strip, where the eye is after a key,
    *  that goes again after a moment. With the column hidden, the strip is
    *  too: it goes in the terminal's row instead. */
+  /** A failed open, said where the sheet says its own errors (the tab
+   *  strip's note, or the chat row's when the page side is folded), for a
+   *  few seconds and not dimmed. */
+  notice(text: string): void {
+    const at = this.isFolded() ? this.say : this.noteEl;
+    at.textContent = text;
+    at.classList.remove("quiet");
+    clearTimeout(this.sayTimer);
+    this.sayTimer = window.setTimeout(() => {
+      if (at.textContent === text) at.textContent = "";
+    }, 6000);
+  }
+
   private flash(text: string): void {
     const at = this.isFolded() ? this.say : this.noteEl;
     at.textContent = text;
@@ -1587,7 +1606,8 @@ export class Sheet {
     };
     invoke<IntentServer>("intent_server").then(async (server) => {
       if (!server.up || !server.origin) return down(server.reason ?? "no answer");
-      let src = server.origin + t.key;
+      // The page's own address, query and all (a lookout ?t=); the tab is its bare path.
+      let src = server.origin + (t.page?.path ?? t.key);
       // A plan's scenarios page asks for its key, which only the app reads
       // (shell.rs scenarios_key): the intent server never hands it out.
       const scn = /^\/scenarios\/([a-z0-9][a-z0-9._-]*)$/.exec(t.key);
@@ -1655,6 +1675,11 @@ function needsYou(n = 1): HTMLElement {
   return dot;
 }
 
+/** A page path without its query or fragment: the tab it is. */
+function bareOf(path: string): string {
+  return path.split("#")[0].split("?")[0];
+}
+
 function kindOf(path: string): string {
   return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan"
     : path.startsWith("/scenarios/") ? "scenarios"
@@ -1684,6 +1709,11 @@ export function setDockSheet(s: Sheet): void {
 /** Where a pane's link opens a page: the Dock's side column, beside the
  *  terminal and in the workspace it shows. With another view up (Lookout)
  *  the Dock comes forward first (main.ts): a page never opens anywhere else. */
+/** Say a failed open in the Dock's side column (Sheet.notice). */
+export function noticeInDock(text: string): void {
+  docked?.notice(text);
+}
+
 /** The workspace a link belongs to, without moving the Dock. */
 export function peekPlace(target: { page?: string; file?: string }): string | undefined {
   return docked?.placeOfLink(target);

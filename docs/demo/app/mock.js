@@ -1088,7 +1088,12 @@ const handlers = {
     return opening("open_in_cmux", a);
   },
   open_in_vscode: ({ dir }) => ({ folder: dir, note: null }),
-  open_in_editor: (a) => opening("open_in_editor", a),
+  // A path under a missing/ folder is gone, as a file deleted since it was
+  // printed: VS Code says so, as the app's open_in_editor would.
+  open_in_editor: (a) => {
+    if (/\/missing\//.test(String(a?.path ?? ""))) throw `${a.path}: no such file`;
+    return opening("open_in_editor", a);
+  },
   open_url: (a) => opening("open_url", a),
   copy_text: () => null,
   gh_card: ({ url }) => (/\/pull\/41\b/.test(url) ? CARD : null),

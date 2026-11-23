@@ -11,7 +11,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type { IBufferLine, ILink, ILinkProvider, Terminal } from "@xterm/xterm";
 import { bangAcross } from "./bang";
 import { DOCK_FILE, joinWrapped, route } from "./linkroute";
-import { linkSheet, peekPlace, type Shown } from "./sheet";
+import { linkSheet, noticeInDock, peekPlace, type Shown } from "./sheet";
+
+/** A failed open, said in the Dock's side column rather than dropped. */
+const said = (what: string) => (err: unknown) => noticeInDock(`${what}: ${String(err)}`);
 
 /** Where a side-column tab goes when it is opened elsewhere: a seamux page
  *  (in its workspace), a file (at its line), or a web page. */
@@ -56,11 +59,16 @@ async function placeOf(id: number | null): Promise<string | undefined> {
 /** Open a file a pane links to: in the Dock if it is one to look at,
  *  else (or with Shift) in VS Code at its line. */
 export async function openFile(path: string, at: { line?: number; col?: number }, id: number | null, e?: MouseEvent): Promise<void> {
-  const editor = () => invoke("open_in_editor", { path, line: at.line ?? null, col: at.col ?? null }).catch(() => {});
+  const name = path.split("/").pop() || path;
+  const editor = () => invoke("open_in_editor", { path, line: at.line ?? null, col: at.col ?? null }).catch(said(`VS Code could not open ${name}`));
   // Shift (VS Code) and ⌘ (open elsewhere, which for a file is VS Code too).
   if (e?.shiftKey || e?.metaKey || !DOCK_FILE.test(path)) return void (await editor());
-  const shown = await invoke<Shown>("link_file", { path }).catch(() => null);
-  if (!shown) return void (await editor());
+  let why = "";
+  const shown = await invoke<Shown>("link_file", { path }).catch((err) => ((why = String(err)), null));
+  if (!shown) {
+    noticeInDock(`${name} could not be shown here (${why}); opening it in VS Code`);
+    return void (await editor());
+  }
   const to = linkSheet({ workspace: await placeOf(id) }, { file: path });
   if (!to) return void (await editor());
   to.sheet.show(shown, { kind: "file", path, line: at.line }, to.place);
@@ -276,19 +284,29 @@ export async function follow(uri: string, id: number | null, e?: MouseEvent): Pr
     const u = new URL(uri);
     const path = u.pathname + u.search;
     const ws = peekPlace({ page: path }) ?? (await placeOf(id));
-    return void (await openElsewhere({ kind: "page", path, workspace: ws }).catch(() => {}));
+    return void (await openElsewhere({ kind: "page", path, workspace: ws }).catch(said(`${path} could not open elsewhere`)));
   }
   if (how !== "browser" && !e?.shiftKey && !e?.metaKey) {
     if (how === "page") {
       const u = new URL(uri);
-      return void (await openPage(u.pathname + u.search, decodeURIComponent(u.pathname.split("/")[2] ?? ""), await placeOf(id), uri));
+      return void (await openPage(u.pathname + u.search, pageTitle(u.pathname), await placeOf(id), uri));
     }
     const to = linkSheet({ workspace: await placeOf(id) });
-    if (!to) return void (await invoke("open_url", { url: uri }).catch(() => {}));
+    if (!to) return void (await invoke("open_url", { url: uri }).catch(said("The browser could not open it")));
     to.sheet.openWeb(uri, to.place);
     return;
   }
-  await invoke("open_url", { url: uri }).catch(() => {});
+  await invoke("open_url", { url: uri }).catch(said("The browser could not open it"));
+}
+
+/** A page tab's title from its path: a plan's slug, a review's id, and for
+ *  /agent/<session>/<id> or /run/<session>/<id> the agent or run itself
+ *  (the session is the same for all of a workspace's agents). */
+export function pageTitle(pathname: string): string {
+  const seg = pathname.split("/").map((x) => decodeURIComponent(x));
+  if ((seg[1] === "agent" || seg[1] === "run") && seg[3]) return `${seg[1]} ${seg[3]}`;
+  if (seg[1] === "runs") return "Background work";
+  return seg[2] ?? "";
 }
 
 /** Open a seamux page in the Dock's side column, in the workspace it belongs
@@ -297,7 +315,7 @@ export async function follow(uri: string, id: number | null, e?: MouseEvent): Pr
 export async function openPage(path: string, title: string, from?: string, fallback?: string): Promise<void> {
   const to = linkSheet({ workspace: from }, { page: path });
   if (!to) {
-    if (fallback) await invoke("open_url", { url: fallback }).catch(() => {});
+    if (fallback) await invoke("open_url", { url: fallback }).catch(said("The browser could not open it"));
     return;
   }
   await to.sheet.open({ path, title, ...to.place });

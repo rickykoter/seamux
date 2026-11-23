@@ -141,9 +141,12 @@ void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 // its pane in the Dock.
 // A seamux://focus link (ADR 0086) arrives the same way; one that launched
 // the app came before this listened, so it is taken once listening starts.
+// A link that arrives while listening comes both ways (open_link emits and
+// keeps it): handling the event takes the kept one too, so it jumps once.
 void listen<{ ws: string; pane: string }>("notify:jump", (e) => {
   tabs.select("dock");
   dockView.jump(e.payload.ws, e.payload.pane);
+  void invoke("notify_take_link").catch(() => null);
 }).then(async () => {
   const link = await invoke<{ ws: string; pane: string } | null>("notify_take_link").catch(() => null);
   if (link?.ws) {
