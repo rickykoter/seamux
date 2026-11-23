@@ -268,13 +268,16 @@ export const isFull = v => !!v && (v.full === true || (v.full === undefined && (
 // Whether the newest full verdict passed on `head`: what deliver, the last
 // done and ship ask of a plan with a scenarios check (ADR: a retry
 // re-judges only the failing scenarios; a full pass at HEAD gates the merge).
-export function fullPassAt(slug, head) {
+export function fullPassAt(slug, head, threshold = DEFAULT_THRESHOLD) {
   if (readRevisions(slug).stale) return { ok: false, why: "an amend left the scenarios stale, so they wait on the writer's revisions and the person's answer" };
   const all = readSealedJson(slug, "verdicts.json");
   const v = (all && all.lastFull) || ((all && all.history) || []).find(isFull);
   if (!v) return { ok: false, why: "no full judge run yet" };
   const at = String(v.head || "").slice(0, 8);
   if (!v.pass) return { ok: false, why: `the last full judge run (on ${at}) did not pass` };
+  // A run judged at a lower threshold than the plan's (scenarios judge
+  // --threshold 0) proves nothing at the plan's.
+  if (!(Number(v.threshold) >= Number(threshold))) return { ok: false, why: `the last full judge run passed at threshold ${v.threshold}, below the plan's ${threshold}` };
   if (!head || v.head !== head) return { ok: false, why: `the last full judge run passed on ${at}, not HEAD ${String(head || "").slice(0, 8)}` };
   // It judged the scenarios as they read now: an edit, a removal undone or a
   // new scenario since needs a run of its own. A verdict from before scores
@@ -751,6 +754,7 @@ export function reviseScenarios(slug, { root, model } = {}) {
       model: m, tools: [], cwd, schema: REVISE_SCHEMA, timeoutS: 900 });
     if (!out.ok) return { error: `the writer did not finish: ${out.error}` };
     const ids = new Set(doc.scenarios.map(s => s.id));
+    const draft = crypto.randomBytes(3).toString("hex");
     const proposals = [];
     const asked = (out.value.changes || []).length;
     for (const c of out.value.changes || []) {
@@ -760,7 +764,7 @@ export function reviseScenarios(slug, { root, model } = {}) {
       for (const k of ["title", "body", "expect"]) if (typeof c[k] === "string" && c[k].trim()) fields[k] = c[k].trim().slice(0, TEXT_MAX[k] || 4000);
       if (c.action === "add" && !(fields.title && fields.body)) continue;
       if (c.action === "edit" && !Object.keys(fields).length) continue;
-      proposals.push({ pid: `p${proposals.length + 1}`, action: c.action, ...(c.action !== "add" ? { id: c.id } : {}), ...fields,
+      proposals.push({ pid: `p${proposals.length + 1}-${draft}`, action: c.action, ...(c.action !== "add" ? { id: c.id } : {}), ...fields,
         why: String(c.why || "").slice(0, 600) });
     }
     const writer = { model: m, at: Date.now(), cost: out.cost ?? null };

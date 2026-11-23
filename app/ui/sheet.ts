@@ -1532,10 +1532,10 @@ export class Sheet {
       return;
     }
     // Asked each time a page is framed: the server can come back on a new port.
-    const down = (why: string) => {
+    const down = (why: string, text?: string) => {
       const n = document.createElement("p");
       n.className = "note";
-      n.textContent = `The intent server is down (${why}), so this page can't be shown here. Open in cmux may still work once it is back. `;
+      n.textContent = text ?? `The intent server is down (${why}), so this page can't be shown here. Open in cmux may still work once it is back. `;
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "sheet-btn";
@@ -1556,7 +1556,7 @@ export class Sheet {
         try {
           src += "?k=" + encodeURIComponent(await invoke<string>("scenarios_key", { slug: scn[1] }));
         } catch (e) {
-          return down(String(e));
+          return down(String(e), `This plan's scenarios page can't be opened: ${String(e)}. `);
         }
       }
       const f = document.createElement("iframe");

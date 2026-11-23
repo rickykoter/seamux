@@ -3905,8 +3905,17 @@ function repend(inc, ids, why) {
 function scenariosHold(st) {
   const has = (st.increments || []).some(i => Object.values(checksOf(i)).some(c => c.kind === "scenarios" && !c.retired));
   if (!has) return null;
-  const f = SCN.fullPassAt(st.slug, headSha(st.root));
+  const f = SCN.fullPassAt(st.slug, headSha(st.root), scenariosThreshold(st));
   return f.ok ? null : `${st.slug} has a scenarios check, and ${f.why}: run deep-plan scenarios judge ${st.slug} (every scenario, at HEAD) first`;
+}
+// The threshold a plan's scenarios checks ask for: the highest any check
+// sets, else the repo's .seamux/scenarios.json, else the default.
+function scenariosThreshold(st) {
+  const set = (st.increments || []).flatMap(i => Object.values(checksOf(i)))
+    .filter(c => c.kind === "scenarios" && !c.retired && typeof c.threshold === "number").map(c => c.threshold);
+  if (set.length) return Math.max(...set);
+  const cfg = SCN.scenariosConfig(st.root);
+  return typeof cfg.threshold === "number" ? cfg.threshold : SCN.DEFAULT_THRESHOLD;
 }
 // HEAD of the plan root, or "" outside git: an increment's base.
 function headSha(root) {
@@ -5312,7 +5321,7 @@ function shipVerdict({ st, root, fetch = true }) {
   // (files that could not be read count as matching).
   const req = POL.scenariosRequiredFor(pol, files);
   if (scen.length || (req && POL.atLeast(level, req))) {
-    const full = scen.length ? SCN.fullPassAt(st.slug, head) : null;
+    const full = scen.length ? SCN.fullPassAt(st.slug, head, scenariosThreshold(st)) : null;
     gate("scenarios", scen.length && scen.every(c => c.status === "pass") && full.ok,
       !scen.length ? `the policy needs a scenarios check at ${req} and above, and the plan has none`
         : !scen.every(c => c.status === "pass") ? "a scenarios check has not passed"

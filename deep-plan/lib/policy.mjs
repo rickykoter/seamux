@@ -166,7 +166,13 @@ function coversGlob(file, glob) {
   // matching file: it counts as matching.
   if (/[*?[{]/.test(String(file)) || /^\.?\/?$/.test(String(file))) return true;
   const dir = String(file).replace(/\/+$/, "");
-  return !!dir && (matchesGlob(`${dir}/x`, glob) || glob.startsWith(`${dir}/`));
+  if (!dir) return false;
+  if (matchesGlob(`${dir}/x`, glob) || glob.startsWith(`${dir}/`)) return true;
+  // The glob's fixed part, up to its first wildcard: a directory inside it,
+  // or holding it, may hold a matching file (app against app/*/ui/**).
+  const k = glob.search(/[*?[{]/);
+  const pre = k < 0 ? glob : glob.slice(0, k);
+  return pre.startsWith(`${dir}/`) || `${dir}/`.startsWith(pre.replace(/[^/]*$/, ""));
 }
 // The lowest level that needs a scenarios check for a change of these files:
 // scenariosRequiredAt, unless scenarios.paths is set and no file matches it.

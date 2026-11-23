@@ -9195,10 +9195,14 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   const keep = JSON.parse(spawnSync("node", ["--input-type=module", "-e", `
     import { saveVerdict, fullPassAt } from ${JSON.stringify(path.join(HERE, "lib", "scenarios.mjs"))};
     const at = () => new Date().toISOString();
-    saveVerdict("scn-h", { at: at(), head: "a".repeat(40), pass: true, full: true, scores: [{ id: "s1", score: 1, sha: "x" }] });
+    saveVerdict("scn-h", { at: at(), head: "a".repeat(40), threshold: 0.8, pass: true, full: true, scores: [{ id: "s1", score: 1, sha: "x" }] });
     for (let i = 0; i < 25; i++) saveVerdict("scn-h", { at: at(), head: "a".repeat(40), pass: false, full: false, scores: [{ id: "s1", score: 0.1, sha: "x" }] });
-    console.log(JSON.stringify(fullPassAt("scn-h", "a".repeat(40))));`], { encoding: "utf8", env: SENV }).stdout || "{}");
+    const kept = fullPassAt("scn-h", "a".repeat(40));
+    saveVerdict("scn-h", { at: at(), head: "b".repeat(40), threshold: 0, pass: true, full: true, scores: [{ id: "s1", score: 0.1, sha: "x" }] });
+    console.log(JSON.stringify({ ...kept, low: fullPassAt("scn-h", "b".repeat(40), 0.8) }));`], { encoding: "utf8", env: SENV }).stdout || "{}");
   ok("scenarios: the newest full run is kept past the 20 verdicts of history, so retries do not push it out (f3)", keep.ok === true, JSON.stringify(keep));
+  ok("scenarios: a full run judged below the plan's threshold (judge --threshold 0) is no full pass (delivery f5)",
+    keep.low && keep.low.ok === false && /below the plan's 0.8/.test(keep.low.why), JSON.stringify(keep.low));
 
   // The last done of a plan with no delivery review wants the full pass too.
   {
@@ -9320,15 +9324,16 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   const rhtml = await g.text();
   ok("scenarios page: it shows the amendments and each proposal beside what it changes, with the writer's why",
     /The plan changed after these were written/.test(rhtml) && rhtml.includes("AMEND-TWO") && rhtml.replace(/<\/?(ins|del)>/g, "").includes("NEW-STEPS-X kill the worker twice") &&
-    rhtml.includes("SECRET-STEPS kill the worker") && rhtml.includes("WHY-ONE") && rhtml.includes('data-pid="p2"') &&
-    /<section class="sc[^"]*" id="sc-s2"[^]*?data-pid="p1"/.test(rhtml) && /<ins>NEW-STEPS-X<\/ins>/.test(rhtml), rhtml.slice(0, 200));
-  g = await fetch(`${B}/scenarios-edit/scn-a?op=accept&id=p1`);
+    rhtml.includes("SECRET-STEPS kill the worker") && rhtml.includes("WHY-ONE") && /data-pid="p2-[0-9a-f]{6}"/.test(rhtml) &&
+    /<section class="sc[^"]*" id="sc-s2"[^]*?data-pid="p1-[0-9a-f]{6}"/.test(rhtml) && /<ins>NEW-STEPS-X<\/ins>/.test(rhtml), rhtml.slice(0, 200));
+  const pid = n => rev().proposals[n].pid;
+  g = await fetch(`${B}/scenarios-edit/scn-a?op=accept&id=${pid(0)}`);
   ok("scenarios page: accepting without the key is refused", g.status === 403 && rev().proposals.length === 2);
-  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=accept&id=p1`);
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=accept&id=${pid(0)}`);
   ok("scenarios page: accepting a proposal applies it as the person's edit, and the mark stays while another waits",
     g.status === 200 && sealedDoc().scenarios.find(x => x.id === "s2").body === "NEW-STEPS-X kill the worker twice" &&
     rev().stale && rev().proposals.length === 1, JSON.stringify(rev()));
-  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=reject&id=p2`);
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=reject&id=${pid(0)}`);
   ok("scenarios page: rejecting the last proposal drops it and clears the mark",
     g.status === 200 && rev().stale === null && sealedDoc().scenarios.length === 2 && !/stale:/.test(sc("scenarios", "list", "scn-a").stdout), JSON.stringify(rev()));
   amendA("AMEND-THREE");
@@ -9519,7 +9524,7 @@ if (want("policy and ship: levels from the base branch")) {
     r.status === 0 && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`) && /merged PR #12/.test(r.stdout), r.stdout + r.stderr);
   seedFull = false;
   fs.writeFileSync(path.join(PSEALED, "pol-ship", "verdicts.json"),
-    JSON.stringify({ history: [{ head: "0".repeat(40), pass: true, full: true, scores: [{ id: "s1", score: 1 }] }] }));
+    JSON.stringify({ history: [{ head: "0".repeat(40), threshold: 0.8, pass: true, full: true, scores: [{ id: "s1", score: 1 }] }] }));
   ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: a full judge run that passed on another head than HEAD holds the merge, naming the command",

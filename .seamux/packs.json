@@ -8,7 +8,7 @@
       "items": {
         "recipe:scrub": "04ac09aa6a02",
         "recipe:map-sync": "576510369619",
-        "recipe:theme-sync": "04e156770f03",
+        "recipe:theme-sync": "1e1ced2deb1b",
         "recipe:plugin-validate": "fc57701df932",
         "recipe:deep-plan-probe": "829f0f21d962",
         "recipe:restack-probe": "7e501da71523",
@@ -58,7 +58,7 @@
         "policy": "c7dddf17671b",
         "scenarios:harness": "1c8467f3359b"
       },
-      "updatedAt": "2026-11-23T11:49:39.197Z"
+      "updatedAt": "2026-11-23T14:26:07.719Z"
     }
   }
 }

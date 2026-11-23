@@ -43,6 +43,7 @@
         "theme/**",
         "tools/theme_sync.py",
         "deep-plan/deep_plan.mjs",
+        "deep-plan/lib/scenarios.mjs",
         "lookout/page/review.css",
         "app/ui/everforest.css",
         "crew/board/*.html"
