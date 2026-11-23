@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! ~/.claude/crew/bosun/            (CREW_DURABLE_DIR/bosun)
-//!   bosun.json       {root, resetHour, sandbox: {allowWrite, allowedDomains}, loops}
+//!   bosun.json       {root, resetHour, sandbox: {allowWrite, allowedDomains}, loops, reports}
 //!   state.json       {session, day}: the conversation the supervisor resumes
 //!   settings.json    written at each launch, passed to claude --settings
 //!   brief.md         written at each launch, --append-system-prompt-file
@@ -10,7 +10,7 @@
 //!
 //! Every key is optional. `root` is where the Bosun works and the folder it
 //! may not write in; it defaults to the code root (CREW_CODE_ROOT, else
-//! ~/code). `loops` belongs to bosun-routines and is not read here.
+//! ~/code). `loops` (loops.rs) and `reports` (reports.rs) are not read here.
 
 use std::fs;
 use std::path::{Path, PathBuf};

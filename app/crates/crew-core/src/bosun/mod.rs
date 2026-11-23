@@ -16,6 +16,8 @@
 //! seamux bosun dispatch <repo> <branch> --brief <file> [--json]
 //! seamux bosun loops [list] [--json] | loops run <id>
 //!                                bosun.json's timed prompts (loops.rs)
+//! seamux bosun report [list] [--json] | report run <id> | report check [<id>]
+//!                                bosun.json's reports: checked sections (reports.rs)
 //! seamux bosun precompact        the PreCompact hook (stdin: its payload)
 //! seamux bosun recall            the SessionStart hook after a compaction
 //! seamux bosun context radar|lookout [--json]
@@ -33,6 +35,8 @@ pub mod launch;
 pub mod log;
 pub mod loops;
 pub mod queue;
+pub mod reports;
+pub mod sources;
 pub mod supervise;
 
 use std::io::Read;
@@ -206,7 +210,7 @@ fn fail(what: &str, e: impl std::fmt::Display) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>] | precompact | recall | context radar|lookout");
+    eprintln!("usage: seamux bosun ensure|status [--json] | stop | run | prime | send | ask | answer <id> | log add|list | dispatch | loops [list|run <id>] | report [list|run <id>|check [<id>]] | precompact | recall | context radar|lookout");
     2
 }
 
@@ -382,6 +386,7 @@ pub fn main(args: &[String]) -> i32 {
             }
         },
         "loops" => loops::main(&args[1..], &dir),
+        "report" | "reports" => reports::main(&args[1..], &dir),
         "context" => context::main(&args[1..]),
         "precompact" | "recall" => {
             let since = compact::conversation_day(&dir);
