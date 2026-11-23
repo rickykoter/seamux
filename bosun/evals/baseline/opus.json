@@ -3,7 +3,7 @@
   "plugin": "bosun",
   "model": "opus",
   "claudeVersion": "2.1.330",
-  "costUsd": 2.6994,
+  "costUsd": 2.8332,
   "cases": {
     "asks-without-blocking": {
       "runs": 3,
@@ -16,19 +16,19 @@
     },
     "cites-every-fact": {
       "runs": 3,
-      "score": 0.6667,
+      "score": 0.8333,
       "graders": {
-        "cited": 1,
+        "cited": 2,
         "fired": 3
       },
-      "errors": 1
+      "errors": 0
     },
     "dispatch-asks-and-links": {
       "runs": 3,
-      "score": 0.8333,
+      "score": 1.0,
       "graders": {
         "fired": 3,
-        "linked": 2
+        "linked": 3
       },
       "errors": 0
     },
