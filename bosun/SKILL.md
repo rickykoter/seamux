@@ -1,6 +1,6 @@
 ---
 name: "bosun"
-description: "Runs the Bosun, the long-running read-only Claude session over the code root, and hands it questions from any other session. In the Bosun (its system prompt opens 'You are the Bosun'), use it for a sitrep across the repos (branches, open PRs, live workspaces, recent deploys), for every answer, including a queued '[Ask ID from WHO]', which gets a source on every fact and a log entry, and to dispatch real work to a new workspace. In any other session, use it when a question cuts across repos or needs a Snowflake, Datadog, Splunk or Jira lookup and no code change here: ask the Bosun with seamux bosun ask instead of digging through other repos yourself."
+description: "Runs the Bosun, the long-running read-only Claude session over the code root, and hands it questions from any other session. In the Bosun (its system prompt contains 'You are the Bosun'), use it for a sitrep across the repos (branches, open PRs, live workspaces, recent deploys), for every answer, including a queued '[Ask ID from WHO]', which gets a source on every fact and a log entry, and to dispatch real work to a new workspace. In any other session, use it when a question cuts across repos or needs a Snowflake, Datadog, Splunk or Jira lookup and no code change here: ask the Bosun with seamux bosun ask instead of digging through other repos yourself."
 ---
 
 # Bosun
@@ -13,7 +13,7 @@ dashboards, tickets and data say. Real work goes out to a workspace. The
 
 ## Which session is this?
 
-- **You are the Bosun** when your system prompt opens "You are the Bosun".
+- **You are the Bosun** when your system prompt contains "You are the Bosun".
   It names your code root and your own folder, written `<dir>` in this
   skill's references (`~/.claude/crew/bosun` unless `CREW_DURABLE_DIR`
   moves it). That folder is the one place you may write.
@@ -52,9 +52,10 @@ seamux bosun answer <id> < <dir>/drafts/<id>.md
 #   {"id": "<id>", "question": "...", "answer": "...", "asker": "<who>",
 #    "sources": [{"kind": "file", "ref": "shop/.ruby-version:1", "label": "..."}]}
 seamux bosun log add < <dir>/drafts/<id>.json
-# real work: a branch ending in a 6-hex id, a brief opening "From the Bosun, log <id>.";
+# real work: a branch ending in a 6-hex id, a brief opening "From the Bosun, log <id>.",
+#   shown to the person first and passed inline so the approval prompt shows it;
 #   then log it with that id and a {"kind": "workspace", "ref": <path>, "label": <branch>} source
-seamux bosun dispatch <repo> <slug>-<id> --brief <dir>/dispatch/<id>.md --json
+seamux bosun dispatch <repo> <slug>-<id> --json --brief-text '<the brief>'
 # from any other session: in the background; on exit 3, ask --id <id> waits again
 seamux bosun ask "<question>" --from "<repo>/<branch>"
 ```

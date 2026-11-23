@@ -13,7 +13,7 @@
 //!                                print the answer (exit 3: still waiting)
 //! seamux bosun answer <id>       an ask's answer, on stdin
 //! seamux bosun log add           one entry on stdin | log list [--day D] [--json]
-//! seamux bosun dispatch <repo> <branch> --brief <file> [--json]
+//! seamux bosun dispatch <repo> <branch> --brief-text TEXT [--json]
 //! seamux bosun loops [list] [--json] | loops run <id>
 //!                                bosun.json's timed prompts (loops.rs)
 //! seamux bosun report [list] [--json] | report run <id> | report check [<id>]
@@ -194,6 +194,18 @@ fn words(args: &[String], valued: &[&str]) -> (String, Vec<(String, String)>) {
     (text.join(" "), flags)
 }
 
+/// Seconds from `30`, `30s`, `2m` or `1h`; None for anything else.
+fn parse_secs(t: &str) -> Option<u64> {
+    let t = t.trim();
+    let (n, mul) = match t.chars().last()? {
+        's' => (&t[..t.len() - 1], 1),
+        'm' => (&t[..t.len() - 1], 60),
+        'h' => (&t[..t.len() - 1], 3600),
+        _ => (t, 1),
+    };
+    n.parse::<u64>().ok().and_then(|n| n.checked_mul(mul))
+}
+
 fn flag<'a>(flags: &'a [(String, String)], name: &str) -> Option<&'a str> {
     flags.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
 }
@@ -294,7 +306,26 @@ pub fn main(args: &[String]) -> i32 {
         }
         "ask" => {
             let (text, flags) = words(args, &["--from", "--timeout", "--id"]);
-            let timeout = std::time::Duration::from_secs(flag(&flags, "--timeout").and_then(|t| t.parse().ok()).unwrap_or(900));
+            let timeout = match flag(&flags, "--timeout").map(parse_secs) {
+                None => std::time::Duration::from_secs(900),
+                Some(Some(s)) => std::time::Duration::from_secs(s),
+                Some(None) => {
+                    eprintln!("bosun ask: --timeout takes seconds, or a number with s, m or h (30s, 2m)");
+                    return 2;
+                }
+            };
+            // Asking needs a Bosun to answer; asking from inside the Bosun
+            // would queue a question back to itself.
+            if flag(&flags, "--id").is_none() {
+                let row = t.kind_row(KIND).ok().flatten();
+                let pane = row.as_ref().and_then(|r| r.live.clone());
+                if pane.as_deref().is_none_or(|p| supervised(&t, p) == Some(false)) {
+                    return fail("ask", "no Bosun runs here: start it with `seamux bosun ensure` (it needs the app's tmux backend)");
+                }
+                if crate::py::env_or("SEAMUX_PANE_ID").is_some_and(|me| pane.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&me))) {
+                    return fail("ask", "this is the Bosun's own pane: answer the question here instead of asking yourself");
+                }
+            }
             let id = match flag(&flags, "--id") {
                 Some(id) if !queue::valid_id(id) => return fail("ask", format!("not an id: {id:?}")),
                 Some(id) => id.to_string(),
@@ -409,6 +440,12 @@ mod tests {
         let cfg = Config { root: PathBuf::from("/u/code"), reset_hour: 4, allow_write: vec![], allowed_domains: vec![] };
         let n = prime_note(&cfg, "2026-11-22", "clear");
         assert!(n.contains("2026-11-22") && n.contains("/u/code") && n.contains("new day"));
+    }
+
+    #[test]
+    fn timeouts_take_units_and_refuse_the_rest() {
+        assert_eq!((parse_secs("30"), parse_secs("30s"), parse_secs("2m"), parse_secs("1h")), (Some(30), Some(30), Some(120), Some(3600)));
+        assert_eq!((parse_secs("soon"), parse_secs("2d"), parse_secs("")), (None, None, None));
     }
 
     #[test]
