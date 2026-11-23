@@ -61,6 +61,18 @@ A report in `bosun.json` (the supervisor writes starter ones, `morning` and
              "to": ["doc", "banner"]}]
 ```
 
+A `cmd:` source is checked before each run: the command must be on PATH,
+and the sandbox must let out the hosts it needs. seamux knows the hosts of
+a few CLIs that always call one API (`gh`, `vercel`, `netlify`, `fly`,
+`heroku`, `doctl`, `stripe`, `circleci`). For any other CLI, or to change
+those, give the section a `hosts` list, and add the same hosts to
+`sandbox.allowedDomains`. An empty list turns the check off:
+
+```json
+{"title": "Deploys", "via": ["cmd:gcloud"], "hosts": ["oauth2.googleapis.com", "run.googleapis.com"],
+ "ask": "failed Cloud Run deploys today"}
+```
+
 `seamux bosun report list` shows each report and its next run,
 `seamux bosun report run <id>` runs one now, and
 `seamux bosun report check [<id>]` says which sources work right now.

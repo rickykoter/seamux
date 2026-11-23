@@ -251,6 +251,15 @@ impl Found {
         }
     }
 
+    /// `check`, with a section's own `hosts` in place of the built-in table
+    /// for a cmd: source; an mcp: source ignores them.
+    pub fn check_with(&self, via: &Via, hosts: Option<&[String]>) -> Result<(), String> {
+        match (via, hosts) {
+            (Via::Cmd(c), Some(h)) if on_path(c, &self.path) => self.let_out(h),
+            _ => self.check(via),
+        }
+    }
+
     /// Ok when the running sandbox lets out every one of `hosts`, else
     /// which it does not.
     pub fn let_out(&self, hosts: &[String]) -> Result<(), String> {

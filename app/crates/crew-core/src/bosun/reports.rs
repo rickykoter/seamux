@@ -43,6 +43,25 @@ pub struct Section {
     pub title: String,
     pub via: Vec<Via>,
     pub ask: String,
+    /// The hosts its cmd: sources need the sandbox to let out, in place of
+    /// the built-in table (sources.rs); Some(empty) turns the check off.
+    pub hosts: Option<Vec<String>>,
+}
+
+/// A section's `hosts`: absent, or a list of the host names its CLI
+/// connects to (dot-separated labels of letters, digits and dashes; no
+/// wildcard or port, which belong in allowedDomains), or why not.
+fn hosts_of(s: &Value) -> Result<Option<Vec<String>>, String> {
+    let bare = |h: &str| h.split('.').all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    match s.get("hosts") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|x| x.as_str().map(str::trim).filter(|h| bare(h)).map(str::to_string).ok_or(format!("hosts {x}: use host names like api.example.com")))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(x) => Err(format!("hosts {x} is not a list")),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,10 +114,11 @@ pub fn parse(v: &Value) -> Result<Report, String> {
             Some(Value::Array(a)) => a.iter().map(|x| Via::parse(x.as_str().unwrap_or(""))).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{id}: {title}: {e}"))?,
             Some(x) => return Err(format!("{id}: {title}: via {x} is not a list")),
         };
+        let hosts = hosts_of(s).map_err(|e| format!("{id}: {title}: {e}"))?;
         if sections.iter().any(|s: &Section| s.title.eq_ignore_ascii_case(&title)) {
             return Err(format!("{id}: two sections are titled {title:?}"));
         }
-        sections.push(Section { title, via, ask });
+        sections.push(Section { title, via, ask, hosts });
     }
     if sections.is_empty() {
         return Err(format!("{id}: no sections"));
@@ -325,7 +345,7 @@ impl Checked {
 }
 
 pub fn check_sections(r: &Report, found: &Found) -> Vec<Checked> {
-    r.sections.iter().map(|s| Checked { section: s.clone(), via: s.via.iter().map(|v| (v.clone(), found.check(v))).collect() }).collect()
+    r.sections.iter().map(|s| Checked { section: s.clone(), via: s.via.iter().map(|v| (v.clone(), found.check_with(v, s.hosts.as_deref()))).collect() }).collect()
 }
 
 /// What the run does with its Claude Doc.
@@ -703,7 +723,7 @@ pub fn list(dir: &Path, now_secs: i64) -> Vec<Value> {
                     "last": k.as_ref().map(|k| k.last.last).filter(|x| *x > 0),
                     "lastRun": k.as_ref().map(|k| k.last.queued.clone()).unwrap_or_default(),
                     "doc": k.map(|k| k.doc).unwrap_or_default(),
-                    "sections": r.sections.iter().map(|s| json!({"title": s.title, "via": s.via.iter().map(Via::text).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                    "sections": r.sections.iter().map(|s| json!({"title": s.title, "via": s.via.iter().map(Via::text).collect::<Vec<_>>(), "hosts": s.hosts})).collect::<Vec<_>>(),
                 })
             }
             Err(e) => json!({"error": e}),
@@ -939,6 +959,34 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         loops::tick_at(&d, 300, &mon(9, 5), "/bin/seamux");
         assert_eq!(kept(&load_state(&d), "morning").unwrap().last.queued, w[0].id);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_sections_hosts_decide_its_cmd_sources() {
+        let d = tmp("sec-hosts");
+        use std::os::unix::fs::PermissionsExt;
+        for c in ["gcloud", "gh"] {
+            fs::write(d.join(c), "#!/bin/sh\n").unwrap();
+            fs::set_permissions(d.join(c), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let r = parse(&json!({"id": "infra", "at": ["09:00"], "sections": [
+            {"title": "Deploys", "via": ["cmd:gcloud", "mcp:datadog"], "hosts": ["oauth2.googleapis.com", "run.googleapis.com"], "ask": "failed deploys"},
+            {"title": "Offline", "via": ["cmd:gh"], "hosts": [], "ask": "local only"},
+            {"title": "Plain", "via": ["cmd:gcloud"], "ask": "no hosts named"},
+        ]}))
+        .unwrap();
+        let path = d.to_string_lossy().into_owned();
+        let closed = check_sections(&r, &Found { path: path.clone(), ..found() });
+        assert!(!closed[0].runnable(), "a section's hosts are checked for a CLI the table doesn't know");
+        assert!(closed[0].why().contains("oauth2.googleapis.com and run.googleapis.com are not in sandbox.allowedDomains"), "{}", closed[0].why());
+        assert!(closed[1].runnable(), "an empty list turns the host check off, even for gh");
+        assert!(closed[2].runnable(), "no hosts key and no table entry: the PATH check alone");
+        let open = check_sections(&r, &Found { path, domains: vec!["*.googleapis.com".into()], ..found() });
+        assert!(open[0].runnable());
+        for bad in [json!("run.googleapis.com"), json!(["https://run.googleapis.com"]), json!(["a b"]), json!([""]), json!([3]), json!(["*"]), json!(["*.googleapis.com"]), json!(["api.example.com:8443"]), json!([".."]), json!([":"])] {
+            let v = json!({"id": "x", "at": ["09:00"], "sections": [{"title": "t", "via": ["cmd:gcloud"], "hosts": bad, "ask": "a"}]});
+            assert!(parse(&v).is_err(), "{v}");
+        }
     }
 
     #[test]
