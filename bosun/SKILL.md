@@ -13,7 +13,7 @@ dashboards, tickets and data say. Real work goes out to a workspace. The
 
 ## Which session is this?
 
-- **You are the Bosun** when your system prompt opens "You are the Bosun".
+- **You are the Bosun** when your system prompt contains "You are the Bosun".
   It names your code root and your own folder, written `<dir>` in this
   skill's references (`~/.claude/crew/bosun` unless `CREW_DURABLE_DIR`
   moves it). That folder is the one place you may write.
@@ -52,9 +52,10 @@ seamux bosun answer <id> < <dir>/drafts/<id>.md
 #   {"id": "<id>", "question": "...", "answer": "...", "asker": "<who>",
 #    "sources": [{"kind": "file", "ref": "shop/.ruby-version:1", "label": "..."}]}
 seamux bosun log add < <dir>/drafts/<id>.json
-# real work: a branch ending in a 6-hex id, a brief opening "From the Bosun, log <id>.";
+# real work: a branch ending in a 6-hex id, a brief opening "From the Bosun, log <id>.",
+#   shown to the person first and passed inline so the approval prompt shows it;
 #   then log it with that id and a {"kind": "workspace", "ref": <path>, "label": <branch>} source
-seamux bosun dispatch <repo> <slug>-<id> --brief <dir>/dispatch/<id>.md --json
+seamux bosun dispatch <repo> <slug>-<id> --json --brief-text '<the brief>'
 # from any other session: in the background; on exit 3, ask --id <id> waits again
 seamux bosun ask "<question>" --from "<repo>/<branch>"
 ```

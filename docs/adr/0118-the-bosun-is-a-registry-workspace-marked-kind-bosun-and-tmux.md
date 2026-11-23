@@ -1,4 +1,4 @@
-# 0114. The Bosun is a registry workspace marked kind bosun, and TmuxBackend leaves it out of its lists
+# 0118. The Bosun is a registry workspace marked kind bosun, and TmuxBackend leaves it out of its lists
 
 Date: 2026-11-22
 
