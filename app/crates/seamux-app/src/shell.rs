@@ -328,7 +328,7 @@ pub async fn intent_page(path: String) -> Result<u16, String> {
 
 #[tauri::command]
 pub fn hide_overlay<R: Runtime>(window: WebviewWindow<R>) {
-    hide(&window);
+    hide(&window, "page");
 }
 
 /// A page's companion tab key: plan-<slug>, review-<id> or ask-<id>.
@@ -383,7 +383,7 @@ pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, wo
     })
     .await
     .map_err(|e| e.to_string())??;
-    hide(&window);
+    hide(&window, "open_in_cmux");
     Ok(())
 }
 
@@ -517,7 +517,7 @@ fn bring_forward<R: Runtime>(w: &WebviewWindow<R>) {
     let visible = w.is_visible().unwrap_or(false);
     if !(visible && here(w) && on_active_space(w)) {
         if visible {
-            hide(w);
+            hide(w, "re-place");
         }
         fill_screen(w);
     }
@@ -536,7 +536,7 @@ fn toggle<R: Runtime>(app: &AppHandle<R>) {
         let in_front = w.is_focused().unwrap_or(false) && app_in_front();
         // On another screen than the pointer's, it comes here instead.
         if visible && in_front && here(&w) && seen(&w) {
-            hide(&w);
+            hide(&w, "hotkey");
         } else {
             bring_forward(&w);
         }
@@ -581,7 +581,7 @@ fn fill_screen<R: Runtime>(w: &WebviewWindow<R>) {
 /// handoffs (Open in cmux, the Wall's jump) open this for a moment.
 static CMUX_ALLOWED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -673,8 +673,99 @@ mod front {
     }
 }
 
-/// The window lost the focus: if cmux took it without being asked, take it
-/// back. Looked at a moment later, once macOS has said who is in front.
+/// What the guard saw a moment after the window lost focus.
+// Gathered only on macOS (guard_focus); tested everywhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Seen {
+    /// The frontmost app's bundle id.
+    pub front: Option<String>,
+    /// This app is the frontmost one (a menu, a sheet of its own).
+    pub ours: bool,
+    pub visible: bool,
+    pub pointer_over: bool,
+    pub clicked_elsewhere: bool,
+    pub modifier: bool,
+    /// The person asked to go to cmux within the last 3 s.
+    pub cmux_allowed: bool,
+    /// How often focus was taken back from this same app in the last 10 s.
+    pub taken_lately: usize,
+}
+
+/// An app focus was taken back from this many times in TAKEN_WINDOW_MS
+/// keeps it the next time: it is activating itself on purpose (a dialog,
+/// an updater), and a fight helps no one.
+const TAKEN_LIMIT: usize = 2;
+const TAKEN_WINDOW_MS: u64 = 10_000;
+/// The apps focus was taken back from lately: (bundle id, when).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+static TAKEN: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// How often focus was taken back from `app` lately; with `now_taken`, note
+/// one more.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn taken_from(app: &str, now: u64, now_taken: bool) -> usize {
+    let mut t = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+    t.retain(|(_, at)| now.saturating_sub(*at) < TAKEN_WINDOW_MS);
+    if now_taken {
+        t.push((app.to_string(), now));
+    }
+    t.iter().filter(|(a, _)| a == app).count()
+}
+
+/// What the guard did about a lost focus, and why.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    TakeBack,
+    Hidden,
+    CmuxAllowed,
+    NoApp,
+    Ours,
+    /// Taken back from this app TAKEN_LIMIT times already, just now.
+    GaveUp,
+    PointerAway,
+    Modifier,
+    ClickedElsewhere,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Whether to take the focus back. Any app that came forward while the
+/// pointer stayed on the window, with no click elsewhere and no modifier
+/// key, came forward without the person: Finder when nothing else is open,
+/// cmux, anything.
+pub fn take_back(s: &Seen) -> Verdict {
+    if !s.visible {
+        return Verdict::Hidden;
+    }
+    if s.cmux_allowed {
+        return Verdict::CmuxAllowed;
+    }
+    if s.ours {
+        return Verdict::Ours;
+    }
+    if s.front.is_none() {
+        return Verdict::NoApp;
+    }
+    if !s.pointer_over {
+        return Verdict::PointerAway;
+    }
+    if s.modifier {
+        return Verdict::Modifier;
+    }
+    if s.clicked_elsewhere {
+        return Verdict::ClickedElsewhere;
+    }
+    if s.taken_lately >= TAKEN_LIMIT {
+        return Verdict::GaveUp;
+    }
+    Verdict::TakeBack
+}
+
+/// The window lost the focus: if an app took it without being asked, take
+/// it back (take_back), and log what was seen either way. Looked at a moment
+/// later, once macOS has said who is in front.
 fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
     #[cfg(target_os = "macos")]
     {
@@ -683,20 +774,31 @@ fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
             std::thread::sleep(Duration::from_millis(150));
             let w2 = w.clone();
             let _ = w.run_on_main_thread(move || {
-                if !w2.is_visible().unwrap_or(false) || now_ms() < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed) {
-                    return;
-                }
-                if !front::frontmost().is_some_and(|id| is_cmux_bundle(&id)) {
-                    return; // another app, which the person went to
-                }
                 let Ok(ptr) = w2.ns_window() else { return };
                 // SAFETY: as in join_full_screen_spaces; this runs on the main thread.
                 let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
-                if !front::pointer_over(win) || front::modifier_within(0.6) || front::clicked_elsewhere_within(0.6) {
-                    return; // a click on another app or screen, or Cmd-Tab: the person went there
+                let app = front::frontmost();
+                let now = now_ms();
+                let seen = Seen {
+                    taken_lately: app.as_deref().map_or(0, |a| taken_from(a, now, false)),
+                    front: app,
+                    ours: front::we_are_front(),
+                    visible: w2.is_visible().unwrap_or(false),
+                    pointer_over: front::pointer_over(win),
+                    // A click on another app or screen, or Cmd-Tab: the person went there.
+                    clicked_elsewhere: front::clicked_elsewhere_within(0.6),
+                    modifier: front::modifier_within(0.6),
+                    cmux_allowed: now < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed),
+                };
+                let verdict = take_back(&seen);
+                crate::focus_log::lost(&seen, verdict);
+                if verdict == Verdict::TakeBack {
+                    if let Some(a) = &seen.front {
+                        taken_from(a, now, true);
+                    }
+                    win.orderFrontRegardless();
+                    let _ = w2.set_focus();
                 }
-                win.orderFrontRegardless();
-                let _ = w2.set_focus();
             });
         });
     }
@@ -706,8 +808,9 @@ fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
 
 /// Tauri's hide does not take the window off screen once its class is the
 /// panel subclass (seen: hide ran, the window stayed on screen), so order it
-/// out directly as well.
-fn hide<R: Runtime>(w: &WebviewWindow<R>) {
+/// out directly as well. `by` names who asked, for the focus log.
+fn hide<R: Runtime>(w: &WebviewWindow<R>, by: &str) {
+    crate::focus_log::hid(by);
     let _ = w.hide();
     #[cfg(target_os = "macos")]
     if let Ok(ptr) = w.ns_window() {
@@ -848,7 +951,7 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
         w.on_window_event(move |e| match e {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                hide(&w2);
+                hide(&w2, "close");
             }
             // The sheet's keys work wherever focus is, a framed page
             // included, but only while this window has it.
@@ -886,6 +989,63 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::{take_back, Seen, Verdict};
+
+    /// The window is up, the pointer is on it, and nothing was clicked or
+    /// pressed: whatever came forward came without the person.
+    fn unasked(front: &str) -> Seen {
+        Seen { front: Some(front.into()), visible: true, pointer_over: true, ..Seen::default() }
+    }
+
+    #[test]
+    fn takes_focus_back_from_finder() {
+        assert_eq!(take_back(&unasked("com.apple.finder")), Verdict::TakeBack);
+    }
+
+    #[test]
+    fn takes_focus_back_from_cmux_as_before() {
+        assert_eq!(take_back(&unasked("com.cmuxterm.app")), Verdict::TakeBack);
+    }
+
+    #[test]
+    fn leaves_it_where_the_person_went() {
+        let s = unasked("com.apple.Safari");
+        assert_eq!(take_back(&Seen { pointer_over: false, ..s.clone() }), Verdict::PointerAway);
+        assert_eq!(take_back(&Seen { clicked_elsewhere: true, ..s.clone() }), Verdict::ClickedElsewhere);
+        assert_eq!(take_back(&Seen { modifier: true, ..s.clone() }), Verdict::Modifier);
+        assert_eq!(take_back(&Seen { cmux_allowed: true, ..unasked("com.cmuxterm.app") }), Verdict::CmuxAllowed);
+    }
+
+    #[test]
+    fn leaves_a_hidden_window_and_its_own_app_alone() {
+        assert_eq!(take_back(&Seen { visible: false, ..unasked("com.apple.finder") }), Verdict::Hidden);
+        assert_eq!(take_back(&Seen { ours: true, ..unasked("dev.seamux.app") }), Verdict::Ours);
+        assert_eq!(take_back(&Seen { front: None, ..unasked("") }), Verdict::NoApp);
+    }
+
+    #[test]
+    fn gives_up_on_an_app_that_keeps_coming_back() {
+        assert_eq!(take_back(&Seen { taken_lately: 1, ..unasked("com.apple.finder") }), Verdict::TakeBack);
+        assert_eq!(take_back(&Seen { taken_lately: 2, ..unasked("com.apple.finder") }), Verdict::GaveUp);
+        // The guards still come first: a click on the app is the person's.
+        assert_eq!(take_back(&Seen { taken_lately: 2, clicked_elsewhere: true, ..unasked("com.apple.finder") }), Verdict::ClickedElsewhere);
+    }
+
+    #[test]
+    fn takes_back_count_per_app_and_age_out() {
+        let app = "test.taken.counts";
+        assert_eq!(super::taken_from(app, 1_000, true), 1);
+        assert_eq!(super::taken_from(app, 2_000, true), 2);
+        assert_eq!(super::taken_from("test.taken.other", 2_000, false), 0);
+        assert_eq!(super::taken_from(app, 12_500, false), 0);
+    }
+
+    #[test]
+    fn a_verdict_logs_as_a_word() {
+        assert_eq!(serde_json::to_value(Verdict::TakeBack).unwrap(), "take_back");
+        assert_eq!(serde_json::to_value(Verdict::ClickedElsewhere).unwrap(), "clicked_elsewhere");
+    }
+
     #[test]
     fn login_due_asks_first_and_then_a_minute_after_a_failure() {
         let t0 = std::time::Instant::now();

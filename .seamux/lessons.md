@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L12 -->
+<!-- next: L13 -->
 
 ## L1
 applies: **
@@ -26,9 +26,9 @@ A bug or idea found mid-plan becomes a deep-plan note first. It joins a plan onl
 
 ## L4
 applies: **
-from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22
+from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22; window-keeps-focus (grade c768b8e3e), 2026-11-22
 
-A quiz question names the change it asks about, never an increment number, and states every input its answer depends on. After adding an increment or changing a decision, re-read each question whose answer it can move before the quiz is taken.
+A quiz question names the change it asks about, never an increment number, and states every input its answer depends on. After adding an increment or changing a decision, re-read each question whose answer it can move before the quiz is taken. When a grade fails and the person confirms the plan, the question is the broken one: reword it to state the input it left out.
 
 ## L5
 applies: app/**, crew/**
@@ -71,3 +71,9 @@ applies: **
 from: demo-mock-catchup inc 4 (correction c864d2d03), 2026-11-22
 
 After an amend on a plan with a scenarios check, name the promises it changed and have the person review the scenarios (scenarios show, in their own shell) before the next judge run: a sealed scenario keeps checking the old promise.
+
+## L12
+applies: app/ui/**
+from: window-keeps-focus inc 2 (correction cd45e903e), 2026-11-22
+
+A focus change moves where every key lands, Escape and Cmd-digits included: before planning one, try each key a non-goal names on the page as built, and ask the person about any that changes.
