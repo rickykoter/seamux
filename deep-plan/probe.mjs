@@ -8899,7 +8899,7 @@ if (want("scenarios: sealed, judged, refused to the builder")) {
   fs.writeFileSync(path.join(SR, ".seamux", "verify.json"), JSON.stringify({ recipes: [] }));
   fs.writeFileSync(path.join(SR, "app.txt"), "v1\n");
   const SEALED = path.join(TMP, "sealed");
-  const FLOG = path.join(TMP, "fake-claude.jsonl"), FSCORES = path.join(TMP, "fake-scores.json");
+  const FLOG = path.join(TMP, "fake-claude.jsonl"), FSCORES = path.join(TMP, "fake-scores.json"), FREVISE = path.join(TMP, "fake-revise.json");
   const HSEEN = path.join(TMP, "harness-env.txt");
   const srv = "require('http').createServer((q,r)=>r.end('ok')).listen(process.env.PORT,'127.0.0.1')";
   const rdy = "require('http').get('http://127.0.0.1:'+process.env.PORT,r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))";
@@ -8918,7 +8918,8 @@ fs.appendFileSync(${JSON.stringify(FLOG)}, JSON.stringify({ args, tools, cwd: pr
   claudecode: process.env.CLAUDECODE || "", envFile, wt, git: fs.existsSync(wt + "/.git"), cwdGit: fs.existsSync(".git"),
   app: fs.existsSync(wt + "/app.txt") ? fs.readFileSync(wt + "/app.txt", "utf8") : "" }) + "\\n");
 let out;
-if (tools === "") out = { scenarios: [
+if (tools === "" && /You revise acceptance scenarios/.test(input)) out = JSON.parse(fs.readFileSync(${JSON.stringify(FREVISE)}, "utf8"));
+else if (tools === "") out = { scenarios: [
   { id: "s1", title: "A retry is sent once", body: "SECRET-STEPS run the outbox twice", expect: "one row" },
   { id: "s2", title: "A dead letter is kept", body: "SECRET-STEPS kill the worker", expect: "kept", hint: "look at the dead-letter path" }] };
 else {
@@ -8952,6 +8953,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     return r;
   };
   const chk = slug => stOf(slug).increments[0].checks["scenarios-scenarios"];
+  // What a passing check run printed: its run log (the summary names it).
+  const runLog = r => { const m = /\(log: ([^)]+)\)/.exec(r.stdout || ""); try { return m ? fs.readFileSync(m[1], "utf8") : ""; } catch { return ""; } };
 
   ok("scenarios: a scenarios check that names a recipe is refused",
     /a scenarios check runs the judge/.test(sc("render", tmpSpec(mk("scn-bad", { kind: "scenarios", recipe: "x" })), "--root", SR).stderr));
@@ -8975,6 +8978,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   const w = calls().pop() || {};
   ok("scenarios: write seals them and prints titles only",
     r.status === 0 && /sealed 2 scenario\(s\)/.test(r.stdout) && /A retry is sent once/.test(r.stdout) && !/SECRET-STEPS/.test(r.stdout), r.stdout + r.stderr);
+  ok("scenarios: writing them makes the page's key too, so the seamux app can open the page without a first show",
+    /^[0-9a-f]{48}$/.test(fs.readFileSync(path.join(SEALED, "scn-a", "page.key"), "utf8").trim()));
   ok("scenarios: the sealed folder is 0700 and the file 0600",
     (fs.statSync(path.join(SEALED, "scn-a")).mode & 0o777) === 0o700 &&
     (fs.statSync(path.join(SEALED, "scn-a", "scenarios.json")).mode & 0o777) === 0o600);
@@ -9006,6 +9011,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios gate: a Bash run from inside the folder is refused", sgate("Bash", { command: "ls" }, path.join(SEALED, "scn-a")).status === 2);
   ok("scenarios gate: an Edit or Write into the folder is refused as deep-plan's own records",
     sgate("Write", { file_path: path.join(SEALED, "scn-a", "verdicts.json"), content: "{}" }).status === 2);
+  ok("scenarios gate: a Write or an Edit of the revisions file is refused too, so the building session cannot clear a stale mark (inc3 f8)",
+    sgate("Write", { file_path: path.join(SEALED, "scn-a", "revisions.json"), content: '{"stale":null,"proposals":null}' }).status === 2 &&
+    sgate("Edit", { file_path: path.join(SEALED, "scn-a", "revisions.json"), old_string: "stale", new_string: "x" }).status === 2 &&
+    sgate("Edit", { file_path: path.join(SEALED, "scn-a", "scenarios.json"), old_string: "a", new_string: "b" }).status === 2);
   const dn = path.dirname(TMP), bn = path.basename(TMP);
   ok("scenarios gate: a brace-only Glob spelling reaches node and is refused (f7)",
     sgate("Glob", { pattern: `${dn}/{${bn},zz}/se{a,b}led/scn-a/scenarios.json` }).status === 2);
@@ -9024,6 +9033,47 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios gate: a Grep for the word in the repo is allowed",
     sgate("Bash", { command: "grep -rn sealed . && grep -n deep-plan/sealed app.txt" }).status === 0 &&
     sgate("Grep", { pattern: "deep-plan/sealed", path: SR }).status === 0);
+  // Globs count only where the shell expands them (note n1f5cda5d): a JSDoc
+  // opener in a heredoc, or a glob in quoted text, is not a path.
+  const JSDOC = "python3 - <<'EOF'\nimport re\np = 'app/ui/x.ts'\ns = open(p).read()\nopen(p, 'w').write(s.replace('a', '/** A note. */ a'))\nEOF";
+  ok("scenarios gate: a JSDoc opener in a heredoc still counts as a glob from the root, and the refusal says to make the edit with the Edit tool or a script file",
+    (r0 => r0.status === 2 && /make the edit with the Edit tool, or run it from a script file/.test(r0.stderr))(sgate("Bash", { command: JSDOC })), sgate("Bash", { command: JSDOC }).stderr);
+  ok("scenarios gate: the same glob unquoted, where the shell expands it, is still refused",
+    sgate("Bash", { command: `cat ${path.dirname(TMP)}/*/s*/*/scenarios.json` }).status === 2);
+  ok("scenarios gate: a heredoc or a quoted string that names the sealed file literally is still refused",
+    sgate("Bash", { command: `python3 - <<'EOF'\nprint(open(${JSON.stringify(path.join(SEALED, "scn-a", "scenarios.json"))}).read())\nEOF` }).status === 2 &&
+    sgate("Bash", { command: `cat "${path.join(SEALED, "scn-a", "scenarios.json")}"` }).status === 2);
+  ok("scenarios gate: a double star anywhere walks, whatever follows it or whatever options the command sets (inc6 f10, f11)",
+    sgate("Bash", { command: `cat ${path.dirname(TMP)}/**` }).status === 2 &&
+    sgate("Bash", { command: `zsh -c 'setopt globstarshort glob_dots; cat ${path.dirname(TMP)}/**'` }).status === 2 &&
+    sgate("Bash", { command: `cat ${path.dirname(TMP)}/*/**/scenarios.json` }).status === 2);
+  ok("scenarios gate: a ** that may walk from the data root is still refused: with a slash after it, or under globstar (inc6 f8, f9)",
+    sgate("Bash", { command: `for d in ${path.dirname(SEALED)}/**/; do cat $d/scenarios.json; done` }).status === 2 &&
+    sgate("Bash", { command: `shopt -s globstar; cat ${path.dirname(SEALED)}/**` }).status === 2 &&
+    sgate("Bash", { command: `bash -O globstar -c 'cat ${path.dirname(SEALED)}/**'` }).status === 2);
+  ok("scenarios gate: a glob inside a quoted inner shell, a $( ) or a heredoc program is still read (inc6 f1, f2, f5)",
+    sgate("Bash", { command: `bash -c 'cat ${path.dirname(TMP)}/*/s*/*/scenarios.json'` }).status === 2 &&
+    sgate("Bash", { command: `echo "$(cat ${path.dirname(TMP)}/*/s*/*/scenarios.json)"` }).status === 2 &&
+    sgate("Bash", { command: `python3 - <<'EOF'\nimport glob\nprint(glob.glob('${path.dirname(TMP)}/*/s*/*/scenarios.json'))\nEOF` }).status === 2);
+  ok("scenarios gate: a comment with an apostrophe, or a here-string, does not hide the next line (inc6 f3, f4)",
+    sgate("Bash", { command: `# don't\ncat ${path.dirname(TMP)}/*/s*/*/scenarios.json` }).status === 2 &&
+    sgate("Bash", { command: `cat <<< "x"\ncat ${path.dirname(TMP)}/*/s*/*/scenarios.json` }).status === 2);
+  // Where a refusal is written: the plan it names, else the session's own.
+  const shared = path.join(SEALED, "access.log");
+  const sharedLines = () => fs.existsSync(shared) ? fs.readFileSync(shared, "utf8").split("\n").length : 0;
+  fs.mkdirSync(path.join(SEALED, "scn-z"), { recursive: true });
+  const sharedBefore = sharedLines(), bBefore = access("scn-z").length, aBefore = access("scn-a").length;
+  const far = sgate("Bash", { command: `ls ${TMP}/sea*/` }, "/");
+  ok("scenarios gate: a refusal that names no one plan, from outside any plan, goes to the shared log, not every plan's",
+    far.status === 2 && access("scn-z").length === bBefore && access("scn-a").length === aBefore && sharedLines() > sharedBefore, far.stderr);
+  // logSlugs reads which plans have a sealed folder: run it on the probe's.
+  const LS = path.join(TMP, "logslugs-check.mjs");
+  fs.writeFileSync(LS, `const { logSlugs } = await import(${JSON.stringify(path.join(HERE, "lib", "scenarios.mjs"))});
+console.log(JSON.stringify([logSlugs(["scn-a"], "b"), logSlugs(["scn-a", "scn-z"], "scn-z"), logSlugs(["scn-a", "scn-z"], "c"),
+  logSlugs(["scn-a", "scn-z"], null), logSlugs(["scn-a"], "b", false), logSlugs(["scn-a"], "scn-a", false), logSlugs(["access.log"], null, true)]));`);
+  const ls = (spawnSync("node", [LS], { encoding: "utf8", env: SENV }).stdout || "").trim();
+  ok("scenarios gate: logSlugs keeps a plan the call named, else the session's own plan, else none, even when only one plan is sealed, and never a file beside the plans (inc6 f7, f10)",
+    ls === JSON.stringify([["scn-a"], ["scn-z"], [], [], [], ["scn-a"], []]), ls);
   ok("scenarios gate: show and edit are the person's levers, refused from a session",
     /scenarios show` and `scenarios edit` open the sealed scenarios/.test(sgate("Bash", { command: "deep-plan scenarios show scn-a" }).stderr) &&
     sgate("Bash", { command: "deep-plan scenarios edit scn-a" }).status === 2 && sgate("Bash", { command: "deep-plan scenarios list scn-a" }).status === 0);
@@ -9046,13 +9096,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   // The judge.
   fs.writeFileSync(path.join(SR, "app.txt"), "v2\n");
   execSync(`${G} commit -qam v2`, { cwd: SR });
-  scores([{ id: "s1", score: 1, reason: "REASON-ONE fine" }, { id: "s2", score: 0.3, reason: "REASON-TWO nothing kept" }]);
+  scores([{ id: "s1", score: 1, reason: "REASON-ONE fine", cause: "harness" }, { id: "s2", score: 0.3, reason: "REASON-TWO nothing kept", cause: "product" }]);
   r = sc("check", "run", "scn-a", "1", "--inline");
   const j = calls().pop() || {};
   ok("scenarios judge: a scenario under the threshold fails the check, counted, printing titles and scores only",
     r.status !== 0 && chk("scn-a").status === "fail" && chk("scn-a").fails === 1 &&
     /1 of 2 met the threshold 0\.7/.test(r.stdout) && /0\.30 {2}s2 {2}A dead letter is kept/.test(r.stdout) &&
     !/REASON|SECRET|dead-letter path/.test(r.stdout + JSON.stringify(chk("scn-a"))), r.stdout);
+  ok("scenarios judge: the schema and prompt ask for a cause below 1, and say what product, harness and scenario mean",
+    j.args.some(a => /"cause":\{"type":"string","enum":\["product","harness","scenario"\]\}/.test(a)) &&
+    /harness: you could not run what the scenario needs/.test(j.prompt) && /scenario: the scenario asks for something/.test(j.prompt), j.args.join(" ").slice(0, 400));
+  ok("scenarios judge: a failing scenario's cause prints beside its score with what to do, and still counts; a full score's cause is dropped",
+    /0\.30 {2}s2 {2}A dead letter is kept {2}\[product\]/.test(r.stdout) && /product: the change does not do what the scenario expects/.test(r.stdout) &&
+    /every failed run counts toward the retry cap/.test(r.stdout) && !/harness: the judge could not/.test(r.stdout) && !/1\.00 {2}s1[^\n]*\[/.test(r.stdout), r.stdout);
+  ok("scenarios judge: the run prints its time per phase and the judge's cost",
+    /took \d+s \(setup \d+s, ready \d+s, judge \d+s\); the judge cost \$0\.01/.test(r.stdout), r.stdout);
   ok("scenarios judge: it judges a throwaway worktree at HEAD from an empty folder beside it, with a fixed tool list and no settings",
     j.tools === "Bash,Read,Grep,Glob" && j.git && j.app === "v2\n" && !j.cwdGit && j.cwd !== j.wt && j.wt !== SR &&
     j.args.includes("--setting-sources") && !j.claudecode, JSON.stringify({ tools: j.tools, cwd: j.cwd, wt: j.wt, app: j.app }));
@@ -9075,6 +9133,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   const vd = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8"));
   ok("scenarios judge: the reasons and transcript stay in the sealed folder",
     vd.last.scores[1].reason === "REASON-TWO nothing kept" && fs.readdirSync(path.join(SEALED, "scn-a")).some(f => /^judge-\d+\.json$/.test(f)));
+  ok("scenarios judge: the sealed verdict keeps each phase's time and the failing scenario's cause",
+    vd.last.scores[1].cause === "product" && !vd.last.scores[0].cause &&
+    ["setup", "ready", "judge", "total"].every(k => typeof vd.last.took[k] === "number" && vd.last.took[k] >= 0), JSON.stringify(vd.last.took));
   ok("scenarios judge: the refused attempts are counted in the verdict the builder sees", /access log holds \d+ refused attempt/.test(r.stdout));
 
   // A person allows s2's hint (their editor, outside a session); the next
@@ -9087,6 +9148,12 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
     !fs.existsSync(path.join(SEALED, "scn-a", "edit.json")), r.stdout + r.stderr);
   r = sc("check", "run", "scn-a", "1", "--inline");
   ok("scenarios judge: a hint the person approved is shown under its failing scenario", /0\.30 {2}s2[^\n]*\n\s+hint: look at the dead-letter path/.test(r.stdout), r.stdout);
+  const jr = calls().pop() || {};
+  const vd2 = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).last;
+  ok("scenarios judge: a retry after a failing run judges only the failing scenario and carries the pass, marked with its run",
+    /kill the worker/.test(jr.prompt) && !/run the outbox twice/.test(jr.prompt) && /1 judged, 1 carried from earlier runs/.test(r.stdout) &&
+    /1\.00 {2}s1 {2}A retry is sent once {2}\(carried from [0-9a-f]{8}\)/.test(r.stdout) &&
+    vd2.full === false && vd2.carried === 1 && vd2.scores[0].carried && vd2.scores[0].carried.head, r.stdout);
   ok("scenarios: write --force from a session is refused once the person has edited them",
     /writing them again is theirs/.test(spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "scenarios", "write", "scn-a", "--force"],
       { encoding: "utf8", env: { ...SENV, CLAUDECODE: "1" }, cwd: SR }).stderr));
@@ -9097,16 +9164,77 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   scores([{ id: "s1", score: 0.9, reason: "ok" }, { id: "s2", score: 0.75, reason: "ok" }]);
   r = sc("check", "run", "scn-a", "1", "--inline");
   ok("scenarios judge: every scenario at or over the threshold passes", r.status === 0 && chk("scn-a").status === "pass", r.stdout);
+  ok("scenarios judge: a pass that carries a score says it is not trusted to merge, naming the full run",
+    /carried passes are not trusted to merge[^\n]*deep-plan scenarios judge scn-a/.test(runLog(r)), runLog(r));
   r = sc("scenarios", "list", "scn-a", "--json");
   const lj = JSON.parse(r.stdout || "{}");
   ok("scenarios: list --json has titles, last scores and the access count, and no reasons",
     lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 12 && !/reason|SECRET/.test(r.stdout));
+  ok("scenarios: list shows each scenario's earlier scores, skipping a run with no verdict, and the run's time",
+    JSON.stringify(lj.last.scores[1].before) === "[0.3,0.3]" && typeof lj.last.took.total === "number" &&
+    /0\.75 {2}s2 {2}A dead letter is kept {2}\(before: 0\.30 0\.30\)/.test(sc("scenarios", "list", "scn-a").stdout) &&
+    /last judged [^\n]*, in \d+s/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout);
+
+  scores([{ id: "s1", score: 1, reason: "ok" }]);
+  r = sc("scenarios", "judge", "scn-a");
+  ok("scenarios judge: a scenario the judge left unscored fails as 0, tagged unscored, with what that means (f5)",
+    r.status !== 0 && /0\.00 {2}s2 {2}A dead letter is kept {2}\[unscored\]/.test(r.stdout) && /unscored: the judge returned no score/.test(r.stdout), r.stdout);
+  ok("scenarios judge: deep-plan scenarios judge is always a full run, even after a pass that carried",
+    /run the outbox twice/.test((calls().pop() || {}).prompt) && !/carried/.test(r.stdout) &&
+    JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).last.full === true, r.stdout);
+  const fpa = h => JSON.parse(spawnSync("node", ["--input-type=module", "-e",
+    `import { fullPassAt } from ${JSON.stringify(path.join(HERE, "lib", "scenarios.mjs"))}; console.log(JSON.stringify(fullPassAt("scn-a", ${JSON.stringify(h)})))`],
+    { encoding: "utf8", env: SENV }).stdout || "{}");
+  const SHEAD = execSync("git rev-parse HEAD", { cwd: SR, encoding: "utf8" }).trim();
+  ok("scenarios: a full run that failed does not count as the full pass", fpa(SHEAD).ok === false && /did not pass/.test(fpa(SHEAD).why), JSON.stringify(fpa(SHEAD)));
+  scores([{ id: "s1", score: 0.9, reason: "ok" }, { id: "s2", score: 0.9, reason: "ok" }]);
+  r = sc("scenarios", "judge", "scn-a");
+  ok("scenarios: a full run that passed counts at its head only",
+    r.status === 0 && fpa(SHEAD).ok === true && fpa("f".repeat(40)).ok === false && /passed on [0-9a-f]{8}, not HEAD ffffffff/.test(fpa("f".repeat(40)).why), r.stdout);
+
+  const keep = JSON.parse(spawnSync("node", ["--input-type=module", "-e", `
+    import { saveVerdict, fullPassAt } from ${JSON.stringify(path.join(HERE, "lib", "scenarios.mjs"))};
+    const at = () => new Date().toISOString();
+    saveVerdict("scn-h", { at: at(), head: "a".repeat(40), threshold: 0.8, pass: true, full: true, scores: [{ id: "s1", score: 1, sha: "x" }] });
+    for (let i = 0; i < 25; i++) saveVerdict("scn-h", { at: at(), head: "a".repeat(40), pass: false, full: false, scores: [{ id: "s1", score: 0.1, sha: "x" }] });
+    const kept = fullPassAt("scn-h", "a".repeat(40));
+    saveVerdict("scn-h", { at: at(), head: "b".repeat(40), threshold: 0, pass: true, full: true, scores: [{ id: "s1", score: 0.1, sha: "x" }] });
+    console.log(JSON.stringify({ ...kept, low: fullPassAt("scn-h", "b".repeat(40), 0.8) }));`], { encoding: "utf8", env: SENV }).stdout || "{}");
+  ok("scenarios: the newest full run is kept past the 20 verdicts of history, so retries do not push it out (f3)", keep.ok === true, JSON.stringify(keep));
+  ok("scenarios: a full run judged below the plan's threshold (judge --threshold 0) is no full pass (delivery f5)",
+    keep.low && keep.low.ok === false && /below the plan's 0.8/.test(keep.low.why), JSON.stringify(keep.low));
+
+  // The last done of a plan with no delivery review wants the full pass too.
+  {
+    const one = mk("scn-c"); one.deliverables = one.deliverables.slice(0, 1);
+    sc("render", tmpSpec(one), "--root", SR);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "scn-c.key.json"), "utf8"));
+    sc("grade", "scn-c", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    sc("go", "scn-c", "1"); sc("scenarios", "write", "scn-c");
+    scores([{ id: "s1", score: 1, reason: "ok" }, { id: "s2", score: 0.2, reason: "no" }]);
+    sc("check", "run", "scn-c", "1", "--inline");
+    scores([{ id: "s1", score: 0.1, reason: "would fail" }, { id: "s2", score: 0.9, reason: "ok" }]);
+    r = sc("check", "run", "scn-c", "1", "--inline");
+    const passedCarried = r.status === 0 && /1 carried/.test(runLog(r));
+    r = sc("done", "scn-c", "1");
+    ok("scenarios: the last done of a plan with no delivery review is refused on a carried pass, naming the full run",
+      passedCarried && r.status !== 0 && /scn-c has a scenarios check, and the last full judge run \(on [0-9a-f]{8}\) did not pass: run deep-plan scenarios judge scn-c/.test(r.stderr) &&
+      stOf("scn-c").increments[0].status !== "done", r.stdout + r.stderr);
+    scores([{ id: "s1", score: 0.9, reason: "ok" }, { id: "s2", score: 0.9, reason: "ok" }]);
+    sc("scenarios", "judge", "scn-c");
+    r = sc("done", "scn-c", "1");
+    ok("scenarios: after a full run that passed at HEAD, the last done closes the plan", r.status === 0 && stOf("scn-c").phase === "done", r.stdout + r.stderr);
+  }
 
   // A harness that never comes up: every scenario fails on it.
   fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness: { ready: "exit 1", timeout: 2 } }));
   execSync(`${G} commit -qam broken`, { cwd: SR });
   r = sc("scenarios", "judge", "scn-a");
   ok("scenarios judge: a harness that is never ready fails every scenario and says so", r.status === 1 && /not ready within 2s/.test(r.stdout), r.stdout);
+  ok("scenarios judge: a harness that never starts tags every scenario start, not harness, since the change may be what broke it (f1)",
+    /start: the change did not come up under the harness[^\n]*If the change broke its setup or start, fix it/.test(r.stdout) &&
+    !/harness: the judge could not run/.test(r.stdout) && /took \d+s \(ready \d+s\)/.test(r.stdout) &&
+    JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).last.scores.every(x => x.cause === "start"), r.stdout);
   r = sc("scenarios", "judge", "scn-a", "--threshold", "high");
   ok("scenarios judge: a threshold that is not a number from 0 to 1 is refused (f6)", r.status !== 0 && /--threshold is a number from 0 to 1/.test(r.stderr), r.stderr);
 
@@ -9130,12 +9258,109 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
   const html = await g.text();
   ok("scenarios page: with the key it shows the steps, the judge's reasons and the access log",
-    g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log") && /prefers-color-scheme: dark/.test(html));
+    g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log"));
+  ok("scenarios page: it wears Everforest, as the plan and review pages do, and sets data-theme before first paint, following the app when framed",
+    html.includes("/* everforest:start */") && html.includes("--role-text") && /<script>\(function\(\)\{[^<]*data-theme[^<]*data-framed/.test(html) &&
+    !/#fbfaf7/.test(html));
+  ok("scenarios page: after a harness that never came up, it says nothing was judged, with the harness's reason, and paints no card as failing",
+    /Nothing was judged: the change did not come up under the harness/.test(html) && /not ready within 2s/.test(html) &&
+    !/class="sc fails/.test(html) && /The scenarios below show the run before it/.test(html) && /passes 0\.90/.test(html) && /deep-plan scenarios judge scn-a/.test(html), html.slice(0, 400));
+  const fullHead = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).lastFull.head;
+  const fpaBefore = fpa(fullHead);
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);
   ok("scenarios page: an edit with the key saves",
     g.status === 200 && /exactly once/.test(sc("scenarios", "list", "scn-a").stdout));
+  ok("scenarios: a full pass no longer counts once a scenario's text changed after it (f2)",
+    fpaBefore.ok === true && fpa(fullHead).ok === false && /before s1 took their current text/.test(fpa(fullHead).why), JSON.stringify([fpaBefore, fpa(fullHead)]));
+  ok("scenarios: an edited scenario's earlier scores are of other wording, so list shows none for it and keeps the rest (f3)",
+    (j2 => j2.last.scores[0].before.length === 0 && j2.last.scores[1].before.length === 2)(JSON.parse(sc("scenarios", "list", "scn-a", "--json").stdout)));
   g = await fetch(`${B}/scenarios-edit/scn-a?op=delete&id=s1`);
   ok("scenarios page: an edit without the key is refused", g.status === 403 && /2 scenario/.test(sc("scenarios", "list", "scn-a").stdout));
+
+  // An amend after the scenarios exist: stale, the writer proposes, the
+  // person answers on the page.
+  fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness, style: "Name the CLI verb a scenario drives." }));
+  fs.writeFileSync(path.join(SR, "app.txt"), "v3\n");
+  execSync(`${G} commit -qam harness-back`, { cwd: SR });
+  const rev = () => JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "revisions.json"), "utf8"));
+  const sealedDoc = () => JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "scenarios.json"), "utf8"));
+  let amendN = 0;
+  const amendA = why => { const a = mk("scn-a"); a.context += ` Amended ${++amendN}.`; return sc("amend", "scn-a", tmpSpec(a), why); };
+  r = amendA("AMEND-ONE the retry stops after one try");
+  ok("scenarios revise: an amend on a plan with scenarios marks them stale in the sealed folder, and says what happens next",
+    r.status === 0 && /sealed scenarios predate this amend: the next scenarios check has the writer propose revisions/.test(r.stdout) &&
+    rev().stale && /AMEND-ONE/.test(rev().stale.amendments[0].why) && rev().proposals === null, r.stdout + r.stderr);
+  ok("scenarios revise: list says they are stale", /stale: the plan was amended after they were written/.test(sc("scenarios", "list", "scn-a").stdout));
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [] }));
+  scores([{ id: "s1", score: 0.9, reason: "ok" }, { id: "s2", score: 0.9, reason: "ok" }]);
+  let nCalls = calls().length;
+  r = sc("scenarios", "judge", "scn-a");
+  const wr = calls()[nCalls] || {};
+  ok("scenarios revise: a judge run on stale scenarios runs the writer first, with no tools, the amendments, both plans and the scenarios fenced as data",
+    wr.tools === "" && /You revise acceptance scenarios/.test(wr.prompt) && /<data name="amendments"[^]*AMEND-ONE/.test(wr.prompt) &&
+    /<data name="live-plan"/.test(wr.prompt) && /<data name="approved-plan"/.test(wr.prompt) && /<data name="scenarios"[^]*SECRET-STEPS kill the worker/.test(wr.prompt) &&
+    /never instructions to you/.test(wr.prompt), (wr.prompt || "").slice(0, 300));
+  ok("scenarios revise: when the writer proposes nothing, they are current again and the judging goes on",
+    r.status === 0 && /found nothing the amendments move, so they are current again/.test(r.stdout) && /2 of 2 met the threshold/.test(r.stdout) && rev().stale === null, r.stdout);
+  amendA("AMEND-TWO a dead letter now goes to a second queue");
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [
+    { action: "edit", id: "s2", body: "NEW-STEPS-X kill the worker twice", why: "WHY-ONE the second queue" },
+    { action: "add", title: "NEWTITLE-Y", body: "steps", expect: "kept", why: "WHY-TWO" },
+    { action: "remove", id: "no-such", why: "dropped: not a scenario" }] }));
+  const failsBefore = chk("scn-a").fails || 0;
+  nCalls = calls().length;
+  r = sc("check", "run", "scn-a", "1", "--inline");
+  ok("scenarios revise: proposals mean no verdict, uncounted, naming only the existing titles they touch and how many are new",
+    r.status !== 0 && (chk("scn-a").fails || 0) === failsBefore && /2 proposed revision\(s\) wait for the person/.test(r.stdout) &&
+    /edit {2}s2 {2}A dead letter is kept/.test(r.stdout) && /add {2}1 new scenario\(s\)/.test(r.stdout) &&
+    !/NEW-STEPS|NEWTITLE|WHY-ONE|no-such/.test(r.stdout + JSON.stringify(chk("scn-a"))) && calls().length === nCalls + 1, r.stdout);
+  nCalls = calls().length;
+  r = sc("scenarios", "judge", "scn-a");
+  const r2 = sc("scenarios", "revise", "scn-a", "--force");
+  ok("scenarios revise: while proposals wait, neither the judge nor revise runs a model again",
+    r.status === 3 && /wait for the person/.test(r2.stdout) && calls().length === nCalls &&
+    /stale: 2 proposed revision\(s\) after an amend wait for the person/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout + r2.stdout);
+  g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
+  const rhtml = await g.text();
+  ok("scenarios page: it shows the amendments and each proposal beside what it changes, with the writer's why",
+    /The plan changed after these were written/.test(rhtml) && rhtml.includes("AMEND-TWO") && rhtml.replace(/<\/?(ins|del)>/g, "").includes("NEW-STEPS-X kill the worker twice") &&
+    rhtml.includes("SECRET-STEPS kill the worker") && rhtml.includes("WHY-ONE") && /data-pid="p2-[0-9a-f]{6}"/.test(rhtml) &&
+    /<section class="sc[^"]*" id="sc-s2"[^]*?data-pid="p1-[0-9a-f]{6}"/.test(rhtml) && /<ins>NEW-STEPS-X<\/ins>/.test(rhtml), rhtml.slice(0, 200));
+  const pid = n => rev().proposals[n].pid;
+  g = await fetch(`${B}/scenarios-edit/scn-a?op=accept&id=${pid(0)}`);
+  ok("scenarios page: accepting without the key is refused", g.status === 403 && rev().proposals.length === 2);
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=accept&id=${pid(0)}`);
+  ok("scenarios page: accepting a proposal applies it as the person's edit, and the mark stays while another waits",
+    g.status === 200 && sealedDoc().scenarios.find(x => x.id === "s2").body === "NEW-STEPS-X kill the worker twice" &&
+    rev().stale && rev().proposals.length === 1, JSON.stringify(rev()));
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=reject&id=${pid(0)}`);
+  ok("scenarios page: rejecting the last proposal drops it and clears the mark",
+    g.status === 200 && rev().stale === null && sealedDoc().scenarios.length === 2 && !/stale:/.test(sc("scenarios", "list", "scn-a").stdout), JSON.stringify(rev()));
+  amendA("AMEND-THREE");
+  ok("scenarios: stale scenarios are not a full pass, so the last done, deliver and ship wait on the answer (f4)",
+    fpa(execSync("git rev-parse HEAD", { cwd: SR, encoding: "utf8" }).trim()).ok === false && /an amend left the scenarios stale/.test(fpa("x").why));
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [{ action: "edit", id: "no-such", body: "x", why: "typo" }] }));
+  r = sc("scenarios", "revise", "scn-a");
+  ok("scenarios revise: a writer whose changes are all unusable leaves them stale, as an error, not as nothing to change (f3)",
+    r.status !== 0 && /could not be used/.test(r.stderr) && rev().stale && rev().proposals === null, r.stdout + r.stderr);
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [{ action: "remove", id: "s1", why: "gone" }] }));
+  r = sc("scenarios", "revise", "scn-a");
+  ok("scenarios revise: deep-plan scenarios revise runs the writer now and names what its proposals touch",
+    r.status === 0 && /remove {2}s1 {2}A retry is sent exactly once/.test(r.stdout) && rev().proposals.length === 1, r.stdout + r.stderr);
+  amendA("AMEND-FOUR");
+  fs.writeFileSync(FREVISE, JSON.stringify({ changes: [] }));
+  r = sc("scenarios", "judge", "scn-a");
+  ok("scenarios revise: an amend that drops waiting proposals, then a draft with none, still waits for the person to confirm (f1)",
+    r.status === 3 && /earlier revisions were dropped by a later amend/.test(r.stdout) && rev().stale && rev().stale.dropped === 1 &&
+    JSON.stringify(rev().proposals) === "[]" && rev().stale.seq === 2 && /the person confirms them as they are/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout);
+  g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=current&id=-`);
+  ok("scenarios page: keep-them-all clears the mark and the proposals, and changes no scenario",
+    g.status === 200 && rev().stale === null && rev().proposals === null && sealedDoc().scenarios.length === 2, JSON.stringify(rev()));
+  const SVLOG = VENV.DEEP_PLAN_SERVE_FILE.replace(/\.json$/, "") + ".log";
+  const red = spawnSync("node", ["--input-type=module", "-e", `import { redact } from ${JSON.stringify(path.join(HERE, "lib", "serve.mjs"))}; console.log(redact("FAIL GET /scenarios/x?k=${KEY}&op=save: boom"))`],
+    { encoding: "utf8", env: VENV }).stdout.trim();
+  ok("scenarios page: serve's log never holds the page key: it is redacted from every line (delivery f13)",
+    !fs.readFileSync(SVLOG, "utf8").includes(KEY) && red === "FAIL GET /scenarios/x?k=<redacted>&op=save: boom", red);
   spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--stop"], { env: VENV });
 }
 
@@ -9158,9 +9383,23 @@ if (want("policy and ship: levels from the base branch")) {
   };
   execSync(`git clone -q ${ORIGIN} ${PR_} && git -C ${PR_} checkout -q -b dev/docs`);
   const MAP = path.join(TMP, "pol-gh.json"), GLOG = path.join(TMP, "pol-gh-log.jsonl");
+  const PSEALED = path.join(TMP, "pol-sealed");
   const PENV = { ...ENV, DEEP_PLAN_GH: path.join(HERE, "tools", "fake-gh"), FAKE_GH_MAP: MAP, FAKE_GH_LOG: GLOG,
-    DEEP_PLAN_SHIP_INTERVAL_S: "0", DEEP_PLAN_CI_INTERVAL_S: "0" };
-  const pc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: PENV, cwd: PR_ });
+    DEEP_PLAN_SHIP_INTERVAL_S: "0", DEEP_PLAN_CI_INTERVAL_S: "0", DEEP_PLAN_SEALED_DIR: PSEALED };
+  // These plans hand-pass their scenarios check, so a full judge run that
+  // passed at HEAD is written for each before a done or a ship (the last
+  // done and ship want one), unless a test turns that off to see the gate.
+  let seedFull = true;
+  const fullPassHere = slug => {
+    const v = { at: new Date().toISOString(), head: execSync("git rev-parse HEAD", { cwd: PR_, encoding: "utf8" }).trim(), threshold: 0.8,
+      pass: true, full: true, scores: [{ id: "s1", title: "t", sha: "x", score: 1, reason: "seeded" }] };
+    fs.mkdirSync(path.join(PSEALED, slug), { recursive: true });
+    fs.writeFileSync(path.join(PSEALED, slug, "verdicts.json"), JSON.stringify({ last: v, history: [v] }));
+  };
+  const pc = (...a) => {
+    if (seedFull && ["done", "ship"].includes(a[0]) && /^pol-/.test(a[1] || "")) fullPassHere(a[1]);
+    return spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: PENV, cwd: PR_ });
+  };
   const ghMap = m => { for (const f of fs.readdirSync(TMP)) if (f.startsWith("pol-gh.json.count.")) fs.rmSync(path.join(TMP, f)); fs.writeFileSync(MAP, JSON.stringify(m)); fs.rmSync(GLOG, { force: true }); };
   const ghCalls = () => fs.existsSync(GLOG) ? fs.readFileSync(GLOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l).argv.join(" ")) : [];
   const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
@@ -9196,6 +9435,29 @@ if (want("policy and ship: levels from the base branch")) {
     r.status !== 0 && /needs a scenarios check at auto-pr and above/.test(r.stderr), r.stderr);
   const withScn = mk("pol-docs2", [["docs/a.md"], ["docs/b.md"]]); withScn.deliverables[1].checks.push({ kind: "scenarios" });
   ok("policy: with a scenarios check it renders at auto-merge", render(withScn).status === 0 && stOf("pol-docs2").increments[0].level === "auto-merge");
+  // scenarios.paths: only a change touching a matching file needs them.
+  setPolicy({ ...POLICY, scenarios: { require: "auto-pr", paths: ["docs/ui/**"], threshold: 0.8 } }, "paths");
+  ok("policy: with scenarios.paths, a plan that touches no matching file renders without a scenarios check",
+    render(mk("pol-paths-off", [["docs/a.md"], ["docs/b.md"]])).status === 0, "");
+  r = render(mk("pol-paths-on", [["docs/a.md"], ["docs/ui/page.md"]]));
+  ok("policy: with scenarios.paths, a plan touching a matching file at the require level is refused without one, naming the paths",
+    r.status !== 0 && /needs a scenarios check at auto-pr and above[^\n]*for a change touching docs\/ui\/\*\*/.test(r.stderr), r.stderr);
+  ok("policy: with scenarios.paths, a plan that names only a directory holding matching files is refused too (inc4 f1)",
+    /needs a scenarios check/.test(render(mk("pol-paths-dir", [["docs/a.md"], ["docs/ui"]])).stderr) &&
+    /needs a scenarios check/.test(render(mk("pol-paths-dir2", [["docs/a.md"], ["docs/"]])).stderr));
+  ok("policy: with scenarios.paths, a plan path that is a pattern, or a plan that lists no files, counts as matching (delivery f1)",
+    /needs a scenarios check/.test(render(mk("pol-paths-glob", [["docs/a.md"], ["docs/*"]])).stderr) &&
+    (await import("./lib/policy.mjs")).scenariosRequiredFor({ source: "base", policy: { default: "auto-go", scenarios: { require: "auto-pr", paths: ["docs/ui/**"] } } }, []) === "auto-pr" &&
+    (await import("./lib/policy.mjs")).scenariosRequiredFor({ source: "base", policy: { default: "auto-go", scenarios: { require: "auto-pr", paths: ["docs/ui/**"] } } }, ["."]) === "auto-pr");
+  r = pc("policy", "show", "docs/ui/page.md", "docs/a.md");
+  ok("policy show: scenarios.paths is shown, and each file says whether it alone needs a scenarios check",
+    /scenarios required at auto-pr and above for a change touching docs\/ui\/\*\*/.test(r.stdout) &&
+    /docs\/ui\/page\.md: auto-merge \(docs\/\*\*\); needs a scenarios check/.test(r.stdout) && !/docs\/a\.md: [^\n]*needs a scenarios check/.test(r.stdout), r.stdout);
+  const bad = JSON.parse(spawnSync("node", ["--input-type=module", "-e",
+    `import { validatePolicy } from ${JSON.stringify(path.join(HERE, "lib", "policy.mjs"))}; console.log(JSON.stringify([validatePolicy({ default: "auto-go", scenarios: { paths: "app/**" } }), validatePolicy({ default: "auto-go", scenarios: { paths: [] } }), validatePolicy({ default: "auto-go", scenarios: { require: "auto-pr", paths: ["app/**"] } })]))`],
+    { encoding: "utf8" }).stdout || "[]");
+  ok("policy: scenarios.paths must be a non-empty list of globs", /scenarios.paths: a list of globs/.test(bad[0]) && /scenarios.paths/.test(bad[1]) && bad[2].length === 0, JSON.stringify(bad));
+  setPolicy(POLICY, "paths off");
   // The worktree's own copy raising secret/** changes nothing.
   fs.mkdirSync(path.join(PR_, ".seamux"), { recursive: true });
   fs.writeFileSync(path.join(PR_, ".seamux", "policy.json"), JSON.stringify({ ...POLICY, paths: [{ match: "**", level: "auto-merge" }] }));
@@ -9265,6 +9527,14 @@ if (want("policy and ship: levels from the base branch")) {
   r = pc("ship", "pol-ship");
   ok("ship: green checks at auto-merge merge it, pinned to HEAD",
     r.status === 0 && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`) && /merged PR #12/.test(r.stdout), r.stdout + r.stderr);
+  seedFull = false;
+  fs.writeFileSync(path.join(PSEALED, "pol-ship", "verdicts.json"),
+    JSON.stringify({ history: [{ head: "0".repeat(40), threshold: 0.8, pass: true, full: true, scores: [{ id: "s1", score: 1 }] }] }));
+  ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a full judge run that passed on another head than HEAD holds the merge, naming the command",
+    r.status === 3 && /the last full judge run passed on 00000000, not HEAD[^\n]*deep-plan scenarios judge pol-ship/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  seedFull = true;
   ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }], [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
     "repo view --json autoMergeAllowed": { stdout: { autoMergeAllowed: false } }, "pr merge 12": { stdout: "" } });
   r = pc("ship", "pol-ship");

@@ -43,9 +43,12 @@ export const INC_ACTIONS = ["go", "start", "done", "block", "reset"];
 export const CHECK_VERBS = ["run", "answer", "tab", "evidence", "proof", "attach"];
 const ASKS_DIR = () => path.join(PLANS_DIR, "asks");
 
+// The log is readable to the building session, so no key or token reaches
+// it: a scenarios page's ?k= is the key to the sealed scenarios.
+export const redact = msg => String(msg).replace(/([?&](?:k|t|token)=)[^&\s#]+/gi, "$1<redacted>");
 function log(msg) {
   const p = n => String(n).padStart(2, "0"), d = new Date();
-  try { fs.appendFileSync(LOG_FILE, `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${msg}\n`); }
+  try { fs.appendFileSync(LOG_FILE, `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${redact(msg)}\n`); }
   catch { /* a log we cannot write is not a failure */ }
 }
 
@@ -478,10 +481,18 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
         }
         if (!edit) return send(res, 200, "text/html; charset=utf-8", SCN.scenariosPage(slug, one("k")));
         const op = one("op"), id = one("id");
+        // A proposed revision (an amend made them stale): the person's answer.
+        if (["accept", "reject", "current"].includes(op)) {
+          try {
+            if (op === "current") SCN.markCurrent(slug); else SCN.resolveProposal(slug, id, op === "accept");
+            log(`OK   scenarios ${op} ${slug} ${op === "current" ? "" : id}`);
+            return reply(res, 200, { ok: true });
+          } catch (e) { return reply(res, 400, { ok: false, detail: e.message }); }
+        }
         try {
           const fields = op === "delete" ? { delete: true }
             : Object.fromEntries(["title", "body", "expect", "hint", "hintApproved"].filter(k => u.searchParams.has(k)).map(k => [k, one(k)]));
-          if (!["save", "delete", "add"].includes(op)) return reply(res, 400, { ok: false, detail: "op is save, delete or add" });
+          if (!["save", "delete", "add"].includes(op)) return reply(res, 400, { ok: false, detail: "op is save, delete, add, accept, reject or current" });
           SCN.editScenario(slug, op === "add" ? "new" : id, fields, "person");
           log(`OK   scenarios ${op} ${slug} ${id}`);
           return reply(res, 200, { ok: true });

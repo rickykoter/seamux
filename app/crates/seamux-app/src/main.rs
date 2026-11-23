@@ -237,6 +237,7 @@ fn main() {
             notify_app::notify_review_looking,
             notify_app::notify_take_link,
             shell::intent_server,
+            shell::scenarios_key,
             shell::intent_page,
             shell::hide_overlay,
             focus_log::focus_tab,

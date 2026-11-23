@@ -4,7 +4,7 @@
 //   .seamux/policy.json
 //   { "default": "auto-go",
 //     "paths": [{ "match": "docs/**", "level": "auto-merge", "fix": "off" }],
-//     "scenarios": { "require": "auto-pr", "threshold": 0.8, "writer": "opus", "judge": "sonnet" },
+//     "scenarios": { "require": "auto-pr", "paths": ["app/ui/**"], "threshold": 0.8, "writer": "opus", "judge": "sonnet" },
 //     "merge": { "method": "squash" } }
 //
 // Levels, lowest first:
@@ -22,7 +22,11 @@
 // validate) falls to supervised, never higher.
 //
 // A path's level is the lowest of the entries that match it, else the
-// default; a change's level is the lowest of its files'. `fix` (off,
+// default; a change's level is the lowest of its files'. scenarios.require
+// is the lowest level at which ship acting alone needs a scenarios check;
+// scenarios.paths, when set, limits that to a change touching a matching
+// file (the ADR in docs/adr titled "Per-path require lives in
+// scenarios.paths", from plan scenarios-true). `fix` (off,
 // diagnose, draft-pr) is the next plan's: validated and shown, never acted on.
 import { spawnSync } from "node:child_process";
 import { matchesGlob } from "./verify.mjs";
@@ -66,6 +70,8 @@ export function validatePolicy(p) {
       if (s.threshold !== undefined && !(typeof s.threshold === "number" && s.threshold >= 0 && s.threshold <= 1))
         errs.push("scenarios.threshold: a number from 0 to 1");
       for (const k of ["writer", "judge"]) if (s[k] !== undefined && (typeof s[k] !== "string" || !s[k].trim())) errs.push(`scenarios.${k}: a model name`);
+      if (s.paths !== undefined && (!Array.isArray(s.paths) || !s.paths.length || s.paths.some(g => typeof g !== "string" || !g.trim())))
+        errs.push("scenarios.paths: a list of globs (a change touching one needs a scenarios check), or left out for every path");
     }
   }
   if (p.merge !== undefined && (!p.merge || typeof p.merge !== "object" || (p.merge.method !== undefined && !MERGE_METHODS.includes(p.merge.method))))
@@ -147,6 +153,38 @@ export function scenariosRequiredAt(pol) {
   return s.require === true ? "auto-pr" : s.require;
 }
 
+// The globs that limit where scenarios are required, or null for every path.
+export function scenariosPaths(pol) {
+  const s = pol && pol.source === "base" && pol.policy.scenarios;
+  return s && Array.isArray(s.paths) && s.paths.length ? s.paths : null;
+}
+// A file matches the glob, or a plan's directory path holds files it would
+// match: "app/ui" or "app" against "app/ui/**".
+function coversGlob(file, glob) {
+  if (matchesGlob(file, glob)) return true;
+  // A plan path that is itself a pattern, or the whole repo, may hold a
+  // matching file: it counts as matching.
+  if (/[*?[{]/.test(String(file)) || /^\.?\/?$/.test(String(file))) return true;
+  const dir = String(file).replace(/\/+$/, "");
+  if (!dir) return false;
+  if (matchesGlob(`${dir}/x`, glob) || glob.startsWith(`${dir}/`)) return true;
+  // The glob's fixed part, up to its first wildcard: a directory inside it,
+  // or holding it, may hold a matching file (app against app/*/ui/**).
+  const k = glob.search(/[*?[{]/);
+  const pre = k < 0 ? glob : glob.slice(0, k);
+  return pre.startsWith(`${dir}/`) || `${dir}/`.startsWith(pre.replace(/[^/]*$/, ""));
+}
+// The lowest level that needs a scenarios check for a change of these files:
+// scenariosRequiredAt, unless scenarios.paths is set and no file matches it.
+// Files that could not be read (null), or none listed, are treated as
+// matching: what a plan may change is not narrowed by what it left out.
+export function scenariosRequiredFor(pol, files) {
+  const at = scenariosRequiredAt(pol);
+  const globs = scenariosPaths(pol);
+  if (!at || !globs || files == null || !files.length) return at;
+  return files.some(f => globs.some(g => coversGlob(f, g))) ? at : null;
+}
+
 export const mergeMethod = pol => (pol && pol.source === "base" && pol.policy.merge && pol.policy.merge.method) || "squash";
 
 // The files a branch changes against its base: committed since the merge base.
@@ -169,9 +207,15 @@ export function describe(pol, files = []) {
     out.push(`policy from ${pol.ref}: default ${p.default}`);
     for (const e of p.paths || []) out.push(`  ${[].concat(e.match).join(", ")}  ${e.level}${e.fix && e.fix !== "off" ? `  (fix: ${e.fix}, not acted on yet)` : ""}`);
     const req = scenariosRequiredAt(pol);
-    if (req) out.push(`  scenarios required at ${req} and above${p.scenarios.threshold !== undefined ? `, threshold ${p.scenarios.threshold}` : ""}`);
+    const globs = scenariosPaths(pol);
+    if (req) out.push(`  scenarios required at ${req} and above${globs ? ` for a change touching ${globs.join(", ")}` : ""}` +
+      `${p.scenarios.threshold !== undefined ? `, threshold ${p.scenarios.threshold}` : ""}`);
     out.push(`  merges by ${mergeMethod(pol)}`);
   }
-  for (const f of files) { const l = levelOf(pol, f); out.push(`${f}: ${l.level} (${l.by})`); }
+  for (const f of files) {
+    const l = levelOf(pol, f);
+    const req = scenariosRequiredFor(pol, [f]);
+    out.push(`${f}: ${l.level} (${l.by})${req && atLeast(l.level, req) ? `; needs a scenarios check (at ${req} and above)` : ""}`);
+  }
   return out;
 }

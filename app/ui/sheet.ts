@@ -1532,10 +1532,10 @@ export class Sheet {
       return;
     }
     // Asked each time a page is framed: the server can come back on a new port.
-    const down = (why: string) => {
+    const down = (why: string, text?: string) => {
       const n = document.createElement("p");
       n.className = "note";
-      n.textContent = `The intent server is down (${why}), so this page can't be shown here. Open in cmux may still work once it is back. `;
+      n.textContent = text ?? `The intent server is down (${why}), so this page can't be shown here. Open in cmux may still work once it is back. `;
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "sheet-btn";
@@ -1546,10 +1546,21 @@ export class Sheet {
       box.replaceChildren(n);
       box.dataset.failed = "1";
     };
-    invoke<IntentServer>("intent_server").then((server) => {
+    invoke<IntentServer>("intent_server").then(async (server) => {
       if (!server.up || !server.origin) return down(server.reason ?? "no answer");
+      let src = server.origin + t.key;
+      // A plan's scenarios page asks for its key, which only the app reads
+      // (shell.rs scenarios_key): the intent server never hands it out.
+      const scn = /^\/scenarios\/([a-z0-9][a-z0-9._-]*)$/.exec(t.key);
+      if (scn) {
+        try {
+          src += "?k=" + encodeURIComponent(await invoke<string>("scenarios_key", { slug: scn[1] }));
+        } catch (e) {
+          return down(String(e), `This plan's scenarios page can't be opened: ${String(e)}. `);
+        }
+      }
       const f = document.createElement("iframe");
-      f.src = server.origin + t.key;
+      f.src = src;
       f.title = t.label;
       box.append(f);
     }, (e) => down(String(e)));
@@ -1592,6 +1603,7 @@ function needsYou(n = 1): HTMLElement {
 
 function kindOf(path: string): string {
   return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan"
+    : path.startsWith("/scenarios/") ? "scenarios"
     : path.startsWith("/agent/") ? "agent" : path.startsWith("/run/") ? "run" : path.startsWith("/runs/") ? "agents" : "page";
 }
 

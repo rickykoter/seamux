@@ -1054,6 +1054,9 @@ const handlers = {
   focus_tab: () => null,
   home_dir: () => HOME,
   intent_server: () => INTENT,
+  // A plan's scenarios page key (shell.rs scenarios_key): the demo seals
+  // none, so it answers as the app does for a plan without scenarios.
+  scenarios_key: ({ slug }) => { throw `${slug} has no sealed scenarios yet: deep-plan scenarios write ${slug}`; },
   intent_page: async ({ path }) => {
     if (!INTENT.up) throw "the intent server is down";
     if (PAGES && boardFromIntent) return 200;

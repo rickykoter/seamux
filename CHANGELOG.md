@@ -6,6 +6,24 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Scenarios that stay true to the plan.** A scenarios failure names its
+  cause (product, harness, scenario, or deep-plan's own start and
+  unscored), and each run prints how long each phase took and what the
+  judge cost. `scenarios list` and the page show each scenario's earlier
+  scores. A retry judges only the scenarios that fell short and carries the
+  rest; a full run that passed at HEAD then gates the last `done`,
+  `deliver` and ship. An amend marks the scenarios stale, the separate
+  writer proposes revisions, and the person accepts or rejects them on the
+  scenarios page (`deep-plan scenarios revise` runs the writer at once). A
+  policy's `scenarios.paths` limits where scenarios are required, and the
+  seamux pack (1.3.0) requires them on `app/ui/**`. In the seamux app, the
+  Dock has a Scenarios tab beside the plan, and the Wake a scenarios entry
+  on the plan's row; the app adds the page's key itself. The page now
+  wears Everforest and follows the app's appearance. The gate's
+  sealed-folder test logs a refusal under the plan it names or the
+  session's own, not under every plan with scenarios, and the refusal
+  says how to make an edit it caught by mistake (the Edit tool, or a
+  script file).
 - **A bosun plugin.** It is the skill for the Bosun, the read-only Claude
   session the seamux app keeps over your code root. In the Bosun it gives a
   sitrep across the repos, cites a source for every fact, answers a queued

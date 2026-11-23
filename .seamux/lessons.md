@@ -26,7 +26,7 @@ A bug or idea found mid-plan becomes a deep-plan note first. It joins a plan onl
 
 ## L4
 applies: **
-from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22; window-keeps-focus (grade c768b8e3e), 2026-11-22
+from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22; window-keeps-focus (grade c768b8e3e), 2026-11-22; scenarios-true (grade cb8a68459), 2026-11-23
 
 A quiz question names the change it asks about, never an increment number, and states every input its answer depends on. After adding an increment or changing a decision, re-read each question whose answer it can move before the quiz is taken. When a grade fails and the person confirms the plan, the question is the broken one: reword it to state the input it left out.
 
@@ -65,12 +65,6 @@ applies: app/crates/**, crew/**
 from: dock-many-prs (correction c4a0e799c), 2026-11-13
 
 Code a branch's checks run never opens the person's real stores: point CREW_DURABLE_DIR, XDG_CACHE_HOME and HOME at a temp dir, or a branch build can migrate the live store before merge. After a schema change, verify it on the real store once the merged build is installed.
-
-## L11
-applies: **
-from: demo-mock-catchup inc 4 (correction c864d2d03), 2026-11-22
-
-After an amend on a plan with a scenarios check, name the promises it changed and have the person review the scenarios (scenarios show, in their own shell) before the next judge run: a sealed scenario keeps checking the old promise.
 
 ## L12
 applies: app/ui/**

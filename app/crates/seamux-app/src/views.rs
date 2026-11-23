@@ -341,9 +341,10 @@ pub struct ReviewBrief {
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct NowPage {
     pub ws: String,
-    /// "plan", "review" or "ask".
+    /// "plan", "scenarios", "review" or "ask".
     pub kind: String,
-    /// The intent server path: /plan/<slug>[.review.html], /review/<id>, /ask/<id>.
+    /// The intent server path: /plan/<slug>[.review.html], /scenarios/<slug>
+    /// (keyless: the Sheet adds the key), /review/<id>, /ask/<id>.
     pub path: String,
     pub label: String,
     /// A few words on where it stands: "working inc 2/5", "3 open", "waiting".
@@ -1088,6 +1089,20 @@ impl Feed {
                 since: p.touched,
                 root: p.root.clone(),
             });
+            // Its sealed scenarios, beside it: the state only, never their text;
+            // the Sheet asks the app for the page's key when it opens the tab.
+            if let Some(s) = crew_board::scenarios::standing(&p.slug) {
+                out.push(NowPage {
+                    ws: p.ws.clone(),
+                    kind: "scenarios".into(),
+                    path: format!("/scenarios/{}", p.slug),
+                    label: format!("{} scenarios", p.slug),
+                    state: s.state(),
+                    waiting: s.needs_person(),
+                    since: p.touched,
+                    root: p.root.clone(),
+                });
+            }
         }
         let mut revs: Vec<&(String, ReviewSummary)> = reviews.iter().filter(|(_, r)| r.open + r.addressed > 0).collect();
         revs.sort_by(|a, b| b.1.since.cmp(&a.1.since));

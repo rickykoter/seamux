@@ -109,7 +109,8 @@ export function autoNext(spec, st, doneN, { forced = false, owner = null, waits 
 // The repo policy's word on an auto plan (lib/policy.mjs, ADR 0108). `levels`
 // is each increment's level, [{ level, file, by }], from its files on the
 // base branch's policy; `requiredAt` the lowest level that needs a scenarios
-// check (or null); `why` where the policy came from. An increment after the
+// check for this plan's files (or null: none, or scenarios.paths matches no
+// file of the plan); `why` where the policy came from. An increment after the
 // first that would auto-go is refused when its files are supervised, unless
 // it stops for a person. A plan whose files all sit at or above requiredAt
 // (ship would open or merge it alone) needs a scenarios check somewhere.

@@ -45,7 +45,7 @@ import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
 import * as CI from "./lib/ci.mjs";
 import * as SCN from "./lib/scenarios.mjs";
-import { JUDGE_TIMEOUT_S } from "./lib/judge.mjs";
+import { JUDGE_TIMEOUT_S, staleLines } from "./lib/judge.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
@@ -540,9 +540,26 @@ async function amendCmd(args, flags) {
   if (specHash(spec) === specHash(prior)) die(`amend ${slug}: ${specPath} is the plan as it stands; nothing to amend`);
   const changed = specChanges(prior, spec);
   const amendment = { at: Date.now(), why, changed, graded: !!st.approved };
+  const sealed = !!SCN.readScenarios(slug);
   await render(specPath, { ...flags, root: st.root, amendment });
+  // Sealed scenarios still test the plan as it was: mark them stale, where
+  // only the writer and the person's page clear it (lib/scenarios.mjs). Only
+  // after the render took the amend (a refused spec exits before this), and
+  // loudly if the mark cannot be written: the amend stands either way.
+  if (sealed) {
+    try { SCN.markStale(slug, amendment); }
+    catch (e) {
+      console.error(`deep-plan: ${slug} is amended, but its sealed scenarios could not be marked stale (${e.message}); ` +
+        `they still test the plan as it was: the person reviews them (deep-plan scenarios show ${slug}, in their own shell)`);
+      process.exit(1);
+    }
+  }
   say(`amended ${slug}: ${why}`);
   for (const c of changed) say(`  ${c}`);
+  if (sealed) {
+    say(`  ${slug}'s sealed scenarios predate this amend: the next scenarios check has the writer propose revisions for the person first ` +
+      `(deep-plan scenarios revise ${slug} runs it now)`);
+  }
   if (st.approved) say("  the plan now differs from its approved snapshot; the working page says so");
 }
 
@@ -3040,7 +3057,10 @@ async function render(specPath, opts) {
   const policy = POL.readPolicy(planRoot, { fetch: true });
   const levels = (spec.deliverables || []).map(d => POL.changeLevel(policy, planPaths(d)));
   {
-    const perrs = policyProblems(spec, levels, { requiredAt: POL.scenariosRequiredAt(policy), why: policy.why });
+    const planFiles = (spec.deliverables || []).flatMap(d => planPaths(d));
+    const globs = POL.scenariosPaths(policy);
+    const perrs = policyProblems(spec, levels, { requiredAt: POL.scenariosRequiredFor(policy, planFiles),
+      why: policy.why + (globs ? `, for a change touching ${globs.join(", ")}` : "") });
     if (perrs.length) {
       console.error("deep-plan: spec refused — the repo's policy:");
       for (const e of perrs) console.error("  ✗ " + e);
@@ -3879,6 +3899,24 @@ function repend(inc, ids, why) {
   return moved;
 }
 
+// A plan with a scenarios check completes, and ship merges it, only once
+// the newest full judge run passed at HEAD: a pass carried by a retry is not
+// trusted to merge. null when it holds, or the plan has no scenarios check.
+function scenariosHold(st) {
+  const has = (st.increments || []).some(i => Object.values(checksOf(i)).some(c => c.kind === "scenarios" && !c.retired));
+  if (!has) return null;
+  const f = SCN.fullPassAt(st.slug, headSha(st.root), scenariosThreshold(st));
+  return f.ok ? null : `${st.slug} has a scenarios check, and ${f.why}: run deep-plan scenarios judge ${st.slug} (every scenario, at HEAD) first`;
+}
+// The threshold a plan's scenarios checks ask for: the highest any check
+// sets, else the repo's .seamux/scenarios.json, else the default.
+function scenariosThreshold(st) {
+  const set = (st.increments || []).flatMap(i => Object.values(checksOf(i)))
+    .filter(c => c.kind === "scenarios" && !c.retired && typeof c.threshold === "number").map(c => c.threshold);
+  if (set.length) return Math.max(...set);
+  const cfg = SCN.scenariosConfig(st.root);
+  return typeof cfg.threshold === "number" ? cfg.threshold : SCN.DEFAULT_THRESHOLD;
+}
 // HEAD of the plan root, or "" outside git: an increment's base.
 function headSha(root) {
   const sha = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" });
@@ -4041,6 +4079,15 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
     // a proof and ships without looking at it has promised nothing.
     const out = checksBlock(inc, needsTree(inc) ? trees : null);
     if (out.length && !force) refuse(checksRefusal(slug, n, out, st.root));
+    // The last done of a plan with no delivery review completes it, so it
+    // holds the full scenarios run that deliver would (ADR: a full pass at
+    // HEAD gates the merge). --force passes it, logged like any override.
+    const lastOne = (st.increments || []).every(i => i === inc || i.status === "done");
+    if (lastOne && !((spec || planSpec(slug)).review || {}).delivery) {
+      const hold = scenariosHold(st);
+      if (hold && !force) refuse(hold);
+      if (hold) log1(st, `done: --force past the full scenarios run (${hold})`);
+    }
     inc.status = "done"; inc.doneAt = inc.changedAt = Date.now();
     // An override is logged for the same reason the verdict is recorded: someone
     // reading the history has to be able to see that the proof was skipped.
@@ -5270,11 +5317,17 @@ function shipVerdict({ st, root, fetch = true }) {
   if (st) gate("delivered", st.phase === "done", st.phase === "done" ? "the plan is delivered" : `the plan is ${st.phase}: every increment done and deep-plan deliver first`);
   else gate("plan", false, "no deep-plan plan is at this worktree");
   const scen = st ? (st.increments || []).flatMap(i => Object.values(checksOf(i)).filter(c => c.kind === "scenarios" && !c.retired)) : [];
-  const req = POL.scenariosRequiredAt(pol);
-  if (scen.length || (req && POL.atLeast(level, req)))
-    gate("scenarios", scen.length && scen.every(c => c.status === "pass"),
+  // Required by the level, and by scenarios.paths when the policy sets it
+  // (files that could not be read count as matching).
+  const req = POL.scenariosRequiredFor(pol, files);
+  if (scen.length || (req && POL.atLeast(level, req))) {
+    const full = scen.length ? SCN.fullPassAt(st.slug, head, scenariosThreshold(st)) : null;
+    gate("scenarios", scen.length && scen.every(c => c.status === "pass") && full.ok,
       !scen.length ? `the policy needs a scenarios check at ${req} and above, and the plan has none`
-        : scen.every(c => c.status === "pass") ? "every scenarios check passed" : "a scenarios check has not passed");
+        : !scen.every(c => c.status === "pass") ? "a scenarios check has not passed"
+        : full.ok ? `every scenarios check passed, and ${full.why}`
+        : `every scenarios check passed, but ${full.why}: deep-plan scenarios judge ${st.slug}`);
+  }
   if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
   const remote = branch ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
@@ -5533,7 +5586,7 @@ function policyCmd(args, flags) {
 // them from a session, and so does this); judge runs the judge as a
 // scenarios check would.
 function scenariosCmd(args, flags) {
-  const usage = "scenarios write|list|access|judge|show|edit <slug> [--model M] [--threshold T] [--json]";
+  const usage = "scenarios write|list|access|judge|revise|show|edit <slug> [--model M] [--threshold T] [--json]";
   const [sub, slug, ...more] = args;
   if (!sub || !slug) die(usage);
   if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(slug)) die(`not a plan slug: ${slug}`);
@@ -5558,27 +5611,57 @@ function scenariosCmd(args, flags) {
     if (fresh) { log1(fresh, `scenarios: ${r.doc.scenarios.length} written by ${model}`); writeState(fresh); }
     say(`sealed ${r.doc.scenarios.length} scenario(s) for ${slug}; the building session sees their titles only:`);
     for (const t of r.doc.scenarios) say(`  ${t.id}  ${t.title}`);
-    say(`the person reads and edits them (and allows hints): deep-plan scenarios show ${slug}, in their own shell`);
+    say(`the person reads and edits them (and allows hints): in the seamux app, the Dock's Scenarios tab beside the plan; elsewhere, deep-plan scenarios show ${slug}, in their own shell`);
     return;
   }
   if (sub === "list") {
     const t = SCN.titles(slug);
     const v = SCN.lastVerdict(slug);
     const access = SCN.readAccess(slug).length;
-    const scores = v ? (v.scores || []).map(s => ({ id: s.id, title: s.title, score: s.score })) : [];
+    // Titles, scores, causes and earlier scores: never a reason or a step.
+    const prior = SCN.scoresBefore(slug, v, 2);
+    const scores = v ? (v.scores || []).map(s => ({ id: s.id, title: s.title, score: s.score, ...(s.cause ? { cause: s.cause } : {}),
+      before: prior[s.id] || [] })) : [];
     if (flags.json) {
       process.stdout.write(JSON.stringify({ slug, count: t ? t.count : 0, titles: t ? t.titles : [], writtenAt: t ? t.writtenAt : "",
-        edited: t ? t.edited : 0, last: v ? { at: v.at, head: v.head, threshold: v.threshold, pass: v.pass, scores } : null, access }) + "\n");
+        edited: t ? t.edited : 0, last: v ? { at: v.at, head: v.head, threshold: v.threshold, pass: v.pass, scores, took: v.took || null } : null, access }) + "\n");
       return;
     }
     if (!t) { say(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug} (after the grade)`); return; }
     say(`${t.count} scenario(s) for ${slug}, written ${t.writtenAt.slice(0, 16).replace("T", " ")}${t.edited ? `, edited ${t.edited} time(s)` : ""}:`);
     for (const x of t.titles) {
       const s = scores.find(y => y.id === x.id);
-      say(`  ${s ? s.score.toFixed(2) : "  - "}  ${x.id}  ${x.title}`);
+      const before = s ? s.before : [];
+      say(`  ${s ? s.score.toFixed(2) : "  - "}  ${x.id}  ${x.title}${s && s.cause && s.score < v.threshold ? `  [${s.cause}]` : ""}` +
+        (before.length ? `  (before: ${before.map(n => n.toFixed(2)).join(" ")})` : ""));
     }
-    if (v) say(`last judged ${String(v.at).slice(0, 16).replace("T", " ")} on ${String(v.head || "").slice(0, 8)}: ${v.pass ? "passed" : "not passed"} at ${v.threshold}`);
+    if (v) say(`last judged ${String(v.at).slice(0, 16).replace("T", " ")} on ${String(v.head || "").slice(0, 8)}: ${v.pass ? "passed" : "not passed"} at ${v.threshold}` +
+      (v.took ? `, in ${SCN.took(v.took.total)}` : ""));
     if (access) say(`the access log holds ${access} refused attempt(s) to read them`);
+    const rs = SCN.revisionState(slug);
+    if (rs.stale) say(rs.written ? (rs.waiting ? `stale: ${rs.waiting} proposed revision(s) after an amend wait for the person (deep-plan scenarios show ${slug}, in their own shell)`
+      : `stale: after an amend, the person confirms them as they are (deep-plan scenarios show ${slug}, in their own shell)`)
+      : `stale: the plan was amended after they were written; the next scenarios check has the writer propose revisions (or deep-plan scenarios revise ${slug})`);
+    return;
+  }
+  if (sub === "revise") {
+    if (!st) die(`no plan ${slug}`);
+    if (!SCN.readScenarios(slug)) die(`no scenarios for ${slug} yet: deep-plan scenarios write ${slug}`);
+    const before = SCN.revisionState(slug);
+    if (!before.stale) { say(`${slug}'s scenarios are current: no amend since they were last written or answered`); return; }
+    // Proposals already wait: they are the person's to answer, never redrawn
+    // from a session (a redraw that proposed nothing would clear them).
+    if (before.written) {
+      for (const l of staleLines(slug, before)) say(l);
+      return;
+    }
+    console.error(`deep-plan: the writer revises ${slug}'s scenarios (a headless run, with its own tokens)…`);
+    const r = SCN.reviseScenarios(slug, { root: st.root, model: opt("--model") });
+    if (r.error) die(r.error);
+    const fresh = readState(slug);
+    if (fresh) { log1(fresh, `scenarios: the writer proposed ${r.changes} revision(s) after an amend`); writeState(fresh); }
+    if (!r.changes && !r.confirm) { say(`the writer found nothing the amendments move: ${slug}'s scenarios are current again`); return; }
+    for (const l of staleLines(slug, SCN.revisionState(slug))) say(l);
     return;
   }
   if (sub === "access") {
@@ -5592,7 +5675,7 @@ function scenariosCmd(args, flags) {
     if (!st) die(`no plan ${slug}`);
     const t = opt("--threshold");
     if (t !== undefined && !(Number(t) >= 0 && Number(t) <= 1)) die(`--threshold is a number from 0 to 1 (got ${t})`);
-    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "judge.mjs"), "run", slug,
+    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "judge.mjs"), "run", slug, "--full",
       ...(t !== undefined ? ["--threshold", t] : []), ...(opt("--model") ? ["--model", opt("--model")] : [])],
       { cwd: st.root, stdio: "inherit", env: { ...process.env, DEEP_PLAN_ROOT: st.root } });
     process.exitCode = r.status === null ? 1 : r.status;
@@ -7489,6 +7572,7 @@ switch (cmd) {
     }
     if (g.code !== 0) die(`the delivery review holds the plan open — ${g.out.split("\n")[0]}\n` +
       `deliver refused: a blocker or major is open on ${reviewId(slug, "all")}`);
+    { const hold = scenariosHold(st); if (hold) die(`deliver refused: ${hold}, then deep-plan deliver ${slug}`); }
     settleNotes(st, "deliver");
     settleCandidates(st, "deliver");
     st.phase = "done";
@@ -7617,7 +7701,10 @@ switch (cmd) {
                                               outside the repo (after the grade)
   scenarios list|access <slug> [--json]       their titles and last scores, and the refused
                                               attempts to read them
-  scenarios judge <slug> [--threshold T]      run the judge as a scenarios check does
+  scenarios judge <slug> [--threshold T]      judge every scenario at HEAD (a check run may
+                                              judge only the failing ones)
+  scenarios revise <slug>                     after an amend, the writer proposes revisions
+                                              for the person to answer on the page
   scenarios show|edit <slug>                  the person's: open the keyed page, or an editor
   intake <link> [--json]                      gather an issue, PR, failed Actions run or Jira
                                               key into a seed file to plan a bug from

@@ -10,12 +10,12 @@
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
   deepPlanCalls, tooLongForGate, humanLever, onHumansWord, trustOverride, humansWordCount, claimLever, markDenied, deniedThisTurn, promptApproves,
-  actedThisTurn, bashWriteTargets, canon } from "../lib/state.mjs";
+  actedThisTurn, bashWriteTargets, canon, planFor } from "../lib/state.mjs";
 import { matchesGlob } from "../lib/verify.mjs";
 import path from "node:path";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 import { sessionIds } from "../lib/host.mjs";
-import { sealedTouch, logAccess } from "../lib/scenarios.mjs";
+import { sealedTouch, logAccess, logSlugs } from "../lib/scenarios.mjs";
 
 let raw = "";
 try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
@@ -44,11 +44,16 @@ if (tool === "Read" || tool === "Grep" || tool === "Glob" || tool === "Bash") {
   let t = null;
   try { t = sealedTouch(tool, input, cwd); } catch { /* fail open: the access log is the backstop */ }
   if (t) {
-    logAccess(t.slugs, { tool, via: "gate", what: t.what, session: who.session, cwd });
+    // In the plan the attempt names, else the session's own plan, else the
+    // shared log: never every plan's (lib/scenarios.mjs logSlugs).
+    let own = null;
+    try { own = planFor(canon(cwd)); } catch { /* no plan here */ }
+    logAccess(logSlugs(t.slugs, own && own.slug, t.named), { tool, via: "gate", what: t.what, session: who.session, cwd });
     const slug = t.slugs.length === 1 ? t.slugs[0] : "?";
     process.stderr.write(`deep-plan gate [${slug}]: that names a plan's sealed scenarios, which the building session does not read. ` +
-      `It is refused, and the attempt is in the plan's access log. deep-plan scenarios list ${slug === "?" ? "<slug>" : slug} gives their titles; ` +
-      `a check of kind scenarios runs the judge on them.\n`);
+      `It is refused, and the attempt is logged (the plan's access log, or the shared one). deep-plan scenarios list ${slug === "?" ? "<slug>" : slug} gives their titles; ` +
+      `a check of kind scenarios runs the judge on them. If this was an edit or text that only mentions a glob ` +
+      `(a JSDoc comment in a heredoc, a pattern in a note), make the edit with the Edit tool, or run it from a script file.\n`);
     process.exit(2);
   }
   if (tool !== "Bash") process.exit(0);

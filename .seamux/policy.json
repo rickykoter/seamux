@@ -40,7 +40,10 @@
     }
   ],
   "scenarios": {
-    "require": false,
+    "require": "auto-pr",
+    "paths": [
+      "app/ui/**"
+    ],
     "threshold": 0.8
   },
   "merge": {

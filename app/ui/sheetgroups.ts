@@ -18,6 +18,8 @@ export type GroupId = (typeof GROUPS)[number]["id"];
 /** The group a tab's kind files under; the Wake is its own. */
 export function groupOf(kind: string): GroupId | typeof WAKE {
   if (kind === WAKE) return WAKE;
+  // A plan's scenarios sit with the plan.
+  if (kind === "scenarios") return "plan";
   return kind === "plan" || kind === "review" || kind === "ask" ? kind : "other";
 }
 
