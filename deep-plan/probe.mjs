@@ -9113,18 +9113,24 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios: list --json has titles, last scores and the access count, and no reasons",
     lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 12 && !/reason|SECRET/.test(r.stdout));
   ok("scenarios: list shows each scenario's earlier scores, skipping a run with no verdict, and the run's time",
-    JSON.stringify(lj.last.scores[1].history) === "[0.75,0.3,0.3]" && typeof lj.last.took.total === "number" &&
+    JSON.stringify(lj.last.scores[1].before) === "[0.3,0.3]" && typeof lj.last.took.total === "number" &&
     /0\.75 {2}s2 {2}A dead letter is kept {2}\(before: 0\.30 0\.30\)/.test(sc("scenarios", "list", "scn-a").stdout) &&
     /last judged [^\n]*, in \d+s/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout);
+
+  scores([{ id: "s1", score: 1, reason: "ok" }]);
+  r = sc("scenarios", "judge", "scn-a");
+  ok("scenarios judge: a scenario the judge left unscored fails as 0, tagged unscored, with what that means (f5)",
+    r.status !== 0 && /0\.00 {2}s2 {2}A dead letter is kept {2}\[unscored\]/.test(r.stdout) && /unscored: the judge returned no score/.test(r.stdout), r.stdout);
 
   // A harness that never comes up: every scenario fails on it.
   fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness: { ready: "exit 1", timeout: 2 } }));
   execSync(`${G} commit -qam broken`, { cwd: SR });
   r = sc("scenarios", "judge", "scn-a");
   ok("scenarios judge: a harness that is never ready fails every scenario and says so", r.status === 1 && /not ready within 2s/.test(r.stdout), r.stdout);
-  ok("scenarios judge: a harness that never starts tags every scenario harness, says what to do, and prints its time",
-    /harness: the judge could not run what the scenario needs/.test(r.stdout) && /took \d+s \(ready \d+s\)/.test(r.stdout) &&
-    JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).last.scores.every(x => x.cause === "harness"), r.stdout);
+  ok("scenarios judge: a harness that never starts tags every scenario start, not harness, since the change may be what broke it (f1)",
+    /start: the change did not come up under the harness[^\n]*If the change broke its setup or start, fix it/.test(r.stdout) &&
+    !/harness: the judge could not run/.test(r.stdout) && /took \d+s \(ready \d+s\)/.test(r.stdout) &&
+    JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).last.scores.every(x => x.cause === "start"), r.stdout);
   r = sc("scenarios", "judge", "scn-a", "--threshold", "high");
   ok("scenarios judge: a threshold that is not a number from 0 to 1 is refused (f6)", r.status !== 0 && /--threshold is a number from 0 to 1/.test(r.stderr), r.stderr);
 
@@ -9150,10 +9156,12 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios page: with the key it shows the steps, the judge's reasons and the access log",
     g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log") && /prefers-color-scheme: dark/.test(html));
   ok("scenarios page: it shows each scenario's cause, its earlier scores and the run's time",
-    html.includes('<span class="cause">harness</span>') && /before: 0\.75 0\.30/.test(html) && /, in \d+s\./.test(html));
+    html.includes('<span class="cause">start</span>') && /before: 0\.00 0\.75 0\.30/.test(html) && /, in \d+s\./.test(html));
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);
   ok("scenarios page: an edit with the key saves",
     g.status === 200 && /exactly once/.test(sc("scenarios", "list", "scn-a").stdout));
+  ok("scenarios: an edited scenario's earlier scores are of other wording, so list shows none for it and keeps the rest (f3)",
+    (j2 => j2.last.scores[0].before.length === 0 && j2.last.scores[1].before.length === 2)(JSON.parse(sc("scenarios", "list", "scn-a", "--json").stdout)));
   g = await fetch(`${B}/scenarios-edit/scn-a?op=delete&id=s1`);
   ok("scenarios page: an edit without the key is refused", g.status === 403 && /2 scenario/.test(sc("scenarios", "list", "scn-a").stdout));
   spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--stop"], { env: VENV });

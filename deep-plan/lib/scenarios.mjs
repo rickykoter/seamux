@@ -215,16 +215,37 @@ export const took = s => {
   const n = Math.max(0, Math.round(Number(s) || 0));
   return n >= 60 ? `${Math.floor(n / 60)}m${String(n % 60).padStart(2, "0")}s` : `${n}s`;
 };
-// Each scenario's scores from the newest verdicts that scored it, newest
-// first: { id: [0.8, 0.6, 0.95] }. A run with no verdict (no scores) is
-// skipped, so a score that moves with nothing changed shows as noise.
+// A scenario's text as judged: a score is about this wording, and an edit
+// (or a revision) makes it a different scenario under the same id.
+export function scenarioSha(s) {
+  return crypto.createHash("sha256").update([s.title, s.body, s.expect || ""].join("\0")).digest("hex").slice(0, 12);
+}
+// Each scenario's scores from the newest verdicts that scored its current
+// text, newest first: { id: [0.8, 0.6, 0.95] }. A run with no verdict (no
+// scores) is skipped, and so is a score of other wording (or one saved
+// before verdicts kept the text's hash), so a score that moved while the
+// scenario stayed the same is what shows.
 export function scoreHistory(slug, n = 3) {
+  const doc = readScenarios(slug);
+  const cur = new Map(((doc && doc.scenarios) || []).map(s => [s.id, scenarioSha(s)]));
   const all = readSealedJson(slug, "verdicts.json");
   const out = {};
   for (const v of (all && all.history) || []) for (const s of v.scores || []) {
-    if (typeof s.score !== "number") continue;
+    if (typeof s.score !== "number" || !s.sha || s.sha !== cur.get(s.id)) continue;
     const list = out[s.id] || (out[s.id] = []);
     if (list.length < n) list.push(s.score);
+  }
+  return out;
+}
+// The scores before the one a verdict shows, per id: the history less the
+// verdict's own score when that score is of the current text.
+export function scoresBefore(slug, v, n = 2) {
+  const doc = readScenarios(slug);
+  const cur = new Map(((doc && doc.scenarios) || []).map(s => [s.id, scenarioSha(s)]));
+  const hist = scoreHistory(slug, n + 1), out = {};
+  for (const [id, list] of Object.entries(hist)) {
+    const shown = v && (v.scores || []).find(x => x.id === id);
+    out[id] = (shown && shown.sha && shown.sha === cur.get(id) ? list.slice(1) : list).slice(0, n);
   }
   return out;
 }
@@ -551,11 +572,11 @@ export function scenariosPage(slug, key) {
   const doc = readScenarios(slug);
   const v = lastVerdict(slug);
   const access = readAccess(slug);
-  const hist = scoreHistory(slug, 4);
+  const prior = scoresBefore(slug, v, 3);
   const score = id => { const s = v && (v.scores || []).find(x => x.id === id); return s ? s : null; };
   const card = s => {
     const sc = score(s.id);
-    const before = (hist[s.id] || []).slice(1);
+    const before = prior[s.id] || [];
     return `<section class="sc" data-id="${esc(s.id)}">
   <header><code>${esc(s.id)}</code>${sc ? ` <span class="score ${sc.score >= (v.threshold ?? DEFAULT_THRESHOLD) ? "ok" : "low"}">${Number(sc.score).toFixed(2)}</span>` : ""}${sc && sc.cause ? ` <span class="cause">${esc(sc.cause)}</span>` : ""}${before.length ? ` <span class="msg">before: ${before.map(x => Number(x).toFixed(2)).join(" ")}</span>` : ""}</header>
   <label>Title <input name="title" value="${esc(s.title)}" maxlength="${TEXT_MAX.title}"></label>

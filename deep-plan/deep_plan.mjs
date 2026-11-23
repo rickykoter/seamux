@@ -5566,9 +5566,9 @@ function scenariosCmd(args, flags) {
     const v = SCN.lastVerdict(slug);
     const access = SCN.readAccess(slug).length;
     // Titles, scores, causes and earlier scores: never a reason or a step.
-    const hist = SCN.scoreHistory(slug, 3);
+    const prior = SCN.scoresBefore(slug, v, 2);
     const scores = v ? (v.scores || []).map(s => ({ id: s.id, title: s.title, score: s.score, ...(s.cause ? { cause: s.cause } : {}),
-      history: hist[s.id] || [] })) : [];
+      before: prior[s.id] || [] })) : [];
     if (flags.json) {
       process.stdout.write(JSON.stringify({ slug, count: t ? t.count : 0, titles: t ? t.titles : [], writtenAt: t ? t.writtenAt : "",
         edited: t ? t.edited : 0, last: v ? { at: v.at, head: v.head, threshold: v.threshold, pass: v.pass, scores, took: v.took || null } : null, access }) + "\n");
@@ -5578,7 +5578,7 @@ function scenariosCmd(args, flags) {
     say(`${t.count} scenario(s) for ${slug}, written ${t.writtenAt.slice(0, 16).replace("T", " ")}${t.edited ? `, edited ${t.edited} time(s)` : ""}:`);
     for (const x of t.titles) {
       const s = scores.find(y => y.id === x.id);
-      const before = s ? s.history.slice(1) : [];
+      const before = s ? s.before : [];
       say(`  ${s ? s.score.toFixed(2) : "  - "}  ${x.id}  ${x.title}${s && s.cause && s.score < v.threshold ? `  [${s.cause}]` : ""}` +
         (before.length ? `  (before: ${before.map(n => n.toFixed(2)).join(" ")})` : ""));
     }

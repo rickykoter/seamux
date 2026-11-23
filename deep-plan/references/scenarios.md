@@ -51,9 +51,10 @@ edited them, writing them again is theirs.
 
 `deep-plan scenarios list <slug>` gives the count, the titles, the last
 scores with each failing one's cause, each scenario's two scores before
-those, and how long the last run took. That is all. A score that moves
-between runs with nothing relevant changed is the judge's noise, not a
-regression. The gate refuses a Read, Grep, Glob or Bash that names
+those (of its current wording only), and how long the last run took. That
+is all. A score that moved on runs where nothing the scenario tests
+changed may be the judge's noise; a drop right after your change is yours
+to explain before you call it noise. The gate refuses a Read, Grep, Glob or Bash that names
 the sealed folder, in any spelling it can see, and writes each attempt to
 the plan's access log; `scenarios access <slug>` lists them, and a verdict
 says how many there were. `scenarios show` and `scenarios edit` are the
@@ -93,10 +94,14 @@ The cause is the judge's word for why a scenario fell short:
 
 - `product`: the change runs and does not do what the scenario expects.
 - `harness`: the judge could not run what the scenario needs (the server,
-  a mock, a tool), so the change was not really tried. A harness that
-  never starts tags every scenario `harness`.
+  a mock, a tool), so the change was not really tried.
 - `scenario`: the scenario asks for something the change could not be
   expected to do as written.
+
+Two are deep-plan's own: `start`, when the harness's setup or server did
+not come up so no judge ran (the check prints the log's tail; the change
+may be what broke it), and `unscored`, when the judge returned no score
+for a scenario.
 
 Every failed run counts toward the retry cap, whatever its cause: the
 checkout is the builder's, so a judge it could talk into saying `harness`

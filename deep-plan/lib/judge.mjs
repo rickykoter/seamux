@@ -33,7 +33,7 @@ import net from "node:net";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readScenarios, saveVerdict, scenariosConfig, readAccess, runClaude, headlessEnv, fence, took,
+import { readScenarios, saveVerdict, scenariosConfig, readAccess, runClaude, headlessEnv, fence, took, scenarioSha,
   DEFAULT_THRESHOLD, JUDGE_MODEL } from "./scenarios.mjs";
 
 export const NO_VERDICT = 3;
@@ -48,12 +48,16 @@ export const JUDGE_DENIED = ["Bash(git push:*)", "Bash(gh:*)", "Bash(git remote:
 // Why a scenario fell short, as the judge saw it. The builder sees the word
 // (never the reason), and every failure counts toward the retry cap whatever
 // it says: the checkout is the builder's, so a judge it talked into saying
-// harness must not buy it free retries.
+// harness must not buy it free retries. Two more are deep-plan's own, never
+// the judge's: start (the harness's setup or server did not come up, so no
+// judge ran) and unscored (the judge returned no score for it).
 export const CAUSES = ["product", "harness", "scenario"];
 const CAUSE_SAYS = {
   product: "product: the change does not do what the scenario expects; fix the behavior its title names",
   harness: "harness: the judge could not run what the scenario needs (the harness, a mock, a tool); file a deep-plan note on it, since .seamux/scenarios.json is the developer's",
   scenario: "scenario: it may ask for something the plan no longer promises; name its title to the person, who edits it",
+  start: "start: the change did not come up under the harness, so nothing was judged; the log tail above says why. If the change broke its setup or start, fix it; if the harness lacks something, file a deep-plan note on it",
+  unscored: "unscored: the judge returned no score for it, so it counts as 0; a rerun may score it",
 };
 
 export const JUDGE_SCHEMA = {
@@ -187,11 +191,11 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
     if (broke) {
       // The change did not start: every scenario fails on it, and that is a
       // verdict (the builder can fix what does not start).
-      const scores = doc.scenarios.map(s => ({ id: s.id, title: s.title, score: 0, reason: broke.what, cause: "harness" }));
+      const scores = doc.scenarios.map(s => ({ id: s.id, title: s.title, sha: scenarioSha(s), score: 0, reason: broke.what, cause: "start" }));
       const v = { at: now.toISOString(), head, threshold: th, model: m, pass: false, scores, harness: broke, took: total() };
       saveVerdict(slug, v);
       return { code: 1, lines: [...lines, `scenarios: not judged, ${broke.what}`, ...(broke.tail ? broke.tail.split("\n").map(l => `  | ${l}`) : []),
-        tookLine(v.took), `  ${CAUSE_SAYS.harness}`] };
+        tookLine(v.took), `  ${CAUSE_SAYS.start}`] };
     }
     // The judge's shell: the temp stores, the sandbox's PATH and the exports,
     // sourced before each command it runs.
@@ -218,8 +222,9 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
     const scores = doc.scenarios.map(s => {
       const g = got.get(s.id);
       const n = g && Number.isFinite(Number(g.score)) ? Math.max(0, Math.min(1, Number(g.score))) : 0;
-      const cause = g && n < 1 && CAUSES.includes(g.cause) ? g.cause : undefined;
-      return { id: s.id, title: s.title, score: n, reason: g ? String(g.reason || "") : "the judge gave this scenario no score", ...(cause ? { cause } : {}) };
+      const cause = !g ? "unscored" : n < 1 && CAUSES.includes(g.cause) ? g.cause : undefined;
+      return { id: s.id, title: s.title, sha: scenarioSha(s), score: n, reason: g ? String(g.reason || "") : "the judge gave this scenario no score",
+        ...(cause ? { cause } : {}) };
     });
     const met = scores.filter(s => s.score >= th).length;
     const pass = met === scores.length;
@@ -235,7 +240,7 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
       const sc = doc.scenarios.find(x => x.id === s.id);
       if (low && sc && sc.hint && sc.hintApproved) lines.push(`        hint: ${sc.hint}`);
     }
-    for (const c of CAUSES) if (seen.has(c)) lines.push(`  ${CAUSE_SAYS[c]}`);
+    for (const c of Object.keys(CAUSE_SAYS)) if (seen.has(c)) lines.push(`  ${CAUSE_SAYS[c]}`);
     if (seen.size) lines.push("  every failed run counts toward the retry cap, whatever its cause");
     lines.push(tookLine(tk, r.cost));
     if (access) lines.push(`  the access log holds ${access} refused attempt(s) to read the sealed scenarios`);
