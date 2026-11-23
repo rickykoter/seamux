@@ -80,6 +80,10 @@ fn answers_since(dir: &Path, since: &str, today: &str) -> Vec<Value> {
     let from = if since.is_empty() || since > today { today } else { since };
     let mut days: Vec<String> = log::days(dir).into_iter().filter(|d| d.as_str() >= from && d.as_str() <= today).collect();
     days.sort();
+    // A conversation whose day never moved (no reset ran) reads at most the
+    // last week, so the hook stays inside its timeout.
+    let keep = days.len().saturating_sub(7);
+    let days = days.split_off(keep);
     days.iter().flat_map(|d| log::list(dir, d).unwrap_or_default()).collect()
 }
 

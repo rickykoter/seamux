@@ -117,7 +117,8 @@ pub fn is_claude(comm: &str) -> bool {
 
 /// Type `text` into the tmux session `t`, as is (a trailing \r is Enter).
 pub fn send_text(t: &Target, text: &str) -> Result<(), String> {
-    let o = tmux(&t.socket, &["send-keys", "-t", &pane_of(t), "-l", text]).map_err(|e| e.to_string())?;
+    // `--` ends tmux's options, so text that starts with `-` is typed, not parsed.
+    let o = tmux(&t.socket, &["send-keys", "-t", &pane_of(t), "-l", "--", text]).map_err(|e| e.to_string())?;
     if o.status.success() {
         Ok(())
     } else {

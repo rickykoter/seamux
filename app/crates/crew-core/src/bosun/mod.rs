@@ -13,7 +13,7 @@
 //!                                print the answer (exit 3: still waiting)
 //! seamux bosun answer <id>       an ask's answer, on stdin
 //! seamux bosun log add           one entry on stdin | log list [--day D] [--json]
-//! seamux bosun dispatch <repo> <branch> --brief <file> [--json]
+//! seamux bosun dispatch <repo> <branch> --brief-text TEXT [--json]
 //! seamux bosun loops [list] [--json] | loops run <id>
 //!                                bosun.json's timed prompts (loops.rs)
 //! seamux bosun precompact        the PreCompact hook (stdin: its payload)
@@ -126,7 +126,9 @@ pub fn status_at(t: &TmuxBackend, dir: &Path) -> Result<Value, String> {
     let st = launch::State::load(dir);
     let row = t.kind_row(KIND)?;
     let pane = row.as_ref().and_then(|r| r.live.clone().or(r.gone.clone())).unwrap_or_default();
-    let live = row.as_ref().is_some_and(|r| r.live.is_some());
+    // Live means the supervisor still runs: a pane whose `bosun run` returned
+    // is only a shell, and the app's keep-alive should ensure (replace) it.
+    let live = row.as_ref().and_then(|r| r.live.as_deref()).is_some_and(|p| supervised(t, p) != Some(false));
     let state = if live { crate::status::read(&crate::status::pane_dir(), &pane).map(|p| p.state).unwrap_or_default() } else { String::new() };
     Ok(json!({
         "ws": row.as_ref().map(|r| r.ws.clone()).unwrap_or_default(),
@@ -166,20 +168,38 @@ pub fn prime_with_log(cfg: &Config, dir: &Path, today: &str, source: &str) -> St
 }
 
 /// The text after the subcommand, flags (and their values) left out.
+/// The text after the subcommand and its flags. Only the subcommand's own
+/// flags (`valued`, and `--json`) are flags; any other word is text, so a
+/// question that mentions `--fix` keeps it. After a bare `--` all is text.
 fn words(args: &[String], valued: &[&str]) -> (String, Vec<(String, String)>) {
     let mut text = Vec::new();
     let mut flags = Vec::new();
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
-        if valued.contains(&a.as_str()) {
+        if a == "--" {
+            text.extend(it.by_ref().cloned());
+            break;
+        } else if valued.contains(&a.as_str()) {
             flags.push((a.clone(), it.next().cloned().unwrap_or_default()));
-        } else if a.starts_with("--") {
+        } else if a == "--json" {
             flags.push((a.clone(), String::new()));
         } else {
             text.push(a.clone());
         }
     }
     (text.join(" "), flags)
+}
+
+/// Seconds from `30`, `30s`, `2m` or `1h`; None for anything else.
+fn parse_secs(t: &str) -> Option<u64> {
+    let t = t.trim();
+    let (n, mul) = match t.chars().last()? {
+        's' => (&t[..t.len() - 1], 1),
+        'm' => (&t[..t.len() - 1], 60),
+        'h' => (&t[..t.len() - 1], 3600),
+        _ => (t, 1),
+    };
+    n.parse::<u64>().ok().and_then(|n| n.checked_mul(mul))
 }
 
 fn flag<'a>(flags: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -203,7 +223,8 @@ fn usage() -> i32 {
 }
 
 pub fn main(args: &[String]) -> i32 {
-    let json_out = args.iter().any(|a| a == "--json");
+    // --json counts only before a bare `--` (after it, all is the text).
+    let json_out = args.iter().take_while(|a| *a != "--").any(|a| a == "--json");
     let sub = args.first().map(String::as_str).filter(|a| !a.starts_with("--")).unwrap_or("");
     let dir = config::dir();
     let t = TmuxBackend::default();
@@ -281,8 +302,28 @@ pub fn main(args: &[String]) -> i32 {
         }
         "ask" => {
             let (text, flags) = words(args, &["--from", "--timeout", "--id"]);
-            let timeout = std::time::Duration::from_secs(flag(&flags, "--timeout").and_then(|t| t.parse().ok()).unwrap_or(900));
+            let timeout = match flag(&flags, "--timeout").map(parse_secs) {
+                None => std::time::Duration::from_secs(900),
+                Some(Some(s)) => std::time::Duration::from_secs(s),
+                Some(None) => {
+                    eprintln!("bosun ask: --timeout takes seconds, or a number with s, m or h (30s, 2m)");
+                    return 2;
+                }
+            };
+            // Asking needs a Bosun to answer; asking from inside the Bosun
+            // would queue a question back to itself.
+            if flag(&flags, "--id").is_none() {
+                let row = t.kind_row(KIND).ok().flatten();
+                let pane = row.as_ref().and_then(|r| r.live.clone());
+                if pane.as_deref().is_none_or(|p| supervised(&t, p) == Some(false)) {
+                    return fail("ask", "no Bosun runs here: start it with `seamux bosun ensure` (it needs the app's tmux backend)");
+                }
+                if crate::py::env_or("SEAMUX_PANE_ID").is_some_and(|me| pane.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&me))) {
+                    return fail("ask", "this is the Bosun's own pane: answer the question here instead of asking yourself");
+                }
+            }
             let id = match flag(&flags, "--id") {
+                Some(id) if !queue::valid_id(id) => return fail("ask", format!("not an id: {id:?}")),
                 Some(id) => id.to_string(),
                 None => {
                     let who = flag(&flags, "--from").map(str::to_string).unwrap_or_else(|| {
@@ -394,6 +435,22 @@ mod tests {
         let cfg = Config { root: PathBuf::from("/u/code"), reset_hour: 4, allow_write: vec![], allowed_domains: vec![] };
         let n = prime_note(&cfg, "2026-11-22", "clear");
         assert!(n.contains("2026-11-22") && n.contains("/u/code") && n.contains("new day"));
+    }
+
+    #[test]
+    fn timeouts_take_units_and_refuse_the_rest() {
+        assert_eq!((parse_secs("30"), parse_secs("30s"), parse_secs("2m"), parse_secs("1h")), (Some(30), Some(30), Some(120), Some(3600)));
+        assert_eq!((parse_secs("soon"), parse_secs("2d"), parse_secs("")), (None, None, None));
+    }
+
+    #[test]
+    fn a_question_keeps_its_own_dashes() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (t, f) = words(&v(&["ask", "why", "does", "crew", "doctor", "--fix", "fail", "--from", "me"]), &["--from"]);
+        assert_eq!((t.as_str(), flag(&f, "--from")), ("why does crew doctor --fix fail", Some("me")));
+        let (t, f) = words(&v(&["ask", "--json", "--", "what", "does", "--json", "do"]), &["--from"]);
+        assert_eq!(t, "what does --json do");
+        assert!(flag(&f, "--json").is_some());
     }
 
     #[test]

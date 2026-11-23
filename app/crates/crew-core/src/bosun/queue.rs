@@ -60,6 +60,11 @@ pub fn enqueue_as(dir: &Path, id: &str, text: &str, source: &str) -> Result<Item
     if text.trim().is_empty() {
         return Err("nothing to queue".into());
     }
+    // The queue holds prompts: typed into Claude, a leading / would run as a
+    // slash command (/clear, /exit) instead of being answered.
+    if text.trim_start().starts_with('/') {
+        return Err("the queue takes prompts, not slash commands: drop the leading /".into());
+    }
     let at = crate::history::now_ms();
     let path = queue_dir(dir).join(format!("{at:013}-{id}.json"));
     write_atomic(&path, &json!({"id": id, "at": at, "text": text, "source": source}).to_string())?;
@@ -199,6 +204,7 @@ mod tests {
         let d = tmp("bad");
         assert!(enqueue_as(&d, "../x", "t", "send").is_err());
         assert!(enqueue(&d, "  ", "send").is_err());
+        assert!(enqueue(&d, " /clear", "send").is_err(), "no slash commands");
         assert!(answer(&d, "a/b", "x").is_err());
         assert!(answer(&d, "ok-1", " ").is_err());
         let _ = fs::remove_dir_all(&d);

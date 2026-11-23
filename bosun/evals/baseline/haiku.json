@@ -3,41 +3,41 @@
   "plugin": "bosun",
   "model": "haiku",
   "claudeVersion": "2.1.330",
-  "costUsd": 0.1058,
+  "costUsd": 0.1041,
   "cases": {
     "asks-without-blocking": {
       "runs": 3,
-      "score": 1.0,
+      "score": 0.6667,
       "graders": {
-        "background": 3,
+        "background": 1,
         "fired": 3
       },
       "errors": 0
     },
     "cites-every-fact": {
       "runs": 3,
-      "score": 0.5,
+      "score": 0.3333,
       "graders": {
         "cited": 0,
-        "fired": 3
+        "fired": 2
       },
       "errors": 0
     },
     "dispatch-asks-and-links": {
       "runs": 3,
-      "score": 0.6667,
+      "score": 0.8333,
       "graders": {
         "fired": 3,
-        "linked": 1
+        "linked": 2
       },
       "errors": 0
     },
     "dispatches-instead-of-editing": {
       "runs": 3,
-      "score": 0.6667,
+      "score": 1.0,
       "graders": {
-        "dispatched": 2,
-        "fired": 2
+        "dispatched": 3,
+        "fired": 3
       },
       "errors": 0
     },
@@ -51,17 +51,17 @@
     },
     "fires-on-sitrep": {
       "runs": 3,
-      "score": 0.6667,
+      "score": 1.0,
       "graders": {
-        "fired": 2
+        "fired": 3
       },
       "errors": 0
     },
     "fires-on-workspace-ask": {
       "runs": 3,
-      "score": 1.0,
+      "score": 0.6667,
       "graders": {
-        "fired": 3
+        "fired": 2
       },
       "errors": 0
     },

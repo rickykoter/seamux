@@ -85,17 +85,39 @@ pub fn later_day(a: &str, b: &str) -> String {
     if b > a { b.to_string() } else { a.to_string() }
 }
 
+/// Print `msg` to the pane at most once per ten minutes for the same `key`:
+/// the supervisor's terminal is Claude's screen, and a fault that repeats
+/// every tick (a full disk, an unwritable queue) must not flood it.
+pub fn warn(key: &str, msg: &str) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(HashMap::new);
+    if m.get(key).is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
+        return;
+    }
+    m.insert(key.to_string(), Instant::now());
+    eprintln!("{msg}");
+}
+
 /// Whether Claude Code's prompt is empty, read from the pane's screen (tmux
 /// capture-pane -e): the text after the last `❯` line's marker. A dim run
 /// is the placeholder hint, and so is a "Try \"…" line. None when no prompt
 /// line is found (the caller types anyway). Typing after a person's draft
 /// (a stray `/`) turns the question into a slash command, so a draft waits.
 pub fn input_empty(screen: &str) -> Option<bool> {
+    input_text(screen).map(|t| t.is_empty())
+}
+
+/// The text in Claude Code's prompt ("" when empty or showing its hint),
+/// or None when no prompt line is found.
+pub fn input_text(screen: &str) -> Option<String> {
     let line = screen.lines().rev().find(|l| l.contains('❯'))?;
     let after = &line[line.find('❯')? + '❯'.len_utf8()..];
     let after = after.trim_start_matches(|c: char| c == '\u{a0}' || c == ' ');
     if after.starts_with("\x1b[2m") {
-        return Some(true);
+        return Some(String::new());
     }
     let mut plain = String::new();
     let mut chars = after.chars().peekable();
@@ -112,7 +134,20 @@ pub fn input_empty(screen: &str) -> Option<bool> {
         }
     }
     let plain = plain.trim_matches(|c: char| c.is_whitespace() || c == '\u{a0}');
-    Some(plain.is_empty() || plain.starts_with("Try \""))
+    Some(if plain.starts_with("Try \"") { String::new() } else { plain.to_string() })
+}
+
+/// Whether the prompt holds the start of `item`'s text: what a paste whose
+/// Enter was lost leaves behind (and what is ours to press Enter on).
+pub fn holds_item(input: &str, item: &str) -> bool {
+    // Claude Code shows a long or multi-line paste collapsed, as
+    // "[Pasted text #1 +4 lines]": a multi-line item left unsent reads so.
+    if item.contains('\n') && input.trim_start().starts_with("[Pasted text") {
+        return true;
+    }
+    let want: String = item.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(24).collect();
+    let have: String = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    want.len() >= 4 && (have.starts_with(&want) || want.starts_with(&have) && have.len() >= 4)
 }
 
 /// The pane's screen with its colours, for `input_empty`.
@@ -141,6 +176,24 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
                 super::queue::done(item);
                 pending = None;
             } else if at.elapsed() >= SENT_WAIT {
+                // A paste whose Enter was lost leaves our own text in the
+                // prompt, and nothing would ever type after it: press Enter.
+                let target = tmux::TmuxBackend::default().target(&pane).ok().flatten();
+                if let Some(t) = &target {
+                    if screen(t).as_deref().and_then(input_text).is_some_and(|i| holds_item(&i, &item.text)) {
+                        // Each Enter is a try too, so one that never submits
+                        // still ends in queue/failed.
+                        if super::queue::bump(item) >= super::queue::MAX_TRIES {
+                            eprintln!("bosun: {} sat unsent in the prompt after {} Enters; it is in queue/failed", item.id, super::queue::MAX_TRIES);
+                            super::queue::fail(item);
+                            pending = None;
+                            continue;
+                        }
+                        let _ = tmux::send_text(t, "\r");
+                        pending = Some((item.clone(), Instant::now()));
+                        continue;
+                    }
+                }
                 if super::queue::bump(item) >= super::queue::MAX_TRIES {
                     eprintln!("bosun: {} was typed {} times and never started; it is in queue/failed", item.id, super::queue::MAX_TRIES);
                     super::queue::fail(item);
@@ -185,7 +238,7 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
         match typed {
             Ok(()) if pending.is_none() => sent = Some(Instant::now()),
             Ok(()) => {}
-            Err(e) => eprintln!("bosun: could not type into the pane: {e}"),
+            Err(e) => warn("type", &format!("bosun: could not type into the pane: {e}")),
         }
     }
 }
@@ -313,6 +366,17 @@ mod tests {
         assert_eq!(due(&today, false, &cfg(), "2026-11-22", 9, &q), None, "never into a busy Bosun");
         let old = State { session: "S".into(), day: "2026-11-21".into() };
         assert_eq!(due(&old, true, &cfg(), "2026-11-22", 9, &q), Some(Action::Clear), "the reset first");
+    }
+
+    #[test]
+    fn a_lost_enter_is_told_from_a_persons_draft() {
+        assert!(holds_item("[Ask q1 from ws] is X", "[Ask q1 from ws]\nis X true?\n\nAnswer it"));
+        assert!(!holds_item("/", "[Ask q1 from ws] is X"));
+        assert!(!holds_item("hello there", "[Ask q1 from ws] is X"));
+        assert!(holds_item("[Pasted text #1 +4 lines]", "[Ask q1 from ws]\nis X?\n\nAnswer it"), "a collapsed paste is ours");
+        assert!(!holds_item("[Pasted text #1 +4 lines]", "one line"), "only a multi-line item collapses");
+        let e = "\x1b[39m\u{276f}\u{a0}";
+        assert_eq!(input_text(&format!("{e}[Ask q1 from")).as_deref(), Some("[Ask q1 from"));
     }
 
     #[test]

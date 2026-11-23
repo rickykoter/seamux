@@ -202,7 +202,7 @@ pub fn terminal_reviews(dir: &Path, skip: &[String], app_base: &str) -> Vec<Valu
         let Some(d) = fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
         let Some(src) = d.get("source") else { continue };
         let root = s(src, "root");
-        if !app_base.is_empty() && root.starts_with(app_base) {
+        if !app_base.is_empty() && (root == app_base || root.starts_with(&format!("{}/", app_base.trim_end_matches('/')))) {
             continue;
         }
         let mut open: BTreeMap<String, u32> = BTreeMap::new();
