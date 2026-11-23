@@ -3879,7 +3879,6 @@ function repend(inc, ids, why) {
   return moved;
 }
 
-// HEAD of the plan root, or "" outside git: an increment's base.
 // A plan with a scenarios check completes, and ship merges it, only once
 // the newest full judge run passed at HEAD: a pass carried by a retry is not
 // trusted to merge. null when it holds, or the plan has no scenarios check.
@@ -3889,6 +3888,7 @@ function scenariosHold(st) {
   const f = SCN.fullPassAt(st.slug, headSha(st.root));
   return f.ok ? null : `${st.slug} has a scenarios check, and ${f.why}: run deep-plan scenarios judge ${st.slug} (every scenario, at HEAD) first`;
 }
+// HEAD of the plan root, or "" outside git: an increment's base.
 function headSha(root) {
   const sha = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" });
   return sha.status === 0 ? sha.stdout.trim() : "";

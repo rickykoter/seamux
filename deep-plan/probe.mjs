@@ -9144,6 +9144,14 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios: a full run that passed counts at its head only",
     r.status === 0 && fpa(SHEAD).ok === true && fpa("f".repeat(40)).ok === false && /passed on [0-9a-f]{8}, not HEAD ffffffff/.test(fpa("f".repeat(40)).why), r.stdout);
 
+  const keep = JSON.parse(spawnSync("node", ["--input-type=module", "-e", `
+    import { saveVerdict, fullPassAt } from ${JSON.stringify(path.join(HERE, "lib", "scenarios.mjs"))};
+    const at = () => new Date().toISOString();
+    saveVerdict("scn-h", { at: at(), head: "a".repeat(40), pass: true, full: true, scores: [{ id: "s1", score: 1, sha: "x" }] });
+    for (let i = 0; i < 25; i++) saveVerdict("scn-h", { at: at(), head: "a".repeat(40), pass: false, full: false, scores: [{ id: "s1", score: 0.1, sha: "x" }] });
+    console.log(JSON.stringify(fullPassAt("scn-h", "a".repeat(40))));`], { encoding: "utf8", env: SENV }).stdout || "{}");
+  ok("scenarios: the newest full run is kept past the 20 verdicts of history, so retries do not push it out (f3)", keep.ok === true, JSON.stringify(keep));
+
   // The last done of a plan with no delivery review wants the full pass too.
   {
     const one = mk("scn-c"); one.deliverables = one.deliverables.slice(0, 1);
@@ -9201,9 +9209,13 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
     g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log") && /prefers-color-scheme: dark/.test(html));
   ok("scenarios page: it shows each scenario's cause, its earlier scores and the run's time",
     html.includes('<span class="cause">start</span>') && /before: 0\.90 0\.75 0\.30/.test(html) && !/before: 0\.00/.test(html) && /, in \d+s\./.test(html));
+  const fullHead = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).lastFull.head;
+  const fpaBefore = fpa(fullHead);
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);
   ok("scenarios page: an edit with the key saves",
     g.status === 200 && /exactly once/.test(sc("scenarios", "list", "scn-a").stdout));
+  ok("scenarios: a full pass no longer counts once a scenario's text changed after it (f2)",
+    fpaBefore.ok === true && fpa(fullHead).ok === false && /before s1 took their current text/.test(fpa(fullHead).why), JSON.stringify([fpaBefore, fpa(fullHead)]));
   ok("scenarios: an edited scenario's earlier scores are of other wording, so list shows none for it and keeps the rest (f3)",
     (j2 => j2.last.scores[0].before.length === 0 && j2.last.scores[1].before.length === 2)(JSON.parse(sc("scenarios", "list", "scn-a", "--json").stdout)));
   g = await fetch(`${B}/scenarios-edit/scn-a?op=delete&id=s1`);

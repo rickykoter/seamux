@@ -207,7 +207,10 @@ export function saveVerdict(slug, v, transcript) {
     const old = fs.readdirSync(sealedDir(slug)).filter(f => /^judge-\d+\.json$/.test(f)).sort().slice(0, -5);
     for (const f of old) fs.rmSync(path.join(sealedDir(slug), f), { force: true });
   }
-  writeSealed(slug, "verdicts.json", { last: v, history: [v, ...(prev.history || [])].slice(0, 20) });
+  // The newest full run is kept apart too: retries past the history's 20
+  // must not push out the run that deliver and ship ask for.
+  const lastFull = isFull(v) ? v : prev.lastFull || (prev.history || []).find(isFull) || null;
+  writeSealed(slug, "verdicts.json", { last: v, history: [v, ...(prev.history || [])].slice(0, 20), ...(lastFull ? { lastFull } : {}) });
 }
 export function lastVerdict(slug) { const v = readSealedJson(slug, "verdicts.json"); return v && v.last || null; }
 // 552 seconds as "9m12s".
@@ -239,11 +242,18 @@ export const isFull = v => !!v && (v.full === true || (v.full === undefined && (
 // re-judges only the failing scenarios; a full pass at HEAD gates the merge).
 export function fullPassAt(slug, head) {
   const all = readSealedJson(slug, "verdicts.json");
-  const v = ((all && all.history) || []).find(isFull);
+  const v = (all && all.lastFull) || ((all && all.history) || []).find(isFull);
   if (!v) return { ok: false, why: "no full judge run yet" };
   const at = String(v.head || "").slice(0, 8);
   if (!v.pass) return { ok: false, why: `the last full judge run (on ${at}) did not pass` };
   if (!head || v.head !== head) return { ok: false, why: `the last full judge run passed on ${at}, not HEAD ${String(head || "").slice(0, 8)}` };
+  // It judged the scenarios as they read now: an edit, a removal undone or a
+  // new scenario since needs a run of its own. A verdict from before scores
+  // kept their text's hash is taken at its word.
+  const doc = readScenarios(slug);
+  const judgedSha = new Map((v.scores || []).map(x => [x.id, x.sha]));
+  const stale = ((doc && doc.scenarios) || []).filter(x => !judgedSha.has(x.id) || (judgedSha.get(x.id) && judgedSha.get(x.id) !== scenarioSha(x)));
+  if (stale.length) return { ok: false, why: `the last full judge run passed on ${at}, before ${stale.map(x => x.id).join(", ")} took their current text` };
   return { ok: true, why: `the last full judge run passed on HEAD ${at}` };
 }
 // Each scenario's scores from the newest verdicts that scored its current
