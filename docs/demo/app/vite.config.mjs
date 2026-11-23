@@ -57,11 +57,10 @@ const intent = { port: 0, target: "" };
 const HANDS_OVER = `<script>document.addEventListener("click",function(e){var a=window.parent!==window&&e.target.closest&&e.target.closest('a[target="_blank"][href]');if(!a)return;e.preventDefault();window.parent.postMessage({seamux:"open",url:a.href,shift:e.shiftKey,meta:e.metaKey},"*");});</script>`;
 
 /** A plan page's links, as a real one has them: its trace (a page on the
- *  intent server outside seamux's page paths), its proof and a file. */
+ *  intent server outside seamux's page paths), its proof and GitHub. */
 function planLinks(path) {
   const slug = path.split("/")[2] ?? "";
-  const file = `${process.env.HOME_DEMO ?? "/home/demo"}/code/shop.worktrees/coupons-api/notes/error-codes.md`;
-  return `<nav class="links"><a target="_blank" href="/plan-evidence/${slug}/inc1">trace</a> · <a target="_blank" href="/plan/${slug}.proof/proof.md">proof.md</a> · <a target="_blank" href="file://${file}">error-codes.md</a> · <a target="_blank" href="https://github.com/">github</a></nav>${HANDS_OVER}`;
+  return `<nav class="links"><a target="_blank" href="/plan-evidence/${slug}/inc1">trace</a> · <a target="_blank" href="/plan/${slug}.proof/proof.md">proof.md</a> · <a target="_blank" href="https://github.com/">github</a></nav>${HANDS_OVER}`;
 }
 
 /** A page on another origin than the intent server's (the demo's own), that

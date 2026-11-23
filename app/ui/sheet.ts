@@ -761,7 +761,10 @@ export class Sheet {
     window.addEventListener("message", (e) => {
       const d = e.data as { seamux?: unknown } | null;
       if (!d || typeof d !== "object" || d.seamux !== "open") return;
-      if (![...this.stack.querySelectorAll("iframe")].some((x) => x.contentWindow === e.source)) return;
+      const f = [...this.stack.querySelectorAll("iframe")].find((x) => x.contentWindow === e.source);
+      // A seamux page's frame only: a web tab is framed from the intent
+      // origin too (/plan-evidence/), and its scripts are not the plan's.
+      if (!f || !/^\/(plan|review|ask|agent|run|runs)\//.test(new URL(f.src, location.href).pathname)) return;
       void openFramed(d, e.origin);
     });
     this.noteEl.className = "sheet-tabs-note";
@@ -1005,8 +1008,12 @@ export class Sheet {
     const t = this.tabs.find((x) => x.key === key);
     const away: Away = { kind: "page", path: p.path, workspace: p.workspace };
     if (t) {
-      // A frame already drawn keeps the address it loaded from.
-      t.page = t.el && t.page ? { ...p, path: t.page.path } : p;
+      // Another query (a fresh lookout token): the frame loads it again.
+      if (t.el && t.page && t.page.path !== p.path) {
+        t.el.remove();
+        t.el = null;
+      }
+      t.page = p;
       t.away = away;
     } else this.addTab({ key, kind: kindOf(key), label: p.title, state: "", waiting: false, now: false, el: null, page: p, away });
     this.select(key, true);
@@ -1329,9 +1336,6 @@ export class Sheet {
     this.select(key, true);
   }
 
-  /** A quiet word at the end of the strip, where the eye is after a key,
-   *  that goes again after a moment. With the column hidden, the strip is
-   *  too: it goes in the terminal's row instead. */
   /** A failed open, said where the sheet says its own errors (the tab
    *  strip's note, or the chat row's when the page side is folded), for a
    *  few seconds and not dimmed. */
@@ -1345,6 +1349,9 @@ export class Sheet {
     }, 6000);
   }
 
+  /** A quiet word at the end of the strip, where the eye is after a key,
+   *  that goes again after a moment. With the column hidden, the strip is
+   *  too: it goes in the terminal's row instead. */
   private flash(text: string): void {
     const at = this.isFolded() ? this.say : this.noteEl;
     at.textContent = text;
@@ -1706,9 +1713,6 @@ export function setDockSheet(s: Sheet): void {
   docked = s;
 }
 
-/** Where a pane's link opens a page: the Dock's side column, beside the
- *  terminal and in the workspace it shows. With another view up (Lookout)
- *  the Dock comes forward first (main.ts): a page never opens anywhere else. */
 /** Say a failed open in the Dock's side column (Sheet.notice). */
 export function noticeInDock(text: string): void {
   docked?.notice(text);
@@ -1719,6 +1723,10 @@ export function peekPlace(target: { page?: string; file?: string }): string | un
   return docked?.placeOfLink(target);
 }
 
+/** Where a link opens a page: the Dock's side column, in the workspace the
+ *  link belongs to (linkroute.ts placeFor), else the one it came from, else
+ *  the one the Dock shows. The Dock comes forward first (main.ts), and the
+ *  Bosun's drop-down goes away: a page never opens anywhere else. */
 export function linkSheet(place: { workspace?: string; dir?: string }, target: { page?: string; file?: string } = {}): { sheet: Sheet; place: { workspace?: string; dir?: string } } | null {
   if (!docked) return null;
   // The Dock comes forward, and the Bosun's drop-down goes away (main.ts),

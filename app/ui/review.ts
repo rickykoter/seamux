@@ -958,7 +958,7 @@ export class ReviewView {
     }, can));
     // Landing and PR links follow a pane link's rules: GitHub and the web to
     // the browser, a localhost page (a preview) into the Dock.
-    const open = (url: string) => void follow(url, null);
+    const open = (url: string) => void follow(url, null, undefined, (m) => (this.err.textContent = m));
     const panel = stage === "pr" ? prPanel(pr, open)
       : stage === "merge" ? mergePanel(pr, open, this.shipFor(pr))
       : stage === "land" ? landPanel(land, pr.state === "merged", {

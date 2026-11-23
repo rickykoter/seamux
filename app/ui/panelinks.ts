@@ -14,7 +14,7 @@ import { DOCK_FILE, joinWrapped, route } from "./linkroute";
 import { linkSheet, noticeInDock, peekPlace, type Shown } from "./sheet";
 
 /** A failed open, said in the Dock's side column rather than dropped. */
-const said = (what: string) => (err: unknown) => noticeInDock(`${what}: ${String(err)}`);
+const said = (what: string, say: (m: string) => void = noticeInDock) => (err: unknown) => say(`${what}: ${String(err)}`);
 
 /** Where a side-column tab goes when it is opened elsewhere: a seamux page
  *  (in its workspace), a file (at its line), or a web page. */
@@ -250,7 +250,9 @@ async function intentOrigin(): Promise<string | null> {
  *  whether it was taken. */
 export async function openFramed(d: object, from: string): Promise<boolean> {
   const m = d as { url?: unknown; shift?: unknown; meta?: unknown };
-  if (typeof m.url !== "string" || m.url.length > 4096) return false;
+  // A web link only: a page's script can post without a click, so a framed
+  // page never opens a file or the editor (its files go through its own /open).
+  if (typeof m.url !== "string" || m.url.length > 4096 || !/^https?:\/\//i.test(m.url)) return false;
   const o = await intentOrigin();
   if (!o || from.replace("//localhost:", "//127.0.0.1:") !== o) return false;
   await follow(m.url, null, new MouseEvent("click", { shiftKey: m.shift === true, metaKey: m.meta === true }));
@@ -259,7 +261,7 @@ export async function openFramed(d: object, from: string): Promise<boolean> {
 
 /** Follow a link the pane shows (see the top of this file). `id` names its
  *  terminal, for the workspace a page belongs to; `e` is the click. */
-export async function follow(uri: string, id: number | null, e?: MouseEvent): Promise<void> {
+export async function follow(uri: string, id: number | null, e?: MouseEvent, say: (m: string) => void = noticeInDock): Promise<void> {
   const o = await intentOrigin();
   const how = (() => {
     try {
@@ -292,11 +294,11 @@ export async function follow(uri: string, id: number | null, e?: MouseEvent): Pr
       return void (await openPage(u.pathname + u.search, pageTitle(u.pathname), await placeOf(id), uri));
     }
     const to = linkSheet({ workspace: await placeOf(id) });
-    if (!to) return void (await invoke("open_url", { url: uri }).catch(said("The browser could not open it")));
+    if (!to) return void (await invoke("open_url", { url: uri }).catch(said("The browser could not open it", say)));
     to.sheet.openWeb(uri, to.place);
     return;
   }
-  await invoke("open_url", { url: uri }).catch(said("The browser could not open it"));
+  await invoke("open_url", { url: uri }).catch(said("The browser could not open it", say));
 }
 
 /** A page tab's title from its path: a plan's slug, a review's id, and for

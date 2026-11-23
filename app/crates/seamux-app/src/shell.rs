@@ -342,6 +342,8 @@ pub fn hide_overlay<R: Runtime>(window: WebviewWindow<R>) {
 
 /// A page's companion tab key: plan-<slug>, review-<id> or ask-<id>.
 pub fn companion_key(path: &str) -> String {
+    // One tab per page: the query (a lookout token) is not part of it.
+    let path = path.split(['?', '#']).next().unwrap_or(path);
     let rest = path.trim_start_matches('/');
     let (kind, id) = rest.split_once('/').unwrap_or(("page", rest));
     format!("{kind}-{id}").to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).take(96).collect()
@@ -357,9 +359,31 @@ pub fn cmux_path_ok(path: &str) -> bool {
         && !p.contains("..")
         && !p.contains("//")
         && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
-        && !q.contains("..")
-        && !q.contains("//")
         && q.chars().all(|c| c.is_ascii_alphanumeric() || "-_.=&%/".contains(c))
+        && {
+            // Checked as the page will read it: %2e%2e is '..', %2F%2F is '//'.
+            let d = percent_decoded(q);
+            !d.contains("..") && !d.contains("//") && !d.contains("://")
+        }
+}
+
+/// `s` with each %XX decoded (an invalid escape is kept as written).
+fn percent_decoded(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Open an intent-server page in cmux, in `workspace`'s tab group when one
@@ -1228,6 +1252,9 @@ mod tests {
         for p in ["/agent/3f6c1e2a-8b4d/a91c", "/runs/3f6c", "/review/rv-1?t=ab12CD", "/agent/s/a?back=%2Fruns%2Fs"] {
             assert!(crew_board::companion::key_ok(&companion_key(p)), "{p} -> {}", companion_key(p));
         }
+        // One tab per page, and no token in the key.
+        assert_eq!(companion_key("/review/rv-1?t=AAA"), companion_key("/review/rv-1?t=BBB"));
+        assert_eq!(companion_key("/review/rv-1?t=AAA"), "review-rv-1");
     }
 
     #[test]
@@ -1247,6 +1274,9 @@ mod tests {
         assert!(!cmux_path_ok("/plan/x?back=../../etc"));
         assert!(!cmux_path_ok("/plan//evil.example"));
         assert!(!cmux_path_ok("/plan/x?u=//evil.example"));
+        assert!(!cmux_path_ok("/runs/s?back=%2F%2Fevil.example"));
+        assert!(!cmux_path_ok("/plan/x?back=%2e%2e%2Fetc"));
+        assert!(!cmux_path_ok("/plan/x?u=https%3A%2F%2Fevil.example"));
         assert!(!cmux_path_ok("/plan/x y"));
         assert!(!cmux_path_ok("/plan/x?t=a b"));
         assert!(!cmux_path_ok("/plan/x#frag"));
