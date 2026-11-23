@@ -240,6 +240,7 @@ fn main() {
             shell::scenarios_key,
             shell::intent_page,
             shell::hide_overlay,
+            shell::focus_away,
             focus_log::focus_tab,
             wall_app::wall_frame,
             wall_app::wall_reply,

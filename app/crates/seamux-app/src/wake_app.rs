@@ -57,6 +57,8 @@ pub async fn wake_open(id: i64, sub: String, here: bool) -> Result<Opened, Strin
             None if needs_server => return Err("the intent server has not started, so cmux has no page to open".into()),
             None => 0,
         };
+        // cmux, the browser or VS Code comes forward and keeps the focus.
+        crate::shell::allow_focus_away();
         match wake::open_target(&t, port) {
             (true, detail) => Ok(Opened { sheet: None, detail }),
             (false, detail) => Err(detail),

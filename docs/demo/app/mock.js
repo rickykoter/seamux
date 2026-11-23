@@ -1081,6 +1081,7 @@ const handlers = {
   desk_cleanup_run: () => ({ ok: true, steps: [] }),
   hide_overlay: () => null,
   focus_tab: () => null,
+  focus_away: () => null,
   home_dir: () => HOME,
   intent_server: () => INTENT,
   // A plan's scenarios page key (shell.rs scenarios_key): the demo seals

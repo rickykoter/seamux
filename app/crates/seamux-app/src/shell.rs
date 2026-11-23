@@ -412,13 +412,13 @@ pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, wo
         // The workspace comes forward first, so its companion is on screen
         // and sized; then the page opens there, focused: the person asked.
         // The person asked for cmux here: it may come forward.
-        allow_cmux_focus();
+        allow_focus_away();
         if let Some(w) = &ws {
             c.workspace_select(w).map_err(|e| e.to_string())?;
         }
         crew_board::companion::open(&url, &companion_key(&path), ws.as_deref().unwrap_or(""), "", true)?;
         // Counted from when cmux has been asked, however long that took.
-        allow_cmux_focus();
+        allow_focus_away();
         Ok::<(), String>(())
     })
     .await
@@ -617,17 +617,26 @@ fn fill_screen<R: Runtime>(w: &WebviewWindow<R>) {
 // processes. While the window is up, a cmux that comes forward without the
 // person going there is sent back: the window takes the front again.
 
-/// Until when (ms since the epoch) cmux may come forward: the app's own
-/// handoffs (Open in cmux, the Wall's jump) open this for a moment.
-static CMUX_ALLOWED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Until when (ms since the epoch) another app may keep the focus: the app's
+/// own handoffs (Open in cmux, the Wall's jump, a link opened in the browser
+/// or VS Code, the board's PR and checks links) open this for a moment.
+static AWAY_ALLOWED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// The person asked to go to cmux: let it come forward for the next 3 s.
-pub fn allow_cmux_focus() {
-    CMUX_ALLOWED_UNTIL.store(now_ms() + 3000, std::sync::atomic::Ordering::Relaxed);
+/// The person asked to go elsewhere (cmux, the browser, VS Code): let the app
+/// that comes forward keep the focus for the next 3 s.
+pub fn allow_focus_away() {
+    AWAY_ALLOWED_UNTIL.store(now_ms() + 3000, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The page opened something outside the app that the app did not open
+/// itself (the board's server opens its PR, checks and VS Code links).
+#[tauri::command]
+pub fn focus_away() {
+    allow_focus_away();
 }
 
 /// cmux's bundle ids: the release and the nightly.
@@ -726,8 +735,8 @@ pub struct Seen {
     pub pointer_over: bool,
     pub clicked_elsewhere: bool,
     pub modifier: bool,
-    /// The person asked to go to cmux within the last 3 s.
-    pub cmux_allowed: bool,
+    /// The app opened something elsewhere within the last 3 s.
+    pub allowed: bool,
     /// How often focus was taken back from this same app in the last 10 s.
     pub taken_lately: usize,
 }
@@ -760,7 +769,7 @@ fn taken_from(app: &str, now: u64, now_taken: bool) -> usize {
 pub enum Verdict {
     TakeBack,
     Hidden,
-    CmuxAllowed,
+    Allowed,
     NoApp,
     Ours,
     /// Taken back from this app TAKEN_LIMIT times already, just now.
@@ -779,8 +788,8 @@ pub fn take_back(s: &Seen) -> Verdict {
     if !s.visible {
         return Verdict::Hidden;
     }
-    if s.cmux_allowed {
-        return Verdict::CmuxAllowed;
+    if s.allowed {
+        return Verdict::Allowed;
     }
     if s.ours {
         return Verdict::Ours;
@@ -828,7 +837,7 @@ fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
                     // A click on another app or screen, or Cmd-Tab: the person went there.
                     clicked_elsewhere: front::clicked_elsewhere_within(0.6),
                     modifier: front::modifier_within(0.6),
-                    cmux_allowed: now < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed),
+                    allowed: now < AWAY_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed),
                 };
                 let verdict = take_back(&seen);
                 crate::focus_log::lost(&seen, verdict);
@@ -1053,7 +1062,10 @@ mod tests {
         assert_eq!(take_back(&Seen { pointer_over: false, ..s.clone() }), Verdict::PointerAway);
         assert_eq!(take_back(&Seen { clicked_elsewhere: true, ..s.clone() }), Verdict::ClickedElsewhere);
         assert_eq!(take_back(&Seen { modifier: true, ..s.clone() }), Verdict::Modifier);
-        assert_eq!(take_back(&Seen { cmux_allowed: true, ..unasked("com.cmuxterm.app") }), Verdict::CmuxAllowed);
+        assert_eq!(take_back(&Seen { allowed: true, ..unasked("com.cmuxterm.app") }), Verdict::Allowed);
+        // A link the app opened in the browser or VS Code: that app keeps it.
+        assert_eq!(take_back(&Seen { allowed: true, ..unasked("com.apple.Safari") }), Verdict::Allowed);
+        assert_eq!(take_back(&Seen { allowed: true, ..unasked("com.microsoft.VSCode") }), Verdict::Allowed);
     }
 
     #[test]
@@ -1078,6 +1090,14 @@ mod tests {
         assert_eq!(super::taken_from(app, 2_000, true), 2);
         assert_eq!(super::taken_from("test.taken.other", 2_000, false), 0);
         assert_eq!(super::taken_from(app, 12_500, false), 0);
+    }
+
+    #[test]
+    fn an_open_elsewhere_allows_focus_away_for_a_moment() {
+        super::allow_focus_away();
+        let until = super::AWAY_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed);
+        let now = super::now_ms();
+        assert!(until > now && until <= now + 3000, "{until} vs {now}");
     }
 
     #[test]
