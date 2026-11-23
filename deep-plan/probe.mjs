@@ -9156,7 +9156,7 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios page: with the key it shows the steps, the judge's reasons and the access log",
     g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log") && /prefers-color-scheme: dark/.test(html));
   ok("scenarios page: it shows each scenario's cause, its earlier scores and the run's time",
-    html.includes('<span class="cause">start</span>') && /before: 0\.00 0\.75 0\.30/.test(html) && /, in \d+s\./.test(html));
+    html.includes('<span class="cause">start</span>') && /before: 0\.75 0\.30 0\.30/.test(html) && !/before: 0\.00/.test(html) && /, in \d+s\./.test(html));
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);
   ok("scenarios page: an edit with the key saves",
     g.status === 200 && /exactly once/.test(sc("scenarios", "list", "scn-a").stdout));

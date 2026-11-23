@@ -220,18 +220,21 @@ export const took = s => {
 export function scenarioSha(s) {
   return crypto.createHash("sha256").update([s.title, s.body, s.expect || ""].join("\0")).digest("hex").slice(0, 12);
 }
+// A score the judge gave: not the 0 of a harness that never came up
+// (start) or of a scenario the judge left out (unscored).
+const judged = s => typeof s.score === "number" && !!s.sha && s.cause !== "start" && s.cause !== "unscored";
 // Each scenario's scores from the newest verdicts that scored its current
 // text, newest first: { id: [0.8, 0.6, 0.95] }. A run with no verdict (no
-// scores) is skipped, and so is a score of other wording (or one saved
-// before verdicts kept the text's hash), so a score that moved while the
-// scenario stayed the same is what shows.
+// scores) is skipped, and so is a 0 nobody judged, and a score of other
+// wording (or one saved before verdicts kept the text's hash), so a score
+// that moved while the scenario stayed the same is what shows.
 export function scoreHistory(slug, n = 3) {
   const doc = readScenarios(slug);
   const cur = new Map(((doc && doc.scenarios) || []).map(s => [s.id, scenarioSha(s)]));
   const all = readSealedJson(slug, "verdicts.json");
   const out = {};
   for (const v of (all && all.history) || []) for (const s of v.scores || []) {
-    if (typeof s.score !== "number" || !s.sha || s.sha !== cur.get(s.id)) continue;
+    if (!judged(s) || s.sha !== cur.get(s.id)) continue;
     const list = out[s.id] || (out[s.id] = []);
     if (list.length < n) list.push(s.score);
   }
@@ -245,7 +248,7 @@ export function scoresBefore(slug, v, n = 2) {
   const hist = scoreHistory(slug, n + 1), out = {};
   for (const [id, list] of Object.entries(hist)) {
     const shown = v && (v.scores || []).find(x => x.id === id);
-    out[id] = (shown && shown.sha && shown.sha === cur.get(id) ? list.slice(1) : list).slice(0, n);
+    out[id] = (shown && judged(shown) && shown.sha === cur.get(id) ? list.slice(1) : list).slice(0, n);
   }
   return out;
 }
