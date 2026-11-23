@@ -9217,8 +9217,9 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios page: it wears Everforest, as the plan and review pages do, and sets data-theme before first paint, following the app when framed",
     html.includes("/* everforest:start */") && html.includes("--role-text") && /<script>\(function\(\)\{[^<]*data-theme[^<]*data-framed/.test(html) &&
     !/#fbfaf7/.test(html));
-  ok("scenarios page: it shows each scenario's cause, its earlier scores and the run's time",
-    html.includes('<span class="cause">start</span>') && /before: 0\.90 0\.75 0\.30/.test(html) && !/before: 0\.00/.test(html) && /, in \d+s\./.test(html));
+  ok("scenarios page: after a harness that never came up, it says nothing was judged, with the harness's reason, and paints no card as failing",
+    /Nothing was judged: the change did not come up under the harness/.test(html) && /not ready within 2s/.test(html) &&
+    !/class="sc fails/.test(html) && /not judged yet/.test(html) && /deep-plan scenarios judge scn-a/.test(html), html.slice(0, 400));
   const fullHead = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).lastFull.head;
   const fpaBefore = fpa(fullHead);
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);

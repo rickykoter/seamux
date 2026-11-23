@@ -911,7 +911,8 @@ const CAUSE_DO = {
 // A word diff for a proposed edit: the removed words marked in `now`, the
 // added ones in `proposed` (a longest common run of words).
 function wordDiff(a, b) {
-  const A = String(a || "").split(/(\s+)/), B = String(b || "").split(/(\s+)/);
+  const tok = t => String(t || "").split(/(\s+|[`'"(),.;:!?])/).filter(x => x !== "");
+  const A = tok(a), B = tok(b);
   const n = A.length, m = B.length;
   if (n * m > 250000) return { was: esc(a), now: esc(b) };
   const L = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
@@ -927,7 +928,7 @@ function wordDiff(a, b) {
   return { was, now };
 }
 
-const when = at => esc(String(at || "").slice(0, 16).replace("T", " "));
+const when = at => at ? `${esc(String(at).slice(0, 16).replace("T", " "))} UTC` : "";
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
 // The scenarios page, served by deep-plan serve behind the plan's page key.
@@ -941,7 +942,20 @@ export function scenariosPage(slug, key) {
   const th = v ? (v.threshold ?? DEFAULT_THRESHOLD) : DEFAULT_THRESHOLD;
   const list = doc ? doc.scenarios : [];
   const score = id => (v && (v.scores || []).find(x => x.id === id)) || null;
-  const failing = v ? list.filter(s => { const sc = score(s.id); return !sc || sc.score < th; }) : [];
+  // A verdict that judged nothing: the judge did not answer, or the change
+  // never came up under the harness.
+  const noRun = v && (v.error || v.harness) ? v : null;
+  const judged = v && !noRun;
+  // Where one scenario stands: new (not judged yet), edited (its verdict is
+  // of other wording), passes or fails.
+  const stand = s => {
+    const sc = score(s.id);
+    if (!judged || !sc) return "new";
+    if (sc.sha && sc.sha !== scenarioSha(s)) return "edited";
+    return sc.score >= th ? "passes" : "fails";
+  };
+  const failing = judged ? list.filter(s => stand(s) === "fails") : [];
+  const stale = !!rev.stale;
   const proposals = (rev.stale && rev.proposals) || [];
   const propFor = id => proposals.filter(p => p.id === id);
   const adds = proposals.filter(p => p.action === "add");
@@ -957,27 +971,34 @@ export function scenariosPage(slug, key) {
     }).join("");
     const head = p.action === "edit" ? `<tr><th></th><td class="col">Now</td><td class="col">Proposed</td></tr>` : "";
     const what = p.action === "add" ? "Add a scenario" : p.action === "remove" ? `Remove ${esc(p.id)}` : `Edit ${esc(p.id)}`;
-    return `<div class="prop" data-pid="${esc(p.pid)}" data-action="${esc(p.action)}"${s ? ` data-title="${esc(s.title)}"` : ""}>
+    return `<div class="prop" id="prop-${esc(p.pid)}" data-pid="${esc(p.pid)}" data-action="${esc(p.action)}" data-what="${esc(p.action === "add" ? "the new scenario" : p.action === "remove" ? `the removal of ${p.id}` : `the edit to ${p.id}`)}"${s ? ` data-sid="${esc(s.id)}" data-title="${esc(s.title)}"` : ""}>
   <p class="prop-head"><span class="pill attend">${what}</span> <span class="why">The writer: ${esc(p.why || "")}</span></p>
   ${p.action === "remove" ? `<p class="dim">Accepting removes this scenario.</p>` : `<table class="diff">${head}${rows}</table>`}
-  <div class="act"><button data-do="accept" class="primary">Accept</button> <button data-do="reject">Reject</button> <span class="msg" role="status"></span></div>
+  <div class="act"><button data-do="accept" class="accept">Accept</button> <button data-do="reject">Reject</button> <span class="msg" role="status"></span></div>
 </div>`;
   };
 
-  const verdictPill = sc => !v ? `<span class="pill">not judged</span>`
-    : !sc ? `<span class="pill broken">not scored</span>`
-    : sc.score >= th ? `<span class="pill done">passes ${Number(sc.score).toFixed(2)}</span>`
-    : `<span class="pill broken">fails ${Number(sc.score).toFixed(2)}</span>`;
+  const verdictPill = (s, sc) => {
+    const st = stand(s);
+    if (st === "new") return `<span class="pill">not judged yet</span>`;
+    if (st === "edited") return `<span class="pill" title="the last verdict judged the text before your edit">edited since judged (was ${Number(sc.score).toFixed(2)})</span>`;
+    const carried = sc.carried ? ` <span class="pill" title="a retry judged only the failing scenarios and carried this score">carried from ${esc(String(sc.carried.head || "").slice(0, 8))}</span>` : "";
+    return st === "passes" ? `<span class="pill done">passes ${Number(sc.score).toFixed(2)}</span>${carried}`
+      : `<span class="pill broken">fails ${Number(sc.score).toFixed(2)}</span>${carried}`;
+  };
+  const causeRole = c => c === "product" ? "broken" : "attend";
 
   const card = s => {
     const sc = score(s.id);
-    const fails = v && (!sc || sc.score < th);
-    const before = prior[s.id] || [];
+    const st = stand(s);
+    const fails = st === "fails";
+    const role = fails ? (sc.cause ? causeRole(sc.cause) : "broken") : "";
+    const before = st === "passes" || st === "fails" ? prior[s.id] || [] : [];
     const props = propFor(s.id);
-    return `<section class="sc${fails ? " fails" : ""}${props.length ? " asked" : ""}" id="sc-${esc(s.id)}" data-id="${esc(s.id)}">
-  <header><code>${esc(s.id)}</code> <h3>${esc(s.title)}</h3> ${verdictPill(sc)}${sc && sc.cause && fails ? ` <span class="cause">${esc(sc.cause)}</span>` : ""}${before.length ? ` <span class="before">before: ${before.map(x => Number(x).toFixed(2)).join(" ")}</span>` : ""}</header>
-  ${fails && sc && sc.cause && CAUSE_DO[sc.cause] ? `<p class="todo">${esc(CAUSE_DO[sc.cause])}</p>` : ""}
-  ${sc && sc.reason ? `<details class="reason"${fails ? " open" : ""}><summary>The judge's reason</summary><p>${esc(sc.reason)}</p></details>` : ""}
+    return `<section class="sc${fails ? ` fails ${role}` : ""}${props.length ? " asked" : ""}" id="sc-${esc(s.id)}" data-id="${esc(s.id)}">
+  <header><code>${esc(s.id)}</code> <h3>${esc(s.title)}</h3> ${verdictPill(s, sc)}${sc && sc.cause && fails ? ` <span class="cause ${role}">${esc(sc.cause)}</span>` : ""}${before.length ? ` <span class="before" title="this scenario's earlier scores, newest first">earlier: ${before.map(x => Number(x).toFixed(2)).join(", ")}</span>` : ""}</header>
+  ${fails && sc.cause && CAUSE_DO[sc.cause] ? `<p class="todo ${role}">${esc(CAUSE_DO[sc.cause])}</p>` : ""}
+  ${sc && sc.reason && judged && st !== "new" ? `<details class="reason"${fails ? " open" : ""}><summary>The judge's reason${st === "edited" ? " (on the earlier text)" : ""}</summary><p>${esc(sc.reason)}</p></details>` : ""}
   ${props.map(p => proposal(p, s)).join("\n")}
   <dl class="read"><dt>Steps</dt><dd class="txt">${esc(s.body)}</dd>${s.expect ? `<dt>Accept when</dt><dd class="txt">${esc(s.expect)}</dd>` : ""}
   ${s.hint ? `<dt>Hint</dt><dd>${esc(s.hint)} <span class="dim">${s.hintApproved ? "(the builder sees it when this fails)" : "(not shown to the builder)"}</span></dd>` : ""}</dl>
@@ -993,20 +1014,26 @@ export function scenariosPage(slug, key) {
   };
 
   // The status line: what the person most needs first.
+  const rerun = `<span class="dim">Judge every scenario again: <code>deep-plan scenarios judge ${esc(slug)}</code></span>`;
+  const others = judged ? list.filter(s => stand(s) !== "passes" && stand(s) !== "fails").length : 0;
   const status = !doc ? `<p class="status">No scenarios yet: run <code>deep-plan scenarios write ${esc(slug)}</code>.</p>`
-    : !v ? `<p class="status">Not judged yet: the next scenarios check runs the judge.</p>`
-    : `<p class="status ${failing.length ? "bad" : "good"}"><strong>${failing.length ? `${failing.length} of ${list.length} failing` : `All ${list.length} passing`}</strong>
-  at threshold ${esc(th)}${failing.length ? `: ${failing.map(s => `<a href="#sc-${esc(s.id)}">${esc(s.id)}</a>`).join(", ")}` : ""}.
-  <span class="dim">Last judged ${when(v.at)} on <code>${esc(String(v.head || "").slice(0, 8))}</code>${v.took ? `, in ${esc(took(v.took.total))}.` : "."}</span></p>`;
+    : !v ? `<p class="status">Not judged yet: the next scenarios check runs the judge.<br>${rerun}</p>`
+    : noRun ? `<p class="status attend"><strong>${noRun.harness ? "Nothing was judged: the change did not come up under the harness" : "Nothing was judged: the judge did not answer"}</strong>
+  <span class="dim">${esc(noRun.harness ? noRun.harness.what : noRun.error)} (${when(v.at)}, on <code>${esc(String(v.head || "").slice(0, 8))}</code>)</span>
+  ${noRun.harness && noRun.harness.tail ? `<details><summary>The harness log's last lines</summary><pre>${esc(noRun.harness.tail)}</pre></details>` : ""}${rerun}</p>`
+    : `<p class="status ${stale ? "attend" : failing.length ? "bad" : "good"}"><strong>${failing.length ? `${failing.length} of ${list.length} failing` : `${list.length - others} of ${list.length} passing`}</strong>
+  at threshold ${esc(th)} <span class="aside">(a score below it fails)</span>${failing.length ? `: ${failing.map(s => `<a href="#sc-${esc(s.id)}">${esc(s.id)}</a>`).join(", ")}` : ""}${others ? `; ${others} not judged on ${others === 1 ? "its" : "their"} current text` : ""}.
+  ${stale ? `<span class="dim">This verdict is from before the amend below.</span>` : ""}
+  <span class="dim">Last judged ${when(v.at)} on <code>${esc(String(v.head || "").slice(0, 8))}</code>${v.took ? `, in ${esc(took(v.took.total))}` : ""}${v.carried ? `, ${v.carried} carried from an earlier run` : ""}.</span>${rerun}</p>`;
 
   const revHtml = !rev.stale ? "" : `<section class="rev" aria-label="Revisions after an amend">
 <h2>The plan changed after these were written</h2>
 <ul class="amends">${(rev.stale.amendments || []).map(a => `<li><span class="dim">${when(new Date(a.at).toISOString())}</span> ${esc(a.why)}</li>`).join("")}</ul>
 ${rev.proposals && !rev.proposals.length
-    ? `<p>A later amend dropped the writer's earlier proposals, and its new draft proposes none. Check the scenarios below, edit any that need it, then confirm them.</p>
-<div class="act"><button data-do="current" data-count="0" class="primary">Confirm the scenarios as they are</button> <span class="msg" role="status"></span></div>`
+    ? `<p>The plan was amended again before you answered the writer's proposals, and its new draft proposes no change. Check the scenarios below against the amendments above, edit any that need it, then confirm them at the end of the list.</p>`
     : rev.proposals
-    ? `<p>The writer proposed ${plural(rev.proposals.length, "revision")}. Each sits with the scenario it changes${adds.length ? `; ${plural(adds.length, "new scenario")} ${adds.length === 1 ? "is" : "are"} below` : ""}. A scenarios check gives no verdict until you answer each one.</p>
+    ? `<p>The writer proposed ${plural(rev.proposals.length, "revision")}. A scenarios check gives no verdict until you answer each one:</p>
+<ul class="index">${rev.proposals.map(p => `<li><a href="#${p.action === "add" ? `prop-${esc(p.pid)}` : `sc-${esc(p.id)}`}">${p.action === "add" ? "add a scenario" : `${esc(p.action)} ${esc(p.id)}`}</a>${p.action !== "add" && list.find(x => x.id === p.id) ? ` <span class="dim">${esc(list.find(x => x.id === p.id).title)}</span>` : ""}</li>`).join("")}</ul>
 ${adds.map(p => proposal(p, null)).join("\n")}
 <div class="act"><button data-do="current" data-count="${rev.proposals.length}">Reject all and keep them as they are</button> <span class="msg" role="status"></span></div>`
     : `<p>The writer has not proposed revisions yet: the next scenarios check runs it (or <code>deep-plan scenarios revise ${esc(slug)}</code>).</p>
@@ -1014,7 +1041,7 @@ ${adds.map(p => proposal(p, null)).join("\n")}
 </section>`;
 
   // Failing first, then the rest, each in id order.
-  const ordered = v ? [...failing, ...list.filter(s => !failing.includes(s))] : list;
+  const ordered = judged ? [...failing, ...list.filter(s => !failing.includes(s))] : list;
   const shownLog = access.slice(-50).reverse();
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(slug)} scenarios</title>
@@ -1033,18 +1060,22 @@ h3{font-size:var(--fs-4);font-weight:600;margin:0;flex:1 1 220px;min-width:0;ove
 a{color:var(--link)}code{font:var(--fs-2) var(--ef-mono)}
 .meta,.dim{color:var(--dim)}.meta{font-size:var(--fs-3);margin:0 0 14px}
 .status{margin:0 0 8px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--line2);border-radius:6px}
+.status.attend{border-left-color:var(--mark)}.status.attend strong{color:var(--mark-t)}.status pre{white-space:pre-wrap;font:var(--fs-2) var(--ef-mono)}
 .status.bad{border-left-color:var(--bad)}.status.bad strong{color:var(--bad-t)}.status.good{border-left-color:var(--good)}.status.good strong{color:var(--good-t)}
-.status .dim{display:block;font-size:var(--fs-3)}
+.status .dim{display:block;font-size:var(--fs-3)}.aside{color:var(--dim);font-size:var(--fs-3)}
 .pill{display:inline-block;font-size:var(--fs-2);line-height:1.6;border:1px solid var(--line2);border-radius:999px;padding:0 8px;color:var(--dim);white-space:nowrap}
 .pill.done{border-color:var(--good);color:var(--good-t)}.pill.broken{border-color:var(--bad);color:var(--bad-t)}.pill.attend{border-color:var(--mark);color:var(--mark-t)}
-.cause{display:inline-block;font-size:var(--fs-2);line-height:1.6;border-radius:999px;padding:0 8px;background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad-t)}
+.cause{display:inline-block;font-size:var(--fs-2);line-height:1.6;border:1px solid;border-radius:999px;padding:0 8px}
+.cause.broken{border-color:var(--bad);color:var(--bad-t)}.cause.attend{border-color:var(--mark);color:var(--mark-t)}
 .before{font-size:var(--fs-2);color:var(--dim)}
 .sc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:0 0 10px;scroll-margin-top:12px}
-.sc.fails{border-left:3px solid var(--bad)}.sc.asked{border-left:3px solid var(--mark)}
+.sc.asked{border-left:3px solid var(--mark)}.sc.fails.broken{border-left:3px solid var(--bad)}.sc.fails.attend{border-left:3px solid var(--mark)}
 .sc header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 8px}
-.todo{margin:6px 0 0;font-size:var(--fs-3);color:var(--bad-t)}
-details summary{cursor:pointer;color:var(--link);font-size:var(--fs-3);margin-top:6px}details.reason p{margin:4px 0 0;font-size:var(--fs-3)}
-dl.read{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:10px 0 0;font-size:var(--fs-3)}
+.todo{margin:6px 0 0}.todo.broken{color:var(--bad-t)}.todo.attend{color:var(--mark-t)}
+details summary{cursor:pointer;color:var(--dim);font-size:var(--fs-3);margin-top:6px}details summary:hover{color:var(--fg)}details.reason p{margin:4px 0 0}
+details.edit>summary{display:inline-block;border:1px solid var(--line2);border-radius:6px;padding:3px 12px;color:var(--fg);font-weight:600;list-style:none;margin-top:10px}
+details.edit>summary::-webkit-details-marker{display:none}details.edit[open]>summary{margin-bottom:4px}
+dl.read{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:10px 0 0}dl.read dt{font-size:var(--fs-3);padding-top:2px}
 dl.read dt{color:var(--dim)}dl.read dd{margin:0}.txt{white-space:pre-wrap;overflow-wrap:anywhere}
 details.edit[open]{border-top:1px solid var(--line);margin-top:10px;padding-top:4px}
 label{display:block;margin:8px 0;color:var(--dim);font-size:var(--fs-3)}label.row{display:flex;gap:6px;align-items:center}
@@ -1053,7 +1084,9 @@ input:not([type=checkbox]),textarea{display:block;width:100%;box-sizing:border-b
 .act{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
 button{font:600 var(--fs-3) system-ui;border:1px solid var(--line2);background:transparent;color:var(--fg);border-radius:6px;padding:6px 12px;min-height:32px;cursor:pointer}
 button.primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
-button.danger{color:var(--bad-t)}
+button.danger{color:var(--bad-t)}button.accept{border-color:var(--mark);color:var(--mark-t)}
+.top{display:flex;align-items:flex-start;gap:8px}.top h1{flex:1}#mode{min-height:28px;padding:2px 9px}:root[data-framed] #mode{display:none}
+.index{margin:0 0 8px;padding-left:18px}.index a{font-weight:600}
 button:hover{border-color:var(--focus)}button:disabled{opacity:.55;cursor:default}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .flash{margin:0;color:var(--good-t);font-size:var(--fs-3)}.flash:empty{display:none}
@@ -1074,12 +1107,12 @@ ins{background:color-mix(in srgb,var(--good) 22%,transparent);color:var(--good-t
 .log code{overflow-wrap:anywhere}
 @media (max-width:620px){.log tr{display:grid;grid-template-columns:auto 1fr}.log td:last-child{grid-column:1 / -1;border-top:0;padding-top:0}}
 </style></head><body><main>
-<h1>Scenarios for ${esc(slug)}</h1>
+<div class="top"><h1>Scenarios for ${esc(slug)}</h1><button id="mode" type="button" aria-label="switch between light and dark">◐</button></div>
 <p class="meta">${doc ? `${plural(list.length, "scenario")}, written ${when(doc.writtenAt)} by ${esc(doc.writer && doc.writer.model || "?")}${(doc.edits || []).length ? `, edited ${plural(doc.edits.length, "time")}` : ""}. The building session sees only their titles, and a hint you allow.` : ""}</p>
 ${status}
 <p class="flash" role="status" aria-live="polite"></p>
 ${revHtml}
-${doc ? `<h2>Scenarios</h2>${ordered.map(card).join("\n")}<div class="act"><button data-do="add">Add a scenario</button></div>` : ""}
+${doc ? `<h2>Scenarios</h2>${ordered.map(card).join("\n")}<div class="act">${rev.stale && rev.proposals && !rev.proposals.length ? `<button data-do="current" data-count="0" class="primary">Confirm the scenarios as they are</button> ` : ""}<button data-do="add">Add a scenario</button> <span class="msg" role="status"></span></div>` : ""}
 <h2>Access log</h2>
 ${access.length ? `<details class="log"${access.length <= 5 ? " open" : ""}><summary>${plural(access.length, "refused attempt")} to read the sealed folder${access.length > 50 ? ` (the last 50 shown)` : ""}</summary>
 <table>${shownLog.map(a => `<tr><td>${esc(String(a.at).slice(0, 16).replace("T", " "))}</td><td>${esc(a.via || a.tool || "")}</td><td><code>${esc(a.what)}</code></td></tr>`).join("")}</table></details>`
@@ -1089,8 +1122,10 @@ const KEY=${JSON.stringify(key)},SLUG=${JSON.stringify(slug)},HERE="scn-place-"+
 async function call(op,id,fields){const q=new URLSearchParams({k:KEY,op,id,...fields});const r=await fetch("/scenarios-edit/"+SLUG+"?"+q,{cache:"no-store"});const j=await r.json().catch(()=>({detail:"no reply"}));if(!r.ok)throw new Error(j.detail||j.error||r.status);return j}
 // Keep the person's place across the reload an answer needs: the scroll,
 // and the card being edited.
-function reload(open,flash){try{sessionStorage.setItem(HERE,JSON.stringify({y:scrollY,open:open||"",flash:flash||""}))}catch(e){}location.reload()}
-try{const p=JSON.parse(sessionStorage.getItem(HERE)||"null");sessionStorage.removeItem(HERE);if(p){if(p.open){const d=document.querySelector('#sc-'+CSS.escape(p.open)+' details.edit');if(d)d.open=true}if(p.flash)document.querySelector(".flash").textContent=p.flash;scrollTo(0,p.y||0)}}catch(e){}
+function reload(open,flash,at){try{sessionStorage.setItem(HERE,JSON.stringify({y:scrollY,open:open||"",flash:flash||"",at:at||""}))}catch(e){}location.reload()}
+try{const p=JSON.parse(sessionStorage.getItem(HERE)||"null");sessionStorage.removeItem(HERE);if(p){if(p.open){const d=document.querySelector('#sc-'+CSS.escape(p.open)+' details.edit');if(d)d.open=true}scrollTo(0,p.y||0);
+if(p.flash){const box=p.at&&document.querySelector('#sc-'+CSS.escape(p.at));const m=box&&box.querySelector(".act .msg");if(m&&box.getBoundingClientRect().bottom>0&&box.getBoundingClientRect().top<innerHeight)m.textContent=p.flash;else document.querySelector(".flash").textContent=p.flash}}}catch(e){}
+document.getElementById("mode").addEventListener("click",()=>{const d=document.documentElement,n=d.getAttribute("data-theme")==="light"?"dark":"light";d.setAttribute("data-theme",n);try{localStorage.setItem("dp-theme",n)}catch(e){}});
 const dirty=()=>[...document.querySelectorAll(".sc[data-dirty]")];
 const others=(sec)=>dirty().filter(s=>s!==sec);
 const leaveOk=(sec)=>{const o=others(sec);return!o.length||confirm("Unsaved changes in "+o.map(s=>s.dataset.id).join(", ")+" will be lost. Go on?")};
@@ -1101,13 +1136,13 @@ addEventListener("beforeunload",e=>{if(dirty().length&&!sessionStorage.getItem(H
 document.addEventListener("click",async e=>{const b=e.target.closest("button[data-do]");if(!b)return;const sec=b.closest(".sc");const box=b.closest(".act");const msg=box&&box.querySelector(".msg");
 const say=t=>{if(msg)msg.textContent=t};b.disabled=true;
 try{const d=b.dataset.do;
-if(d==="add"){if(!leaveOk(null))return;const r=await call("add","new",{title:"New scenario",body:"Steps"});reload(r&&r.id||"","Added a scenario at the end.");return}
+if(d==="add"){if(!leaveOk(null))return;const r=await call("add","new",{title:"New scenario",body:"Steps"});reload("","Added a scenario at the end of the list: open its Edit.");return}
 if(d==="current"){const n=Number(b.dataset.count);if(!confirm(n>0?"Reject all "+n+" proposed revision"+(n===1?"":"s")+" and keep every scenario as it is?":n<0?"Keep the scenarios as they are, without the writer's revisions?":"Confirm the scenarios as they are?"))return;if(!leaveOk(null))return;say("saving…");await call("current","-",{});reload("",n>0?"Rejected the proposals; the scenarios are current.":"The scenarios are current.");return}
-const pr=b.closest(".prop");if(pr){if(d==="accept"&&pr.dataset.action==="remove"&&!confirm("Remove "+(sec?sec.dataset.id+": "+(pr.dataset.title||""):"this scenario")+"?"))return;if(!leaveOk(sec))return;say("saving…");await call(d,pr.dataset.pid,{});reload("",(d==="accept"?"Accepted ":"Rejected ")+pr.dataset.pid+".");return}
+const pr=b.closest(".prop");if(pr){if(d==="accept"&&pr.dataset.action==="remove"&&!confirm("Remove "+(sec?sec.dataset.id+": "+(pr.dataset.title||""):"this scenario")+"?"))return;if(!leaveOk(sec))return;say("saving…");await call(d,pr.dataset.pid,{});reload("",(d==="accept"?"Accepted ":"Rejected ")+pr.dataset.what+".",pr.dataset.sid||"");return}
 const id=sec.dataset.id;
 if(d==="delete"){if(!confirm("Remove "+id+"? Its scores go with it."))return;if(!leaveOk(sec))return;await call("delete",id,{});reload("","Removed "+id+".");return}
 const f={};for(const el of sec.querySelectorAll("details.edit input,details.edit textarea"))f[el.name]=el.type==="checkbox"?(el.checked?"1":"0"):el.value;
-say("saving…");await call("save",id,f);delete sec.dataset.dirty;if(!leaveOk(sec)){say("saved");return}reload(id,"Saved "+id+".")}
+say("saving…");await call("save",id,f);delete sec.dataset.dirty;if(!leaveOk(sec)){say("saved");return}reload(id,"Saved "+id+".",id)}
 catch(err){say(String(err.message||err));if(!msg)alert(err.message||err)}finally{b.disabled=false}});
 </script></body></html>`;
 }
