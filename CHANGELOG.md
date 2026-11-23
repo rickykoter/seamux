@@ -16,7 +16,10 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   writer proposes revisions, and the person accepts or rejects them on the
   scenarios page (`deep-plan scenarios revise` runs the writer at once). A
   policy's `scenarios.paths` limits where scenarios are required, and the
-  seamux pack (1.3.0) requires them on `app/ui/**`.
+  seamux pack (1.3.0) requires them on `app/ui/**`. In the seamux app, the
+  Dock has a Scenarios tab beside the plan, and the Wake a scenarios entry
+  on the plan's row; the app adds the page's key itself. The page now
+  wears Everforest and follows the app's appearance.
 - **A bosun plugin.** It is the skill for the Bosun, the read-only Claude
   session the seamux app keeps over your code root. In the Bosun it gives a
   sitrep across the repos, cites a source for every fact, answers a queued

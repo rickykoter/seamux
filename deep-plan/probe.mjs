@@ -9277,8 +9277,9 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
   const rhtml = await g.text();
   ok("scenarios page: it shows the amendments and each proposal beside what it changes, with the writer's why",
-    /The plan changed after these were written/.test(rhtml) && rhtml.includes("AMEND-TWO") && rhtml.includes("NEW-STEPS-X kill the worker twice") &&
-    rhtml.includes("SECRET-STEPS kill the worker") && rhtml.includes("WHY-ONE") && rhtml.includes('data-pid="p2"'), rhtml.slice(0, 200));
+    /The plan changed after these were written/.test(rhtml) && rhtml.includes("AMEND-TWO") && rhtml.replace(/<\/?(ins|del)>/g, "").includes("NEW-STEPS-X kill the worker twice") &&
+    rhtml.includes("SECRET-STEPS kill the worker") && rhtml.includes("WHY-ONE") && rhtml.includes('data-pid="p2"') &&
+    /<section class="sc[^"]*" id="sc-s2"[^]*?data-pid="p1"/.test(rhtml) && /<ins>NEW-STEPS-X<\/ins>/.test(rhtml), rhtml.slice(0, 200));
   g = await fetch(`${B}/scenarios-edit/scn-a?op=accept&id=p1`);
   ok("scenarios page: accepting without the key is refused", g.status === 403 && rev().proposals.length === 2);
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=accept&id=p1`);

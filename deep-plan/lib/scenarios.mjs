@@ -899,6 +899,37 @@ const THEME_JS = `(function(){var d=document.documentElement,mq=window.matchMedi
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// What each cause asks of the person reading the page.
+const CAUSE_DO = {
+  product: "the change does not do this yet: the builder fixes the behavior",
+  harness: "the judge could not run what this needs (the harness, a mock, a tool): fix the harness, not the change",
+  scenario: "the scenario may ask for something the plan no longer promises: edit it, or remove it",
+  start: "the change did not come up under the harness, so nothing was judged",
+  unscored: "the judge returned no score for it: a rerun may score it",
+};
+
+// A word diff for a proposed edit: the removed words marked in `now`, the
+// added ones in `proposed` (a longest common run of words).
+function wordDiff(a, b) {
+  const A = String(a || "").split(/(\s+)/), B = String(b || "").split(/(\s+)/);
+  const n = A.length, m = B.length;
+  if (n * m > 250000) return { was: esc(a), now: esc(b) };
+  const L = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  let i = 0, j = 0, was = "", now = "";
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { was += esc(A[i]); now += esc(B[j]); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) { was += /^\s+$/.test(A[i]) ? esc(A[i]) : `<del>${esc(A[i])}</del>`; i++; }
+    else { now += /^\s+$/.test(B[j]) ? esc(B[j]) : `<ins>${esc(B[j])}</ins>`; j++; }
+  }
+  for (; i < n; i++) was += /^\s+$/.test(A[i]) ? esc(A[i]) : `<del>${esc(A[i])}</del>`;
+  for (; j < m; j++) now += /^\s+$/.test(B[j]) ? esc(B[j]) : `<ins>${esc(B[j])}</ins>`;
+  return { was, now };
+}
+
+const when = at => esc(String(at || "").slice(0, 16).replace("T", " "));
+const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
 // The scenarios page, served by deep-plan serve behind the plan's page key.
 // Edits go back as GET requests carrying the same key (serve never reads a body).
 export function scenariosPage(slug, key) {
@@ -907,76 +938,176 @@ export function scenariosPage(slug, key) {
   const access = readAccess(slug);
   const prior = scoresBefore(slug, v, 3);
   const rev = readRevisions(slug);
-  const cur = id => doc && doc.scenarios.find(x => x.id === id);
-  const fieldRows = p => ["title", "body", "expect"].filter(k => p[k] !== undefined).map(k => {
-    const was = p.action === "edit" && cur(p.id) ? cur(p.id)[k] || "" : "";
-    return `<tr><td>${esc(k === "body" ? "steps" : k === "expect" ? "accept when" : k)}</td>${p.action === "edit" ? `<td class="was">${esc(was)}</td>` : ""}<td>${esc(p[k])}</td></tr>`;
-  }).join("");
-  const proposal = p => `<section class="sc prop" data-pid="${esc(p.pid)}">
-  <header><code>${esc(p.pid)}</code> ${p.action === "add" ? "add a scenario" : `${esc(p.action)} <code>${esc(p.id)}</code> ${esc(cur(p.id) ? cur(p.id).title : "")}`}</header>
-  ${p.action === "remove" ? "" : `<table>${p.action === "edit" ? `<tr><td></td><td class="dim">now</td><td class="dim">proposed</td></tr>` : ""}${fieldRows(p)}</table>`}
-  <p class="sub">The writer's why: ${esc(p.why || "")}</p>
-  <div class="act"><button data-do="accept">Accept</button> <button data-do="reject" class="quiet">Reject</button> <span class="msg"></span></div>
-</section>`;
-  const revHtml = !rev.stale ? "" : `<section class="rev">
-<h2 style="font-size:16px">The plan changed after these were written</h2>
-<ul>${(rev.stale.amendments || []).map(a => `<li><span class="dim">${esc(new Date(a.at).toISOString().slice(0, 16).replace("T", " "))}</span> ${esc(a.why)}</li>`).join("")}</ul>
-${rev.proposals && !rev.proposals.length ? `<p class="sub">A later amend dropped the writer's earlier proposals, and its new draft proposes none. Confirm the scenarios as they are, or edit them, then keep them.</p>`
-    : rev.proposals ? `<p class="sub">The writer proposed ${rev.proposals.length} revision(s). A scenarios check gives no verdict until you answer each one.</p>${rev.proposals.map(proposal).join("\n")}`
-    : `<p class="sub">The writer has not proposed revisions yet: the next scenarios check runs it (or <code>deep-plan scenarios revise ${esc(slug)}</code>).</p>`}
-<p><button data-do="current" class="quiet">Keep them all as they are</button> <span class="msg"></span></p>
-</section>`;
-  const score = id => { const s = v && (v.scores || []).find(x => x.id === id); return s ? s : null; };
+  const th = v ? (v.threshold ?? DEFAULT_THRESHOLD) : DEFAULT_THRESHOLD;
+  const list = doc ? doc.scenarios : [];
+  const score = id => (v && (v.scores || []).find(x => x.id === id)) || null;
+  const failing = v ? list.filter(s => { const sc = score(s.id); return !sc || sc.score < th; }) : [];
+  const proposals = (rev.stale && rev.proposals) || [];
+  const propFor = id => proposals.filter(p => p.id === id);
+  const adds = proposals.filter(p => p.action === "add");
+
+  // A proposal: a word diff of each field it changes, the writer's why, and
+  // its answer. A remove shows what it would remove.
+  const proposal = (p, s) => {
+    const rows = ["title", "body", "expect"].filter(k => p[k] !== undefined).map(k => {
+      const name = k === "body" ? "Steps" : k === "expect" ? "Accept when" : "Title";
+      if (p.action !== "edit") return `<tr><th>${name}</th><td class="txt">${esc(p[k])}</td></tr>`;
+      const d = wordDiff(s ? s[k] || "" : "", p[k]);
+      return `<tr><th>${name}</th><td class="txt was">${d.was}</td><td class="txt now">${d.now}</td></tr>`;
+    }).join("");
+    const head = p.action === "edit" ? `<tr><th></th><td class="col">Now</td><td class="col">Proposed</td></tr>` : "";
+    const what = p.action === "add" ? "Add a scenario" : p.action === "remove" ? `Remove ${esc(p.id)}` : `Edit ${esc(p.id)}`;
+    return `<div class="prop" data-pid="${esc(p.pid)}" data-action="${esc(p.action)}"${s ? ` data-title="${esc(s.title)}"` : ""}>
+  <p class="prop-head"><span class="pill attend">${what}</span> <span class="why">The writer: ${esc(p.why || "")}</span></p>
+  ${p.action === "remove" ? `<p class="dim">Accepting removes this scenario.</p>` : `<table class="diff">${head}${rows}</table>`}
+  <div class="act"><button data-do="accept" class="primary">Accept</button> <button data-do="reject">Reject</button> <span class="msg" role="status"></span></div>
+</div>`;
+  };
+
+  const verdictPill = sc => !v ? `<span class="pill">not judged</span>`
+    : !sc ? `<span class="pill broken">not scored</span>`
+    : sc.score >= th ? `<span class="pill done">passes ${Number(sc.score).toFixed(2)}</span>`
+    : `<span class="pill broken">fails ${Number(sc.score).toFixed(2)}</span>`;
+
   const card = s => {
     const sc = score(s.id);
+    const fails = v && (!sc || sc.score < th);
     const before = prior[s.id] || [];
-    return `<section class="sc" data-id="${esc(s.id)}">
-  <header><code>${esc(s.id)}</code>${sc ? ` <span class="score ${sc.score >= (v.threshold ?? DEFAULT_THRESHOLD) ? "ok" : "low"}">${Number(sc.score).toFixed(2)}</span>` : ""}${sc && sc.cause ? ` <span class="cause">${esc(sc.cause)}</span>` : ""}${before.length ? ` <span class="msg">before: ${before.map(x => Number(x).toFixed(2)).join(" ")}</span>` : ""}</header>
+    const props = propFor(s.id);
+    return `<section class="sc${fails ? " fails" : ""}${props.length ? " asked" : ""}" id="sc-${esc(s.id)}" data-id="${esc(s.id)}">
+  <header><code>${esc(s.id)}</code> <h3>${esc(s.title)}</h3> ${verdictPill(sc)}${sc && sc.cause && fails ? ` <span class="cause">${esc(sc.cause)}</span>` : ""}${before.length ? ` <span class="before">before: ${before.map(x => Number(x).toFixed(2)).join(" ")}</span>` : ""}</header>
+  ${fails && sc && sc.cause && CAUSE_DO[sc.cause] ? `<p class="todo">${esc(CAUSE_DO[sc.cause])}</p>` : ""}
+  ${sc && sc.reason ? `<details class="reason"${fails ? " open" : ""}><summary>The judge's reason</summary><p>${esc(sc.reason)}</p></details>` : ""}
+  ${props.map(p => proposal(p, s)).join("\n")}
+  <dl class="read"><dt>Steps</dt><dd class="txt">${esc(s.body)}</dd>${s.expect ? `<dt>Accept when</dt><dd class="txt">${esc(s.expect)}</dd>` : ""}
+  ${s.hint ? `<dt>Hint</dt><dd>${esc(s.hint)} <span class="dim">${s.hintApproved ? "(the builder sees it when this fails)" : "(not shown to the builder)"}</span></dd>` : ""}</dl>
+  <details class="edit"><summary>Edit</summary>
   <label>Title <input name="title" value="${esc(s.title)}" maxlength="${TEXT_MAX.title}"></label>
-  <label>Steps <textarea name="body" rows="5">${esc(s.body)}</textarea></label>
-  <label>Accept when <textarea name="expect" rows="3">${esc(s.expect || "")}</textarea></label>
+  <label>Steps <textarea name="body" rows="2">${esc(s.body)}</textarea></label>
+  <label>Accept when <textarea name="expect" rows="2">${esc(s.expect || "")}</textarea></label>
   <label>Hint for the builder <input name="hint" value="${esc(s.hint || "")}" maxlength="${TEXT_MAX.hint}"></label>
   <label class="row"><input type="checkbox" name="hintApproved"${s.hintApproved ? " checked" : ""}> the builder may see this hint when it fails</label>
-  ${sc && sc.reason ? `<details><summary>The judge's reason</summary><p>${esc(sc.reason)}</p></details>` : ""}
-  <div class="act"><button data-do="save">Save</button> <button data-do="delete" class="quiet">Remove</button> <span class="msg"></span></div>
+  <div class="act"><button data-do="save" class="primary">Save</button> <button data-do="delete" class="danger">Remove</button> <span class="msg" role="status"></span></div>
+  </details>
 </section>`;
   };
+
+  // The status line: what the person most needs first.
+  const status = !doc ? `<p class="status">No scenarios yet: run <code>deep-plan scenarios write ${esc(slug)}</code>.</p>`
+    : !v ? `<p class="status">Not judged yet: the next scenarios check runs the judge.</p>`
+    : `<p class="status ${failing.length ? "bad" : "good"}"><strong>${failing.length ? `${failing.length} of ${list.length} failing` : `All ${list.length} passing`}</strong>
+  at threshold ${esc(th)}${failing.length ? `: ${failing.map(s => `<a href="#sc-${esc(s.id)}">${esc(s.id)}</a>`).join(", ")}` : ""}.
+  <span class="dim">Last judged ${when(v.at)} on <code>${esc(String(v.head || "").slice(0, 8))}</code>${v.took ? `, in ${esc(took(v.took.total))}.` : "."}</span></p>`;
+
+  const revHtml = !rev.stale ? "" : `<section class="rev" aria-label="Revisions after an amend">
+<h2>The plan changed after these were written</h2>
+<ul class="amends">${(rev.stale.amendments || []).map(a => `<li><span class="dim">${when(new Date(a.at).toISOString())}</span> ${esc(a.why)}</li>`).join("")}</ul>
+${rev.proposals && !rev.proposals.length
+    ? `<p>A later amend dropped the writer's earlier proposals, and its new draft proposes none. Check the scenarios below, edit any that need it, then confirm them.</p>
+<div class="act"><button data-do="current" data-count="0" class="primary">Confirm the scenarios as they are</button> <span class="msg" role="status"></span></div>`
+    : rev.proposals
+    ? `<p>The writer proposed ${plural(rev.proposals.length, "revision")}. Each sits with the scenario it changes${adds.length ? `; ${plural(adds.length, "new scenario")} ${adds.length === 1 ? "is" : "are"} below` : ""}. A scenarios check gives no verdict until you answer each one.</p>
+${adds.map(p => proposal(p, null)).join("\n")}
+<div class="act"><button data-do="current" data-count="${rev.proposals.length}">Reject all and keep them as they are</button> <span class="msg" role="status"></span></div>`
+    : `<p>The writer has not proposed revisions yet: the next scenarios check runs it (or <code>deep-plan scenarios revise ${esc(slug)}</code>).</p>
+<div class="act"><button data-do="current" data-count="-1">Keep them as they are, without the writer</button> <span class="msg" role="status"></span></div>`}
+</section>`;
+
+  // Failing first, then the rest, each in id order.
+  const ordered = v ? [...failing, ...list.filter(s => !failing.includes(s))] : list;
+  const shownLog = access.slice(-50).reverse();
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(slug)} scenarios</title>
 <script>${THEME_JS}</script>
 <style>
 ${EVERFOREST_CSS}
-:root{--bg:var(--ef-bg);--card:var(--ef-bg1);--fg:var(--role-text);--mute:var(--role-text-quiet);--line:var(--role-line);
---ok:var(--role-done-t);--low:var(--role-broken-t);--attend:var(--role-attend-t);--accent:var(--role-link)}
-body{background:var(--bg);color:var(--fg);font:var(--fs-3)/1.5 -apple-system,system-ui,sans-serif;margin:0;padding:16px}
-main{max-width:860px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 16px}
-.sc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:0 0 12px}
-label{display:block;margin:6px 0;color:var(--mute);font-size:13px}label.row{display:flex;gap:6px;align-items:center}
-input:not([type=checkbox]),textarea{display:block;width:100%;box-sizing:border-box;margin-top:2px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
-.score{font-weight:600;margin-left:6px}.score.ok{color:var(--ok)}.score.low{color:var(--low)}
-.rev{border-left:3px solid var(--low);padding-left:12px;margin:0 0 16px}.prop .was{color:var(--mute)}.dim{color:var(--mute)}
-.cause{font-size:12px;border:1px solid var(--line);border-radius:10px;padding:0 7px;margin-left:4px;color:var(--mute)}
-button{font:inherit;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;padding:4px 12px;cursor:pointer}
-button.quiet{background:transparent;color:var(--accent)}.msg{color:var(--mute);font-size:13px}
-table{border-collapse:collapse;font-size:13px;width:100%}td{border-top:1px solid var(--line);padding:4px 6px;vertical-align:top}
+:root{--bg:var(--ef-bg);--card:var(--ef-card);--fg:var(--role-text);--dim:var(--role-text-quiet);--line:var(--role-line);--line2:var(--role-edge);
+--good:var(--role-done);--good-t:var(--role-done-t);--bad:var(--role-broken);--bad-t:var(--role-broken-t);--mark:var(--role-attend);--mark-t:var(--role-attend-t);
+--link:var(--role-link);--focus:var(--role-focus);--primary:var(--role-primary);--on-primary:var(--role-on-primary)}
+:root[data-theme="light"]{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:var(--fs-4)/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased;margin:0}
+main{max-width:860px;margin:0 auto;padding:24px 20px 64px}
+h1{font:600 var(--fs-6)/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em;margin:0 0 4px}
+h2{font:700 var(--fs-3)/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:2em 0 10px;border-bottom:1px solid var(--line);padding-bottom:7px}
+h3{font-size:var(--fs-4);font-weight:600;margin:0;flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+a{color:var(--link)}code{font:var(--fs-2) var(--ef-mono)}
+.meta,.dim{color:var(--dim)}.meta{font-size:var(--fs-3);margin:0 0 14px}
+.status{margin:0 0 8px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--line2);border-radius:6px}
+.status.bad{border-left-color:var(--bad)}.status.bad strong{color:var(--bad-t)}.status.good{border-left-color:var(--good)}.status.good strong{color:var(--good-t)}
+.status .dim{display:block;font-size:var(--fs-3)}
+.pill{display:inline-block;font-size:var(--fs-2);line-height:1.6;border:1px solid var(--line2);border-radius:999px;padding:0 8px;color:var(--dim);white-space:nowrap}
+.pill.done{border-color:var(--good);color:var(--good-t)}.pill.broken{border-color:var(--bad);color:var(--bad-t)}.pill.attend{border-color:var(--mark);color:var(--mark-t)}
+.cause{display:inline-block;font-size:var(--fs-2);line-height:1.6;border-radius:999px;padding:0 8px;background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad-t)}
+.before{font-size:var(--fs-2);color:var(--dim)}
+.sc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:0 0 10px;scroll-margin-top:12px}
+.sc.fails{border-left:3px solid var(--bad)}.sc.asked{border-left:3px solid var(--mark)}
+.sc header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 8px}
+.todo{margin:6px 0 0;font-size:var(--fs-3);color:var(--bad-t)}
+details summary{cursor:pointer;color:var(--link);font-size:var(--fs-3);margin-top:6px}details.reason p{margin:4px 0 0;font-size:var(--fs-3)}
+dl.read{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:10px 0 0;font-size:var(--fs-3)}
+dl.read dt{color:var(--dim)}dl.read dd{margin:0}.txt{white-space:pre-wrap;overflow-wrap:anywhere}
+details.edit[open]{border-top:1px solid var(--line);margin-top:10px;padding-top:4px}
+label{display:block;margin:8px 0;color:var(--dim);font-size:var(--fs-3)}label.row{display:flex;gap:6px;align-items:center}
+input[type=checkbox]{accent-color:var(--role-working)}
+input:not([type=checkbox]),textarea{display:block;width:100%;box-sizing:border-box;margin-top:2px;font:inherit;font-size:var(--fs-3);line-height:1.5;color:var(--fg);background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:6px 8px;resize:vertical}
+.act{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+button{font:600 var(--fs-3) system-ui;border:1px solid var(--line2);background:transparent;color:var(--fg);border-radius:6px;padding:6px 12px;min-height:32px;cursor:pointer}
+button.primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+button.danger{color:var(--bad-t)}
+button:hover{border-color:var(--focus)}button:disabled{opacity:.55;cursor:default}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.flash{margin:0;color:var(--good-t);font-size:var(--fs-3)}.flash:empty{display:none}
+.msg{color:var(--dim);font-size:var(--fs-3)}.sc[data-dirty] .msg:empty::before{content:"unsaved changes";color:var(--mark-t)}
+.rev{border:1px solid var(--line);border-left:3px solid var(--mark);border-radius:8px;padding:4px 14px 12px;margin:14px 0}
+.rev h2{margin-top:10px;color:var(--mark-t);border-bottom:0;padding-bottom:0}.amends{margin:0 0 8px;padding-left:18px;font-size:var(--fs-3)}
+.prop{border:1px dashed var(--mark);border-radius:6px;padding:8px 10px;margin:10px 0}
+.prop-head{margin:0 0 6px;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}.why{font-size:var(--fs-3);color:var(--dim)}
+table{border-collapse:collapse;width:100%;font-size:var(--fs-3)}
+.diff th{color:var(--dim);font-weight:400;text-align:left;vertical-align:top;padding:4px 8px 4px 0;white-space:nowrap}
+.diff td{vertical-align:top;padding:4px 6px;border-top:1px solid var(--line)}.diff td.col{color:var(--dim);border-top:0;font-size:var(--fs-2)}
+.diff td.was{color:var(--dim)}
+del{background:color-mix(in srgb,var(--bad) 22%,transparent);color:var(--bad-t);text-decoration:line-through}
+ins{background:color-mix(in srgb,var(--good) 22%,transparent);color:var(--good-t);text-decoration:none}
+@media (max-width:620px){.diff,.diff tbody,.diff tr{display:block}.diff tr:first-child:has(td.col){display:none}.diff th{display:block;padding-top:8px}
+.diff td{display:block;border-top:0;padding:2px 0}.diff td.was::before{content:"Now: ";color:var(--dim)}.diff td.now::before{content:"Proposed: ";color:var(--dim)}}
+.log td{border-top:1px solid var(--line);padding:4px 6px;vertical-align:top}.log td:first-child{white-space:nowrap;color:var(--dim)}
+.log code{overflow-wrap:anywhere}
+@media (max-width:620px){.log tr{display:grid;grid-template-columns:auto 1fr}.log td:last-child{grid-column:1 / -1;border-top:0;padding-top:0}}
 </style></head><body><main>
 <h1>Scenarios for ${esc(slug)}</h1>
-<p class="sub">${doc ? `${doc.scenarios.length} scenario(s), written ${esc((doc.writtenAt || "").slice(0, 16).replace("T", " "))} by ${esc(doc.writer && doc.writer.model || "?")}${(doc.edits || []).length ? `, edited ${doc.edits.length} time(s)` : ""}. The building session sees only their titles, and a hint you allow here.` : "No scenarios yet: run <code>deep-plan scenarios write " + esc(slug) + "</code>."}
-${v ? ` Last judged ${esc(String(v.at).slice(0, 16).replace("T", " "))} on ${esc(String(v.head || "").slice(0, 8))}: ${v.pass ? "passed" : "not passed"} at threshold ${esc(v.threshold)}${v.took ? `, in ${esc(took(v.took.total))}` : ""}.` : ""}</p>
+<p class="meta">${doc ? `${plural(list.length, "scenario")}, written ${when(doc.writtenAt)} by ${esc(doc.writer && doc.writer.model || "?")}${(doc.edits || []).length ? `, edited ${plural(doc.edits.length, "time")}` : ""}. The building session sees only their titles, and a hint you allow.` : ""}</p>
+${status}
+<p class="flash" role="status" aria-live="polite"></p>
 ${revHtml}
-${doc ? doc.scenarios.map(card).join("\n") : ""}
-${doc ? `<p><button data-do="add" class="quiet">Add a scenario</button></p>` : ""}
-<h2 style="font-size:16px">Access log</h2>
-${access.length ? `<table>${access.slice(-50).reverse().map(a => `<tr><td>${esc(String(a.at).slice(0, 19).replace("T", " "))}</td><td>${esc(a.via || a.tool || "")}</td><td><code>${esc(a.what)}</code></td></tr>`).join("")}</table>` : `<p class="sub">No attempt to read the sealed folder was refused.</p>`}
+${doc ? `<h2>Scenarios</h2>${ordered.map(card).join("\n")}<div class="act"><button data-do="add">Add a scenario</button></div>` : ""}
+<h2>Access log</h2>
+${access.length ? `<details class="log"${access.length <= 5 ? " open" : ""}><summary>${plural(access.length, "refused attempt")} to read the sealed folder${access.length > 50 ? ` (the last 50 shown)` : ""}</summary>
+<table>${shownLog.map(a => `<tr><td>${esc(String(a.at).slice(0, 16).replace("T", " "))}</td><td>${esc(a.via || a.tool || "")}</td><td><code>${esc(a.what)}</code></td></tr>`).join("")}</table></details>`
+    : `<p class="dim">No attempt to read the sealed folder was refused.</p>`}
 </main><script>
-const KEY=${JSON.stringify(key)},SLUG=${JSON.stringify(slug)};
+const KEY=${JSON.stringify(key)},SLUG=${JSON.stringify(slug)},HERE="scn-place-"+SLUG;
 async function call(op,id,fields){const q=new URLSearchParams({k:KEY,op,id,...fields});const r=await fetch("/scenarios-edit/"+SLUG+"?"+q,{cache:"no-store"});const j=await r.json().catch(()=>({detail:"no reply"}));if(!r.ok)throw new Error(j.detail||j.error||r.status);return j}
-document.addEventListener("click",async e=>{const b=e.target.closest("button[data-do]");if(!b)return;const sec=b.closest(".sc");const msg=sec&&sec.querySelector(".msg");
-try{if(b.dataset.do==="add"){await call("add","new",{title:"New scenario",body:"Steps"});location.reload();return}
-if(b.dataset.do==="current"){await call("current","-",{});location.reload();return}
-const pr=b.closest(".prop");if(pr){await call(b.dataset.do,pr.dataset.pid,{});location.reload();return}
-const id=sec.dataset.id;if(b.dataset.do==="delete"){if(!confirm("Remove "+id+"?"))return;await call("delete",id,{});location.reload();return}
-const f={};for(const el of sec.querySelectorAll("input,textarea"))f[el.name]=el.type==="checkbox"?(el.checked?"1":"0"):el.value;await call("save",id,f);msg.textContent="saved"}
-catch(err){if(msg)msg.textContent=String(err.message||err);else alert(err.message||err)}});
+// Keep the person's place across the reload an answer needs: the scroll,
+// and the card being edited.
+function reload(open,flash){try{sessionStorage.setItem(HERE,JSON.stringify({y:scrollY,open:open||"",flash:flash||""}))}catch(e){}location.reload()}
+try{const p=JSON.parse(sessionStorage.getItem(HERE)||"null");sessionStorage.removeItem(HERE);if(p){if(p.open){const d=document.querySelector('#sc-'+CSS.escape(p.open)+' details.edit');if(d)d.open=true}if(p.flash)document.querySelector(".flash").textContent=p.flash;scrollTo(0,p.y||0)}}catch(e){}
+const dirty=()=>[...document.querySelectorAll(".sc[data-dirty]")];
+const others=(sec)=>dirty().filter(s=>s!==sec);
+const leaveOk=(sec)=>{const o=others(sec);return!o.length||confirm("Unsaved changes in "+o.map(s=>s.dataset.id).join(", ")+" will be lost. Go on?")};
+const grow=t=>{t.style.height="auto";t.style.height=(t.scrollHeight+2)+"px"};
+document.querySelectorAll("details.edit").forEach(d=>d.addEventListener("toggle",()=>d.querySelectorAll("textarea").forEach(grow)));
+document.addEventListener("input",e=>{const t=e.target;if(t.matches("textarea"))grow(t);const sec=t.closest(".sc");if(sec&&t.closest("details.edit")){sec.dataset.dirty="1";const m=sec.querySelector("details.edit .msg");if(m)m.textContent=""}});
+addEventListener("beforeunload",e=>{if(dirty().length&&!sessionStorage.getItem(HERE)){e.preventDefault();e.returnValue=""}});
+document.addEventListener("click",async e=>{const b=e.target.closest("button[data-do]");if(!b)return;const sec=b.closest(".sc");const box=b.closest(".act");const msg=box&&box.querySelector(".msg");
+const say=t=>{if(msg)msg.textContent=t};b.disabled=true;
+try{const d=b.dataset.do;
+if(d==="add"){if(!leaveOk(null))return;const r=await call("add","new",{title:"New scenario",body:"Steps"});reload(r&&r.id||"","Added a scenario at the end.");return}
+if(d==="current"){const n=Number(b.dataset.count);if(!confirm(n>0?"Reject all "+n+" proposed revision"+(n===1?"":"s")+" and keep every scenario as it is?":n<0?"Keep the scenarios as they are, without the writer's revisions?":"Confirm the scenarios as they are?"))return;if(!leaveOk(null))return;say("saving…");await call("current","-",{});reload("",n>0?"Rejected the proposals; the scenarios are current.":"The scenarios are current.");return}
+const pr=b.closest(".prop");if(pr){if(d==="accept"&&pr.dataset.action==="remove"&&!confirm("Remove "+(sec?sec.dataset.id+": "+(pr.dataset.title||""):"this scenario")+"?"))return;if(!leaveOk(sec))return;say("saving…");await call(d,pr.dataset.pid,{});reload("",(d==="accept"?"Accepted ":"Rejected ")+pr.dataset.pid+".");return}
+const id=sec.dataset.id;
+if(d==="delete"){if(!confirm("Remove "+id+"? Its scores go with it."))return;if(!leaveOk(sec))return;await call("delete",id,{});reload("","Removed "+id+".");return}
+const f={};for(const el of sec.querySelectorAll("details.edit input,details.edit textarea"))f[el.name]=el.type==="checkbox"?(el.checked?"1":"0"):el.value;
+say("saving…");await call("save",id,f);delete sec.dataset.dirty;if(!leaveOk(sec)){say("saved");return}reload(id,"Saved "+id+".")}
+catch(err){say(String(err.message||err));if(!msg)alert(err.message||err)}finally{b.disabled=false}});
 </script></body></html>`;
 }

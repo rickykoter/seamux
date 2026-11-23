@@ -150,6 +150,13 @@ start. A pack can write this file (`deep-plan pack add`).
 
 ## The person's page
 
+In the seamux app, a plan with sealed scenarios has a Scenarios tab beside
+its plan tab in the Dock, marked when revisions wait on the person or the
+last run failed; the plan's Wake row has a scenarios entry that opens it.
+The app reads the page's key from the sealed folder itself and adds it to
+the tab: crew's intent server forwards `/scenarios/` to deep-plan, which
+checks the key, and never hands the key out, since any local caller (the
+building session too) can reach it. Elsewhere,
 `deep-plan scenarios show <slug>`, run by the person in their own shell,
 opens the scenarios page: each scenario's steps, what to accept, the hint
 and whether the builder may see it, the last scores with the judge's
@@ -157,6 +164,10 @@ reasons and causes and the scores before them, any proposed revisions, and
 the access log. They edit and save there, or in an editor with
 `scenarios edit`. The page is served behind a key kept in the sealed
 folder, not serve's token, and its address is printed only to a terminal.
+deep-plan makes the key when it writes the scenarios. The page wears the
+Everforest palette and roles the plan and review pages wear
+(`tools/theme_sync.py` keeps them in step), and follows the app's light or
+dark setting.
 
 ## When the plan is amended
 
