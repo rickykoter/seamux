@@ -140,6 +140,11 @@ pub fn input_text(screen: &str) -> Option<String> {
 /// Whether the prompt holds the start of `item`'s text: what a paste whose
 /// Enter was lost leaves behind (and what is ours to press Enter on).
 pub fn holds_item(input: &str, item: &str) -> bool {
+    // Claude Code shows a long or multi-line paste collapsed, as
+    // "[Pasted text #1 +4 lines]": a multi-line item left unsent reads so.
+    if item.contains('\n') && input.trim_start().starts_with("[Pasted text") {
+        return true;
+    }
     let want: String = item.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(24).collect();
     let have: String = input.split_whitespace().collect::<Vec<_>>().join(" ");
     want.len() >= 4 && (have.starts_with(&want) || want.starts_with(&have) && have.len() >= 4)
@@ -176,6 +181,14 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
                 let target = tmux::TmuxBackend::default().target(&pane).ok().flatten();
                 if let Some(t) = &target {
                     if screen(t).as_deref().and_then(input_text).is_some_and(|i| holds_item(&i, &item.text)) {
+                        // Each Enter is a try too, so one that never submits
+                        // still ends in queue/failed.
+                        if super::queue::bump(item) >= super::queue::MAX_TRIES {
+                            eprintln!("bosun: {} sat unsent in the prompt after {} Enters; it is in queue/failed", item.id, super::queue::MAX_TRIES);
+                            super::queue::fail(item);
+                            pending = None;
+                            continue;
+                        }
                         let _ = tmux::send_text(t, "\r");
                         pending = Some((item.clone(), Instant::now()));
                         continue;
@@ -360,6 +373,8 @@ mod tests {
         assert!(holds_item("[Ask q1 from ws] is X", "[Ask q1 from ws]\nis X true?\n\nAnswer it"));
         assert!(!holds_item("/", "[Ask q1 from ws] is X"));
         assert!(!holds_item("hello there", "[Ask q1 from ws] is X"));
+        assert!(holds_item("[Pasted text #1 +4 lines]", "[Ask q1 from ws]\nis X?\n\nAnswer it"), "a collapsed paste is ours");
+        assert!(!holds_item("[Pasted text #1 +4 lines]", "one line"), "only a multi-line item collapses");
         let e = "\x1b[39m\u{276f}\u{a0}";
         assert_eq!(input_text(&format!("{e}[Ask q1 from")).as_deref(), Some("[Ask q1 from"));
     }

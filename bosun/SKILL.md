@@ -1,6 +1,6 @@
 ---
 name: "bosun"
-description: "Runs the Bosun, the long-running read-only Claude session over the code root, and hands it questions from any other session. In the Bosun (its system prompt opens 'You are the Bosun'), use it for a sitrep across the repos (branches, open PRs, live workspaces, recent deploys), for every answer, including a queued '[Ask ID from WHO]', which gets a source on every fact and a log entry, and to dispatch real work to a new workspace. In any other session, use it when a question cuts across repos or needs a Snowflake, Datadog, Splunk or Jira lookup and no code change here: ask the Bosun with seamux bosun ask instead of digging through other repos yourself."
+description: "Runs the Bosun, the long-running read-only Claude session over the code root, and hands it questions from any other session. In the Bosun (its system prompt contains 'You are the Bosun'), use it for a sitrep across the repos (branches, open PRs, live workspaces, recent deploys), for every answer, including a queued '[Ask ID from WHO]', which gets a source on every fact and a log entry, and to dispatch real work to a new workspace. In any other session, use it when a question cuts across repos or needs a Snowflake, Datadog, Splunk or Jira lookup and no code change here: ask the Bosun with seamux bosun ask instead of digging through other repos yourself."
 ---
 
 # Bosun
