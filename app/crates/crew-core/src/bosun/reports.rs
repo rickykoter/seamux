@@ -285,7 +285,7 @@ pub fn tick(dir: &Path, root: &Path, now_secs: i64) {
     let last = TRIED.load(Ordering::SeqCst);
     if now_secs.saturating_sub(last) >= SEED_RETRY && needs_seed(dir) {
         TRIED.store(now_secs, Ordering::SeqCst);
-        if let Err(e) = seed(dir, &Found::look(root)) {
+        if let Err(e) = seed(dir, &Found::look(root, &super::launch::launched_domains(dir))) {
             super::supervise::warn("reports-starters", &format!("bosun reports: could not write the starter reports yet: {e}"));
         }
     }
@@ -451,7 +451,7 @@ pub fn prepare(dir: &Path, item: &queue::Item, root: &Path) -> Result<queue::Ite
     if read_run(dir, &item.id).is_some_and(|v| v["built"] == true) {
         return Ok(item.clone());
     }
-    prepare_with(dir, item, &Found::look(root), super::launch::now_secs(), &super::launch::seamux_bin())
+    prepare_with(dir, item, &Found::look(root, &super::launch::launched_domains(dir)), super::launch::now_secs(), &super::launch::seamux_bin())
 }
 
 // ---- results and the banner ----
@@ -813,7 +813,7 @@ pub fn main(args: &[String], dir: &Path) -> i32 {
         }
         ["check", rest @ ..] if rest.len() <= 1 => {
             let cfg = super::config::Config::load_from(dir);
-            let found = Found::look(&cfg.root);
+            let found = Found::look(&cfg.root, &super::launch::launched_domains(dir));
             // From a person's shell, a store with no reports gets its starters
             // here too; inside the Bosun's sandbox the write is refused.
             if needs_seed(dir) {
@@ -880,7 +880,7 @@ mod tests {
 plugin:engineering:datadog: https://x (HTTP) - ! Needs authentication\n\
 plugin:engineering:atlassian: https://x (HTTP) - \u{2714} Connected\n\
 plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
-        Found { servers: Ok(parse_mcp_list(listed)), path: String::new() }
+        Found { servers: Ok(parse_mcp_list(listed)), path: String::new(), domains: vec![] }
     }
 
     fn morning() -> Value {
@@ -942,6 +942,23 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
     }
 
     #[test]
+    fn a_starter_pr_section_names_the_host_the_sandbox_lacks() {
+        let d = tmp("gh-host");
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(d.join("gh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(d.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let path = d.to_string_lossy().into_owned();
+        let starters = starters(&found());
+        let r = parse(&starters[1]).unwrap();
+        let closed = Found { path: path.clone(), ..found() };
+        let c = check_sections(&r, &closed);
+        assert!(!c[0].runnable());
+        assert_eq!(c[0].why(), "api.github.com is not in sandbox.allowedDomains (bosun.json, read when the Bosun starts)", "GitHub is opt-in, and the section says what to add");
+        let open = Found { path, domains: vec!["api.github.com".into()], ..found() };
+        assert!(check_sections(&r, &open)[0].runnable());
+    }
+
+    #[test]
     fn the_prompt_is_built_at_typing_with_down_sources_not_checked() {
         let d = tmp("prep");
         loops::write_json(&d.join("bosun.json"), &json!({"reports": [morning()]})).unwrap();
@@ -965,7 +982,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         assert_eq!(rv["sections"][1]["why"], "datadog needs authentication");
         assert_eq!(rv["sections"][2]["runnable"], true);
         // Built once: a retry types the same text without a new check.
-        let none = Found { servers: Err("gone".into()), path: String::new() };
+        let none = Found { servers: Err("gone".into()), path: String::new(), domains: vec![] };
         assert_eq!(prepare_with(&d, &built, &none, 200, "/bin/seamux").unwrap().text, *t);
         let _ = fs::remove_dir_all(&d);
     }
@@ -976,7 +993,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         let k = Kept { doc: "https://claude.ai/artifact/abc".into(), ..Default::default() };
         assert_eq!(doc_for(&r, &k, &found()), Doc::At("https://claude.ai/artifact/abc".into()));
         assert_eq!(doc_for(&r, &Kept::default(), &found()), Doc::New);
-        let down = Found { servers: Ok(parse_mcp_list("claude.ai Claude Docs: https://x - ! Needs authentication\n")), path: String::new() };
+        let down = Found { servers: Ok(parse_mcp_list("claude.ai Claude Docs: https://x - ! Needs authentication\n")), path: String::new(), domains: vec![] };
         assert_eq!(doc_for(&r, &k, &down), Doc::Down("claude docs needs authentication".into()));
         let off = parse(&json!({"id": "a", "every": "1h", "to": ["banner"], "sections": [{"title": "t", "ask": "a"}]})).unwrap();
         assert_eq!(doc_for(&off, &k, &found()), Doc::Off);
@@ -1055,7 +1072,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
     #[test]
     fn starters_wait_for_a_listing_that_reads() {
         let d = tmp("noseed");
-        let failed = Found { servers: Err("claude mcp list did not finish in 60s".into()), path: String::new() };
+        let failed = Found { servers: Err("claude mcp list did not finish in 60s".into()), path: String::new(), domains: vec![] };
         assert!(seed(&d, &failed).unwrap_err().contains("could not be listed"));
         assert!(needs_seed(&d), "tried again later");
         let _ = fs::remove_dir_all(&d);

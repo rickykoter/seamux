@@ -173,6 +173,18 @@ pub fn claude_args(settings: &Path, brief: &Path, resume: Option<&str>, fresh: &
     a
 }
 
+/// The hosts the running Bosun's sandbox lets out: settings.json's list in
+/// `dir`, written when its Claude started, so an edit to bosun.json counts
+/// only once a restart has picked it up. Before the first launch (no
+/// settings.json), bosun.json's.
+pub fn launched_domains(dir: &Path) -> Vec<String> {
+    let written = fs::read_to_string(dir.join("settings.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    match written {
+        Some(v) => v["sandbox"]["network"]["allowedDomains"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+        None => Config::load_from(dir).allowed_domains,
+    }
+}
+
 /// Writes settings.json and brief.md into `dir`: (settings, brief).
 pub fn write_files(cfg: &Config, dir: &Path, seamux: &str) -> Result<(PathBuf, PathBuf), String> {
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -261,6 +273,20 @@ mod tests {
         assert_eq!(with["sandbox"], without["sandbox"], "the certificate file leaves the sandbox as it is");
         assert_eq!(with["permissions"], without["permissions"]);
         assert!(with["sandbox"].get("enableWeakerNetworkIsolation").is_none() && with["sandbox"]["network"].get("allowMachLookup").is_none(), "the trust service stays shut");
+    }
+
+    #[test]
+    fn the_running_sandboxs_hosts_come_from_the_settings_it_launched_with() {
+        let d = std::env::temp_dir().join(format!("bosun-launched-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("bosun.json"), r#"{"sandbox": {"allowedDomains": ["api.github.com"]}}"#).unwrap();
+        assert_eq!(launched_domains(&d), vec!["api.github.com"], "no launch yet: bosun.json's");
+        let mut c = cfg();
+        c.allowed_domains.clear();
+        write_files(&c, &d, "seamux").unwrap();
+        assert!(launched_domains(&d).is_empty(), "added after the launch: not let out until a restart");
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
