@@ -9038,25 +9038,24 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   const JSDOC = "python3 - <<'EOF'\nimport re\np = 'app/ui/x.ts'\ns = open(p).read()\nopen(p, 'w').write(s.replace('a', '/** A note. */ a'))\nEOF";
   ok("scenarios gate: a JSDoc opener in a heredoc that edits a file is not a read of the folder",
     sgate("Bash", { command: JSDOC }).status === 0, sgate("Bash", { command: JSDOC }).stderr);
-  ok("scenarios gate: a glob in quoted text (a note, a commit message) is not a path",
-    sgate("Bash", { command: 'deep-plan note "the guard read Read(//**/x) as a path"' }).status === 0 &&
+  ok("scenarios gate: a trailing ** in a note or an echo is one level, so it is not a path into the folder",
+    sgate("Bash", { command: 'deep-plan note "the guard read Read(//Users/someone/code/**) as a path"' }).status === 0 &&
     sgate("Bash", { command: "echo 'skip /** in quotes' && echo \"and /** here\"" }).status === 0);
   ok("scenarios gate: the same glob unquoted, where the shell expands it, is still refused",
     sgate("Bash", { command: `cat ${path.dirname(TMP)}/*/s*/*/scenarios.json` }).status === 2);
   ok("scenarios gate: a heredoc or a quoted string that names the sealed file literally is still refused",
     sgate("Bash", { command: `python3 - <<'EOF'\nprint(open(${JSON.stringify(path.join(SEALED, "scn-a", "scenarios.json"))}).read())\nEOF` }).status === 2 &&
     sgate("Bash", { command: `cat "${path.join(SEALED, "scn-a", "scenarios.json")}"` }).status === 2);
-  const HC = path.join(TMP, "heredoc-check.mjs");
-  fs.writeFileSync(HC, `const { sealedTouch, globText } = await import(${JSON.stringify(path.join(HERE, "lib", "scenarios.mjs"))});
-const top = ${JSON.stringify(TMP)};
-console.log(JSON.stringify({
-  heredoc: sealedTouch("Bash", { command: "cd " + top + " && cat <<EOF\\nfind . -name x\\nEOF" }, "/"),
-  real: !!sealedTouch("Bash", { command: "cd " + top + " && find . -name x" }, "/"),
-  text: globText("a 'b c' \\"d\\" <<EOF\\nx y\\nEOF\\nz"),
-}));`);
-  const hc = JSON.parse(spawnSync("node", [HC], { encoding: "utf8", env: SENV }).stdout || "{}");
-  ok("scenarios gate: a recursive read named only inside a heredoc body does not count as one; a real one still does",
-    hc.heredoc === null && hc.real === true && hc.text === "a '   ' \" \" <<EOF\n\n\nz", JSON.stringify(hc));
+  ok("scenarios gate: a trailing ** that ends at the folder still names it; a **/ that walks still reaches",
+    sgate("Bash", { command: `ls ${path.dirname(SEALED)}//**` }).status === 2 &&
+    sgate("Bash", { command: `cat ${path.dirname(TMP)}/**/scenarios.json` }).status === 2);
+  ok("scenarios gate: a glob inside a quoted inner shell, a $( ) or a heredoc program is still read (inc6 f1, f2, f5)",
+    sgate("Bash", { command: `bash -c 'cat ${path.dirname(TMP)}/*/s*/*/scenarios.json'` }).status === 2 &&
+    sgate("Bash", { command: `echo "$(cat ${path.dirname(TMP)}/*/s*/*/scenarios.json)"` }).status === 2 &&
+    sgate("Bash", { command: `python3 - <<'EOF'\nimport glob\nprint(glob.glob('${path.dirname(TMP)}/*/s*/*/scenarios.json'))\nEOF` }).status === 2);
+  ok("scenarios gate: a comment with an apostrophe, or a here-string, does not hide the next line (inc6 f3, f4)",
+    sgate("Bash", { command: `# don't\ncat ${path.dirname(TMP)}/*/s*/*/scenarios.json` }).status === 2 &&
+    sgate("Bash", { command: `cat <<< "x"\ncat ${path.dirname(TMP)}/*/s*/*/scenarios.json` }).status === 2);
   // Where a refusal is written: the plan it names, else the session's own.
   const shared = path.join(SEALED, "access.log");
   const sharedLines = () => fs.existsSync(shared) ? fs.readFileSync(shared, "utf8").split("\n").length : 0;
@@ -9066,9 +9065,10 @@ console.log(JSON.stringify({
   ok("scenarios gate: a refusal that names no one plan, from outside any plan, goes to the shared log, not every plan's",
     far.status === 2 && access("scn-z").length === bBefore && access("scn-a").length === aBefore && sharedLines() > sharedBefore, far.stderr);
   const lg = await import("./lib/scenarios.mjs");
-  ok("scenarios gate: logSlugs keeps a named plan, else the session's own plan, else none",
+  ok("scenarios gate: logSlugs keeps a plan the call named, else the session's own plan, else none, even when only one plan is sealed (inc6 f7)",
     JSON.stringify(lg.logSlugs(["a"], "b")) === '["a"]' && JSON.stringify(lg.logSlugs(["a", "b"], "b")) === '["b"]' &&
-    JSON.stringify(lg.logSlugs(["a", "b"], "c")) === "[]" && JSON.stringify(lg.logSlugs(["a", "b"], null)) === "[]");
+    JSON.stringify(lg.logSlugs(["a", "b"], "c")) === "[]" && JSON.stringify(lg.logSlugs(["a", "b"], null)) === "[]" &&
+    JSON.stringify(lg.logSlugs(["a"], "b", false)) === "[]" && JSON.stringify(lg.logSlugs(["a"], "a", false)) === '["a"]');
   ok("scenarios gate: show and edit are the person's levers, refused from a session",
     /scenarios show` and `scenarios edit` open the sealed scenarios/.test(sgate("Bash", { command: "deep-plan scenarios show scn-a" }).stderr) &&
     sgate("Bash", { command: "deep-plan scenarios edit scn-a" }).status === 2 && sgate("Bash", { command: "deep-plan scenarios list scn-a" }).status === 0);

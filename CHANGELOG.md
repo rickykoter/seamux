@@ -20,9 +20,9 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   Dock has a Scenarios tab beside the plan, and the Wake a scenarios entry
   on the plan's row; the app adds the page's key itself. The page now
   wears Everforest and follows the app's appearance. The gate's
-  sealed-folder test counts a glob only where the shell expands it, so an
-  edit whose heredoc holds a JSDoc comment is no longer refused as a
-  scenarios read, and a refusal is logged under the plan it names or the
+  sealed-folder test reads a trailing double star as one level, as the
+  shell does, so an edit whose heredoc holds a JSDoc comment is no longer
+  refused as a scenarios read, and a refusal is logged under the plan it names or the
   session's own, not under every plan with scenarios.
 - **A bosun plugin.** It is the skill for the Bosun, the read-only Claude
   session the seamux app keeps over your code root. In the Bosun it gives a

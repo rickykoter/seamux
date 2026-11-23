@@ -165,8 +165,8 @@ export function sealedSlugs() {
 // holds the session's folder (when that plan has scenarios), else nowhere
 // but the shared log beside the plans (logAccess with no slugs). Not every
 // sealed plan: one session's slip is not another plan's history.
-export function logSlugs(slugs, ownSlug) {
-  if (slugs.length === 1) return slugs;
+export function logSlugs(slugs, ownSlug, isNamed = slugs.length === 1) {
+  if (isNamed && slugs.length === 1) return slugs;
   return ownSlug && slugs.includes(ownSlug) ? [ownSlug] : [];
 }
 
@@ -182,7 +182,15 @@ export function logAccess(slugs, entry) {
   if (!slugs.length) {
     try {
       fs.mkdirSync(SEALED_DIR, { recursive: true, mode: 0o700 });
-      fs.appendFileSync(path.join(SEALED_DIR, "access.log"), line, { mode: 0o600 });
+      const f = path.join(SEALED_DIR, "access.log");
+      let last = null;
+      try { const t = fs.readFileSync(f, "utf8").trim().split("\n").pop(); last = t ? JSON.parse(t) : null; } catch { /* none yet */ }
+      if (last && last.what === what && (last.via || "") === (entry.via || "") && now - new Date(last.at) < REPEAT_MS) return;
+      fs.appendFileSync(f, line, { mode: 0o600 });
+      if (fs.statSync(f).size > LOG_MAX) {
+        const keep = fs.readFileSync(f, "utf8").slice(-LOG_MAX / 2);
+        fs.writeFileSync(f, keep.slice(keep.indexOf("\n") + 1), { mode: 0o600 });
+      }
     } catch { /* the refusal stands whether or not it was written down */ }
     return;
   }
@@ -351,6 +359,11 @@ function expand(p, at) {
 }
 const roots = () => [...new Set([SEALED_DIR, canon(SEALED_DIR)])];
 const within = (p, d) => p === d || p.startsWith(d + path.sep);
+// The plan whose folder a path is in, or null (the folder itself, or outside).
+function named(p) {
+  for (const r of roots()) if (p !== r && within(p, r)) return path.relative(r, p).split(path.sep)[0] || null;
+  return null;
+}
 // The plan a path inside the folder belongs to: every plan, when it is the
 // folder itself.
 function slugsAt(p) {
@@ -436,7 +449,10 @@ function segHits(s, at) {
     const m = (i, j) => {
       if (j === rs.length) return true;
       if (i === segs.length) return false;
-      if (segs[i] === "**") return m(i + 1, j) || m(i, j + 1);
+      // ** walks any depth only with more after it (**/x); a last ** is one
+      // level, as * is: zsh recurses on **/ alone, and bash only with
+      // globstar set. A bare /** (a JSDoc opener) reaches nothing.
+      if (segs[i] === "**" && i < segs.length - 1) return m(i + 1, j) || m(i, j + 1);
       let re; try { re = segRe(segs[i]); } catch { return false; }
       return re.test(rs[j]) && m(i + 1, j + 1);
     };
@@ -444,41 +460,6 @@ function segHits(s, at) {
   });
 }
 const RECURSIVE = /(^|[\s;&|(`])(rg|ag|fd|find|tar|zip|rsync|du|tree|ls\s+(-\S*\s+)*-\S*R|grep\s+(-\S+\s+)*-\S*[rR]|cp\s+(-\S+\s+)*-\S*[rRa])\b/;
-
-// The part of a Bash command the shell expands globs in: the bodies of
-// heredocs and the insides of single- and double-quoted strings are blanked
-// (the shell expands no glob there), so a JSDoc opener in a heredoc that
-// edits a file, or a glob in a note's quoted text, is not a path. The
-// literal checks (a spelling of the folder, a path that lands in it, a cd)
-// still read the whole command.
-export function globText(cmd) {
-  const lines = String(cmd).split("\n");
-  const out = [];
-  let stop = null, tabs = false;
-  for (const line of lines) {
-    if (stop !== null) {
-      out.push("");
-      if ((tabs ? line.replace(/^\t+/, "") : line) === stop) stop = null;
-      continue;
-    }
-    out.push(line);
-    const m = line.match(/<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
-    if (m) { stop = m[3]; tabs = m[1] === "-"; }
-  }
-  let s = out.join("\n"), r = "", q = "";
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (q) {
-      if (q === '"' && c === "\\") { r += "  "; i++; continue; }
-      if (c === q) { q = ""; r += c; } else r += c === "\n" ? "\n" : " ";
-      continue;
-    }
-    if (c === "\\") { r += c + (s[i + 1] || ""); i++; continue; }
-    if (c === "'" || c === '"') q = c;
-    r += c;
-  }
-  return r;
-}
 
 // Whether a tool call names the sealed folder: {slugs, what} or null.
 // Read, Grep and Glob by their path fields (a Grep's pattern is a regex, not
@@ -494,13 +475,13 @@ export function sealedTouch(tool, input = {}, cwd = process.cwd()) {
     for (const f of fields.filter(Boolean)) {
       const p = expand(f, at0);
       const s = slugsAt(p) || (tool !== "Read" && reaches(p) ? sealedSlugs() : null) || (globHits(f, at0) ? sealedSlugs() : null);
-      if (s) return { slugs: s, what: `${tool} ${f}` };
+      if (s) return { slugs: s, what: `${tool} ${f}`, named: !!named(p) };
     }
     // A Glob whose pattern is relative but walks into the folder from its path.
     if (tool === "Glob" && input.pattern && !path.isAbsolute(String(input.pattern))) {
       const joined = path.join(input.path || at0, String(input.pattern));
       const s = slugsAt(expand(joined, at0)) || (globHits(joined, at0) ? sealedSlugs() : null);
-      if (s) return { slugs: s, what: `Glob ${input.pattern} in ${input.path || at0}` };
+      if (s) return { slugs: s, what: `Glob ${input.pattern} in ${input.path || at0}`, named: !!named(expand(joined, at0)) };
     }
     return null;
   }
@@ -510,30 +491,26 @@ export function sealedTouch(tool, input = {}, cwd = process.cwd()) {
   const what = `Bash ${cmd.split("\n")[0].slice(0, 300)}`;
   for (const sp of spellings()) if (cmd.includes(sp)) {
     const after = cmd.slice(cmd.indexOf(sp) + sp.length).match(/^\/([a-z0-9][a-z0-9._-]*)/);
-    return { slugs: after && SLUG_OK.test(after[1]) ? [after[1]] : sealedSlugs(), what };
+    const one = after && SLUG_OK.test(after[1]) ? after[1] : null;
+    return { slugs: one ? [one] : sealedSlugs(), what, named: !!one };
   }
   let at = at0;
   const hit = p => slugsAt(p);
-  if (hit(canon(at))) return { slugs: hit(canon(at)), what };
-  // Globs and recursive reads count only where the shell expands them.
-  const live = globText(cmd);
-  const recursive = RECURSIVE.test(live);
+  if (hit(canon(at))) return { slugs: hit(canon(at)), what, named: !!named(canon(at)) };
+  const recursive = RECURSIVE.test(cmd);
   for (const m of cmd.matchAll(/(?:^|[;&|(\n]\s*)cd\s+(['"]?)([^\s;&|'"()]+)\1/g)) {
     if (m[2] === "-" || /[$`]/.test(m[2].replace(/^\$\{?HOME\}?/, ""))) continue;
     at = expand(m[2], at);
-    if (hit(at)) return { slugs: hit(at), what };
+    if (hit(at)) return { slugs: hit(at), what, named: !!named(at) };
   }
-  const toks = text => text.split(/[\s;&|()<>'"=`]+/).filter(t => t && !t.startsWith("-") && !/\$(?!\{?HOME\b)/.test(t));
-  // A path that lands in the folder, wherever it is written.
-  for (const tok of toks(cmd)) { const s = hit(expand(tok, at)); if (s) return { slugs: s, what }; }
-  // A glob or a recursive read that reaches it, where the shell expands.
-  for (const tok of toks(live)) {
+  for (const tok of cmd.split(/[\s;&|()<>'"=`]+/)) {
+    if (!tok || tok.startsWith("-") || /\$(?!\{?HOME\b)/.test(tok)) continue;
     const p = expand(tok, at);
-    const s = (globHits(tok, at) ? sealedSlugs() : null) || (recursive && reaches(p.replace(/\/+$/, "") || "/") ? sealedSlugs() : null);
-    if (s) return { slugs: s, what };
+    const s = hit(p) || (globHits(tok, at) ? sealedSlugs() : null) || (recursive && reaches(p.replace(/\/+$/, "") || "/") ? sealedSlugs() : null);
+    if (s) return { slugs: s, what, named: !!named(p) };
   }
   // A recursive reader run from a folder above it, with no path of its own.
-  if (recursive && reaches(at)) return { slugs: sealedSlugs(), what };
+  if (recursive && reaches(at)) return { slugs: sealedSlugs(), what, named: false };
   return null;
 }
 

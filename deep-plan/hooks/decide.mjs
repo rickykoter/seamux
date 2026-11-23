@@ -48,7 +48,7 @@ if (tool === "Read" || tool === "Grep" || tool === "Glob" || tool === "Bash") {
     // shared log: never every plan's (lib/scenarios.mjs logSlugs).
     let own = null;
     try { own = planFor(canon(cwd)); } catch { /* no plan here */ }
-    logAccess(logSlugs(t.slugs, own && own.slug), { tool, via: "gate", what: t.what, session: who.session, cwd });
+    logAccess(logSlugs(t.slugs, own && own.slug, t.named), { tool, via: "gate", what: t.what, session: who.session, cwd });
     const slug = t.slugs.length === 1 ? t.slugs[0] : "?";
     process.stderr.write(`deep-plan gate [${slug}]: that names a plan's sealed scenarios, which the building session does not read. ` +
       `It is refused, and the attempt is in the plan's access log. deep-plan scenarios list ${slug === "?" ? "<slug>" : slug} gives their titles; ` +

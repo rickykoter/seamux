@@ -59,11 +59,12 @@ changed may be the judge's noise; a drop right after your change is yours
 to explain before you call it noise.
 
 The gate refuses a Read, Grep, Glob or Bash that names the sealed folder,
-in any spelling it can see. In Bash, a spelling of the folder or a path
-that lands in it counts anywhere in the command, a heredoc or a quoted
-string included; a glob or a recursive read counts only where the shell
-expands it, so a JSDoc opener in a heredoc or a glob in a note's quoted
-text is not a path. Each refusal goes in the access log of the plan it
+in any spelling it can see, anywhere in a Bash command (a heredoc, a quoted
+string or an inner `bash -c` included). A glob counts as reaching the
+folder only as a shell would expand it: a trailing double star is one
+level, like a single star (zsh walks only on a double star followed by a
+slash, bash only with globstar set), so a JSDoc opener in a heredoc is not
+a path, while a double star followed by more of a path still is. Each refusal goes in the access log of the plan it
 names, else the plan of the session's own folder, else a shared log beside
 the plans (`access.log` in the sealed folder), never in every plan's.
 `scenarios access <slug>` lists a plan's, and a verdict says how many
