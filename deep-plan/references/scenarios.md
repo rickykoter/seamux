@@ -30,8 +30,9 @@ A deliverable asks for them with a check of kind `scenarios`:
 It names no recipe or command, one per deliverable. `threshold` (0 to 1) is
 the score every scenario must meet; left out, it is the repo's
 `.seamux/scenarios.json` `threshold`, else 0.8. A repo policy may require
-one (`scenarios.require` in `.seamux/policy.json`), and render refuses a
-plan that ship would act on alone without it.
+one (`scenarios.require` in `.seamux/policy.json`, limited to some files by
+`scenarios.paths`), and render refuses a plan that ship would act on alone
+without it.
 
 ## Writing them
 

@@ -85,9 +85,10 @@ installed works the same: the files are ordinary repo files.
   Dependency manifests and the land watcher stop at auto-pr, as do the
   plugins and tools by default. The factory's own guards (the gate's hooks,
   `policy`, `scenarios`, `judge`, `autogo` and `state` in `deep-plan/lib`,
-  bash-guard, CI and the scrub check) are supervised. Scenarios are not
-  required, since the judge cannot run the backend; a plan that changes
-  the app's pages adds a scenarios check itself. It is added in this repo,
+  bash-guard, CI and the scrub check) are supervised. Scenarios are
+  required on the app's pages (`app/ui/**`, at auto-pr and above), which
+  the judge clicks through on the demo mock, and not on the backend, which
+  it cannot run. It is added in this repo,
   where `pack check` shows no drift; a change to `.seamux/verify.json`
   shows as drift until the pack is updated with it.
 - `node-web`: unit tests and a build on every change, Playwright e2e, a

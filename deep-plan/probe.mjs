@@ -9377,6 +9377,22 @@ if (want("policy and ship: levels from the base branch")) {
     r.status !== 0 && /needs a scenarios check at auto-pr and above/.test(r.stderr), r.stderr);
   const withScn = mk("pol-docs2", [["docs/a.md"], ["docs/b.md"]]); withScn.deliverables[1].checks.push({ kind: "scenarios" });
   ok("policy: with a scenarios check it renders at auto-merge", render(withScn).status === 0 && stOf("pol-docs2").increments[0].level === "auto-merge");
+  // scenarios.paths: only a change touching a matching file needs them.
+  setPolicy({ ...POLICY, scenarios: { require: "auto-pr", paths: ["docs/ui/**"], threshold: 0.8 } }, "paths");
+  ok("policy: with scenarios.paths, a plan that touches no matching file renders without a scenarios check",
+    render(mk("pol-paths-off", [["docs/a.md"], ["docs/b.md"]])).status === 0, "");
+  r = render(mk("pol-paths-on", [["docs/a.md"], ["docs/ui/page.md"]]));
+  ok("policy: with scenarios.paths, a plan touching a matching file at the require level is refused without one, naming the paths",
+    r.status !== 0 && /needs a scenarios check at auto-pr and above[^\n]*for a change touching docs\/ui\/\*\*/.test(r.stderr), r.stderr);
+  r = pc("policy", "show", "docs/ui/page.md", "docs/a.md");
+  ok("policy show: scenarios.paths is shown, and each file says whether it alone needs a scenarios check",
+    /scenarios required at auto-pr and above for a change touching docs\/ui\/\*\*/.test(r.stdout) &&
+    /docs\/ui\/page\.md: auto-merge \(docs\/\*\*\); needs a scenarios check/.test(r.stdout) && !/docs\/a\.md: [^\n]*needs a scenarios check/.test(r.stdout), r.stdout);
+  const bad = JSON.parse(spawnSync("node", ["--input-type=module", "-e",
+    `import { validatePolicy } from ${JSON.stringify(path.join(HERE, "lib", "policy.mjs"))}; console.log(JSON.stringify([validatePolicy({ default: "auto-go", scenarios: { paths: "app/**" } }), validatePolicy({ default: "auto-go", scenarios: { paths: [] } }), validatePolicy({ default: "auto-go", scenarios: { require: "auto-pr", paths: ["app/**"] } })]))`],
+    { encoding: "utf8" }).stdout || "[]");
+  ok("policy: scenarios.paths must be a non-empty list of globs", /scenarios.paths: a list of globs/.test(bad[0]) && /scenarios.paths/.test(bad[1]) && bad[2].length === 0, JSON.stringify(bad));
+  setPolicy(POLICY, "paths off");
   // The worktree's own copy raising secret/** changes nothing.
   fs.mkdirSync(path.join(PR_, ".seamux"), { recursive: true });
   fs.writeFileSync(path.join(PR_, ".seamux", "policy.json"), JSON.stringify({ ...POLICY, paths: [{ match: "**", level: "auto-merge" }] }));

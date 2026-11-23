@@ -3047,7 +3047,10 @@ async function render(specPath, opts) {
   const policy = POL.readPolicy(planRoot, { fetch: true });
   const levels = (spec.deliverables || []).map(d => POL.changeLevel(policy, planPaths(d)));
   {
-    const perrs = policyProblems(spec, levels, { requiredAt: POL.scenariosRequiredAt(policy), why: policy.why });
+    const planFiles = (spec.deliverables || []).flatMap(d => planPaths(d));
+    const globs = POL.scenariosPaths(policy);
+    const perrs = policyProblems(spec, levels, { requiredAt: POL.scenariosRequiredFor(policy, planFiles),
+      why: policy.why + (globs ? `, for a change touching ${globs.join(", ")}` : "") });
     if (perrs.length) {
       console.error("deep-plan: spec refused — the repo's policy:");
       for (const e of perrs) console.error("  ✗ " + e);
@@ -5295,7 +5298,9 @@ function shipVerdict({ st, root, fetch = true }) {
   if (st) gate("delivered", st.phase === "done", st.phase === "done" ? "the plan is delivered" : `the plan is ${st.phase}: every increment done and deep-plan deliver first`);
   else gate("plan", false, "no deep-plan plan is at this worktree");
   const scen = st ? (st.increments || []).flatMap(i => Object.values(checksOf(i)).filter(c => c.kind === "scenarios" && !c.retired)) : [];
-  const req = POL.scenariosRequiredAt(pol);
+  // Required by the level, and by scenarios.paths when the policy sets it
+  // (files that could not be read count as matching).
+  const req = POL.scenariosRequiredFor(pol, files);
   if (scen.length || (req && POL.atLeast(level, req))) {
     const full = scen.length ? SCN.fullPassAt(st.slug, head) : null;
     gate("scenarios", scen.length && scen.every(c => c.status === "pass") && full.ok,

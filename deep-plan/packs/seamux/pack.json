@@ -1,6 +1,6 @@
 {
   "pack": "seamux",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "describes": "This repo's own set-up for a software factory: its probe, lint and build recipes, its two land recipes (the plugins pulled into the kept checkout, and the app built and installed), a scenarios harness that serves the app's pages in a browser against the demo mock, and a policy that merges app and crew changes on green checks, has a person merge plugin, tool and dependency changes, and keeps the factory's own guards supervised.",
   "detect": [
     ".claude-plugin/marketplace.json",
@@ -693,7 +693,10 @@
       }
     ],
     "scenarios": {
-      "require": false,
+      "require": "auto-pr",
+      "paths": [
+        "app/ui/**"
+      ],
       "threshold": 0.8
     },
     "merge": {
