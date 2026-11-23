@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! via  "mcp:<word>"   up when a `claude mcp list` row named <word> says Connected
-//!      "cmd:<name>"   up when <name> is an executable on PATH
+//!      "cmd:<name>"   up when <name> is an executable on PATH, and the
+//!                     sandbox lets out the host it needs (HOSTS)
 //! ```
 //!
 //! A row matches when its name, the part after its last `:`, or the part
@@ -17,6 +18,53 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// The hosts a vendor CLI needs the Bosun's sandbox to let out, for CLIs
+/// that call one fixed API host on nearly every command. Network is opt-in
+/// (the bosun-gh-tls plan's ADRs), so a section says which host is missing
+/// instead of the Bosun trying the CLI and being refused. Not here: a CLI
+/// whose host depends on the account, region or a self-hosted install (aws,
+/// gcloud, az, acli, snowsql, kubectl, glab, sentry-cli), and one that often
+/// runs with no network at all (npm, terraform). Their sections name their
+/// hosts.
+const HOSTS: &[(&str, &[&str])] = &[
+    ("gh", &["api.github.com"]),
+    ("vercel", &["api.vercel.com"]),
+    ("netlify", &["api.netlify.com"]),
+    ("flyctl", &["api.fly.io"]),
+    ("fly", &["api.fly.io"]),
+    ("heroku", &["api.heroku.com"]),
+    ("doctl", &["api.digitalocean.com"]),
+    ("stripe", &["api.stripe.com"]),
+    ("circleci", &["circleci.com"]),
+];
+
+/// The built-in hosts for command `c` (case ignored, as macOS's disk
+/// ignores it): none for a CLI not in HOSTS.
+fn known_hosts(c: &str) -> Vec<String> {
+    HOSTS.iter().find(|(name, _)| name.eq_ignore_ascii_case(c)).map(|(_, h)| h.iter().map(|x| x.to_string()).collect()).unwrap_or_default()
+}
+
+/// "a is", "a and b are", "a, b and c are".
+fn hosts_are(hosts: &[String]) -> String {
+    match hosts {
+        [one] => format!("{one} is"),
+        [rest @ .., last] => format!("{} and {last} are", rest.join(", ")),
+        [] => String::new(),
+    }
+}
+
+/// Whether an allowedDomains `entry` lets out `host` on 443: the host
+/// itself, `*.<parent>`, or `*`, with no port or :443.
+fn covers(entry: &str, host: &str) -> bool {
+    let e = entry.trim().to_ascii_lowercase();
+    let e = match e.rsplit_once(':') {
+        Some((h, "443")) => h.to_string(),
+        Some((_, port)) if port.chars().all(|c| c.is_ascii_digit()) => return false,
+        _ => e,
+    };
+    e == "*" || e == host || e.strip_prefix("*.").is_some_and(|parent| host.ends_with(&format!(".{parent}")))
+}
 
 /// How long `claude mcp list` may take before every mcp: source counts as down.
 pub const MCP_LIST_LIMIT: Duration = Duration::from_secs(60);
@@ -159,31 +207,35 @@ pub fn on_path(name: &str, path: &str) -> bool {
     std::env::split_paths(path).filter(|d| d.is_absolute()).any(|d| std::fs::metadata(d.join(name)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
-/// What one check found: the servers (or why they could not be read) and
-/// the PATH searched.
+/// What one check found: the servers (or why they could not be read), the
+/// PATH searched, and the hosts the running Bosun's sandbox lets out
+/// (launch::launched_domains).
 #[derive(Clone, Debug)]
 pub struct Found {
     pub servers: Result<Vec<Server>, String>,
     pub path: String,
+    pub domains: Vec<String>,
 }
 
 impl Found {
     /// Look now: `claude mcp list` in `root`, and this process's PATH with
     /// the login shell's after it (the Bosun's Bash tool sources the
     /// person's shell setup, which may add folders this process lacks).
-    pub fn look(root: &Path) -> Found {
+    /// `domains` is what the running sandbox lets out.
+    pub fn look(root: &Path, domains: &[String]) -> Found {
         let mut path = std::env::var("PATH").unwrap_or_default();
         let login = login_path(LOGIN_PATH_LIMIT);
         if !login.is_empty() {
             path = if path.is_empty() { login } else { format!("{path}:{login}") };
         }
-        Found { servers: mcp_list(root, MCP_LIST_LIMIT), path }
+        Found { servers: mcp_list(root, MCP_LIST_LIMIT), path, domains: domains.to_vec() }
     }
 
     /// Ok when `via` works, else why not, in words for "Not checked: <why>".
     pub fn check(&self, via: &Via) -> Result<(), String> {
         match via {
-            Via::Cmd(c) => if on_path(c, &self.path) { Ok(()) } else { Err(format!("{c} is not on PATH")) },
+            Via::Cmd(c) if !on_path(c, &self.path) => Err(format!("{c} is not on PATH")),
+            Via::Cmd(c) => self.let_out(&known_hosts(c)),
             Via::Mcp(w) => {
                 let servers = self.servers.as_ref().map_err(|e| format!("could not read claude mcp list ({e})"))?;
                 // Two rows can name one service (a plugin's unconfigured copy
@@ -196,6 +248,26 @@ impl Found {
                     None => Err(format!("no MCP server named {w} in claude mcp list")),
                 }
             }
+        }
+    }
+
+    /// `check`, with a section's own `hosts` in place of the built-in table
+    /// for a cmd: source; an mcp: source ignores them.
+    pub fn check_with(&self, via: &Via, hosts: Option<&[String]>) -> Result<(), String> {
+        match (via, hosts) {
+            (Via::Cmd(c), Some(h)) if on_path(c, &self.path) => self.let_out(h),
+            _ => self.check(via),
+        }
+    }
+
+    /// Ok when the running sandbox lets out every one of `hosts`, else
+    /// which it does not.
+    pub fn let_out(&self, hosts: &[String]) -> Result<(), String> {
+        let missing: Vec<String> = hosts.iter().filter(|h| !self.domains.iter().any(|d| covers(d, &h.to_ascii_lowercase()))).cloned().collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("{} not in sandbox.allowedDomains (bosun.json, read when the Bosun starts)", hosts_are(&missing)))
         }
     }
 
@@ -225,7 +297,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n\
 splunk: npx -y splunk-mcp - \u{2717} Failed to connect\n";
 
     fn found(path: &str) -> Found {
-        Found { servers: Ok(parse_mcp_list(LISTED)), path: path.into() }
+        Found { servers: Ok(parse_mcp_list(LISTED)), path: path.into(), domains: vec![] }
     }
 
     #[test]
@@ -256,17 +328,17 @@ splunk: npx -y splunk-mcp - \u{2717} Failed to connect\n";
         assert_eq!(f.check(&Via::Mcp("datadog".into())), Err("datadog needs authentication".into()));
         assert_eq!(f.check(&Via::Mcp("splunk".into())), Err("splunk failed to connect".into()));
         assert_eq!(f.check(&Via::Mcp("sentry".into())), Err("no MCP server named sentry in claude mcp list".into()));
-        let broken = Found { servers: Err("claude mcp list did not finish in 60s".into()), path: String::new() };
+        let broken = Found { servers: Err("claude mcp list did not finish in 60s".into()), path: String::new(), domains: vec![] };
         assert_eq!(broken.check(&Via::Mcp("datadog".into())), Err("could not read claude mcp list (claude mcp list did not finish in 60s)".into()));
     }
 
     #[test]
     fn a_working_row_wins_over_another_for_the_same_service() {
         let both = "plugin:engineering:gmail:  (HTTP) - - Not configured\nclaude.ai Gmail: https://x - \u{2714} Connected\n";
-        let f = Found { servers: Ok(parse_mcp_list(both)), path: String::new() };
+        let f = Found { servers: Ok(parse_mcp_list(both)), path: String::new(), domains: vec![] };
         assert_eq!(f.check(&Via::Mcp("gmail".into())), Ok(()));
         let neither = "plugin:engineering:gmail:  (HTTP) - - Not configured\nclaude.ai Gmail: https://x - ! Needs authentication\n";
-        let f = Found { servers: Ok(parse_mcp_list(neither)), path: String::new() };
+        let f = Found { servers: Ok(parse_mcp_list(neither)), path: String::new(), domains: vec![] };
         assert_eq!(f.check(&Via::Mcp("gmail".into())), Err("gmail needs authentication".into()));
     }
 
@@ -286,11 +358,59 @@ splunk: npx -y splunk-mcp - \u{2717} Failed to connect\n";
         std::fs::write(d.join("plain"), "").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(d.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let f = found(&format!("/nowhere:{}", d.display()));
+        let f = Found { domains: vec!["api.github.com".into()], ..found(&format!("/nowhere:{}", d.display())) };
         assert_eq!(f.check(&Via::Cmd("gh".into())), Ok(()));
         assert_eq!(f.check(&Via::Cmd("plain".into())), Err("plain is not on PATH".into()), "not executable");
         assert_eq!(f.check(&Via::Cmd("jq".into())), Err("jq is not on PATH".into()));
         assert!(!on_path("gh", &format!(":{}", "relative/dir")), "empty and relative entries are skipped");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn gh_on_path_is_down_until_the_sandbox_lets_out_api_github_com() {
+        let d = std::env::temp_dir().join(format!("bosun-sources-gh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        for c in ["gh", "jq"] {
+            std::fs::write(d.join(c), "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(d.join(c), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let f = found(&d.to_string_lossy());
+        let missing = Err("api.github.com is not in sandbox.allowedDomains (bosun.json, read when the Bosun starts)".to_string());
+        assert_eq!(f.check(&Via::Cmd("gh".into())), missing.clone(), "GitHub is opt-in: no hosts, no gh");
+        assert_eq!(f.check(&Via::Cmd("jq".into())), Ok(()), "a command with no host keeps the PATH check alone");
+        for ok in [&["api.github.com"][..], &["GitHub.com", "*.github.com"], &["*"], &["api.github.com:443"]] {
+            let f = Found { domains: ok.iter().map(|s| s.to_string()).collect(), ..found(&d.to_string_lossy()) };
+            assert_eq!(f.check(&Via::Cmd("gh".into())), Ok(()), "{ok:?}");
+        }
+        for no in [&["github.com"][..], &["api.github.com:8443"], &["*.githubusercontent.com"], &["xapi.github.com"]] {
+            let f = Found { domains: no.iter().map(|s| s.to_string()).collect(), ..found(&d.to_string_lossy()) };
+            assert_eq!(f.check(&Via::Cmd("gh".into())), missing.clone(), "{no:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_known_vendor_cli_is_down_until_its_hosts_are_let_out() {
+        let d = std::env::temp_dir().join(format!("bosun-sources-vendor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        for c in ["glab", "vercel", "heroku", "GH"] {
+            std::fs::write(d.join(c), "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(d.join(c), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let none = found(&d.to_string_lossy());
+        assert_eq!(none.check(&Via::Cmd("vercel".into())), Err("api.vercel.com is not in sandbox.allowedDomains (bosun.json, read when the Bosun starts)".into()));
+        assert_eq!(none.check(&Via::Cmd("GH".into())), Err("api.github.com is not in sandbox.allowedDomains (bosun.json, read when the Bosun starts)".into()), "case ignored, as the disk ignores it");
+        assert_eq!(none.check(&Via::Cmd("glab".into())), Ok(()), "self-hosted GitLab is common: its section names the host");
+        let open = Found { domains: vec!["api.vercel.com".into(), "api.heroku.com".into()], ..found(&d.to_string_lossy()) };
+        assert_eq!(open.check(&Via::Cmd("vercel".into())), Ok(()));
+        assert_eq!(open.check(&Via::Cmd("heroku".into())), Ok(()));
+        let two = Found { domains: vec![], ..found("") };
+        assert_eq!(two.let_out(&["a.example".into(), "b.example".into()]), Err("a.example and b.example are not in sandbox.allowedDomains (bosun.json, read when the Bosun starts)".into()));
+        assert_eq!(two.let_out(&[]), Ok(()), "no hosts, nothing to let out");
         let _ = std::fs::remove_dir_all(&d);
     }
 

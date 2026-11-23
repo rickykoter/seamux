@@ -54,9 +54,27 @@ fn dispatch_forms(seamux: &str) -> Vec<String> {
     v
 }
 
+/// macOS's bundled certificate roots, a PEM file.
+const MACOS_CERTS: &str = "/etc/ssl/cert.pem";
+
+/// The certificate file sandboxed commands check TLS against: `inherited`
+/// (the supervisor's own SSL_CERT_FILE), else macOS's bundled roots, each
+/// only when `exists` finds it: a stale path would leave Go with no roots. The sandbox refuses the trust service,
+/// com.apple.trustd.agent, so Go programs like gh can't check a certificate
+/// without this. Opening the trust service would weaken the sandbox, and a
+/// file leaves it as it is (the bosun-gh-tls plan's ADR).
+fn cert_file(inherited: Option<String>, exists: impl Fn(&Path) -> bool) -> Option<String> {
+    inherited.into_iter().chain([MACOS_CERTS.to_string()]).find(|f| exists(Path::new(f)))
+}
+
 /// The settings passed with --settings. `dir` is the Bosun's own folder, the
 /// one place it writes.
 pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
+    settings_with(cfg, dir, seamux, cert_file(crate::py::env_or("SSL_CERT_FILE"), Path::is_file))
+}
+
+/// `settings` with the certificate file given: none leaves out the env block.
+fn settings_with(cfg: &Config, dir: &Path, seamux: &str, certs: Option<String>) -> Value {
     let root = cfg.root.to_string_lossy().into_owned();
     let own = dir.to_string_lossy().into_owned();
     let mut allow_write = vec![own.clone()];
@@ -79,7 +97,7 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
     deny.extend(protected.iter().map(|p| format!("Edit(/{p})")));
     let mut deny_write = vec![root];
     deny_write.extend(protected.iter().cloned());
-    json!({
+    let mut s = json!({
         "permissions": {
             "deny": deny,
             "ask": dispatch.iter().map(|d| format!("Bash({d})")).collect::<Vec<_>>(),
@@ -103,7 +121,12 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
             ],
             "PreCompact": [{"hooks": [{"type": "command", "command": precompact, "timeout": 10}]}],
         },
-    })
+    });
+    // Claude Code passes env to every command it runs, sandboxed or not.
+    if let Some(f) = certs {
+        s["env"] = json!({"SSL_CERT_FILE": f});
+    }
+    s
 }
 
 /// The conversation the supervisor keeps: its session id and the local day
@@ -148,6 +171,18 @@ pub fn claude_args(settings: &Path, brief: &Path, resume: Option<&str>, fresh: &
     a.extend(["--settings".to_string(), settings.to_string_lossy().into_owned()]);
     a.extend(["--append-system-prompt-file".to_string(), brief.to_string_lossy().into_owned()]);
     a
+}
+
+/// The hosts the running Bosun's sandbox lets out: settings.json's list in
+/// `dir`, written when its Claude started, so an edit to bosun.json counts
+/// only once a restart has picked it up. Before the first launch (no
+/// settings.json), bosun.json's.
+pub fn launched_domains(dir: &Path) -> Vec<String> {
+    let written = fs::read_to_string(dir.join("settings.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    match written {
+        Some(v) => v["sandbox"]["network"]["allowedDomains"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+        None => Config::load_from(dir).allowed_domains,
+    }
 }
 
 /// Writes settings.json and brief.md into `dir`: (settings, brief).
@@ -210,6 +245,48 @@ mod tests {
         let out = json!(["seamux bosun dispatch *", "/bin/seamux bosun dispatch *"]);
         assert_eq!(s["sandbox"]["excludedCommands"], out, "dispatch alone leaves the sandbox");
         assert_eq!(s["permissions"]["ask"], json!(["Bash(seamux bosun dispatch *)", "Bash(/bin/seamux bosun dispatch *)"]), "and asks every time");
+    }
+
+    #[test]
+    fn settings_point_gh_at_a_certificate_file() {
+        // The sandbox refuses com.apple.trustd.agent, so gh (Go) can't check
+        // a certificate unless SSL_CERT_FILE names a file it can read.
+        let s = settings(&cfg(), Path::new("/d"), "seamux");
+        if Path::new("/etc/ssl/cert.pem").is_file() || crate::py::env_or("SSL_CERT_FILE").is_some() {
+            assert!(s["env"]["SSL_CERT_FILE"].as_str().is_some_and(|f| !f.is_empty()), "no certificate file for gh: {}", s["env"]);
+        }
+    }
+
+    #[test]
+    fn the_supervisors_own_certificate_file_wins_and_the_sandbox_is_unchanged() {
+        let yes = |_: &Path| true;
+        let no = |_: &Path| false;
+        assert_eq!(cert_file(Some("/corp/ca.pem".into()), yes).as_deref(), Some("/corp/ca.pem"), "a corporate bundle is kept");
+        assert_eq!(cert_file(None, yes).as_deref(), Some("/etc/ssl/cert.pem"));
+        assert_eq!(cert_file(None, no), None, "no file, no variable");
+        let only_macos = |p: &Path| p == Path::new("/etc/ssl/cert.pem");
+        assert_eq!(cert_file(Some("/gone/ca.pem".into()), only_macos).as_deref(), Some("/etc/ssl/cert.pem"), "a stale inherited path falls back");
+        let with = settings_with(&cfg(), Path::new("/d"), "seamux", Some("/etc/ssl/cert.pem".into()));
+        let without = settings_with(&cfg(), Path::new("/d"), "seamux", None);
+        assert_eq!(with["env"], json!({"SSL_CERT_FILE": "/etc/ssl/cert.pem"}));
+        assert!(without.get("env").is_none());
+        assert_eq!(with["sandbox"], without["sandbox"], "the certificate file leaves the sandbox as it is");
+        assert_eq!(with["permissions"], without["permissions"]);
+        assert!(with["sandbox"].get("enableWeakerNetworkIsolation").is_none() && with["sandbox"]["network"].get("allowMachLookup").is_none(), "the trust service stays shut");
+    }
+
+    #[test]
+    fn the_running_sandboxs_hosts_come_from_the_settings_it_launched_with() {
+        let d = std::env::temp_dir().join(format!("bosun-launched-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("bosun.json"), r#"{"sandbox": {"allowedDomains": ["api.github.com"]}}"#).unwrap();
+        assert_eq!(launched_domains(&d), vec!["api.github.com"], "no launch yet: bosun.json's");
+        let mut c = cfg();
+        c.allowed_domains.clear();
+        write_files(&c, &d, "seamux").unwrap();
+        assert!(launched_domains(&d).is_empty(), "added after the launch: not let out until a restart");
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

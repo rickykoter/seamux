@@ -82,6 +82,8 @@ The sandbox lets out only the domains and folders in
 `~/.claude/crew/bosun/bosun.json` (`sandbox.allowedDomains` and
 `sandbox.allowWrite`). When `gh`, a CLI or a socket is refused, report that
 source as unreachable, name the error, and say which list would need the
-entry. The person tunes those lists, and you never edit bosun.json for them
+entry. A certificate error from `gh` (`x509:` or `failed to verify
+certificate`) is not a missing entry: report it with the error as it is.
+The person tunes those lists, and you never edit bosun.json for them
 unless asked. MCP servers (Snowflake, Datadog, Splunk, Jira) run outside the
 sandbox and are not affected.

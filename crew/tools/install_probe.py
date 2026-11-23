@@ -32,6 +32,7 @@ What is asserted:
 import glob
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -128,6 +129,10 @@ case "$1" in
       backend) [ -n "${{FAKE_BACKEND:-}}" ] && echo "$FAKE_BACKEND" ;;
     esac; exit 0 ;;
   crew-hook) {{ printf '%s ' "$2"; cat; echo; }} >> {os.path.join(FAKE, "hooks.log")!r} ;;
+  bosun) [ -n "${{FAKE_BOSUN_FAIL:-}}" ] && {{ echo "bosun.json is not JSON" >&2; exit 1; }}
+    [ -n "${{FAKE_NO_BOSUN:-}}" ] && {{ echo 'seamux: no tool named "bosun" (seamux --tools lists them)' >&2; exit 127; }}
+    [ "$2 $3" = "report doctor" ] && [ -n "${{FAKE_BOSUN:-}}" ] || {{ echo "usage: seamux bosun ensure|status" >&2; exit 2; }}
+    printf '%b' "$FAKE_BOSUN" ;;
   *) exit 0 ;;
 esac
 """, 0o755)
@@ -587,6 +592,29 @@ check("in a cmux terminal it passes on CMUX_WORKSPACE_ID, and Computer Use reads
 out, lines = doctor_lines()
 check("with neither id it warns that hooks no-op outside the app's panes and cmux terminals",
       any("no SEAMUX_WORKSPACE_ID or CMUX_WORKSPACE_ID" in l for l in lines), "\n".join(lines))
+
+# --- crew doctor's Bosun lines (plan bosun-gh-tls) ---------------------------
+r = crew("doctor", FAKE_BOSUN="ok\\tBosun reports: every section's sources work (1 report)\\n"
+         "warn\\tBosun report morning · Pull requests: not checkable yet: api.github.com is not in sandbox.allowedDomains\\n"
+         "note\\tdatadog is set up but no report section uses it\\n")
+out = r.stdout + r.stderr
+bosun = out.split("\x1b[1mbosun\x1b[0m", 1)[-1].split("\x1b[1mcontext", 1)[0]
+bosun = re.sub(r"\x1b\[[0-9;]*m", "", bosun)
+check("crew doctor shows seamux's Bosun lines under their own heading, each at its level",
+      "✓ Bosun reports: every section's sources work" in bosun
+      and "! Bosun report morning · Pull requests: not checkable yet: api.github.com" in bosun
+      and "· datadog is set up but no report section uses it" in bosun, bosun or out[-800:])
+r2 = crew("doctor")
+check("…a Bosun warning never fails doctor on its own, and an older seamux without the verb is one note",
+      r.returncode == r2.returncode
+      and "this seamux has no bosun report doctor: update it" in r2.stdout + r2.stderr, (r2.stdout + r2.stderr)[-800:])
+r4 = crew("doctor", FAKE_NO_BOSUN="1")
+check("…and so is a seamux from before the Bosun, which has no bosun tool at all",
+      "this seamux has no bosun report doctor: update it" in r4.stdout + r4.stderr, (r4.stdout + r4.stderr)[-800:])
+r3 = crew("doctor", FAKE_BOSUN_FAIL="1")
+check("…and a doctor verb that fails says so with its error, not that seamux is old",
+      "seamux bosun report doctor failed (exit 1): bosun.json is not JSON" in r3.stdout + r3.stderr
+      and "update it" not in (r3.stdout + r3.stderr).split("context")[0].split("bosun")[-1], (r3.stdout + r3.stderr)[-800:])
 
 # --- cleanup -----------------------------------------------------------------
 try:

@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L15 -->
+<!-- next: L16 -->
 
 ## L1
 applies: **
@@ -89,3 +89,9 @@ applies: app/crates/**, crew/**
 from: bosun (correction ce543aeae), 2026-11-23
 
 A live check on a temp store also runs the background passes the app runs (seamux crew-sync, the doctor scan) and a person's input in the pane, or it misses what they change. A workspace kept out of the lists is checked against every reader that keeps its own list.
+
+## L15
+applies: **
+from: bosun-gh-tls (correction c9ae3487e), 2026-11-23
+
+At the start of a plan, run deep-plan notes and read every open note filed under its slug: the session-start hook's note list can be cut off, and a note placed on the plan can go unread until the person asks.

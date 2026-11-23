@@ -43,6 +43,25 @@ pub struct Section {
     pub title: String,
     pub via: Vec<Via>,
     pub ask: String,
+    /// The hosts its cmd: sources need the sandbox to let out, in place of
+    /// the built-in table (sources.rs); Some(empty) turns the check off.
+    pub hosts: Option<Vec<String>>,
+}
+
+/// A section's `hosts`: absent, or a list of the host names its CLI
+/// connects to (dot-separated labels of letters, digits and dashes; no
+/// wildcard or port, which belong in allowedDomains), or why not.
+fn hosts_of(s: &Value) -> Result<Option<Vec<String>>, String> {
+    let bare = |h: &str| h.split('.').all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    match s.get("hosts") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|x| x.as_str().map(str::trim).filter(|h| bare(h)).map(str::to_string).ok_or(format!("hosts {x}: use host names like api.example.com")))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(x) => Err(format!("hosts {x} is not a list")),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,10 +114,11 @@ pub fn parse(v: &Value) -> Result<Report, String> {
             Some(Value::Array(a)) => a.iter().map(|x| Via::parse(x.as_str().unwrap_or(""))).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{id}: {title}: {e}"))?,
             Some(x) => return Err(format!("{id}: {title}: via {x} is not a list")),
         };
+        let hosts = hosts_of(s).map_err(|e| format!("{id}: {title}: {e}"))?;
         if sections.iter().any(|s: &Section| s.title.eq_ignore_ascii_case(&title)) {
             return Err(format!("{id}: two sections are titled {title:?}"));
         }
-        sections.push(Section { title, via, ask });
+        sections.push(Section { title, via, ask, hosts });
     }
     if sections.is_empty() {
         return Err(format!("{id}: no sections"));
@@ -285,7 +305,7 @@ pub fn tick(dir: &Path, root: &Path, now_secs: i64) {
     let last = TRIED.load(Ordering::SeqCst);
     if now_secs.saturating_sub(last) >= SEED_RETRY && needs_seed(dir) {
         TRIED.store(now_secs, Ordering::SeqCst);
-        if let Err(e) = seed(dir, &Found::look(root)) {
+        if let Err(e) = seed(dir, &Found::look(root, &super::launch::launched_domains(dir))) {
             super::supervise::warn("reports-starters", &format!("bosun reports: could not write the starter reports yet: {e}"));
         }
     }
@@ -325,7 +345,7 @@ impl Checked {
 }
 
 pub fn check_sections(r: &Report, found: &Found) -> Vec<Checked> {
-    r.sections.iter().map(|s| Checked { section: s.clone(), via: s.via.iter().map(|v| (v.clone(), found.check(v))).collect() }).collect()
+    r.sections.iter().map(|s| Checked { section: s.clone(), via: s.via.iter().map(|v| (v.clone(), found.check_with(v, s.hosts.as_deref()))).collect() }).collect()
 }
 
 /// What the run does with its Claude Doc.
@@ -451,7 +471,7 @@ pub fn prepare(dir: &Path, item: &queue::Item, root: &Path) -> Result<queue::Ite
     if read_run(dir, &item.id).is_some_and(|v| v["built"] == true) {
         return Ok(item.clone());
     }
-    prepare_with(dir, item, &Found::look(root), super::launch::now_secs(), &super::launch::seamux_bin())
+    prepare_with(dir, item, &Found::look(root, &super::launch::launched_domains(dir)), super::launch::now_secs(), &super::launch::seamux_bin())
 }
 
 // ---- results and the banner ----
@@ -703,7 +723,7 @@ pub fn list(dir: &Path, now_secs: i64) -> Vec<Value> {
                     "last": k.as_ref().map(|k| k.last.last).filter(|x| *x > 0),
                     "lastRun": k.as_ref().map(|k| k.last.queued.clone()).unwrap_or_default(),
                     "doc": k.map(|k| k.doc).unwrap_or_default(),
-                    "sections": r.sections.iter().map(|s| json!({"title": s.title, "via": s.via.iter().map(Via::text).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                    "sections": r.sections.iter().map(|s| json!({"title": s.title, "via": s.via.iter().map(Via::text).collect::<Vec<_>>(), "hosts": s.hosts})).collect::<Vec<_>>(),
                 })
             }
             Err(e) => json!({"error": e}),
@@ -738,6 +758,69 @@ pub fn check(dir: &Path, found: &Found, only: Option<&str>) -> Vec<Value> {
         .collect()
 }
 
+/// What the Bosun's reports still need, for crew doctor: (level, message)
+/// lines, the level ok, warn or note. A section that can't be checked yet
+/// and why, a report bosun.json can't run, a doc-bound report whose
+/// connector is down, and a set-up MCP server no section uses. Reads only.
+pub fn doctor_lines(dir: &Path, found: &Found) -> Vec<(String, String)> {
+    // One line each: a title with a newline or tab would split crew's read.
+    let line = |l: &str, m: String| (l.to_string(), m.replace(['\n', '\r', '\t'], " "));
+    // A section's mcp: word names a server as Server::named reads it: whole,
+    // by the part after its last ':', or after "claude.ai ".
+    let names = |w: &str, word: &str| {
+        let w = w.to_ascii_lowercase();
+        w == word || w.rsplit(':').next() == Some(word) || w.strip_prefix("claude.ai ") == Some(word)
+    };
+    if needs_seed(dir) {
+        return vec![line("note", "no Bosun reports yet: the supervisor writes the starters on its first run".into())];
+    }
+    let reports = load(dir);
+    if reports.is_empty() {
+        return vec![line("note", "no Bosun reports: bosun.json's reports list is empty".into())];
+    }
+    let mut out = Vec::new();
+    if let Err(e) = &found.servers {
+        out.push(line("warn", format!("Bosun reports: could not read claude mcp list ({e}), so no mcp: source could be checked")));
+    }
+    let state = load_state(dir);
+    let mut used: Vec<String> = Vec::new();
+    let mut running = 0;
+    for r in &reports {
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                out.push(line("warn", format!("bosun.json's reports: {e}")));
+                continue;
+            }
+        };
+        used.extend(r.sections.iter().flat_map(|s| s.via.iter()).filter_map(|v| match v {
+            Via::Mcp(w) => Some(w.to_ascii_lowercase()),
+            Via::Cmd(_) => None,
+        }));
+        if !r.when.enabled {
+            continue;
+        }
+        running += 1;
+        for c in check_sections(r, found).iter().filter(|c| !c.runnable()) {
+            out.push(line("warn", format!("Bosun report {} · {}: not checkable yet: {}", r.id, c.section.title, c.why())));
+        }
+        if let Doc::Down(why) = doc_for(r, &kept(&state, &r.id).unwrap_or_default(), found) {
+            out.push(line("warn", format!("Bosun report {}: its Claude Doc can't be updated: {why}", r.id)));
+        }
+    }
+    if running == 0 {
+        out.push(line("note", "every Bosun report is turned off (enabled: false), so none was checked".into()));
+    } else if !out.iter().any(|(l, _)| l == "warn") {
+        out.insert(0, line("ok", format!("Bosun reports: every section's sources work ({running} report{})", if running == 1 { "" } else { "s" })));
+    }
+    for (word, _, _) in KNOWN {
+        if found.has(word) && !used.iter().any(|u| names(u, word)) {
+            out.push(line("note", format!("{word} is set up but no report section uses it: add one to bosun.json's reports")));
+        }
+    }
+    out
+}
+
 fn print_errors_or(rows: &[Value], empty: &str, each: impl Fn(&Value)) {
     if rows.is_empty() {
         println!("{empty}");
@@ -750,7 +833,7 @@ fn print_errors_or(rows: &[Value], empty: &str, each: impl Fn(&Value)) {
     }
 }
 
-const USAGE: &str = "usage: seamux bosun report [list] [--json] | report run <id> [--json] | report check [<id>] [--json] | report done <run> (results on stdin)";
+const USAGE: &str = "usage: seamux bosun report [list] [--json] | report run <id> [--json] | report check [<id>] [--json] | report doctor | report done <run> (results on stdin)";
 
 /// `seamux bosun report …`.
 pub fn main(args: &[String], dir: &Path) -> i32 {
@@ -811,9 +894,18 @@ pub fn main(args: &[String], dir: &Path) -> i32 {
                 }
             }
         }
+        ["doctor"] => {
+            // crew doctor reads these lines, as it reads pricing --doctor's.
+            let cfg = super::config::Config::load_from(dir);
+            let found = if needs_seed(dir) { Found { servers: Ok(Vec::new()), path: String::new(), domains: Vec::new() } } else { Found::look(&cfg.root, &super::launch::launched_domains(dir)) };
+            for (level, msg) in doctor_lines(dir, &found) {
+                println!("{level}\t{msg}");
+            }
+            0
+        }
         ["check", rest @ ..] if rest.len() <= 1 => {
             let cfg = super::config::Config::load_from(dir);
-            let found = Found::look(&cfg.root);
+            let found = Found::look(&cfg.root, &super::launch::launched_domains(dir));
             // From a person's shell, a store with no reports gets its starters
             // here too; inside the Bosun's sandbox the write is refused.
             if needs_seed(dir) {
@@ -880,7 +972,7 @@ mod tests {
 plugin:engineering:datadog: https://x (HTTP) - ! Needs authentication\n\
 plugin:engineering:atlassian: https://x (HTTP) - \u{2714} Connected\n\
 plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
-        Found { servers: Ok(parse_mcp_list(listed)), path: String::new() }
+        Found { servers: Ok(parse_mcp_list(listed)), path: String::new(), domains: vec![] }
     }
 
     fn morning() -> Value {
@@ -942,6 +1034,90 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
     }
 
     #[test]
+    fn report_doctor_says_what_the_reports_still_need() {
+        let d = tmp("doctor");
+        let lines = doctor_lines(&d, &found());
+        assert_eq!(lines, vec![("note".to_string(), "no Bosun reports yet: the supervisor writes the starters on its first run".to_string())]);
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(d.join("gh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(d.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+        loops::write_json(&d.join("bosun.json"), &json!({"reports": [
+            {"id": "morning", "at": ["09:00"], "to": [], "sections": [
+                {"title": "Pull requests", "via": ["cmd:gh"], "ask": "PRs"},
+                {"title": "Monitors", "via": ["mcp:datadog"], "ask": "alerts"}]},
+            {"id": "quiet", "at": ["09:00"], "enabled": false, "sections": [{"title": "Off", "via": ["cmd:nope"], "ask": "a"}]},
+            {"id": "bad"}]})).unwrap();
+        let f = Found { path: d.to_string_lossy().into_owned(), ..found() };
+        let lines = doctor_lines(&d, &f);
+        let has = |lvl: &str, text: &str| lines.iter().any(|(l, m)| l == lvl && m.contains(text));
+        assert!(has("warn", "morning · Pull requests: not checkable yet: api.github.com is not in sandbox.allowedDomains"), "{lines:?}");
+        assert!(has("warn", "morning · Monitors: not checkable yet: datadog needs authentication"), "{lines:?}");
+        assert!(has("warn", "bosun.json's reports: bad:"), "a report that can't run is named: {lines:?}");
+        assert!(has("note", "atlassian is set up but no report section uses it"), "{lines:?}");
+        assert!(!lines.iter().any(|(_, m)| m.contains("quiet")), "a report turned off is not checked: {lines:?}");
+        assert!(!lines.iter().any(|(l, _)| l == "ok"), "{lines:?}");
+        loops::write_json(&d.join("bosun.json"), &json!({"reports": [{"id": "m", "at": ["09:00"], "to": [], "sections": [
+            {"title": "Tickets", "via": ["mcp:atlassian"], "ask": "a"}, {"title": "Docs", "via": ["mcp:claude docs"], "ask": "b"}]}]})).unwrap();
+        let lines = doctor_lines(&d, &found());
+        assert!(lines.iter().any(|(l, m)| l == "ok" && m == "Bosun reports: every section's sources work (1 report)"), "{lines:?}");
+        loops::write_json(&d.join("bosun.json"), &json!({"reports": [{"id": "m", "at": ["09:00"], "to": [], "enabled": false, "sections": [
+            {"title": "Two\nlines", "via": ["mcp:plugin:engineering:atlassian", "mcp:claude.ai datadog"], "ask": "a"}]}]})).unwrap();
+        let lines = doctor_lines(&d, &found());
+        assert!(!lines.iter().any(|(l, _)| l == "ok"), "nothing ran, nothing is ok: {lines:?}");
+        assert!(lines.iter().any(|(l, m)| l == "note" && m.contains("every Bosun report is turned off")), "{lines:?}");
+        assert!(!lines.iter().any(|(_, m)| m.contains("atlassian is set up") || m.contains("datadog is set up")), "a full or claude.ai name counts as using it: {lines:?}");
+        loops::write_json(&d.join("bosun.json"), &json!({"reports": [{"id": "m", "at": ["09:00"], "to": [], "sections": [
+            {"title": "Two\nlines\there", "via": ["cmd:nope"], "ask": "a"}]}]})).unwrap();
+        let lines = doctor_lines(&d, &found());
+        assert!(lines.iter().any(|(l, m)| l == "warn" && m.contains("m · Two lines here: not checkable yet: nope is not on PATH")), "one line each: {lines:?}");
+    }
+
+    #[test]
+    fn a_sections_hosts_decide_its_cmd_sources() {
+        let d = tmp("sec-hosts");
+        use std::os::unix::fs::PermissionsExt;
+        for c in ["gcloud", "gh"] {
+            fs::write(d.join(c), "#!/bin/sh\n").unwrap();
+            fs::set_permissions(d.join(c), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let r = parse(&json!({"id": "infra", "at": ["09:00"], "sections": [
+            {"title": "Deploys", "via": ["cmd:gcloud", "mcp:datadog"], "hosts": ["oauth2.googleapis.com", "run.googleapis.com"], "ask": "failed deploys"},
+            {"title": "Offline", "via": ["cmd:gh"], "hosts": [], "ask": "local only"},
+            {"title": "Plain", "via": ["cmd:gcloud"], "ask": "no hosts named"},
+        ]}))
+        .unwrap();
+        let path = d.to_string_lossy().into_owned();
+        let closed = check_sections(&r, &Found { path: path.clone(), ..found() });
+        assert!(!closed[0].runnable(), "a section's hosts are checked for a CLI the table doesn't know");
+        assert!(closed[0].why().contains("oauth2.googleapis.com and run.googleapis.com are not in sandbox.allowedDomains"), "{}", closed[0].why());
+        assert!(closed[1].runnable(), "an empty list turns the host check off, even for gh");
+        assert!(closed[2].runnable(), "no hosts key and no table entry: the PATH check alone");
+        let open = check_sections(&r, &Found { path, domains: vec!["*.googleapis.com".into()], ..found() });
+        assert!(open[0].runnable());
+        for bad in [json!("run.googleapis.com"), json!(["https://run.googleapis.com"]), json!(["a b"]), json!([""]), json!([3]), json!(["*"]), json!(["*.googleapis.com"]), json!(["api.example.com:8443"]), json!([".."]), json!([":"])] {
+            let v = json!({"id": "x", "at": ["09:00"], "sections": [{"title": "t", "via": ["cmd:gcloud"], "hosts": bad, "ask": "a"}]});
+            assert!(parse(&v).is_err(), "{v}");
+        }
+    }
+
+    #[test]
+    fn a_starter_pr_section_names_the_host_the_sandbox_lacks() {
+        let d = tmp("gh-host");
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(d.join("gh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(d.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let path = d.to_string_lossy().into_owned();
+        let starters = starters(&found());
+        let r = parse(&starters[1]).unwrap();
+        let closed = Found { path: path.clone(), ..found() };
+        let c = check_sections(&r, &closed);
+        assert!(!c[0].runnable());
+        assert_eq!(c[0].why(), "api.github.com is not in sandbox.allowedDomains (bosun.json, read when the Bosun starts)", "GitHub is opt-in, and the section says what to add");
+        let open = Found { path, domains: vec!["api.github.com".into()], ..found() };
+        assert!(check_sections(&r, &open)[0].runnable());
+    }
+
+    #[test]
     fn the_prompt_is_built_at_typing_with_down_sources_not_checked() {
         let d = tmp("prep");
         loops::write_json(&d.join("bosun.json"), &json!({"reports": [morning()]})).unwrap();
@@ -965,7 +1141,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         assert_eq!(rv["sections"][1]["why"], "datadog needs authentication");
         assert_eq!(rv["sections"][2]["runnable"], true);
         // Built once: a retry types the same text without a new check.
-        let none = Found { servers: Err("gone".into()), path: String::new() };
+        let none = Found { servers: Err("gone".into()), path: String::new(), domains: vec![] };
         assert_eq!(prepare_with(&d, &built, &none, 200, "/bin/seamux").unwrap().text, *t);
         let _ = fs::remove_dir_all(&d);
     }
@@ -976,7 +1152,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         let k = Kept { doc: "https://claude.ai/artifact/abc".into(), ..Default::default() };
         assert_eq!(doc_for(&r, &k, &found()), Doc::At("https://claude.ai/artifact/abc".into()));
         assert_eq!(doc_for(&r, &Kept::default(), &found()), Doc::New);
-        let down = Found { servers: Ok(parse_mcp_list("claude.ai Claude Docs: https://x - ! Needs authentication\n")), path: String::new() };
+        let down = Found { servers: Ok(parse_mcp_list("claude.ai Claude Docs: https://x - ! Needs authentication\n")), path: String::new(), domains: vec![] };
         assert_eq!(doc_for(&r, &k, &down), Doc::Down("claude docs needs authentication".into()));
         let off = parse(&json!({"id": "a", "every": "1h", "to": ["banner"], "sections": [{"title": "t", "ask": "a"}]})).unwrap();
         assert_eq!(doc_for(&off, &k, &found()), Doc::Off);
@@ -1055,7 +1231,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
     #[test]
     fn starters_wait_for_a_listing_that_reads() {
         let d = tmp("noseed");
-        let failed = Found { servers: Err("claude mcp list did not finish in 60s".into()), path: String::new() };
+        let failed = Found { servers: Err("claude mcp list did not finish in 60s".into()), path: String::new(), domains: vec![] };
         assert!(seed(&d, &failed).unwrap_err().contains("could not be listed"));
         assert!(needs_seed(&d), "tried again later");
         let _ = fs::remove_dir_all(&d);
