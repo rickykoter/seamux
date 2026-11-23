@@ -850,6 +850,12 @@ function labWrite(id, data) {
 }
 
 const ptys = new Map();
+
+/** The workspace a pane's terminal (by pty id) is in. */
+function wsOfPty(id) {
+  const t = ptys.get(id);
+  return t ? ws.find((w) => w.surface === t.surface || w.shell?.surface === t.surface) : undefined;
+}
 let nextPty = 1;
 const enc = new TextEncoder();
 
@@ -1072,7 +1078,13 @@ const handlers = {
     const r = await fetch(`/__demo/page?path=${encodeURIComponent(path)}`).then((x) => x.json()).catch(() => ({ code: 0 }));
     return r.code;
   },
-  open_in_cmux: (a) => opening("open_in_cmux", a),
+  // shell.rs cmux_path_ok: every seamux page and a plain query, nothing else.
+  open_in_cmux: (a) => {
+    const [path, query = ""] = String(a?.path ?? "").split("?", 2);
+    const ok = /^\/(plan|review|ask|agent|run|runs)\/[A-Za-z0-9._\/-]+$/.test(path) && !/\.\.|\/\//.test(path + "?" + query) && /^[A-Za-z0-9._=&%\/-]*$/.test(query);
+    if (!ok) throw `not a page cmux opens from here: ${JSON.stringify(a?.path)}`;
+    return opening("open_in_cmux", a);
+  },
   open_in_vscode: ({ dir }) => ({ folder: dir, note: null }),
   open_in_editor: (a) => opening("open_in_editor", a),
   open_url: (a) => opening("open_url", a),
@@ -1093,8 +1105,19 @@ const handlers = {
   pty_line_key: () => null,
   pty_seen: () => null,
   pty_shell: () => false,
-  pty_paths: () => [],
-  pty_workspace: () => null,
+  // Links in a pane: a path with a file extension is taken to exist, in the
+  // pane's worktree when it is relative; the pane's workspace is its own.
+  pty_paths: ({ id, paths }) => {
+    const w = wsOfPty(id);
+    const base = w ? treeOf(w) : HOME;
+    return (paths ?? []).map((q) => {
+      const bare = q.replace(/:\d+(:\d+)?$/, "");
+      if (!/\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(bare)) return null;
+      const abs = bare.startsWith("/") ? bare : bare.startsWith("~/") ? HOME + bare.slice(1) : `${base}/${bare.replace(/^\.\//, "")}`;
+      return abs;
+    });
+  },
+  pty_workspace: ({ id }) => wsOfPty(id)?.id ?? null,
 
   workspace_sessions: ({ workspace }) => {
     const w = ws.find((x) => x.id === workspace);
@@ -1247,8 +1270,16 @@ const handlers = {
   pane_stop_cancel: () => false,
   pty_shell_run: () => null,
   clip_read: () => ({ kind: "empty" }),
-  link_file: () => {
-    throw "the demo has no files to show";
+  // A file a pane links to, as links_app.rs shows it: Markdown rendered, a
+  // picture as itself. The demo has no PDFs or other files to show.
+  link_file: ({ path }) => {
+    const title = path.split("/").pop() || path;
+    if (/\.(md|markdown)$/i.test(path)) {
+      const page = `<!doctype html><body style="font:15px -apple-system,sans-serif;padding:24px;color:#222"><h1>${title}</h1><p>A demo file at <code>${path}</code>.</p><ul><li>BAD_CODE: the code is not one we know</li><li>EXPIRED: the code's date has passed</li></ul></body>`;
+      return { kind: "html", title, data: `data:text/html;base64,${btoa(page)}` };
+    }
+    if (/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) return { kind: "image", title, data: demoShot(title.length) };
+    throw "the demo has no such file to show";
   },
   session_last_exchange: ({ workspace }) => {
     const w = ws.find((x) => x.id === workspace);
