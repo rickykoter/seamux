@@ -56,6 +56,9 @@ seamux bosun log add < <dir>/drafts/<id>.json
 #   shown to the person first and passed inline so the approval prompt shows it;
 #   then log it with that id and a {"kind": "workspace", "ref": <path>, "label": <branch>} source
 seamux bosun dispatch <repo> <slug>-<id> --json --brief-text '<the brief>'
+# a report run ("[Report <id> run <run>]"): its results, as the report reference says;
+#   it logs the run, so no log add for it
+seamux bosun report done <run> < <dir>/drafts/<run>.json
 # from any other session: in the background; on exit 3, ask --id <id> waits again
 seamux bosun ask "<question>" --from "<repo>/<branch>"
 ```
@@ -70,6 +73,7 @@ one for the job before acting, even in a session told not to open files.
 | "Sitrep", "where do things stand", a morning check-in | [references/sitrep.md](references/sitrep.md) |
 | Any question, typed by the person or queued as `[Ask <id> from <who>]` | [references/answers.md](references/answers.md) |
 | "Send this to a workspace", or an answer that turns into real work | [references/dispatch.md](references/dispatch.md) |
+| A queued `[Report <id> run <run>]`: a scheduled report's sections | [references/report.md](references/report.md) |
 | A session other than the Bosun with a cross-repo question | [references/ask.md](references/ask.md) |
 
 ## When a source can't be reached

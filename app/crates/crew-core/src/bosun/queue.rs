@@ -97,6 +97,19 @@ pub fn waiting(dir: &Path) -> Vec<Item> {
     names.iter().filter_map(|p| read_item(p)).collect()
 }
 
+/// Put `text` in place of the item's text, in its file: a report's
+/// placeholder once the supervisor has built its prompt (reports.rs), so a
+/// retry types the same prompt. The item as it now is.
+pub fn rewrite_text(item: &Item, text: &str) -> Result<Item, String> {
+    if text.trim().is_empty() || text.trim_start().starts_with('/') {
+        return Err("not a prompt".into());
+    }
+    let mut v: Value = fs::read_to_string(&item.path).ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or("the item is gone")?;
+    v["text"] = json!(text);
+    write_atomic(&item.path, &v.to_string())?;
+    Ok(Item { text: text.into(), ..item.clone() })
+}
+
 /// The Bosun started on the item: it leaves the queue.
 pub fn done(item: &Item) {
     let _ = fs::remove_file(&item.path);
@@ -196,6 +209,22 @@ mod tests {
         fail(&i);
         assert!(waiting(&d).is_empty());
         assert!(queue_dir(&d).join("failed").join(i.path.file_name().unwrap()).is_file());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_rewritten_item_keeps_its_place_and_tries() {
+        let d = tmp("rewrite");
+        let i = enqueue_as(&d, "r1", "[Report morning run r1]", "report:morning").unwrap();
+        bump(&i);
+        let j = rewrite_text(&i, "the whole prompt").unwrap();
+        let w = waiting(&d);
+        assert_eq!((w.len(), w[0].text.as_str(), w[0].source.as_str()), (1, "the whole prompt", "report:morning"));
+        assert_eq!(j.path, i.path);
+        assert_eq!(bump(&j), 2, "its tries are kept");
+        assert!(rewrite_text(&j, "/clear").is_err());
+        done(&j);
+        assert!(rewrite_text(&j, "x").is_err(), "a gone item is not written again");
         let _ = fs::remove_dir_all(&d);
     }
 

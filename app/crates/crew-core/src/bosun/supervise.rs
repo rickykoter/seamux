@@ -218,6 +218,11 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
         let now = launch::now_secs();
         // bosun-routines' loops queue what is due; the drain below types it.
         super::loops::tick(&dir, now);
+        // bosun-reports: reports queue placeholders; their prompts are built below.
+        super::reports::tick(&dir, &cfg.root, now);
+        // A finished run that needs the person: its banner, as a note file
+        // the app posts (the Bosun's sandbox can't write crew's state folder).
+        super::reports::banner_pass(&dir, &crate::status::pane_dir(), now);
         let (today, hour) = launch::local_day_hour(now);
         let queued = if is_idle { super::queue::waiting(&dir) } else { Vec::new() };
         let Some(action) = due(&state, is_idle, &cfg, &today, hour, &queued) else { continue };
@@ -226,6 +231,26 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
         if screen(&target).as_deref().and_then(input_empty) == Some(false) {
             continue;
         }
+        // A report's prompt is built now, from a source check made just
+        // before it is typed (claude mcp list takes seconds, so the prompt
+        // is looked at again after).
+        let action = match action {
+            Action::Send(item) if item.source.starts_with("report:") => match super::reports::prepare(&dir, &item, &cfg.root) {
+                Ok(built) if built.text != item.text => {
+                    if screen(&target).as_deref().and_then(input_empty) == Some(false) {
+                        continue;
+                    }
+                    Action::Send(built)
+                }
+                Ok(built) => Action::Send(built),
+                Err(e) => {
+                    warn(&format!("report-{}", item.id), &format!("bosun: report run {} can't be typed ({e}); it is in queue/failed", item.id));
+                    super::queue::fail(&item);
+                    continue;
+                }
+            },
+            other => other,
+        };
         let typed = match action {
             // Marked once typed (a failed type is tried again next tick), so
             // a /clear that prime never hears of is not typed again on every one.

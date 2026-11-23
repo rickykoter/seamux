@@ -969,7 +969,25 @@ const bosunDay = (msAgo) => new Date(Date.now() - msAgo).toISOString().slice(0, 
 const BOSUN_LOG = (() => {
   const now = Date.now();
   const e = (id, minAgo, question, answer, sources, asker) => ({ id, at: now - minAgo * 60e3, question, answer, sources, asker });
+  // A morning report run (crew_core::bosun::reports): one section needs you,
+  // one is fine, one was not checked because its server needs a login.
+  const morning = {
+    ...e("r1", 20, "Morning report",
+      "- Pull requests: #812 waits 2 days on your review\n- Tickets: nothing changed since yesterday\n- Monitors: Not checked: datadog needs authentication", [
+        { kind: "github", ref: "https://github.com/acme/shop/pull/812", label: "PR 812" },
+        { kind: "doc", ref: "https://claude.ai/artifact/morning-report", label: "Morning report doc" },
+      ], "report:morning"),
+    report: {
+      id: "morning", run: "r1", title: "Morning report", doc: "https://claude.ai/artifact/morning-report",
+      sections: [
+        { title: "Pull requests", status: "needs", line: "#812 waits 2 days on your review" },
+        { title: "Tickets", status: "ok", line: "nothing changed since yesterday" },
+        { title: "Monitors", status: "unchecked", line: "Not checked: datadog needs authentication", why: "datadog needs authentication" },
+      ],
+    },
+  };
   const today = [
+    morning,
     e("b2", 40, "What's open on checkout-api?", "3 PRs open: #812 waits on review, #815 has red CI, #819 is a draft.", [
       { kind: "github", ref: "https://github.com/acme/shop/pull/812", label: "PR 812" },
       { kind: "github", ref: "https://github.com/acme/shop/pull/815", label: "PR 815" },
@@ -1006,6 +1024,11 @@ const handlers = {
     if (backend !== "tmux") throw "The Bosun runs on the app's tmux backend; this app runs on cmux.";
     bosunQueue.push(text);
     return `q${bosunQueue.length}`;
+  },
+  bosun_report_run: ({ id }) => {
+    if (backend !== "tmux") throw "The Bosun runs on the app's tmux backend; this app runs on cmux.";
+    bosunQueue.push(`[Report ${id}]`);
+    return `run${bosunQueue.length}`;
   },
   migrate_offers: () => migrateOffers,
   migrate_apply: async ({ pane }) => {

@@ -64,6 +64,9 @@ pub enum NoteKind {
     Stale,
     /// A merge landed, failed to, or waits on the person (land_watch.rs).
     Landing,
+    /// A Bosun report run found something that needs the person, from a
+    /// note file the Bosun's supervisor writes (crew_core::bosun::reports).
+    Bosun,
 }
 
 impl NoteKind {
@@ -80,6 +83,7 @@ impl NoteKind {
             NoteKind::Digest => "digest",
             NoteKind::Stale => "stale",
             NoteKind::Landing => "landing",
+            NoteKind::Bosun => "bosun",
         }
     }
 
@@ -95,6 +99,7 @@ impl NoteKind {
             NoteKind::Digest => "Submarine",
             NoteKind::Stale => "Funk",
             NoteKind::Landing => "Hero",
+            NoteKind::Bosun => "Blow",
         }
     }
 }
@@ -141,6 +146,9 @@ pub struct Note {
     /// or "c<GitHub comment id>"). Empty for a pane's banner.
     pub review: String,
     pub item: String,
+    /// A Bosun banner's target: the answer-log entry (a report run) a click
+    /// opens in the Bosun tab. Empty otherwise.
+    pub entry: String,
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -183,7 +191,7 @@ fn options_of(p: &PaneView) -> (Vec<String>, Option<u64>) {
 }
 
 fn note(kind: NoteKind, p: &PaneView, title: String, body: String) -> Note {
-    Note { kind, title, body, pane: p.id.clone(), ws: p.ws.clone(), options: Vec::new(), asked_at: None, review: String::new(), item: String::new() }
+    Note { kind, title, body, pane: p.id.clone(), ws: p.ws.clone(), options: Vec::new(), asked_at: None, review: String::new(), item: String::new(), entry: String::new() }
 }
 
 pub fn waiting(p: &PaneView) -> Note {
@@ -246,6 +254,7 @@ pub fn sent_note(v: &Value, pane: &dyn Fn(&str) -> Option<PaneView>) -> Option<N
         "pr" => NoteKind::Pr,
         "digest" => NoteKind::Digest,
         "stale" => NoteKind::Stale,
+        "bosun" => NoteKind::Bosun,
         _ => return None,
     };
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
@@ -255,7 +264,9 @@ pub fn sent_note(v: &Value, pane: &dyn Fn(&str) -> Option<PaneView>) -> Option<N
     }
     let p = pane(&s("pane")).unwrap_or_else(|| PaneView { id: s("pane"), ws: s("ws"), ..Default::default() });
     let ws = if p.ws.is_empty() { s("ws") } else { p.ws.clone() };
-    Some(Note { ws, ..note(kind, &p, title, clip(&s("body"), 200)) })
+    // A Bosun banner opens its report's card; the Bosun's id rules hold for it.
+    let entry = Some(s("entry")).filter(|e| kind == NoteKind::Bosun && crew_core::bosun::queue::valid_id(e)).unwrap_or_default();
+    Some(Note { ws, entry, ..note(kind, &p, title, clip(&s("body"), 200)) })
 }
 
 /// Banners of one kind that are due together, as one: "3 agents finished",
@@ -287,11 +298,13 @@ pub fn merge(notes: Vec<Note>) -> Vec<Note> {
                 NoteKind::Digest => format!("{count} digests"),
                 NoteKind::Stale => format!("{count} sessions' caches are going stale"),
                 NoteKind::Landing => format!("{count} merges landed or need you"),
+                NoteKind::Bosun => format!("{count} Bosun reports need you"),
             };
             // Each one's label is the part of its title before " · ".
             let mut names: Vec<&str> = Vec::new();
             for n in &v {
-                let name = n.title.split(" · ").next().unwrap_or("");
+                // A Bosun banner is "Bosun · <report>": its name is the report.
+                let name = if kind == NoteKind::Bosun { n.title.split(" · ").nth(1).unwrap_or(&n.title) } else { n.title.split(" · ").next().unwrap_or("") };
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -515,6 +528,10 @@ fn post(app: &AppHandle, n: &Note) {
 /// Bring the app forward on the note's pane, or on its review in the Lookout tab.
 fn jump(app: &AppHandle, n: &Note) {
     crate::shell::summon(app);
+    if !n.entry.is_empty() {
+        let _ = app.emit("notify:bosun", serde_json::json!({"entry": n.entry}));
+        return;
+    }
     if !n.review.is_empty() {
         let _ = app.emit("notify:review", serde_json::json!({"review": n.review, "item": n.item}));
         return;
@@ -576,7 +593,7 @@ pub fn notify_review_looking(review: Option<String>) {
 /// screen with the app in front.
 pub fn review_note(kind: NoteKind, title: String, body: String, review: &str, item: &str) -> Note {
     Note { kind, title, body, pane: String::new(), ws: String::new(), options: Vec::new(), asked_at: None,
-           review: review.into(), item: item.into() }
+           review: review.into(), item: item.into(), entry: String::new() }
 }
 /// A banner the app raises itself, not about a pane (land_watch.rs): logged
 /// and posted, its click going to its workspace.
@@ -588,7 +605,7 @@ pub fn post_note(app: &AppHandle, n: &Note) {
 /// A landing's banner for workspace `ws`.
 pub fn landing_note(ws: &str, title: String, body: String) -> Note {
     Note { kind: NoteKind::Landing, title, body, pane: String::new(), ws: ws.into(), options: Vec::new(), asked_at: None,
-           review: String::new(), item: String::new() }
+           review: String::new(), item: String::new(), entry: String::new() }
 }
 
 pub fn post_review(app: &AppHandle, n: &Note) {
@@ -945,6 +962,11 @@ mod tests {
         assert!(out[0].options.is_empty(), "a merged banner answers nothing");
         assert_eq!(out[1], c);
         assert_eq!(merge(vec![a.clone()]), vec![a]);
+        let none = |_: &str| None;
+        let b1 = sent_note(&serde_json::json!({"kind": "bosun", "title": "Bosun · Morning report", "body": "x", "entry": "r1"}), &none).unwrap();
+        let b2 = sent_note(&serde_json::json!({"kind": "bosun", "title": "Bosun · Afternoon PRs", "body": "y", "entry": "r2"}), &none).unwrap();
+        let m = merge(vec![b1, b2]);
+        assert_eq!((m[0].title.as_str(), m[0].body.as_str(), m[0].entry.as_str()), ("2 Bosun reports need you", "Morning report, Afternoon PRs", "r1"));
     }
 
     #[test]
@@ -1006,6 +1028,12 @@ mod tests {
         assert_eq!((n.kind, n.title.as_str(), n.body.as_str(), n.ws.as_str()), (NoteKind::Pr, "api", "#12 CI red: build", "W"));
         assert_eq!(n.kind.key(), "pr");
         assert!(sent_note(&serde_json::json!({"kind": "turn", "title": "x"}), &none).is_none());
+        let b = sent_note(&serde_json::json!({"kind": "bosun", "title": "Bosun · Morning report", "body": "Pull requests: #412 waits 2 days on you", "entry": "r-1"}), &none).unwrap();
+        assert_eq!((b.kind, b.entry.as_str(), b.pane.as_str()), (NoteKind::Bosun, "r-1", ""));
+        let bad = sent_note(&serde_json::json!({"kind": "bosun", "title": "x", "entry": "../x"}), &none).unwrap();
+        assert_eq!(bad.entry, "", "an entry id that is not an id is dropped");
+        let pr = sent_note(&serde_json::json!({"kind": "pr", "title": "api", "entry": "r-1"}), &none).unwrap();
+        assert_eq!(pr.entry, "", "only a Bosun banner carries an entry");
         assert!(sent_note(&serde_json::json!({"kind": "digest", "title": ""}), &none).is_none());
     }
 }

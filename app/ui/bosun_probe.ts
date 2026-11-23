@@ -2,7 +2,7 @@
 // rail's days and cards, the whistle's mood and what ⌘B does. A pure
 // module, which Node runs as TypeScript.
 import {
-  ago, askText, card, chipTitle, chips, hits, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matchedWhere, matches,
+  ago, askAgain, askText, card, needsCount, reportExtra, reportOf, statusLabel, chipTitle, chips, hits, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matchedWhere, matches,
   mdBlocks, mdInline, mood, newerAnswers, olderDays, pendingNote, rail, recheck, reviewAsk, sameQuestion, sourceRow, sourceTarget, tilde, workspaceAsk,
   type Entry, type LogPage,
 } from "./bosun_model.ts";
@@ -167,6 +167,40 @@ ok("a match past the card's two lines says where it is", matchedWhere(e("c", "20
 ok("a file source names its file and folder", JSON.stringify(sourceRow({ kind: "file", ref: "/Users/me/code/shop/contracts/payments.json", label: "" })) === '{"to":"file","name":"payments.json","where":"~/code/shop/contracts"}');
 ok("a file:line source keeps its line in the name", sourceRow({ kind: "file", ref: "/u/a/b.ts:88", label: "" }).name === "b.ts:88");
 ok("a ticket opens nowhere and shows its key", JSON.stringify(sourceRow({ kind: "jira", ref: "PROJ-311", label: "" })) === '{"to":"none","name":"PROJ-311","where":""}');
+
+// ---- report runs (bosun-reports) ----
+const run = (report: unknown): Entry => ({ ...e("r1", "2026-11-23T09:05:00Z", "Morning report", "- Pull requests: #812 waits", [], "report:morning"), report: report as Entry["report"] });
+const good = {
+  id: "morning", run: "r1", title: "Morning report", doc: "https://claude.ai/artifact/abc",
+  sections: [
+    { title: "Pull requests", status: "needs", line: "#812 waits 2 days on your review" },
+    { title: "Tickets", status: "ok", line: "nothing changed" },
+    { title: "Monitors", status: "unchecked", line: "Not checked: datadog needs authentication", why: "datadog needs authentication" },
+  ],
+};
+const rr = reportOf(run(good));
+ok("a report run reads its sections in order", rr !== null && rr.sections.map((s) => s.status).join(",") === "needs,ok,unchecked", rr);
+ok("a report run keeps its doc link", rr?.doc === "https://claude.ai/artifact/abc");
+ok("one section needs you", rr !== null && needsCount(rr) === 1);
+ok("a card carries its report", card(run(good), TZ).report?.title === "Morning report");
+ok("an answer's card has no report", card(e("a", "2026-11-23T09:00:00Z", "q", "a"), TZ).report === null);
+ok("a report's asker reads as the report", card(run(good), TZ).from === "morning report");
+ok("a section with an unknown status is left out", reportOf(run({ ...good, sections: [...good.sections, { title: "X", status: "great", line: "y" }] }))?.sections.length === 3);
+ok("a report with no readable section is not a report", reportOf(run({ ...good, sections: [{ title: "X", status: "great", line: "y" }] })) === null);
+ok("a report with no id is not a report", reportOf(run({ ...good, id: "" })) === null);
+const js = reportOf(run({ ...good, doc: "javascript:alert(1)", docWhy: "claude docs needs authentication" }));
+ok("a doc link that is not https is dropped, and the why shows", js?.doc === undefined && js?.docWhy === "claude docs needs authentication", js);
+ok("a blank report title falls back to the question", reportOf(run({ ...good, title: "  " }))?.title === "Morning report");
+ok("statuses read as words", statusLabel("needs") === "Needs you" && statusLabel("ok") === "Fine" && statusLabel("unchecked") === "Not checked");
+ok("the filter finds a section's line", matches(run(good), "datadog") && matches(run(good), "Not checked"));
+ok("a match in a shown section line needs no 'matched in'", matchedWhere(run(good), "datadog") === "");
+ok("a match on a status alone says which section", matchedWhere(run(good), "fine") === "status: Fine (Tickets)", matchedWhere(run(good), "fine"));
+ok("Run again queues the report, not its title", JSON.stringify(askAgain(run(good))) === '{"cmd":"bosun_report_run","args":{"id":"morning"}}');
+ok("Re-check on an answer queues its question", JSON.stringify(askAgain(e("a", "2026-11-23T09:00:00Z", " is X? ", "a"))) === '{"cmd":"bosun_send","args":{"text":"is X?"}}');
+ok("a run whose answer is only its section lines adds nothing", reportExtra({ ...run(good), answer: good.sections.map((s) => `- ${s.title}: ${s.line}`).join("\n") }, rr!) === "");
+ok("a run's answer beyond its lines is kept", reportExtra({ ...run(good), answer: "- Pull requests: #812 waits 2 days on your review\nThe deploy at 08:40 rolled back." }, rr!) === "The deploy at 08:40 rolled back.");
+ok("a queued report run says its sources come first", pendingNote(true, "idle", true).includes("sources are checked first"));
+ok("a Claude Doc source has its own chip", kindLabel("doc").label === "doc" && kindLabel("doc").name === "Claude Doc");
 
 console.log(`bosun_probe: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

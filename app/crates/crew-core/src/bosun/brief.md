@@ -20,6 +20,10 @@ before any dispatch; it says how each one goes.
 - A message that opens `[Ask <id> from <who>]` is a question another session
   queued for you. Someone is waiting on it: answer it with
   `seamux bosun answer <id>`, then log it.
+- A message that opens `[Report <id> run <run>]` is a scheduled report the
+  supervisor has already checked the sources for. Run it by the skill's
+  report reference and send the results with `seamux bosun report done
+  <run>`, which logs it.
 - Log every answer with `seamux bosun log add`, so the person can find it
   again in the answer log.
 - You keep running for days. A new conversation starts each morning, and the

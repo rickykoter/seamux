@@ -135,16 +135,9 @@ fn parse_days(v: Option<&Value>) -> Result<[bool; 7], String> {
     }
 }
 
-/// One entry of `loops`: the loop, or why it can't run.
-pub fn parse(v: &Value) -> Result<Loop, String> {
-    let id = v.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    if !queue::valid_id(&id) || id.len() > 40 {
-        return Err(format!("id {id:?}: use letters, digits and dashes"));
-    }
-    let prompt = v.get("prompt").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    if prompt.is_empty() {
-        return Err(format!("{id}: no prompt"));
-    }
+/// An entry's `at` or `every`, and its `days`: what loops and reports
+/// (reports.rs) share. `id` names the entry in the errors.
+pub fn parse_sched(v: &Value, id: &str) -> Result<(Sched, [bool; 7]), String> {
     let sched = match (v.get("at"), v.get("every")) {
         (Some(_), Some(_)) => return Err(format!("{id}: give at or every, not both")),
         (Some(at), None) => {
@@ -167,6 +160,20 @@ pub fn parse(v: &Value) -> Result<Loop, String> {
         (None, None) => return Err(format!("{id}: no at or every")),
     };
     let days = parse_days(v.get("days")).map_err(|e| format!("{id}: {e}"))?;
+    Ok((sched, days))
+}
+
+/// One entry of `loops`: the loop, or why it can't run.
+pub fn parse(v: &Value) -> Result<Loop, String> {
+    let id = v.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if !queue::valid_id(&id) || id.len() > 40 {
+        return Err(format!("id {id:?}: use letters, digits and dashes"));
+    }
+    let prompt = v.get("prompt").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if prompt.is_empty() {
+        return Err(format!("{id}: no prompt"));
+    }
+    let (sched, days) = parse_sched(v, &id)?;
     let enabled = v.get("enabled").and_then(Value::as_bool).unwrap_or(true);
     Ok(Loop { id, sched, days, prompt, enabled })
 }
@@ -275,11 +282,11 @@ pub fn starters() -> Value {
     ])
 }
 
-fn read_json(path: &Path) -> Option<Value> {
+pub(crate) fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-fn write_json(path: &Path, v: &Value) -> Result<(), String> {
+pub(crate) fn write_json(path: &Path, v: &Value) -> Result<(), String> {
     let parent = path.parent().ok_or("no folder")?;
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let tmp = parent.join(format!(".{}.{}.tmp", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), std::process::id()));
@@ -288,6 +295,24 @@ fn write_json(path: &Path, v: &Value) -> Result<(), String> {
         let _ = fs::remove_file(&tmp);
         e.to_string()
     })
+}
+
+/// Turn off, in `cfg` (bosun.json's object), each starter loop still exactly
+/// as shipped, for the starter reports that cover them (reports.rs). With
+/// no `loops` key yet, the starters go in already off, so loops' own first
+/// tick does not add them on. The ids turned off.
+pub fn turn_off_untouched_starters(cfg: &mut Map<String, Value>) -> Vec<String> {
+    let starters = starters();
+    let shipped = starters.as_array().cloned().unwrap_or_default();
+    let mut off = Vec::new();
+    let loops = cfg.entry("loops").or_insert_with(|| starters.clone());
+    for l in loops.as_array_mut().into_iter().flatten() {
+        if shipped.contains(l) {
+            l["enabled"] = json!(false);
+            off.push(l["id"].as_str().unwrap_or("").to_string());
+        }
+    }
+    off
 }
 
 /// bosun.json's loops in `dir`, writing the starters first when the file
@@ -439,7 +464,7 @@ pub fn run_now(dir: &Path, id: &str, now_secs: i64) -> Result<String, String> {
     Ok(item)
 }
 
-fn sched_text(l: &Loop) -> String {
+pub(crate) fn sched_text(l: &Loop) -> String {
     let days = match l.days {
         [true, true, true, true, true, true, true] => "daily".to_string(),
         [false, true, true, true, true, true, false] => "weekdays".to_string(),
@@ -453,7 +478,7 @@ fn sched_text(l: &Loop) -> String {
     }
 }
 
-fn when_text(secs: i64, now_secs: i64) -> String {
+pub(crate) fn when_text(secs: i64, now_secs: i64) -> String {
     let (a, b) = (local(secs), local(now_secs));
     let hm = hhmm(a.minute);
     if a.day == b.day { format!("today {hm}") } else { format!("{} {hm}", a.day) }
