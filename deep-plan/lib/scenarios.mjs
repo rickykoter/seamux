@@ -166,8 +166,12 @@ export function sealedSlugs() {
 // but the shared log beside the plans (logAccess with no slugs). Not every
 // sealed plan: one session's slip is not another plan's history.
 export function logSlugs(slugs, ownSlug, isNamed = slugs.length === 1) {
-  if (isNamed && slugs.length === 1) return slugs;
-  return ownSlug && slugs.includes(ownSlug) ? [ownSlug] : [];
+  // Only plans that have a sealed folder: a read of a file beside them (the
+  // shared access.log) names no plan, and must not make a folder for one.
+  const known = new Set(sealedSlugs());
+  const real = slugs.filter(s => known.has(s));
+  if (isNamed && real.length === 1 && slugs.length === 1) return real;
+  return ownSlug && real.includes(ownSlug) ? [ownSlug] : [];
 }
 
 // One line per refused attempt, in each plan it could have reached. The

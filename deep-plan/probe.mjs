@@ -9066,11 +9066,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   const far = sgate("Bash", { command: `ls ${TMP}/sea*/` }, "/");
   ok("scenarios gate: a refusal that names no one plan, from outside any plan, goes to the shared log, not every plan's",
     far.status === 2 && access("scn-z").length === bBefore && access("scn-a").length === aBefore && sharedLines() > sharedBefore, far.stderr);
-  const lg = await import("./lib/scenarios.mjs");
-  ok("scenarios gate: logSlugs keeps a plan the call named, else the session's own plan, else none, even when only one plan is sealed (inc6 f7)",
-    JSON.stringify(lg.logSlugs(["a"], "b")) === '["a"]' && JSON.stringify(lg.logSlugs(["a", "b"], "b")) === '["b"]' &&
-    JSON.stringify(lg.logSlugs(["a", "b"], "c")) === "[]" && JSON.stringify(lg.logSlugs(["a", "b"], null)) === "[]" &&
-    JSON.stringify(lg.logSlugs(["a"], "b", false)) === "[]" && JSON.stringify(lg.logSlugs(["a"], "a", false)) === '["a"]');
+  // logSlugs reads which plans have a sealed folder: run it on the probe's.
+  const LS = path.join(TMP, "logslugs-check.mjs");
+  fs.writeFileSync(LS, `const { logSlugs } = await import(${JSON.stringify(path.join(HERE, "lib", "scenarios.mjs"))});
+console.log(JSON.stringify([logSlugs(["scn-a"], "b"), logSlugs(["scn-a", "scn-z"], "scn-z"), logSlugs(["scn-a", "scn-z"], "c"),
+  logSlugs(["scn-a", "scn-z"], null), logSlugs(["scn-a"], "b", false), logSlugs(["scn-a"], "scn-a", false), logSlugs(["access.log"], null, true)]));`);
+  const ls = (spawnSync("node", [LS], { encoding: "utf8", env: SENV }).stdout || "").trim();
+  ok("scenarios gate: logSlugs keeps a plan the call named, else the session's own plan, else none, even when only one plan is sealed, and never a file beside the plans (inc6 f7, f10)",
+    ls === JSON.stringify([["scn-a"], ["scn-z"], [], [], [], ["scn-a"], []]), ls);
   ok("scenarios gate: show and edit are the person's levers, refused from a session",
     /scenarios show` and `scenarios edit` open the sealed scenarios/.test(sgate("Bash", { command: "deep-plan scenarios show scn-a" }).stderr) &&
     sgate("Bash", { command: "deep-plan scenarios edit scn-a" }).status === 2 && sgate("Bash", { command: "deep-plan scenarios list scn-a" }).status === 0);
