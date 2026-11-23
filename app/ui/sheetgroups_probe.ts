@@ -13,7 +13,7 @@ const tabs = [t(WAKE, WAKE), t("/ask/1", "ask", true), t("/review/a", "review"),
 
 {
   ok("groups: plans, reviews and asks are their own; everything else is other",
-    groupOf("plan") === "plan" && groupOf("review") === "review" && groupOf("ask") === "ask"
+    groupOf("plan") === "plan" && groupOf("scenarios") === "plan" && groupOf("review") === "review" && groupOf("ask") === "ask"
       && ["file", "web", "agent", "run", "agents", "page"].every((k) => groupOf(k) === "other") && groupOf(WAKE) === WAKE);
   const keys = ordered(tabs).map((x) => x.key);
   ok("order: the Wake, then plan, lookout, ask, other, each in the order it came",

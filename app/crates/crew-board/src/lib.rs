@@ -26,6 +26,7 @@ pub mod review;
 pub mod run_page;
 pub mod runs_page;
 pub mod routes;
+pub mod scenarios;
 pub mod selftest;
 pub mod server;
 pub mod settle;

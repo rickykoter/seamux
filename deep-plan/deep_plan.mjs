@@ -5602,7 +5602,7 @@ function scenariosCmd(args, flags) {
     if (fresh) { log1(fresh, `scenarios: ${r.doc.scenarios.length} written by ${model}`); writeState(fresh); }
     say(`sealed ${r.doc.scenarios.length} scenario(s) for ${slug}; the building session sees their titles only:`);
     for (const t of r.doc.scenarios) say(`  ${t.id}  ${t.title}`);
-    say(`the person reads and edits them (and allows hints): deep-plan scenarios show ${slug}, in their own shell`);
+    say(`the person reads and edits them (and allows hints): in the seamux app, the Dock's Scenarios tab beside the plan; elsewhere, deep-plan scenarios show ${slug}, in their own shell`);
     return;
   }
   if (sub === "list") {

@@ -856,6 +856,7 @@ export class Wake {
         { label: "working", title: "in the sheet; ⌘-click in cmux", run: (e) => void this.open(r, "working", e) },
         { label: "review", run: (e) => void this.open(r, "review", e) },
         { label: "markdown", run: (e) => void this.open(r, "md", e) },
+        { label: "scenarios", title: "its sealed scenarios, in the sheet (the app adds the page's key)", run: (e) => void this.open(r, "scenarios", e) },
       );
     } else if (this.openable(r)) {
       items.push({ label: "open", hint: "↵", title: "pages in the sheet; ⌘-click opens in cmux", run: (e) => void this.open(r, "", e) });

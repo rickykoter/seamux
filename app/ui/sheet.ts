@@ -1546,10 +1546,21 @@ export class Sheet {
       box.replaceChildren(n);
       box.dataset.failed = "1";
     };
-    invoke<IntentServer>("intent_server").then((server) => {
+    invoke<IntentServer>("intent_server").then(async (server) => {
       if (!server.up || !server.origin) return down(server.reason ?? "no answer");
+      let src = server.origin + t.key;
+      // A plan's scenarios page asks for its key, which only the app reads
+      // (shell.rs scenarios_key): the intent server never hands it out.
+      const scn = /^\/scenarios\/([a-z0-9][a-z0-9._-]*)$/.exec(t.key);
+      if (scn) {
+        try {
+          src += "?k=" + encodeURIComponent(await invoke<string>("scenarios_key", { slug: scn[1] }));
+        } catch (e) {
+          return down(String(e));
+        }
+      }
       const f = document.createElement("iframe");
-      f.src = server.origin + t.key;
+      f.src = src;
       f.title = t.label;
       box.append(f);
     }, (e) => down(String(e)));
@@ -1592,6 +1603,7 @@ function needsYou(n = 1): HTMLElement {
 
 function kindOf(path: string): string {
   return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan"
+    : path.startsWith("/scenarios/") ? "scenarios"
     : path.startsWith("/agent/") ? "agent" : path.startsWith("/run/") ? "run" : path.startsWith("/runs/") ? "agents" : "page";
 }
 

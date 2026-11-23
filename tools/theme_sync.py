@@ -63,6 +63,7 @@ START, END = "/* everforest:start */", "/* everforest:end */"
 # (page, "both" | "dark")
 TARGETS = [
     ("deep-plan/deep_plan.mjs", "both"),
+    ("deep-plan/lib/scenarios.mjs", "both"),
     ("lookout/page/review.css", "both"),
     ("app/ui/everforest.css", "both"),
     ("crew/board/board.html", "both"),

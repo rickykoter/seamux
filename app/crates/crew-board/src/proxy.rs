@@ -63,7 +63,9 @@ pub fn owner_get(path: &str) -> Option<Plugin> {
     const DEEP_PLAN: [&str; 9] = ["/mermaid.min.js", "/plan-stamp", "/open", "/answer", "/inc",
         "/check/run", "/check/answer", "/check/tab", "/check/evidence"];
     if DEEP_PLAN.contains(&path) || path == "/check/proof"
-        || ["/plan/", "/plan-evidence/", "/ask/"].iter().any(|p| path.starts_with(p)) {
+        // /scenarios/ and /scenarios-edit/ carry the page's key, which deep-plan
+        // checks; the app adds it (crew_board::scenarios), never this server.
+        || ["/plan/", "/plan-evidence/", "/ask/", "/scenarios/", "/scenarios-edit/"].iter().any(|p| path.starts_with(p)) {
         return Some(Plugin::DeepPlan);
     }
     path.starts_with("/review/").then_some(Plugin::Lookout)
@@ -288,12 +290,13 @@ mod tests {
     fn each_forwarded_route_has_one_owner() {
         for p in ["/plan/x", "/plan/x.review.html", "/plan-stamp", "/plan-evidence/x/inc1-a-1/frame-0001.png",
                   "/inc", "/open", "/answer", "/ask/20260101-000000-abcd", "/mermaid.min.js",
-                  "/check/run", "/check/answer", "/check/tab", "/check/evidence", "/check/proof"] {
+                  "/check/run", "/check/answer", "/check/tab", "/check/evidence", "/check/proof",
+                  "/scenarios/x", "/scenarios-edit/x"] {
             assert_eq!(owner_get(p), Some(Plugin::DeepPlan), "{p}");
         }
         assert_eq!(owner_get("/review/demo"), Some(Plugin::Lookout));
         assert_eq!(owner_get("/review/demo.json"), Some(Plugin::Lookout));
-        for p in ["/board", "/usage", "/do", "/artifacts", "/health", "/check/", "/check/pass", "/planx"] {
+        for p in ["/board", "/usage", "/do", "/artifacts", "/health", "/check/", "/check/pass", "/planx", "/scenarios"] {
             assert_eq!(owner_get(p), None, "{p}");
         }
     }

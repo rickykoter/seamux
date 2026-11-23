@@ -375,6 +375,14 @@ pub enum Target {
 pub fn resolve_row(r: &crew_store::Row, sub: &str) -> Result<Target, String> {
     let loc = r.locator.as_str();
     match r.kind.as_str() {
+        "plan" if sub == "scenarios" => {
+            // The Sheet adds the page's key (crew_board::scenarios).
+            if slug_ok(loc) && crate::scenarios::standing(loc).is_some() {
+                Ok(Target::Page(format!("/scenarios/{loc}")))
+            } else {
+                Err(format!("no sealed scenarios for {loc}"))
+            }
+        }
         "plan" => {
             let suffix = match sub {
                 "" | "working" => Some(""),

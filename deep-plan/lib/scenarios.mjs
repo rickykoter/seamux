@@ -594,7 +594,9 @@ export function writeScenarios(slug, { root, model } = {}) {
     }));
     const doc = { slug, version: 1, writtenAt: new Date().toISOString(), writer: { model: m, cost: r.cost ?? null },
       planSha: crypto.createHash("sha256").update(plan).digest("hex").slice(0, 12), scenarios: list };
-    try { return { doc: saveScenarios(slug, doc, { by: "writer" }), cost: r.cost }; }
+    // The page's key is made with them, so the seamux app finds it to open
+    // the page in the Dock (crew-board scenarios.rs) without a first show.
+    try { const saved = saveScenarios(slug, doc, { by: "writer" }); pageKey(slug); return { doc: saved, cost: r.cost }; }
     catch (e) { return { error: `the writer's scenarios were refused: ${e.message}` }; }
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 }
@@ -768,6 +770,133 @@ export function markCurrent(slug) { return clearStale(slug, "person", "kept them
 
 // ---------------------------------------------------------------- the page
 
+// seamux's palette and its colour roles (theme/everforest.css), written here
+// by tools/theme_sync.py, as on the plan and review pages.
+const EVERFOREST_CSS = `/* everforest:start */
+:root {
+  --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
+  --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
+  --ef-line: #3d484d; --ef-line2: #4f5b58; --ef-card: #3a464c; --ef-card2: #343f44; --ef-card3: #424e54;
+  --ef-red: #e67e80; --ef-orange: #e69875; --ef-yellow: #dbbc7f; --ef-green: #a7c080;
+  --ef-aqua: #83c092; --ef-blue: #7fbbb3; --ef-purple: #d699b6;
+  --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
+  --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
+  --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #bac2bc; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
+  --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
+  --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
+  /* roles: what a colour means, the same on every surface. A page maps its
+     own names onto these and never picks a hue for a state itself. Each state
+     has a fill (rings, dots, borders: 3:1) and a word colour (-t: 4.5:1).
+     A role names a palette token where one passes; a raw hex is a palette
+     hue made darker or lighter to pass. Amber is needs-you and nothing else;
+     working, links and focus share the teal accent in both modes (in light,
+     a teal of their own: --ef-accent stays Everforest's blue, a palette
+     colour that means nothing). Lines and edges are separators, held to no floor. */
+  --role-attend: #dfa000; --role-attend-t: var(--ef-text-mark);
+  --role-working: var(--ef-blue); --role-working-t: var(--ef-text-accent);
+  --role-done: var(--ef-green); --role-done-t: var(--ef-text-green);
+  --role-broken: var(--ef-red); --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: var(--ef-text-accent); --role-focus: var(--ef-accent);
+  /* terminal: the app's terminals draw with these in every mode, whatever a
+     cmux or Ghostty config names (that config sets only the font). Ground,
+     words, cursor and selection, then the 16 ANSI slots (0-7 black, red,
+     green, yellow, blue, magenta, cyan, white; 8-15 their brights). Dark is
+     Ghostty's Everforest Dark Hard. Each slot a program prints words in is
+     4.5:1 or better on --term-bg (theme_sync.py --check); the slots it paints
+     as grounds are held to nothing (TERM_GROUND_SLOTS). Six 256-colour
+     slots keep their usual sense but take seamux's tints per mode, so a
+     Claude theme on slots (seamux foam) gets tints that follow the flip:
+     22 and 52 diff lines, 28 and 88 changed words (dark green and red),
+     236 and 237 raised bands (a grey a step off the ground). */
+  --term-bg: #1e2326; --term-text: #d3c6aa; --term-cursor: #e69875; --term-cursor-text: #4c3743;
+  --term-selection: #4c3743; --term-selection-text: #d3c6aa;
+  --term-0: #7a8478; --term-1: #e67e80; --term-2: #a7c080; --term-3: #dbbc7f; --term-4: #7fbbb3; --term-5: #d699b6; --term-6: #83c092; --term-7: #f2efdf;
+  --term-8: #a6b0a0; --term-9: #f85552; --term-10: #8da101; --term-11: #dfa000; --term-12: #3a94c5; --term-13: #df69ba; --term-14: #35a77c; --term-15: #fffbef;
+  --term-22: #384532; --term-52: #5f3538; --term-28: #425237; --term-88: #753c3f; --term-236: #343f44; --term-237: #2d353b;
+  --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* type scale: every page sizes words with these, never a px value of its own.
+     1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
+     3 body and UI default · 4 emphasis, card titles · 5 section and page titles
+     6 the plan page's h1 alone */
+  --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
+}
+/* light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+    --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+    --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+    --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+    --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+    --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+    --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+    --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+    --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+    --role-working: #2a8079; --role-working-t: #22675f;
+    --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+    --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+    --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+    --role-line: #ddd8bf; --role-edge: #b9bea6;
+    --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+    --role-link: #22675f; --role-focus: #2a8079;
+    /* terminal, light: Light Med's hues are 2:1 as words on its cream, so
+       each slot is the palette's light word colour, the brights a shade
+       deeper. The words are the palette's text, darker than Light Med's, so a
+       tint can sit a step off the ground and still hold them at 4.5:1; black
+       is darker still, white is the words' colour, bright black the quiet
+       grey, and bright white stays light, since programs print it as a
+       ground. */
+    --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+    --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
+    --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+    --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+    --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
+  }
+}
+:root[data-theme="light"] {
+  --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+  --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+  --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+  --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+  --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+  --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+  --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+  --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+  --role-working: #2a8079; --role-working-t: #22675f;
+  --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+  --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: #ddd8bf; --role-edge: #b9bea6;
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: #22675f; --role-focus: #2a8079;
+  --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+  --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
+  --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+  --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+  --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
+}
+/* everforest:end */`;
+
+// The theme before first paint, as the plan page does it: framed by the
+// seamux app, the page follows the app's appearance (the webview reports it
+// as prefers-color-scheme, live); standalone, a saved choice, else the OS.
+const THEME_JS = `(function(){var d=document.documentElement,mq=window.matchMedia?matchMedia("(prefers-color-scheme: light)"):null,os=function(){return mq&&mq.matches?"light":"dark"},framed=false,t="";try{framed=window.self!==window.top}catch(e){framed=true}if(!framed){try{t=localStorage.getItem("dp-theme")||""}catch(e){}}d.setAttribute("data-theme",t||os());if(framed&&mq){d.setAttribute("data-framed","");var on=function(){d.setAttribute("data-theme",os())};if(mq.addEventListener)mq.addEventListener("change",on);else if(mq.addListener)mq.addListener(on)}})();`;
+
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // The scenarios page, served by deep-plan serve behind the plan's page key.
@@ -814,10 +943,12 @@ ${rev.proposals && !rev.proposals.length ? `<p class="sub">A later amend dropped
   };
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(slug)} scenarios</title>
+<script>${THEME_JS}</script>
 <style>
-:root{--bg:#fbfaf7;--fg:#1d1c1a;--mute:#6b675f;--line:#ddd8cc;--card:#fff;--ok:#2f7a4a;--low:#a4402c;--accent:#33589c}
-@media (prefers-color-scheme: dark){:root{--bg:#1a1917;--fg:#ece9e2;--mute:#a19c91;--line:#3a3833;--card:#23221f;--ok:#7cc495;--low:#f08f78;--accent:#8fb0ea}}
-body{background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,sans-serif;margin:0;padding:16px}
+${EVERFOREST_CSS}
+:root{--bg:var(--ef-bg);--card:var(--ef-bg1);--fg:var(--role-text);--mute:var(--role-text-quiet);--line:var(--role-line);
+--ok:var(--role-done-t);--low:var(--role-broken-t);--attend:var(--role-attend-t);--accent:var(--role-link)}
+body{background:var(--bg);color:var(--fg);font:var(--fs-3)/1.5 -apple-system,system-ui,sans-serif;margin:0;padding:16px}
 main{max-width:860px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 16px}
 .sc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:0 0 12px}
 label{display:block;margin:6px 0;color:var(--mute);font-size:13px}label.row{display:flex;gap:6px;align-items:center}

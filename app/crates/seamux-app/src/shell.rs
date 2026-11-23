@@ -288,6 +288,15 @@ fn fallback_path(app: &str, home: &std::path::Path, is_dir: impl Fn(&std::path::
     crate::land_watch::join_path(app, &dirs.join(":"))
 }
 
+/// The key a plan's scenarios page asks for, to the app's own webview only
+/// (the Sheet appends it to a /scenarios/ tab). The building session never
+/// gets it: crew's intent server, which any local caller reaches, does not
+/// hand it out (crew_board::scenarios).
+#[tauri::command]
+pub fn scenarios_key(slug: String) -> Result<String, String> {
+    crew_board::scenarios::page_key(&slug)
+}
+
 #[tauri::command]
 pub async fn intent_server() -> IntentServer {
     tauri::async_runtime::spawn_blocking(|| {

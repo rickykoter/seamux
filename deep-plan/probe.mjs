@@ -8978,6 +8978,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   const w = calls().pop() || {};
   ok("scenarios: write seals them and prints titles only",
     r.status === 0 && /sealed 2 scenario\(s\)/.test(r.stdout) && /A retry is sent once/.test(r.stdout) && !/SECRET-STEPS/.test(r.stdout), r.stdout + r.stderr);
+  ok("scenarios: writing them makes the page's key too, so the seamux app can open the page without a first show",
+    /^[0-9a-f]{48}$/.test(fs.readFileSync(path.join(SEALED, "scn-a", "page.key"), "utf8").trim()));
   ok("scenarios: the sealed folder is 0700 and the file 0600",
     (fs.statSync(path.join(SEALED, "scn-a")).mode & 0o777) === 0o700 &&
     (fs.statSync(path.join(SEALED, "scn-a", "scenarios.json")).mode & 0o777) === 0o600);
@@ -9211,7 +9213,10 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
   const html = await g.text();
   ok("scenarios page: with the key it shows the steps, the judge's reasons and the access log",
-    g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log") && /prefers-color-scheme: dark/.test(html));
+    g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log"));
+  ok("scenarios page: it wears Everforest, as the plan and review pages do, and sets data-theme before first paint, following the app when framed",
+    html.includes("/* everforest:start */") && html.includes("--role-text") && /<script>\(function\(\)\{[^<]*data-theme[^<]*data-framed/.test(html) &&
+    !/#fbfaf7/.test(html));
   ok("scenarios page: it shows each scenario's cause, its earlier scores and the run's time",
     html.includes('<span class="cause">start</span>') && /before: 0\.90 0\.75 0\.30/.test(html) && !/before: 0\.00/.test(html) && /, in \d+s\./.test(html));
   const fullHead = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).lastFull.head;
