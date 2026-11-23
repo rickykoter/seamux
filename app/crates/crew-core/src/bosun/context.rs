@@ -2,7 +2,7 @@
 //! Lookout tabs show, read without the app and without writing anything.
 //!
 //! Radar: the workspaces in the tmux backend's registry, less any row with a
-//! `kind` (the Bosun's own) and the worktrees tucked away in tucked.json,
+//! `kind` (the Bosun's own) and the worktrees tucked or snoozed in tucked.json,
 //! through the same scan, plan read and assembly the tab runs (crate::radar).
 //! The registry is read as on disk, as doctor reads it: TmuxBackend's lists
 //! take its lock and write it back, which the Bosun's sandbox refuses. So a
@@ -47,17 +47,14 @@ fn real(p: &str) -> String {
     if t.is_empty() { "/".into() } else { t.to_string() }
 }
 
-/// The roots tucked away in `crew_dir`/tucked.json.
-pub fn tucked(crew_dir: &Path) -> Vec<String> {
-    let v: Value = fs::read_to_string(crew_dir.join("tucked.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    v.get("entries")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|e| e.get("level").and_then(Value::as_str) == Some("tuck"))
-        .filter_map(|e| e.get("path").and_then(Value::as_str))
-        .map(real)
-        .collect()
+/// The roots hidden from view in `crew_dir`/tucked.json at `now_ms`: tucked,
+/// or snoozed until a time still ahead (crate::tucked, as the board reads
+/// it). A muted worktree still shows.
+pub fn tucked(crew_dir: &Path, now_ms: u64) -> Vec<String> {
+    let text = fs::read_to_string(crew_dir.join("tucked.json")).unwrap_or_default();
+    let mut roots: Vec<String> = crate::tucked::levels(&text, now_ms).into_iter().filter(|(_, q)| q.hidden()).map(|(p, _)| real(&p)).collect();
+    roots.sort();
+    roots
 }
 
 /// The registry's workspaces and their panes, less any row with a `kind`
@@ -122,7 +119,7 @@ pub fn radar_of(seats: &[Seat], state: &Path, keys: &Path) -> Frame {
 pub fn radar_here() -> Result<Frame, String> {
     let crew = env_or("CREW_DURABLE_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".claude/crew"));
     let reg = TmuxBackend::default().registry()?;
-    let s = seats(&reg, &crate::status::pane_dir(), &tucked(&crew), &root_of);
+    let s = seats(&reg, &crate::status::pane_dir(), &tucked(&crew, crate::history::now_ms()), &root_of);
     let state = dp_state();
     Ok(radar_of(&s, &state, &dp_keys(&state)))
 }
@@ -335,15 +332,22 @@ mod tests {
     }
 
     #[test]
-    fn tucked_reads_only_tuck_entries() {
+    fn tucked_and_live_snoozes_are_hidden_and_muted_is_not() {
         let d = tmp("tuck");
         let a = d.join("a");
+        let s = d.join("s");
         fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&s).unwrap();
         fs::write(d.join("tucked.json"), json!({"version": 1, "entries": [
             {"path": a.to_string_lossy(), "level": "tuck", "at": 1},
+            {"path": s.to_string_lossy(), "level": "snooze", "at": 1, "until": 2_000},
+            {"path": "/x/woke", "level": "snooze", "at": 1, "until": 500},
             {"path": "/x/muted", "level": "mute", "at": 1}]}).to_string()).unwrap();
-        assert_eq!(tucked(&d), vec![real(&a.to_string_lossy())]);
-        assert!(tucked(&d.join("missing")).is_empty());
+        let mut want = vec![real(&a.to_string_lossy()), real(&s.to_string_lossy())];
+        want.sort();
+        assert_eq!(tucked(&d, 1_000), want, "tucked, and snoozed until a time still ahead");
+        assert_eq!(tucked(&d, 3_000), vec![real(&a.to_string_lossy())], "a snooze that ended shows again");
+        assert!(tucked(&d.join("missing"), 1_000).is_empty());
         let _ = fs::remove_dir_all(&d);
     }
 

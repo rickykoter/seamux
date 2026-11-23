@@ -51,8 +51,9 @@ bundle that includes it where the app will see it (an app opened from the
 Finder doesn't read your shell profile; `launchctl setenv` reaches it), then
 restart the app and the Bosun.
 
-A report in `bosun.json` (the supervisor writes starter ones, `morning` and
-`afternoon`, from the MCP servers you have, the first time it runs):
+A report in `bosun.json` (the supervisor writes starter ones the first time
+it runs: `morning` covers your PRs, where your open workspaces stand, and a
+section per MCP server you have; `afternoon` covers PRs):
 
 ```json
 "reports": [{"id": "morning", "title": "Morning report", "at": ["09:00"], "days": "weekdays",
