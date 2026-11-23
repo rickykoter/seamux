@@ -78,9 +78,10 @@ is expensive, so it runs detached; `check wait` follows it. It:
    the home folder, do not break `node`, `npm` and `npx` there;
 3. starts the repo's harness, if it has one;
 4. runs a different model (default sonnet, or the repo's `judge`) headless
-   with Bash, Read, Grep and Glob only, from an empty folder beside the
-   checkout, with no settings loaded; its shell cannot push, run gh or
-   change remotes;
+   on the scenarios this run judges (all of them, or on a retry only the
+   failing ones; see below), with Bash, Read, Grep and Glob only, from an
+   empty folder beside the checkout, with no settings loaded; its shell
+   cannot push, run gh or change remotes;
 5. scores each scenario from 0 to 1, and passes when every one meets the
    threshold.
 
@@ -106,7 +107,22 @@ for a scenario.
 Every failed run counts toward the retry cap, whatever its cause: the
 checkout is the builder's, so a judge it could talk into saying `harness`
 must not buy it free retries.
-`deep-plan scenarios judge <slug>` runs the same judging outside a check.
+
+### Retries, and the full run before merge
+
+A retry judges less. When the newest run that judged anything did not
+pass, the next check run judges only the scenarios that fell short there,
+were left unscored, were edited since, or are new. It carries the other
+scores from that run, each marked with the commit it was judged on. A first
+run, a run after a pass, and a run after a harness that never came up judge
+every scenario.
+
+A carried pass is not trusted to merge, since a later commit may have broken
+it unseen. `deep-plan scenarios judge <slug>` always judges every scenario,
+and a plan with a scenarios check completes only once the newest full run
+passed at HEAD. Without that run, `deliver` refuses, and so does the last
+`done` of a plan with no delivery review. Ship's scenarios gate waits on the
+same run. A full run saved before verdicts recorded this counts as one.
 
 Exit 3 is no verdict: no scenarios yet, a bad harness file, or a judge that
 did not answer. It fails the check without counting toward the retry cap.

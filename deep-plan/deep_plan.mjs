@@ -3880,6 +3880,15 @@ function repend(inc, ids, why) {
 }
 
 // HEAD of the plan root, or "" outside git: an increment's base.
+// A plan with a scenarios check completes, and ship merges it, only once
+// the newest full judge run passed at HEAD: a pass carried by a retry is not
+// trusted to merge. null when it holds, or the plan has no scenarios check.
+function scenariosHold(st) {
+  const has = (st.increments || []).some(i => Object.values(checksOf(i)).some(c => c.kind === "scenarios" && !c.retired));
+  if (!has) return null;
+  const f = SCN.fullPassAt(st.slug, headSha(st.root));
+  return f.ok ? null : `${st.slug} has a scenarios check, and ${f.why}: run deep-plan scenarios judge ${st.slug} (every scenario, at HEAD) first`;
+}
 function headSha(root) {
   const sha = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" });
   return sha.status === 0 ? sha.stdout.trim() : "";
@@ -4041,6 +4050,15 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
     // a proof and ships without looking at it has promised nothing.
     const out = checksBlock(inc, needsTree(inc) ? trees : null);
     if (out.length && !force) refuse(checksRefusal(slug, n, out, st.root));
+    // The last done of a plan with no delivery review completes it, so it
+    // holds the full scenarios run that deliver would (ADR: a full pass at
+    // HEAD gates the merge). --force passes it, logged like any override.
+    const lastOne = (st.increments || []).every(i => i === inc || i.status === "done");
+    if (lastOne && !((spec || planSpec(slug)).review || {}).delivery) {
+      const hold = scenariosHold(st);
+      if (hold && !force) refuse(hold);
+      if (hold) log1(st, `done: --force past the full scenarios run (${hold})`);
+    }
     inc.status = "done"; inc.doneAt = inc.changedAt = Date.now();
     // An override is logged for the same reason the verdict is recorded: someone
     // reading the history has to be able to see that the proof was skipped.
@@ -5271,10 +5289,14 @@ function shipVerdict({ st, root, fetch = true }) {
   else gate("plan", false, "no deep-plan plan is at this worktree");
   const scen = st ? (st.increments || []).flatMap(i => Object.values(checksOf(i)).filter(c => c.kind === "scenarios" && !c.retired)) : [];
   const req = POL.scenariosRequiredAt(pol);
-  if (scen.length || (req && POL.atLeast(level, req)))
-    gate("scenarios", scen.length && scen.every(c => c.status === "pass"),
+  if (scen.length || (req && POL.atLeast(level, req))) {
+    const full = scen.length ? SCN.fullPassAt(st.slug, head) : null;
+    gate("scenarios", scen.length && scen.every(c => c.status === "pass") && full.ok,
       !scen.length ? `the policy needs a scenarios check at ${req} and above, and the plan has none`
-        : scen.every(c => c.status === "pass") ? "every scenarios check passed" : "a scenarios check has not passed");
+        : !scen.every(c => c.status === "pass") ? "a scenarios check has not passed"
+        : full.ok ? `every scenarios check passed, and ${full.why}`
+        : `every scenarios check passed, but ${full.why}: deep-plan scenarios judge ${st.slug}`);
+  }
   if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
   const remote = branch ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
@@ -5598,7 +5620,7 @@ function scenariosCmd(args, flags) {
     if (!st) die(`no plan ${slug}`);
     const t = opt("--threshold");
     if (t !== undefined && !(Number(t) >= 0 && Number(t) <= 1)) die(`--threshold is a number from 0 to 1 (got ${t})`);
-    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "judge.mjs"), "run", slug,
+    const r = spawnSync(process.execPath, [path.join(HERE, "lib", "judge.mjs"), "run", slug, "--full",
       ...(t !== undefined ? ["--threshold", t] : []), ...(opt("--model") ? ["--model", opt("--model")] : [])],
       { cwd: st.root, stdio: "inherit", env: { ...process.env, DEEP_PLAN_ROOT: st.root } });
     process.exitCode = r.status === null ? 1 : r.status;
@@ -7495,6 +7517,7 @@ switch (cmd) {
     }
     if (g.code !== 0) die(`the delivery review holds the plan open — ${g.out.split("\n")[0]}\n` +
       `deliver refused: a blocker or major is open on ${reviewId(slug, "all")}`);
+    { const hold = scenariosHold(st); if (hold) die(`deliver refused: ${hold}, then deep-plan deliver ${slug}`); }
     settleNotes(st, "deliver");
     settleCandidates(st, "deliver");
     st.phase = "done";

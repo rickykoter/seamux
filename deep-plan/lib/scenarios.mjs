@@ -220,9 +220,32 @@ export const took = s => {
 export function scenarioSha(s) {
   return crypto.createHash("sha256").update([s.title, s.body, s.expect || ""].join("\0")).digest("hex").slice(0, 12);
 }
-// A score the judge gave: not the 0 of a harness that never came up
-// (start) or of a scenario the judge left out (unscored).
-const judged = s => typeof s.score === "number" && !!s.sha && s.cause !== "start" && s.cause !== "unscored";
+// A score the judge gave in that run: not the 0 of a harness that never
+// came up (start) or of a scenario the judge left out (unscored), and not a
+// score carried from an earlier run.
+const judged = s => typeof s.score === "number" && !!s.sha && s.cause !== "start" && s.cause !== "unscored" && !s.carried;
+
+// The newest verdict that judged anything: scores, no harness break, no
+// judge error. A retry carries passes from it only when it did not pass.
+export function priorVerdict(slug) {
+  const all = readSealedJson(slug, "verdicts.json");
+  return ((all && all.history) || []).find(v => (v.scores || []).length && !v.harness && !v.error) || null;
+}
+// A verdict that judged every scenario. One saved before verdicts said so
+// judged them all, unless the harness broke or the judge did not answer.
+export const isFull = v => !!v && (v.full === true || (v.full === undefined && (v.scores || []).length > 0 && !v.harness && !v.error));
+// Whether the newest full verdict passed on `head`: what deliver, the last
+// done and ship ask of a plan with a scenarios check (ADR: a retry
+// re-judges only the failing scenarios; a full pass at HEAD gates the merge).
+export function fullPassAt(slug, head) {
+  const all = readSealedJson(slug, "verdicts.json");
+  const v = ((all && all.history) || []).find(isFull);
+  if (!v) return { ok: false, why: "no full judge run yet" };
+  const at = String(v.head || "").slice(0, 8);
+  if (!v.pass) return { ok: false, why: `the last full judge run (on ${at}) did not pass` };
+  if (!head || v.head !== head) return { ok: false, why: `the last full judge run passed on ${at}, not HEAD ${String(head || "").slice(0, 8)}` };
+  return { ok: true, why: `the last full judge run passed on HEAD ${at}` };
+}
 // Each scenario's scores from the newest verdicts that scored its current
 // text, newest first: { id: [0.8, 0.6, 0.95] }. A run with no verdict (no
 // scores) is skipped, and so is a 0 nobody judged, and a score of other

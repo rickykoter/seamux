@@ -33,7 +33,7 @@ import net from "node:net";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readScenarios, saveVerdict, scenariosConfig, readAccess, runClaude, headlessEnv, fence, took, scenarioSha,
+import { readScenarios, saveVerdict, scenariosConfig, readAccess, runClaude, headlessEnv, fence, took, scenarioSha, priorVerdict,
   DEFAULT_THRESHOLD, JUDGE_MODEL } from "./scenarios.mjs";
 
 export const NO_VERDICT = 3;
@@ -128,7 +128,15 @@ export function judgePrompt({ scenarios, exports, worktree }) {
 }
 
 // One judging. Returns {code, lines}: what to print, and the exit code.
-export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIMEOUT_S, now = new Date() }) {
+//
+// A retry carries passes (full: false): when the newest verdict that judged
+// anything did not pass, only the scenarios below the threshold there,
+// left unscored, edited since or new are judged, and the others' scores are
+// carried from it, marked with the run they came from. A first run, a run
+// after a pass, after a harness break or with full: true judges them all. A
+// carried pass is not trusted to merge: deliver, the last done and ship
+// want the newest full run to have passed at HEAD (fullPassAt).
+export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIMEOUT_S, now = new Date(), full = false }) {
   const lines = [];
   const doc = readScenarios(slug);
   if (!doc || !(doc.scenarios || []).length)
@@ -141,6 +149,18 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
   if (!head) return { code: NO_VERDICT, lines: [`${root} has no commit to judge`] };
   const dirty = (git(root, "status", "--porcelain", "--untracked-files=no").stdout || "").trim();
   if (dirty) lines.push(`judging HEAD ${head.slice(0, 8)}: uncommitted changes are not in it, so commit first`);
+  // What this run judges, and what it carries.
+  const prior = full ? null : priorVerdict(slug);
+  const carry = new Map();
+  if (prior && !prior.pass) for (const s of doc.scenarios) {
+    const p = (prior.scores || []).find(x => x.id === s.id);
+    if (p && typeof p.score === "number" && p.score >= th && p.sha && p.sha === scenarioSha(s) && p.cause !== "start" && p.cause !== "unscored")
+      carry.set(s.id, { ...p, carried: p.carried || { head: prior.head, at: prior.at } });
+  }
+  // Nothing left to judge (the failing ones were removed): judge them all.
+  if (carry.size === doc.scenarios.length) carry.clear();
+  const toJudge = doc.scenarios.filter(s => !carry.has(s.id));
+  const isFullRun = carry.size === 0;
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dp-judge-"));
   const wt = path.join(tmp, "wt");
@@ -192,7 +212,7 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
       // The change did not start: every scenario fails on it, and that is a
       // verdict (the builder can fix what does not start).
       const scores = doc.scenarios.map(s => ({ id: s.id, title: s.title, sha: scenarioSha(s), score: 0, reason: broke.what, cause: "start" }));
-      const v = { at: now.toISOString(), head, threshold: th, model: m, pass: false, scores, harness: broke, took: total() };
+      const v = { at: now.toISOString(), head, threshold: th, model: m, pass: false, full: false, scores, harness: broke, took: total() };
       saveVerdict(slug, v);
       return { code: 1, lines: [...lines, `scenarios: not judged, ${broke.what}`, ...(broke.tail ? broke.tail.split("\n").map(l => `  | ${l}`) : []),
         tookLine(v.took), `  ${CAUSE_SAYS.start}`] };
@@ -210,16 +230,17 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
     // loaded as the judge's own project (it loads no settings either).
     const home = path.join(tmp, "judge");
     fs.mkdirSync(home, { recursive: true });
-    const r = runClaude({ prompt: judgePrompt({ scenarios: doc.scenarios, exports, worktree: wt }), model: m, tools: JUDGE_TOOLS,
+    const r = runClaude({ prompt: judgePrompt({ scenarios: toJudge, exports, worktree: wt }), model: m, tools: JUDGE_TOOLS,
       denied: JUDGE_DENIED, addDirs: [wt], cwd: home, env: headlessEnv({ CLAUDE_ENV_FILE: envFile }), schema: JUDGE_SCHEMA, timeoutS });
     lap("judge");
     if (!r.ok) {
       const tk = total();
-      saveVerdict(slug, { at: now.toISOString(), head, threshold: th, model: m, pass: false, scores: [], error: r.error, took: tk }, r.raw);
+      saveVerdict(slug, { at: now.toISOString(), head, threshold: th, model: m, pass: false, full: false, scores: [], error: r.error, took: tk }, r.raw);
       return { code: NO_VERDICT, lines: [...lines, `scenarios: the judge did not answer (${r.error})`, tookLine(tk)] };
     }
     const got = new Map((r.value.scores || []).filter(s => s && typeof s.id === "string").map(s => [s.id, s]));
     const scores = doc.scenarios.map(s => {
+      if (carry.has(s.id)) return carry.get(s.id);
       const g = got.get(s.id);
       const n = g && Number.isFinite(Number(g.score)) ? Math.max(0, Math.min(1, Number(g.score))) : 0;
       const cause = !g ? "unscored" : n < 1 && CAUSES.includes(g.cause) ? g.cause : undefined;
@@ -230,12 +251,15 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
     const pass = met === scores.length;
     const access = readAccess(slug).length;
     const tk = total();
-    saveVerdict(slug, { at: now.toISOString(), head, threshold: th, model: m, pass, scores, cost: r.cost ?? null, access, took: tk }, r.raw);
-    lines.push(`scenarios: ${met} of ${scores.length} met the threshold ${th} (judged by ${m} on ${head.slice(0, 8)})`);
+    saveVerdict(slug, { at: now.toISOString(), head, threshold: th, model: m, pass, full: isFullRun, judged: toJudge.length, carried: carry.size,
+      scores, cost: r.cost ?? null, access, took: tk }, r.raw);
+    lines.push(`scenarios: ${met} of ${scores.length} met the threshold ${th} (judged by ${m} on ${head.slice(0, 8)}` +
+      `${carry.size ? `; ${toJudge.length} judged, ${carry.size} carried from earlier runs` : ""})`);
     const seen = new Set();
     for (const s of scores) {
       const low = s.score < th;
-      lines.push(`  ${s.score.toFixed(2)}  ${s.id}  ${s.title}${low && s.cause ? `  [${s.cause}]` : ""}`);
+      lines.push(`  ${s.score.toFixed(2)}  ${s.id}  ${s.title}${low && s.cause ? `  [${s.cause}]` : ""}` +
+        `${s.carried ? `  (carried from ${String(s.carried.head || "").slice(0, 8)})` : ""}`);
       if (low && s.cause) seen.add(s.cause);
       const sc = doc.scenarios.find(x => x.id === s.id);
       if (low && sc && sc.hint && sc.hintApproved) lines.push(`        hint: ${sc.hint}`);
@@ -243,6 +267,7 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
     for (const c of Object.keys(CAUSE_SAYS)) if (seen.has(c)) lines.push(`  ${CAUSE_SAYS[c]}`);
     if (seen.size) lines.push("  every failed run counts toward the retry cap, whatever its cause");
     lines.push(tookLine(tk, r.cost));
+    if (pass && carry.size) lines.push(`  carried passes are not trusted to merge: deliver and ship want a full run that passes at HEAD (deep-plan scenarios judge ${slug})`);
     if (access) lines.push(`  the access log holds ${access} refused attempt(s) to read the sealed scenarios`);
     return { code: pass ? 0 : 1, lines };
   } finally {
@@ -260,12 +285,12 @@ export async function judge({ slug, root, threshold, model, timeoutS = JUDGE_TIM
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [verb, slug, ...rest] = process.argv.slice(2);
   const flag = k => { const i = rest.indexOf(k); return i >= 0 ? rest[i + 1] : undefined; };
-  if (verb !== "run" || !slug) { console.error("usage: judge.mjs run <slug> [--threshold 0..1] [--model M] [--timeout S]"); process.exit(2); }
+  if (verb !== "run" || !slug) { console.error("usage: judge.mjs run <slug> [--full] [--threshold 0..1] [--model M] [--timeout S]"); process.exit(2); }
   const t = flag("--threshold");
   if (t !== undefined && !(/^(0(\.\d+)?|1(\.0+)?)$/.test(t))) { console.error(`--threshold is a number from 0 to 1 (got ${t})`); process.exit(2); }
   const res = await judge({ slug, root: process.env.DEEP_PLAN_ROOT || process.cwd(),
     threshold: t === undefined ? undefined : Number(t), model: flag("--model"),
-    timeoutS: Number(flag("--timeout")) || JUDGE_TIMEOUT_S });
+    timeoutS: Number(flag("--timeout")) || JUDGE_TIMEOUT_S, full: rest.includes("--full") });
   for (const l of res.lines) console.log(l);
   process.exit(res.code);
 }

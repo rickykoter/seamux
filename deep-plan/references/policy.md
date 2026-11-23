@@ -94,7 +94,8 @@ too. It then checks each gate and takes one step:
 - auto-pr: once the plan is delivered and the branch is pushed, it opens
   the PR against the policy's base, or marks the draft ready.
 - auto-merge: the same, and then it merges once every scenarios check
-  passed, the PR targets the policy's base, its head is HEAD, it has no
+  passed and the newest full judge run passed at HEAD (a retry's carried
+  passes do not count; see scenarios.md), the PR targets the policy's base, its head is HEAD, it has no
   conflict, and its checks are green. The merge is pinned to HEAD. With
   checks still running, it uses GitHub's auto-merge when the repo allows
   it, the base requires checks, and every check on the PR is a required
