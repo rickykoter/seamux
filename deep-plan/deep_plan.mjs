@@ -540,13 +540,20 @@ async function amendCmd(args, flags) {
   if (specHash(spec) === specHash(prior)) die(`amend ${slug}: ${specPath} is the plan as it stands; nothing to amend`);
   const changed = specChanges(prior, spec);
   const amendment = { at: Date.now(), why, changed, graded: !!st.approved };
-  // Sealed scenarios still test the plan as it was: mark them stale before
-  // the plan changes, where only the writer and the person's page clear it
-  // (lib/scenarios.mjs). A render that then fails leaves them stale, and
-  // the writer, finding nothing moved, clears the mark.
   const sealed = !!SCN.readScenarios(slug);
-  if (sealed) SCN.markStale(slug, amendment);
   await render(specPath, { ...flags, root: st.root, amendment });
+  // Sealed scenarios still test the plan as it was: mark them stale, where
+  // only the writer and the person's page clear it (lib/scenarios.mjs). Only
+  // after the render took the amend (a refused spec exits before this), and
+  // loudly if the mark cannot be written: the amend stands either way.
+  if (sealed) {
+    try { SCN.markStale(slug, amendment); }
+    catch (e) {
+      console.error(`deep-plan: ${slug} is amended, but its sealed scenarios could not be marked stale (${e.message}); ` +
+        `they still test the plan as it was: the person reviews them (deep-plan scenarios show ${slug}, in their own shell)`);
+      process.exit(1);
+    }
+  }
   say(`amended ${slug}: ${why}`);
   for (const c of changed) say(`  ${c}`);
   if (sealed) {
