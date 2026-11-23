@@ -745,8 +745,7 @@ export function reviseScenarios(slug, { root, model } = {}) {
 // the mark. `current` keeps every scenario as it is and clears it too.
 export function resolveProposal(slug, pid, accept) {
   const r = readRevisions(slug);
-  const ps = r.proposals || [];
-  const p = ps.find(x => x.pid === pid);
+  const p = (r.proposals || []).find(x => x.pid === pid);
   if (!p) throw new Error(`no proposal ${pid} waits for ${slug}`);
   const gone = p.action !== "add" && !((readScenarios(slug) || {}).scenarios || []).some(x => x.id === p.id);
   if (accept && !gone) {
@@ -755,8 +754,10 @@ export function resolveProposal(slug, pid, accept) {
     else if (p.action === "remove") editScenario(slug, p.id, { delete: true }, "person");
     else editScenario(slug, "new", fields, "person");
   }
-  const rest = ps.filter(x => x.pid !== pid);
   const fresh = readRevisions(slug);
+  // What is left is read after the edit, so a second answer in flight is
+  // not written back over this one.
+  const rest = (fresh.proposals || []).filter(x => x.pid !== pid);
   // An amend while the person answered dropped these proposals and owns the
   // mark now: leave it (the accepted edit, if any, stands as theirs).
   if (!sameEpisode(fresh.stale, r.stale) || !fresh.proposals) throw new Error("the plan was amended while you answered: reload the page");

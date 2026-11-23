@@ -9387,6 +9387,10 @@ if (want("policy and ship: levels from the base branch")) {
   ok("policy: with scenarios.paths, a plan that names only a directory holding matching files is refused too (inc4 f1)",
     /needs a scenarios check/.test(render(mk("pol-paths-dir", [["docs/a.md"], ["docs/ui"]])).stderr) &&
     /needs a scenarios check/.test(render(mk("pol-paths-dir2", [["docs/a.md"], ["docs/"]])).stderr));
+  ok("policy: with scenarios.paths, a plan path that is a pattern, or a plan that lists no files, counts as matching (delivery f1)",
+    /needs a scenarios check/.test(render(mk("pol-paths-glob", [["docs/a.md"], ["docs/*"]])).stderr) &&
+    (await import("./lib/policy.mjs")).scenariosRequiredFor({ source: "base", policy: { default: "auto-go", scenarios: { require: "auto-pr", paths: ["docs/ui/**"] } } }, []) === "auto-pr" &&
+    (await import("./lib/policy.mjs")).scenariosRequiredFor({ source: "base", policy: { default: "auto-go", scenarios: { require: "auto-pr", paths: ["docs/ui/**"] } } }, ["."]) === "auto-pr");
   r = pc("policy", "show", "docs/ui/page.md", "docs/a.md");
   ok("policy show: scenarios.paths is shown, and each file says whether it alone needs a scenarios check",
     /scenarios required at auto-pr and above for a change touching docs\/ui\/\*\*/.test(r.stdout) &&

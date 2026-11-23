@@ -162,16 +162,20 @@ export function scenariosPaths(pol) {
 // match: "app/ui" or "app" against "app/ui/**".
 function coversGlob(file, glob) {
   if (matchesGlob(file, glob)) return true;
+  // A plan path that is itself a pattern, or the whole repo, may hold a
+  // matching file: it counts as matching.
+  if (/[*?[{]/.test(String(file)) || /^\.?\/?$/.test(String(file))) return true;
   const dir = String(file).replace(/\/+$/, "");
   return !!dir && (matchesGlob(`${dir}/x`, glob) || glob.startsWith(`${dir}/`));
 }
 // The lowest level that needs a scenarios check for a change of these files:
 // scenariosRequiredAt, unless scenarios.paths is set and no file matches it.
-// Files that could not be read (null) are treated as matching.
+// Files that could not be read (null), or none listed, are treated as
+// matching: what a plan may change is not narrowed by what it left out.
 export function scenariosRequiredFor(pol, files) {
   const at = scenariosRequiredAt(pol);
   const globs = scenariosPaths(pol);
-  if (!at || !globs || files == null) return at;
+  if (!at || !globs || files == null || !files.length) return at;
   return files.some(f => globs.some(g => coversGlob(f, g))) ? at : null;
 }
 
