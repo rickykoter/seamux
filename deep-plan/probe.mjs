@@ -9009,6 +9009,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   ok("scenarios gate: a Bash run from inside the folder is refused", sgate("Bash", { command: "ls" }, path.join(SEALED, "scn-a")).status === 2);
   ok("scenarios gate: an Edit or Write into the folder is refused as deep-plan's own records",
     sgate("Write", { file_path: path.join(SEALED, "scn-a", "verdicts.json"), content: "{}" }).status === 2);
+  ok("scenarios gate: a Write or an Edit of the revisions file is refused too, so the building session cannot clear a stale mark (inc3 f8)",
+    sgate("Write", { file_path: path.join(SEALED, "scn-a", "revisions.json"), content: '{"stale":null,"proposals":null}' }).status === 2 &&
+    sgate("Edit", { file_path: path.join(SEALED, "scn-a", "revisions.json"), old_string: "stale", new_string: "x" }).status === 2 &&
+    sgate("Edit", { file_path: path.join(SEALED, "scn-a", "scenarios.json"), old_string: "a", new_string: "b" }).status === 2);
   const dn = path.dirname(TMP), bn = path.basename(TMP);
   ok("scenarios gate: a brace-only Glob spelling reaches node and is refused (f7)",
     sgate("Glob", { pattern: `${dn}/{${bn},zz}/se{a,b}led/scn-a/scenarios.json` }).status === 2);
