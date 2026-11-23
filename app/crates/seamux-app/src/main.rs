@@ -330,7 +330,8 @@ fn main() {
             bosun_app::bosun_status,
             bosun_app::bosun_ensure,
             bosun_app::bosun_log,
-            bosun_app::bosun_send
+            bosun_app::bosun_send,
+            bosun_app::bosun_report_run
         ])
         .build(tauri::generate_context!())
         .expect("seamux app failed to start")

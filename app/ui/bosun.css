@@ -98,6 +98,48 @@
 .bosun-why {
   font-size: var(--fs-1); color: var(--accent-t); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* A report run's card: its head, a line per section with its dot, Run again.
+   One that needs you carries a touch of amber on its edge. */
+.bosun-card.report.needs { border-color: color-mix(in srgb, var(--ef-yellow) 45%, var(--line)); }
+.bosun-rep-head { display: flex; gap: 6px; align-items: center; min-width: 0; padding-right: 48px; color: var(--muted); font-size: var(--fs-1); }
+.bosun-rep-head .bosun-ico { flex: none; color: var(--accent-t); }
+.bosun-rep-title { color: var(--fg); font-weight: 600; font-size: var(--fs-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bosun-rep-head .bosun-time { margin-left: auto; }
+.bosun-rep-head .bosun-new { margin-left: 0; }
+/* Dot, section, line: the sections line up in one column. */
+.bosun-rep-lines {
+  display: grid; grid-template-columns: 10px fit-content(42%) minmax(0, 1fr); column-gap: 6px; row-gap: 2px; align-items: center;
+  margin-top: 2px; line-height: 1.35;
+}
+.bosun-rep-line { display: contents; }
+.bosun-rep-sec { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bosun-rep-text { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bosun-rep-line.s-unchecked .bosun-rep-sec, .bosun-rep-line.s-unchecked .bosun-rep-text { color: var(--muted); font-style: italic; }
+.bosun-dot { flex: none; display: block; }
+.bosun-dot .fill { fill: var(--ef-yellow); }
+.bosun-dot.s-ok .ring { stroke: var(--good); }
+.bosun-dot.s-unchecked .ring { stroke: var(--muted); }
+.bosun-rep-doc {
+  position: absolute; top: 6px; right: 8px; display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 5px;
+  font-size: var(--fs-1); color: var(--accent-t); text-decoration: none; border: 1px solid transparent;
+}
+.bosun-rep-doc:hover { border-color: var(--line2); background: var(--on); }
+.bosun-rep-doc:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A card with no foot keeps its bottom padding and corners. */
+.bosun-card-main.alone { padding-bottom: 8px; border-radius: 8px; }
+.bosun-rep-docwhy { flex: 1; min-width: 0; font-size: var(--fs-1); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The reading pane's list of sections. */
+.bosun-rep-list { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.bosun-rep-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card); }
+.bosun-rep-item.s-needs { border-color: color-mix(in srgb, var(--ef-yellow) 45%, var(--line)); }
+.bosun-rep-item-h { display: flex; align-items: center; gap: 8px; margin: 0 0 2px; }
+.bosun-rep-st { margin-left: auto; font-size: var(--fs-1); color: var(--muted); }
+.bosun-rep-item.s-needs .bosun-rep-st { color: var(--ef-text-yellow); font-weight: 600; }
+.bosun-rep-item-t { margin: 0; color: var(--fg); line-height: 1.45; }
+.bosun-rep-item.s-unchecked .bosun-rep-item-t { color: var(--muted); font-style: italic; }
+.bosun-rep-item-why { margin: 2px 0 0; font-size: var(--fs-1); color: var(--muted); }
+.bosun-rep-docline { margin: 0 0 14px; }
+
 /* Chips on the left, Re-check on the right: one line. */
 .bosun-card-foot { display: flex; align-items: center; gap: 6px; padding: 2px 6px 6px 10px; min-height: 26px; }
 .bosun-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }

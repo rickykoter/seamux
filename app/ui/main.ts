@@ -131,6 +131,13 @@ void listen<{ review: string; item: string }>("notify:review", (e) => {
   void reviewView.focus(e.payload.review, e.payload.item);
 });
 
+// A click on a Bosun report's banner (crew_core::bosun::reports, through
+// notify_app.rs) lands on that run's card, open in the Bosun tab's reading pane.
+void listen<{ entry: string }>("notify:bosun", (e) => {
+  tabs.select("bosun");
+  void bosunView.openEntry(e.payload.entry);
+});
+
 // Ask the Bosun from Radar or Lookout (bosun_ask.ts) queued a question: the
 // Bosun drops down so the answer can be watched.
 window.addEventListener("seamux:bosun-asked", () => bosunView.afterAsk());

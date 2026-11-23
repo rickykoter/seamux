@@ -6,7 +6,13 @@
 /** One source behind an answer, as `seamux bosun log add` keeps it. */
 export type Source = { kind: string; ref: string; label: string };
 /** One answer log entry (crew_core::bosun::log). `at` is ms since the epoch. */
-export type Entry = { id: string; at: number; question: string; answer: string; sources: Source[]; asker: string };
+export type Entry = { id: string; at: number; question: string; answer: string; sources: Source[]; asker: string; report?: ReportRun };
+/** A section's result in a report run: needs the person, fine, or not checked. */
+export type SectionStatus = "needs" | "ok" | "unchecked";
+/** One section of a report run, as `seamux bosun report done` logs it (crew_core::bosun::reports). */
+export type ReportSection = { title: string; status: SectionStatus; line: string; why?: string };
+/** A report run's `report` field: which report, its doc (or why there is none), its sections. */
+export type ReportRun = { id: string; run: string; title: string; doc?: string; docWhy?: string; sections: ReportSection[] };
 /** bosun_log's answer: one day's entries, and the days that have a log, newest first. */
 export type LogPage = { day: string; today: string; days: string[]; entries: Entry[] };
 /** bosun_status's answer (bosun_app.rs). */
@@ -18,7 +24,7 @@ export type Status = {
 /** A day of cards in the rail: Today, Yesterday, then the date. */
 export type Day = { day: string; label: string; cards: Card[] };
 /** What a rail card shows. */
-export type Card = { id: string; time: string; from: string; question: string; first: string; chips: Chip[]; entry: Entry };
+export type Card = { id: string; time: string; from: string; question: string; first: string; chips: Chip[]; entry: Entry; report: ReportRun | null };
 /** One chip per source kind, with how many of that kind; `name` is its full name, for a tooltip. */
 export type Chip = { kind: string; label: string; name: string; n: number };
 
@@ -57,13 +63,13 @@ export function firstLine(answer: string, max = 120): string {
 const KIND_LABEL: Record<string, string> = {
   file: "file", github: "gh", gh: "gh", pr: "gh", jira: "jira", ticket: "jira",
   snowflake: "sql", query: "sql", sql: "sql", datadog: "dd", dashboard: "dash", splunk: "splunk",
-  workspace: "ws", url: "link", link: "link", command: "cmd", cmd: "cmd",
+  workspace: "ws", url: "link", link: "link", command: "cmd", cmd: "cmd", doc: "doc",
 };
 
 /** The full name behind each short label, for its tooltip. */
 const LABEL_NAME: Record<string, string> = {
   file: "File", gh: "GitHub", jira: "Jira", sql: "SQL query", dd: "Datadog", dash: "Dashboard",
-  splunk: "Splunk search", ws: "Workspace", link: "Link", cmd: "Command",
+  splunk: "Splunk search", ws: "Workspace", link: "Link", cmd: "Command", doc: "Claude Doc",
 };
 
 /** A source kind's short label ("gh") and full name ("GitHub"): the chip and the source list say the same. */
@@ -104,6 +110,7 @@ export function fromLabel(asker: string): string {
   if (a === "app") return "the app";
   if (a === "person") return "you";
   if (a.startsWith("loop:")) return `${a.slice(5)} loop`;
+  if (a.startsWith("report:")) return `${a.slice(7)} report`;
   if (a.startsWith("ask:")) return a.slice(4);
   return a;
 }
@@ -111,8 +118,47 @@ export function fromLabel(asker: string): string {
 export function card(e: Entry, tz?: string): Card {
   return {
     id: e.id, time: clock(e.at, tz), from: fromLabel(e.asker), question: e.question.trim(),
-    first: firstLine(e.answer), chips: chips(e.sources ?? []), entry: e,
+    first: firstLine(e.answer), chips: chips(e.sources ?? []), entry: e, report: reportOf(e),
   };
+}
+
+const STATUSES: SectionStatus[] = ["needs", "ok", "unchecked"];
+
+/** An entry's report run, when it is one and its field reads: sections with
+ *  a title, a known status and a line. A doc link that is not https is dropped. */
+export function reportOf(e: Entry): ReportRun | null {
+  const r = e.report;
+  if (!r || typeof r !== "object" || !Array.isArray(r.sections) || typeof r.id !== "string" || !r.id) return null;
+  const sections = r.sections
+    .filter((s) => s && typeof s.title === "string" && typeof s.line === "string" && STATUSES.includes(s.status))
+    .map((s) => ({ title: s.title, status: s.status, line: s.line, ...(s.why ? { why: String(s.why) } : {}) }));
+  if (!sections.length) return null;
+  const doc = typeof r.doc === "string" && r.doc.startsWith("https://") ? r.doc : undefined;
+  return {
+    id: r.id, run: String(r.run ?? e.id), title: String(r.title ?? "").trim() || e.question.trim(), sections,
+    ...(doc ? { doc } : {}), ...(!doc && r.docWhy ? { docWhy: String(r.docWhy) } : {}),
+  };
+}
+
+/** What a report run's answer says beyond its section lines (the lines
+ *  `report done` writes when the Bosun sends none): "" when nothing. */
+export function reportExtra(e: Entry, r: ReportRun): string {
+  const said = new Set(r.sections.flatMap((s) => [`${s.title}: ${s.line}`, `- ${s.title}: ${s.line}`].map((x) => x.trim().toLowerCase())));
+  return e.answer
+    .split("\n")
+    .filter((l) => l.trim() && !said.has(l.trim().toLowerCase()))
+    .join("\n")
+    .trim();
+}
+
+/** A section's dot, for its tooltip and the screen reader. */
+export function statusLabel(s: SectionStatus): string {
+  return s === "needs" ? "Needs you" : s === "ok" ? "Fine" : "Not checked";
+}
+
+/** How many of a run's sections need the person. */
+export function needsCount(r: ReportRun): number {
+  return r.sections.filter((s) => s.status === "needs").length;
 }
 
 /** The rail: one group per page, newest day first, newest entry first in each. */
@@ -159,7 +205,9 @@ function wordsOf(query: string): RegExp[] {
 export function matches(e: Entry, query: string): boolean {
   const words = wordsOf(query);
   if (!words.length) return true;
-  const hay = [e.question, e.answer, e.asker, fromLabel(e.asker), ...(e.sources ?? []).flatMap((s) => [s.label, s.ref, s.kind, kindLabel(s.kind).name])].join("\n");
+  const report = reportOf(e);
+  const lines = report ? report.sections.flatMap((s) => [s.title, s.line, statusLabel(s.status)]) : [];
+  const hay = [e.question, e.answer, e.asker, fromLabel(e.asker), ...lines, ...(e.sources ?? []).flatMap((s) => [s.label, s.ref, s.kind, kindLabel(s.kind).name])].join("\n");
   return words.every((w) => w.test(hay));
 }
 
@@ -169,7 +217,9 @@ export function matches(e: Entry, query: string): boolean {
 export function matchedWhere(e: Entry, query: string): string {
   const words = wordsOf(query);
   // What a card shows of its answer: about two lines of the rail, not the whole first line.
-  const shown = `${e.question}\n${firstLine(e.answer, 80)}\n${fromLabel(e.asker)}`;
+  // A report card shows its sections' lines instead of its answer's first line.
+  const report = reportOf(e);
+  const shown = report ? `${e.question}\n${report.sections.map((s) => `${s.title} ${s.line}`).join("\n")}` : `${e.question}\n${firstLine(e.answer, 80)}\n${fromLabel(e.asker)}`;
   const hidden = words.filter((w) => !w.test(shown));
   if (!hidden.length) return "";
   for (const s of e.sources ?? []) {
@@ -256,8 +306,14 @@ export function landed(question: string, since: number, entries: Entry[], qid = 
   return best?.id ?? null;
 }
 
-/** What a waiting re-check says, by what the Bosun is doing. */
-export function pendingNote(live: boolean, state: string | undefined): string {
+/** What a waiting re-check says, by what the Bosun is doing; a report's run
+ *  says its sources are checked first. */
+export function pendingNote(live: boolean, state: string | undefined, report = false): string {
+  if (report) {
+    if (!live) return "Queued. It runs once the Bosun is running.";
+    if (state === "needs_input") return "Queued. It runs after you answer the Bosun's prompt.";
+    return "Queued. Its sources are checked first, then the new run lands at the top.";
+  }
   if (!live) return "Queued. The Bosun answers once it is running.";
   if (state === "needs_input") return "Queued. It waits until you answer the Bosun's prompt.";
   if (state === "working") return "Queued. The Bosun answers after its current turn.";
@@ -290,6 +346,13 @@ export function dropAct(tab: string, open: boolean): DropAct {
 /** The re-check prompt: the same question, queued again. */
 export function recheck(e: Entry): string {
   return e.question.trim();
+}
+
+/** How a card asks again: a report run queues its report (bosun_report_run,
+ *  which goes through the supervisor's source check); an answer queues its question. */
+export function askAgain(e: Entry): { cmd: "bosun_report_run"; args: { id: string } } | { cmd: "bosun_send"; args: { text: string } } {
+  const r = reportOf(e);
+  return r ? { cmd: "bosun_report_run", args: { id: r.id } } : { cmd: "bosun_send", args: { text: recheck(e) } };
 }
 
 // ---- the answer's text ----

@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { TermSlot } from "./native";
 import { follow, openFile } from "./panelinks";
 import {
-  ago, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, hits, kindLabel, landed, matchedWhere, mdBlocks, mood, newerAnswers, olderDays,
-  pendingNote, rail, recheck, sourceRow, sourceTarget, tilde,
-  type Card, type Chip, type Entry, type LogPage, type Mood, type Span, type Status,
+  ago, askAgain, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, hits, kindLabel, landed, matchedWhere, mdBlocks, mood, newerAnswers, olderDays,
+  needsCount, pendingNote, rail, reportExtra, sourceRow, sourceTarget, statusLabel, tilde,
+  type Card, type Chip, type Entry, type LogPage, type Mood, type ReportRun, type SectionStatus, type Span, type Status,
 } from "./bosun_model";
 
 // The Bosun (crates/crew-core/src/bosun): one long-running, read-only
@@ -54,7 +54,7 @@ function button(cls: string, text = "", title = ""): HTMLButtonElement {
 
 /** Small line icons, drawn in currentColor: a chevron, a cross, an arrow
  *  leaving a box (a web page), a page (a file), a magnifier, two sheets (copy). */
-type Icon = "left" | "right" | "x" | "web" | "file" | "find" | "copy" | "up" | "check";
+type Icon = "left" | "right" | "x" | "web" | "file" | "find" | "copy" | "up" | "check" | "report";
 function icon(name: Icon, size = 12): SVGSVGElement {
   const s = svg("svg", { viewBox: "0 0 12 12", width: size, height: size, class: `bosun-ico i-${name}`, "aria-hidden": "true" });
   const line = { fill: "none", stroke: "currentColor", "stroke-width": 1.3, "stroke-linecap": "round", "stroke-linejoin": "round" };
@@ -68,9 +68,20 @@ function icon(name: Icon, size = 12): SVGSVGElement {
     find: ["M5.2 8.6a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8Z", "M7.7 7.7 10.5 10.5"],
     copy: ["M4 4h6v6.5H4z", "M2 8V1.5h6"],
     check: ["M2.5 6.3 5 8.8l4.5-5.3"],
+    report: ["M2 1.5h8v9H2z", "M4 4h4M4 6h4M4 8h2.5"],
   };
   for (const p of d[name]) svg("path", { d: p, ...line }, s);
   return s;
+}
+
+/** A report section's dot: amber and filled when it needs you, a hollow
+ *  ring when fine, a dotted ring when not checked. Its words are the label. */
+function statusDot(s: SectionStatus): SVGSVGElement {
+  const d = svg("svg", { viewBox: "0 0 10 10", width: 10, height: 10, class: `bosun-dot s-${s}`, role: "img", "aria-label": statusLabel(s) });
+  svg("title", {}, d).textContent = statusLabel(s);
+  if (s === "needs") svg("circle", { cx: 5, cy: 5, r: 4, class: "fill" }, d);
+  else svg("circle", { cx: 5, cy: 5, r: 3.6, fill: "none", "stroke-width": 1.3, class: "ring", ...(s === "unchecked" ? { "stroke-dasharray": "1.4 1.6" } : {}) }, d);
+  return d;
 }
 
 /** A brass bosun's call: the gun (the pipe) with its mouthpiece on the
@@ -686,6 +697,7 @@ export class BosunView {
   }
 
   private card(c: Card, newer?: string): HTMLElement {
+    if (c.report) return this.reportCard(c, c.report);
     const reading = this.reading?.id === c.id;
     const fresh = this.fresh.has(c.id);
     const a = el("article", `bosun-card${reading ? " reading" : ""}${fresh ? " new" : ""}`);
@@ -717,7 +729,75 @@ export class BosunView {
     const line = this.pendingLine(c.entry);
     if (line) a.append(line);
     // A loop asks the same thing on purpose: its older runs don't each point at the newest.
-    if (newer && !c.entry.asker.startsWith("loop:")) a.append(this.newerLink(newer));
+    if (newer && !c.entry.asker.startsWith("loop:") && !c.entry.asker.startsWith("report:")) a.append(this.newerLink(newer));
+    open.addEventListener("click", () => {
+      if (this.settling()) return;
+      if (reading) this.closeReader(false);
+      else this.openReader(c.entry);
+    });
+    return a;
+  }
+
+  /** A report run's card (the person's pick, 2026-11-22): its title, time
+   *  and doc link on top, one line per section with its dot, then Run again.
+   *  The body opens the reading pane like any card. */
+  private reportCard(c: Card, r: ReportRun): HTMLElement {
+    const reading = this.reading?.id === c.id;
+    const fresh = this.fresh.has(c.id);
+    const n = needsCount(r);
+    const a = el("article", `bosun-card report${n ? " needs" : ""}${reading ? " reading" : ""}${fresh ? " new" : ""}`);
+    a.dataset.id = c.id;
+    const open = el("button", "bosun-card-main");
+    open.type = "button";
+    open.dataset.act = "open";
+    open.setAttribute("aria-pressed", String(reading));
+    open.title = reading ? "Close the reading pane" : "Read the report and its sources";
+    const top = el("span", "bosun-rep-head");
+    top.append(icon("report", 12));
+    top.append(this.marked(el("span", "bosun-rep-title"), r.title));
+    top.append(el("span", "bosun-time", c.time));
+    if (fresh) top.append(el("span", "bosun-new", "new"));
+    open.append(top);
+    const lines = el("span", "bosun-rep-lines");
+    // A screen reader hears how the run went before its lines.
+    const sum = [n ? `${n} need${n === 1 ? "s" : ""} you` : "", `${r.sections.length} section${r.sections.length === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+    lines.setAttribute("role", "group");
+    lines.setAttribute("aria-label", sum);
+    for (const s of r.sections) {
+      const row = el("span", `bosun-rep-line s-${s.status}`);
+      row.append(statusDot(s.status), this.marked(el("span", "bosun-rep-sec"), s.title), this.marked(el("span", "bosun-rep-text"), s.line));
+      row.title = `${s.title}: ${statusLabel(s.status)}. ${s.line}`;
+      lines.append(row);
+    }
+    open.append(lines);
+    const why = this.query.trim() ? matchedWhere(c.entry, this.query) : "";
+    if (why) open.append(this.marked(el("span", "bosun-why"), `Matched in ${why}`));
+    a.append(open);
+    // The doc link sits over the card's corner, outside the button (a link may not sit in one).
+    if (r.doc) {
+      const doc = el("a", "bosun-rep-doc");
+      doc.href = r.doc;
+      doc.title = `Open the ${r.title} doc`;
+      doc.append(document.createTextNode("Doc"), icon("web", 10));
+      doc.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        void follow(r.doc!, null, ev);
+      });
+      a.append(doc);
+    }
+    // The foot only when it holds something: why there is no doc, or Run again.
+    const docWhy = !r.doc && r.docWhy ? `No doc: ${r.docWhy}` : "";
+    const canRun = this.status?.tmux !== false;
+    if (docWhy || canRun) {
+      const foot = el("div", "bosun-card-foot");
+      const why = el("span", "bosun-rep-docwhy", docWhy);
+      if (docWhy) why.title = docWhy;
+      foot.append(why);
+      if (canRun) foot.append(this.recheckButton(c.entry, "bosun-act", "Run again"));
+      a.append(foot);
+    } else open.classList.add("alone");
+    const line = this.pendingLine(c.entry);
+    if (line) a.append(line);
     open.addEventListener("click", () => {
       if (this.settling()) return;
       if (reading) this.closeReader(false);
@@ -737,11 +817,11 @@ export class BosunView {
     return performance.now() < this.settleUntil;
   }
 
-  private recheckButton(e: Entry, cls: string): HTMLButtonElement {
+  private recheckButton(e: Entry, cls: string, label = "Re-check"): HTMLButtonElement {
     const p = this.pending.get(e.id);
     const busy = p?.state === "sending" || p?.state === "waiting";
     const can = this.canAsk();
-    const b = button(cls, busy ? "Re-checking" : p?.state === "failed" ? "Retry" : "Re-check");
+    const b = button(cls, busy ? (label === "Re-check" ? "Re-checking" : "Running") : p?.state === "failed" ? "Retry" : label);
     b.dataset.act = "recheck";
     b.title = busy ? "Already asked again; the new answer lands at the top" : can.why;
     // aria-disabled, not disabled: the button keeps focus across a redraw, and its reason stays reachable.
@@ -763,7 +843,7 @@ export class BosunView {
     if (p.state === "failed") text.textContent = p.err ?? "Couldn't re-check.";
     else {
       line.append(el("span", "bosun-spin"));
-      text.textContent = p.state === "sending" ? "Sending to the Bosun…" : pendingNote(!!this.status?.live, this.status?.state);
+      text.textContent = p.state === "sending" ? "Sending to the Bosun…" : pendingNote(!!this.status?.live, this.status?.state, !!e.report);
     }
     line.append(text);
     // Waiting on the person's answer while the reading pane covers the prompt: a way to it.
@@ -805,7 +885,9 @@ export class BosunView {
     this.pending.set(e.id, mine);
     this.redraw();
     let slow = 0;
-    const send = invoke<string>("bosun_send", { text: recheck(e) });
+    // A report run asks for its report again, through the supervisor's source check.
+    const again = askAgain(e);
+    const send = invoke<string>(again.cmd, again.args);
     const refused = (err: unknown) => {
       const said = String(err).replace(/\.$/, "");
       // The Bosun's pane is the one thing a person can do something about: say it in their words.
@@ -899,7 +981,7 @@ export class BosunView {
     }
     // Where the Bosun can never run, no Re-check (as on the cards). Once a
     // newer answer exists, reading that comes first: Re-check steps down.
-    if (this.status?.tmux !== false) bar.append(this.recheckButton(e, newer ? "bosun-tool" : "bosun-tool primary"));
+    if (this.status?.tmux !== false) bar.append(this.recheckButton(e, newer ? "bosun-tool" : "bosun-tool primary", e.report ? "Run again" : "Re-check"));
 
     const body = el("div", "bosun-reader-body");
     body.tabIndex = -1;
@@ -911,7 +993,8 @@ export class BosunView {
     // Past a day, the age says the answer may be out of date.
     const old = Date.now() - e.at > 86400e3;
     meta.append(el("span", `bosun-age${old ? " old" : ""}`, ` (${ago(e.at, Date.now())}${old ? ", may be out of date" : ""})`));
-    if (c.from) meta.append(` · asked by ${c.from}`);
+    if (c.report) meta.append(" · a scheduled report");
+    else if (c.from) meta.append(` · asked by ${c.from}`);
     col.append(meta, el("h2", "bosun-reader-q", e.question.trim()));
     const line = this.pendingLine(e);
     if (line) col.append(line);
@@ -927,7 +1010,13 @@ export class BosunView {
       col.append(off);
     }
     if (newer) col.append(this.newerLink(newer));
-    col.append(this.answerText(e.answer));
+    const r = c.report;
+    if (r) {
+      col.append(this.reportSections(r));
+      // Only what the answer says beyond the section lines above.
+      const extra = reportExtra(e, r);
+      if (extra) col.append(this.answerText(extra));
+    } else col.append(this.answerText(e.answer));
 
     const src = el("section", "bosun-reader-src");
     const n = e.sources.length;
@@ -942,6 +1031,35 @@ export class BosunView {
     body.append(col);
     this.reader.replaceChildren(bar, body);
     if (same) body.scrollTop = scroll;
+  }
+
+  /** A report run's sections in the reading pane: each with its dot, status
+   *  and line, and why one was not checked; then its doc, or why it has none. */
+  private reportSections(r: ReportRun): HTMLElement {
+    const box = el("section", "bosun-rep-full");
+    const ul = el("ul", "bosun-rep-list");
+    for (const s of r.sections) {
+      const li = el("li", `bosun-rep-item s-${s.status}`);
+      const head = el("p", "bosun-rep-item-h");
+      head.append(statusDot(s.status), el("strong", "", s.title), el("span", "bosun-rep-st", statusLabel(s.status)));
+      li.append(head, el("p", "bosun-rep-item-t", s.line));
+      // Why it was not checked, when the line does not already say it.
+      if (s.why && !s.line.includes(s.why)) li.append(el("p", "bosun-rep-item-why", `Why: ${s.why}`));
+      ul.append(li);
+    }
+    box.append(ul);
+    if (r.doc) {
+      const p = el("p", "bosun-rep-docline");
+      const a = el("a", "bosun-link", `Open the ${r.title} doc`);
+      a.href = r.doc;
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        void follow(r.doc!, null, ev);
+      });
+      p.append(a);
+      box.append(p);
+    } else if (r.docWhy) box.append(el("p", "bosun-quiet", `The doc was not updated: ${r.docWhy}.`));
+    return box;
   }
 
   private answerText(text: string): HTMLElement {
@@ -1064,6 +1182,28 @@ export class BosunView {
       this.closeReader(false);
       this.tick();
     }
+  }
+
+  /** A Bosun banner's click (main.ts, notify:bosun): its report card, open
+   *  in the reading pane. Today's log is read again first, since the run
+   *  may have landed after the last poll. */
+  async openEntry(id: string): Promise<void> {
+    if (!this.entries().some((e) => e.id === id)) await this.readLog();
+    // A run from a day the rail has not read (its banner sat a while):
+    // read the logged days, newest first, until it turns up.
+    for (const day of this.days) {
+      if (this.entries().some((e) => e.id === id)) break;
+      if (this.pages.has(day)) continue;
+      const p = await invoke<LogPage>("bosun_log", { day }).catch(() => null);
+      if (p) this.pages.set(p.day, p);
+    }
+    const e = this.entries().find((x) => x.id === id);
+    if (!e) return;
+    // Its day shows in the rail, so the card it opens is there too.
+    const page = [...this.pages.values()].find((p) => p.entries.some((x) => x.id === id));
+    if (page && !this.shownPages().includes(page)) this.span = Math.max(this.span, daysToLoad(this.today, this.days, 400).indexOf(page.day) + 1);
+    this.scrollTo = id;
+    this.openReader(e);
   }
 
   /** Keyboard focus in the view's main area, its terminal (main.ts, on picking the tab). */

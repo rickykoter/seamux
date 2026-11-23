@@ -59,6 +59,15 @@ fn send_in(kind: Kind, dir: &Path, text: &str) -> Result<String, String> {
     queue::enqueue(dir, text.trim(), SOURCE).map(|i| i.id)
 }
 
+/// Queue a run of report `id` now: the run's id. It goes through the
+/// supervisor's source check like a scheduled run (bosun-reports' ADR).
+fn report_run_in(kind: Kind, dir: &Path, id: &str) -> Result<String, String> {
+    if kind != Kind::Tmux {
+        return Err(NEEDS_TMUX.into());
+    }
+    bosun::reports::run_now(dir, id, launch::now_secs())
+}
+
 fn today() -> String {
     launch::local_day_hour(launch::now_secs()).0
 }
@@ -101,6 +110,12 @@ pub async fn bosun_log(day: Option<String>) -> Result<Value, String> {
 #[tauri::command]
 pub async fn bosun_send(text: String) -> Result<String, String> {
     blocking(move || send_in(seamux_app::backend::kind(), &bosun::config::dir(), &text)).await
+}
+
+/// Run report `id` now (a report card's Run again): the run's id.
+#[tauri::command]
+pub async fn bosun_report_run(id: String) -> Result<String, String> {
+    blocking(move || report_run_in(seamux_app::backend::kind(), &bosun::config::dir(), &id)).await
 }
 
 /// At launch, on its own thread: bring back a Bosun that was started once
@@ -166,6 +181,18 @@ mod tests {
         assert_eq!(w[0].id, id);
         assert_eq!(w[0].text, "is PROJ-9 still blocked?");
         assert_eq!(w[0].source, "app");
+    }
+
+    #[test]
+    fn a_report_run_queues_its_placeholder_and_refuses_on_cmux() {
+        let d = temp("report");
+        let cfg = json!({"reports": [{"id": "morning", "at": "09:00", "sections": [{"title": "PRs", "via": ["cmd:gh"], "ask": "PRs waiting on me"}]}]});
+        std::fs::write(d.join("bosun.json"), cfg.to_string()).unwrap();
+        assert_eq!(report_run_in(Kind::Cmux, &d, "morning").unwrap_err(), NEEDS_TMUX);
+        assert!(report_run_in(Kind::Tmux, &d, "evening").is_err());
+        let run = report_run_in(Kind::Tmux, &d, "morning").unwrap();
+        let w = queue::waiting(&d);
+        assert_eq!((w.len(), w[0].id.as_str(), w[0].source.as_str()), (1, run.as_str(), "report:morning"));
     }
 
     #[test]
