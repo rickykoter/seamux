@@ -304,6 +304,8 @@ export class RadarView {
     const body = h("div", "radar-body");
     // The card comes first in the DOM, so Tab reaches "who to talk to" before the scope's marks.
     body.append(this.card, this.scope);
+    // Focusable from code (focusMain), not a Tab stop of its own.
+    this.card.tabIndex = -1;
     this.tools.setAttribute("role", "toolbar");
     this.tools.setAttribute("aria-label", "Overlays");
     this.chips.setAttribute("role", "toolbar");
@@ -315,6 +317,12 @@ export class RadarView {
         this.pick(null);
       }
     });
+  }
+
+  /** main.ts: the tab was selected. Keys go to the card, "who to talk to". */
+  focusMain(): boolean {
+    this.card.focus();
+    return document.activeElement === this.card;
   }
 
   setShown(on: boolean): void {

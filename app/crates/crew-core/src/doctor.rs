@@ -336,7 +336,9 @@ impl Doctor {
         // with a pane (or only lost ones that can never restart), a merged
         // branch still open.
         let mut by_cwd: HashMap<String, Vec<&Value>> = HashMap::new();
-        for w in &workspaces {
+        // A workspace with a kind (the Bosun's, at the code root) is not a
+        // twin of an ordinary one in the same folder: neither is a duplicate.
+        for w in workspaces.iter().filter(|w| !crate::backend::tmux::has_kind(w)) {
             by_cwd.entry(s(w, "cwd")).or_default().push(w);
         }
         // Of two or more records for one folder, the one kept: one with a
@@ -1336,6 +1338,22 @@ mod tests {
         assert!(ids(&f.d.scan(), "orphan-session").is_empty());
         // Reclaim is the wizard's, never done here.
         assert!(f.d.apply(&Finding { kind: "merged-live", ..f.d.scan().findings[0].clone() }, "reclaim").unwrap_err().contains("reclaim wizard"));
+    }
+
+    #[test]
+    fn an_ordinary_workspace_beside_the_bosun_is_no_duplicate() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fx::new("dupbosun");
+        let t = &f.d.tmux;
+        let wt = f.wt("code");
+        // The Bosun lives in the folder; an ordinary record there has no pane.
+        t.open_kind(&wt, "sleep 600", "bosun", "Bosun").unwrap();
+        let (plain, _) = t.open_workspace(&wt, "sleep 600").unwrap();
+        t.close_pane(&t.panes(Some(&plain)).unwrap()[0].id).unwrap();
+        let scan = f.d.scan();
+        assert!(scan.find(&format!("duplicate-workspace:{}", plain.to_uppercase())).is_none(), "{:?}", scan.findings);
     }
 
     #[test]

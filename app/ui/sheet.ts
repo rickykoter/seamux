@@ -92,6 +92,18 @@ class Chat {
     if (!this.bar.hidden && this.shown) this.drawSessions(this.shown);
   }
 
+  /** Keys to the pane: its live terminal, or the reply box when the pane
+   *  shows as plain text. False while neither is up yet. */
+  focusTerm(): boolean {
+    if (this.term.isNative()) {
+      this.term.focus();
+      return this.term.el.contains(document.activeElement);
+    }
+    if (!this.input.isConnected || this.input.offsetParent === null) return false;
+    this.input.focus();
+    return document.activeElement === this.input;
+  }
+
   /** Its worktree in VS Code (the Dock's "Open in" menu). */
   openCode(): void {
     void openInVSCode(this.shown?.cwd ?? "", (m) => (this.note.textContent = m));
@@ -767,6 +779,11 @@ export class Sheet {
   /** The place shown: a page opened for it joins its tabs. */
   here(): { workspace?: string; dir?: string } {
     return { ...this.place };
+  }
+
+  /** The Dock's tab was selected: keys go to the shown pane (main.ts). */
+  focusMain(): boolean {
+    return !this.el.hidden && this.chat.focusTerm();
   }
 
   /** `show`: "wake" or "plan" go to that tab even when the workspace is

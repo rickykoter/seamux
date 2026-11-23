@@ -1051,6 +1051,7 @@ const handlers = {
   desk_cleanup_plan: () => [],
   desk_cleanup_run: () => ({ ok: true, steps: [] }),
   hide_overlay: () => null,
+  focus_tab: () => null,
   home_dir: () => HOME,
   intent_server: () => INTENT,
   intent_page: async ({ path }) => {
