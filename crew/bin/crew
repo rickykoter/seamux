@@ -1585,6 +1585,35 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
     warn "Computer Use not set up — optional; finish the onboarding in cmux (README: Computer Use)"
   fi
 
+  # What the Bosun's reports still need on this machine (an MCP login, the
+  # Claude Docs connector, a host for the sandbox), as seamux words it. Only
+  # ever a warning: reports are optional, and the person fixes these.
+  head_ "bosun"
+  local _bout _berr _brc _blvl _bmsg
+  # claude mcp list connects to every server (up to a minute), so say so
+  # first when there are reports to check.
+  [ -f "${CREW_DURABLE_DIR:-$HOME/.claude/crew}/bosun/bosun.json" ] \
+    && note "checking the report sources (claude mcp list can take up to a minute)"
+  if [ ! -x "$SEAMUX" ]; then
+    note "no seamux to ask what the Bosun's reports need"
+  else
+    _berr="$(mktemp)"
+    _bout="$("$SEAMUX" bosun report doctor 2>"$_berr")"; _brc=$?
+    if [ "$_brc" -eq 0 ] && [ -n "$_bout" ]; then
+      while IFS=$'\t' read -r _blvl _bmsg; do
+        case "$_blvl" in
+          ok) ok "$_bmsg" ;; warn|bad) warn "$_bmsg" ;; *) note "$_bmsg" ;;
+        esac
+      done <<<"$_bout"
+    elif grep -q -e '^usage: seamux bosun' -e 'no tool named "bosun"' "$_berr"; then
+      # An older seamux: one whose bosun has no report doctor, or no bosun.
+      note "this seamux has no bosun report doctor: update it to see what the Bosun's reports need"
+    else
+      warn "seamux bosun report doctor failed (exit $_brc): $(head -1 "$_berr")"
+    fi
+    rm -f "$_berr"
+  fi
+
   head_ "context"
   # The ids the hooks read (crew_core::ident): SEAMUX_WORKSPACE_ID, which
   # the app's tmux and cmux's native sessions set, else CMUX_WORKSPACE_ID.

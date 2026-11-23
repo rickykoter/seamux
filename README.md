@@ -563,7 +563,13 @@ Stop and ask the person wherever a step says to.
    (`--no-crew`, `--mods`, `--with-jira=SITE`, `--main-repo PATH`; see
    [Install](#install)), then run the same command without `--dry-run`.
 4. Verify with `./install.sh --check` and, if crew is installed, `crew
-   doctor`. Both must be clean.
+   doctor`. Both must be clean. crew doctor's **bosun** lines are the
+   exception: they list what the Bosun's reports still need on this machine
+   (an MCP login, which the person gives with `/mcp` in the Bosun; the
+   Claude Docs connector, from their claude.ai login; a host such as
+   `api.github.com` in `~/.claude/crew/bosun/bosun.json`'s
+   `sandbox.allowedDomains`). Pass each one on to the person. Don't log in
+   or edit bosun.json for them.
 5. Tell the person to start a new Claude Code session. Running sessions
    don't pick up the plugins' hooks. Slash commands like `/plugin` and
    `/reload-plugins` are theirs to type, not yours.
@@ -574,7 +580,8 @@ Stop and ask the person wherever a step says to.
    run `git pull --ff-only`.
 2. Run `./install.sh` again. It's safe to re-run, and it re-applies crew.
 3. Run `./install.sh --check` and `crew doctor`, then ask the person to run
-   `/reload-plugins` in open sessions.
+   `/reload-plugins` in open sessions. Pass on any bosun lines as in a first
+   install.
 
 An install made with `--github` runs a cached copy instead, and updates only
 when a plugin's version changes.

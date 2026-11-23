@@ -76,6 +76,8 @@ those, give the section a `hosts` list, and add the same hosts to
 `seamux bosun report list` shows each report and its next run,
 `seamux bosun report run <id>` runs one now, and
 `seamux bosun report check [<id>]` says which sources work right now.
+`crew doctor` shows the same under **bosun**: each section that can't be
+checked yet and why, and an MCP server you have set up that no section uses.
 
 | file | what |
 |---|---|
