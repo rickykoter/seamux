@@ -651,12 +651,17 @@ const KNOWN: &[(&str, &str, &str)] = &[
     ("slack", "Slack", "List messages that mention me or are sent to me and have waited over a day without a reply."),
 ];
 
+/// The morning report's look at open workspaces: `context radar` already
+/// leaves out the Bosun and tucked or snoozed worktrees, and archived ones
+/// are closed, so what it lists is what is open.
+const WORKSPACES_ASK: &str = "Summarize where each open workspace stands, from `seamux bosun context radar --json` (it leaves out the Bosun and tucked or snoozed workspaces; archived ones are closed): one line per workspace with its repo, branch and what it is doing, grouped by repo, and say which ones wait on me.";
+
 const PRS_ASK: &str = "List the open pull requests waiting on my review or assigned to me (gh search prs --state=open --review-requested=@me, and --assignee=@me), oldest first, with each one's repo, age and check status.";
 
 /// The starter reports for the servers `found` lists.
 pub fn starters(found: &Found) -> Value {
     let prs = json!({"title": "Pull requests", "via": ["cmd:gh"], "ask": PRS_ASK});
-    let mut morning = vec![prs.clone()];
+    let mut morning = vec![prs.clone(), json!({"title": "Workspaces", "via": ["cmd:seamux"], "ask": WORKSPACES_ASK})];
     for (word, title, ask) in KNOWN {
         if found.has(word) {
             morning.push(json!({"title": title, "via": [format!("mcp:{word}")], "ask": ask}));
@@ -1181,7 +1186,9 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         let v = loops::read_json(&d.join("bosun.json")).unwrap();
         assert_eq!(v["resetHour"], 6);
         let titles: Vec<&str> = v["reports"][0]["sections"].as_array().unwrap().iter().map(|s| s["title"].as_str().unwrap()).collect();
-        assert_eq!(titles, ["Pull requests", "Monitors", "Tickets"], "datadog needs a login but is listed; calendar is not configured");
+        assert_eq!(titles, ["Pull requests", "Workspaces", "Monitors", "Tickets"], "datadog needs a login but is listed; calendar is not configured");
+        assert_eq!(v["reports"][0]["sections"][1]["via"], json!(["cmd:seamux"]));
+        assert!(v["reports"][0]["sections"][1]["ask"].as_str().unwrap().contains("seamux bosun context radar --json"));
         assert_eq!(v["reports"][1]["id"], "afternoon");
         let on: Vec<bool> = v["loops"].as_array().unwrap().iter().map(|l| l["enabled"].as_bool().unwrap()).collect();
         assert_eq!(on, [false, true, false], "my-prs was edited, so it stays on");
