@@ -49,8 +49,11 @@ edited them, writing them again is theirs.
 
 ## What the building session sees
 
-`deep-plan scenarios list <slug>` gives the count, the titles and the last
-scores. That is all. The gate refuses a Read, Grep, Glob or Bash that names
+`deep-plan scenarios list <slug>` gives the count, the titles, the last
+scores with each failing one's cause, each scenario's two scores before
+those, and how long the last run took. That is all. A score that moves
+between runs with nothing relevant changed is the judge's noise, not a
+regression. The gate refuses a Read, Grep, Glob or Bash that names
 the sealed folder, in any spelling it can see, and writes each attempt to
 the plan's access log; `scenarios access <slug>` lists them, and a verdict
 says how many there were. `scenarios show` and `scenarios edit` are the
@@ -81,8 +84,23 @@ is expensive, so it runs detached; `check wait` follows it. It:
    threshold.
 
 What the check prints is all the building session gets: each scenario's
-title and score, and a hint under a failing one only when the person
-allowed that hint. The judge's reasons and transcript stay sealed.
+title and score, a failing one's cause, how long each phase took (setup,
+ready, judge) and what the judge cost, and a hint under a failing one only
+when the person allowed that hint. The judge's reasons and transcript stay
+sealed.
+
+The cause is the judge's word for why a scenario fell short:
+
+- `product`: the change runs and does not do what the scenario expects.
+- `harness`: the judge could not run what the scenario needs (the server,
+  a mock, a tool), so the change was not really tried. A harness that
+  never starts tags every scenario `harness`.
+- `scenario`: the scenario asks for something the change could not be
+  expected to do as written.
+
+Every failed run counts toward the retry cap, whatever its cause: the
+checkout is the builder's, so a judge it could talk into saying `harness`
+must not buy it free retries.
 `deep-plan scenarios judge <slug>` runs the same judging outside a check.
 
 Exit 3 is no verdict: no scenarios yet, a bad harness file, or a judge that
@@ -112,14 +130,16 @@ start. A pack can write this file (`deep-plan pack add`).
 `deep-plan scenarios show <slug>`, run by the person in their own shell,
 opens the scenarios page: each scenario's steps, what to accept, the hint
 and whether the builder may see it, the last scores with the judge's
-reasons, and the access log. They edit and save there, or in an editor with
+reasons and causes and the scores before them, and the access log. They edit and save there, or in an editor with
 `scenarios edit`. The page is served behind a key kept in the sealed
 folder, not serve's token, and its address is printed only to a terminal.
 
 ## When a scenarios check fails
 
-Read the titles and scores, and any hint, then fix the behavior the title
-names. Do not ask for the scenario text, and do not weaken the plan's
+Read the titles, scores and causes, and any hint. On `product`, fix the
+behavior the title names. On `harness`, file a `deep-plan note` on what the
+harness lacks: `.seamux/scenarios.json` and any mock it serves are the
+developer's. On `scenario`, name the title to the person. Do not ask for the scenario text, and do not weaken the plan's
 promise to get a pass. A failure counts toward the retry cap like any
 recipe; after three in a row the increment blocks, and you stop and
 re-plan. A scenario that seems wrong is the person's to edit: say which

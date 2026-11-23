@@ -9046,13 +9046,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   // The judge.
   fs.writeFileSync(path.join(SR, "app.txt"), "v2\n");
   execSync(`${G} commit -qam v2`, { cwd: SR });
-  scores([{ id: "s1", score: 1, reason: "REASON-ONE fine" }, { id: "s2", score: 0.3, reason: "REASON-TWO nothing kept" }]);
+  scores([{ id: "s1", score: 1, reason: "REASON-ONE fine", cause: "harness" }, { id: "s2", score: 0.3, reason: "REASON-TWO nothing kept", cause: "product" }]);
   r = sc("check", "run", "scn-a", "1", "--inline");
   const j = calls().pop() || {};
   ok("scenarios judge: a scenario under the threshold fails the check, counted, printing titles and scores only",
     r.status !== 0 && chk("scn-a").status === "fail" && chk("scn-a").fails === 1 &&
     /1 of 2 met the threshold 0\.7/.test(r.stdout) && /0\.30 {2}s2 {2}A dead letter is kept/.test(r.stdout) &&
     !/REASON|SECRET|dead-letter path/.test(r.stdout + JSON.stringify(chk("scn-a"))), r.stdout);
+  ok("scenarios judge: the schema and prompt ask for a cause below 1, and say what product, harness and scenario mean",
+    j.args.some(a => /"cause":\{"type":"string","enum":\["product","harness","scenario"\]\}/.test(a)) &&
+    /harness: you could not run what the scenario needs/.test(j.prompt) && /scenario: the scenario asks for something/.test(j.prompt), j.args.join(" ").slice(0, 400));
+  ok("scenarios judge: a failing scenario's cause prints beside its score with what to do, and still counts; a full score's cause is dropped",
+    /0\.30 {2}s2 {2}A dead letter is kept {2}\[product\]/.test(r.stdout) && /product: the change does not do what the scenario expects/.test(r.stdout) &&
+    /every failed run counts toward the retry cap/.test(r.stdout) && !/harness: the judge could not/.test(r.stdout) && !/1\.00 {2}s1[^\n]*\[/.test(r.stdout), r.stdout);
+  ok("scenarios judge: the run prints its time per phase and the judge's cost",
+    /took \d+s \(setup \d+s, ready \d+s, judge \d+s\); the judge cost \$0\.01/.test(r.stdout), r.stdout);
   ok("scenarios judge: it judges a throwaway worktree at HEAD from an empty folder beside it, with a fixed tool list and no settings",
     j.tools === "Bash,Read,Grep,Glob" && j.git && j.app === "v2\n" && !j.cwdGit && j.cwd !== j.wt && j.wt !== SR &&
     j.args.includes("--setting-sources") && !j.claudecode, JSON.stringify({ tools: j.tools, cwd: j.cwd, wt: j.wt, app: j.app }));
@@ -9075,6 +9083,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
   const vd = JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8"));
   ok("scenarios judge: the reasons and transcript stay in the sealed folder",
     vd.last.scores[1].reason === "REASON-TWO nothing kept" && fs.readdirSync(path.join(SEALED, "scn-a")).some(f => /^judge-\d+\.json$/.test(f)));
+  ok("scenarios judge: the sealed verdict keeps each phase's time and the failing scenario's cause",
+    vd.last.scores[1].cause === "product" && !vd.last.scores[0].cause &&
+    ["setup", "ready", "judge", "total"].every(k => typeof vd.last.took[k] === "number" && vd.last.took[k] >= 0), JSON.stringify(vd.last.took));
   ok("scenarios judge: the refused attempts are counted in the verdict the builder sees", /access log holds \d+ refused attempt/.test(r.stdout));
 
   // A person allows s2's hint (their editor, outside a session); the next
@@ -9101,12 +9112,19 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   const lj = JSON.parse(r.stdout || "{}");
   ok("scenarios: list --json has titles, last scores and the access count, and no reasons",
     lj.count === 2 && lj.last && lj.last.pass === true && lj.last.scores[1].score === 0.75 && lj.access >= 12 && !/reason|SECRET/.test(r.stdout));
+  ok("scenarios: list shows each scenario's earlier scores, skipping a run with no verdict, and the run's time",
+    JSON.stringify(lj.last.scores[1].history) === "[0.75,0.3,0.3]" && typeof lj.last.took.total === "number" &&
+    /0\.75 {2}s2 {2}A dead letter is kept {2}\(before: 0\.30 0\.30\)/.test(sc("scenarios", "list", "scn-a").stdout) &&
+    /last judged [^\n]*, in \d+s/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout);
 
   // A harness that never comes up: every scenario fails on it.
   fs.writeFileSync(path.join(SR, ".seamux", "scenarios.json"), JSON.stringify({ harness: { ready: "exit 1", timeout: 2 } }));
   execSync(`${G} commit -qam broken`, { cwd: SR });
   r = sc("scenarios", "judge", "scn-a");
   ok("scenarios judge: a harness that is never ready fails every scenario and says so", r.status === 1 && /not ready within 2s/.test(r.stdout), r.stdout);
+  ok("scenarios judge: a harness that never starts tags every scenario harness, says what to do, and prints its time",
+    /harness: the judge could not run what the scenario needs/.test(r.stdout) && /took \d+s \(ready \d+s\)/.test(r.stdout) &&
+    JSON.parse(fs.readFileSync(path.join(SEALED, "scn-a", "verdicts.json"), "utf8")).last.scores.every(x => x.cause === "harness"), r.stdout);
   r = sc("scenarios", "judge", "scn-a", "--threshold", "high");
   ok("scenarios judge: a threshold that is not a number from 0 to 1 is refused (f6)", r.status !== 0 && /--threshold is a number from 0 to 1/.test(r.stderr), r.stderr);
 
@@ -9131,6 +9149,8 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   const html = await g.text();
   ok("scenarios page: with the key it shows the steps, the judge's reasons and the access log",
     g.status === 200 && html.includes("SECRET-STEPS kill the worker") && html.includes("Access log") && /prefers-color-scheme: dark/.test(html));
+  ok("scenarios page: it shows each scenario's cause, its earlier scores and the run's time",
+    html.includes('<span class="cause">harness</span>') && /before: 0\.75 0\.30/.test(html) && /, in \d+s\./.test(html));
   g = await fetch(`${B}/scenarios-edit/scn-a?k=${KEY}&op=save&id=s1&title=${encodeURIComponent("A retry is sent exactly once")}`);
   ok("scenarios page: an edit with the key saves",
     g.status === 200 && /exactly once/.test(sc("scenarios", "list", "scn-a").stdout));

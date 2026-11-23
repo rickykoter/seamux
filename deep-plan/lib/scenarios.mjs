@@ -210,6 +210,24 @@ export function saveVerdict(slug, v, transcript) {
   writeSealed(slug, "verdicts.json", { last: v, history: [v, ...(prev.history || [])].slice(0, 20) });
 }
 export function lastVerdict(slug) { const v = readSealedJson(slug, "verdicts.json"); return v && v.last || null; }
+// 552 seconds as "9m12s".
+export const took = s => {
+  const n = Math.max(0, Math.round(Number(s) || 0));
+  return n >= 60 ? `${Math.floor(n / 60)}m${String(n % 60).padStart(2, "0")}s` : `${n}s`;
+};
+// Each scenario's scores from the newest verdicts that scored it, newest
+// first: { id: [0.8, 0.6, 0.95] }. A run with no verdict (no scores) is
+// skipped, so a score that moves with nothing changed shows as noise.
+export function scoreHistory(slug, n = 3) {
+  const all = readSealedJson(slug, "verdicts.json");
+  const out = {};
+  for (const v of (all && all.history) || []) for (const s of v.scores || []) {
+    if (typeof s.score !== "number") continue;
+    const list = out[s.id] || (out[s.id] = []);
+    if (list.length < n) list.push(s.score);
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------- the repo's harness
 
@@ -533,11 +551,13 @@ export function scenariosPage(slug, key) {
   const doc = readScenarios(slug);
   const v = lastVerdict(slug);
   const access = readAccess(slug);
+  const hist = scoreHistory(slug, 4);
   const score = id => { const s = v && (v.scores || []).find(x => x.id === id); return s ? s : null; };
   const card = s => {
     const sc = score(s.id);
+    const before = (hist[s.id] || []).slice(1);
     return `<section class="sc" data-id="${esc(s.id)}">
-  <header><code>${esc(s.id)}</code>${sc ? ` <span class="score ${sc.score >= (v.threshold ?? DEFAULT_THRESHOLD) ? "ok" : "low"}">${Number(sc.score).toFixed(2)}</span>` : ""}</header>
+  <header><code>${esc(s.id)}</code>${sc ? ` <span class="score ${sc.score >= (v.threshold ?? DEFAULT_THRESHOLD) ? "ok" : "low"}">${Number(sc.score).toFixed(2)}</span>` : ""}${sc && sc.cause ? ` <span class="cause">${esc(sc.cause)}</span>` : ""}${before.length ? ` <span class="msg">before: ${before.map(x => Number(x).toFixed(2)).join(" ")}</span>` : ""}</header>
   <label>Title <input name="title" value="${esc(s.title)}" maxlength="${TEXT_MAX.title}"></label>
   <label>Steps <textarea name="body" rows="5">${esc(s.body)}</textarea></label>
   <label>Accept when <textarea name="expect" rows="3">${esc(s.expect || "")}</textarea></label>
@@ -558,13 +578,14 @@ main{max-width:860px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}.sub{color:v
 label{display:block;margin:6px 0;color:var(--mute);font-size:13px}label.row{display:flex;gap:6px;align-items:center}
 input:not([type=checkbox]),textarea{display:block;width:100%;box-sizing:border-box;margin-top:2px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
 .score{font-weight:600;margin-left:6px}.score.ok{color:var(--ok)}.score.low{color:var(--low)}
+.cause{font-size:12px;border:1px solid var(--line);border-radius:10px;padding:0 7px;margin-left:4px;color:var(--mute)}
 button{font:inherit;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;padding:4px 12px;cursor:pointer}
 button.quiet{background:transparent;color:var(--accent)}.msg{color:var(--mute);font-size:13px}
 table{border-collapse:collapse;font-size:13px;width:100%}td{border-top:1px solid var(--line);padding:4px 6px;vertical-align:top}
 </style></head><body><main>
 <h1>Scenarios for ${esc(slug)}</h1>
 <p class="sub">${doc ? `${doc.scenarios.length} scenario(s), written ${esc((doc.writtenAt || "").slice(0, 16).replace("T", " "))} by ${esc(doc.writer && doc.writer.model || "?")}${(doc.edits || []).length ? `, edited ${doc.edits.length} time(s)` : ""}. The building session sees only their titles, and a hint you allow here.` : "No scenarios yet: run <code>deep-plan scenarios write " + esc(slug) + "</code>."}
-${v ? ` Last judged ${esc(String(v.at).slice(0, 16).replace("T", " "))} on ${esc(String(v.head || "").slice(0, 8))}: ${v.pass ? "passed" : "not passed"} at threshold ${esc(v.threshold)}.` : ""}</p>
+${v ? ` Last judged ${esc(String(v.at).slice(0, 16).replace("T", " "))} on ${esc(String(v.head || "").slice(0, 8))}: ${v.pass ? "passed" : "not passed"} at threshold ${esc(v.threshold)}${v.took ? `, in ${esc(took(v.took.total))}` : ""}.` : ""}</p>
 ${doc ? doc.scenarios.map(card).join("\n") : ""}
 ${doc ? `<p><button data-do="add" class="quiet">Add a scenario</button></p>` : ""}
 <h2 style="font-size:16px">Access log</h2>
