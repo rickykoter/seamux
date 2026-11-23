@@ -22,6 +22,18 @@
 //                                  controls hide
 //   &plain=checkout,api            those workspaces' panes are not native: the
 //                                  Dock shows Move to native for them
+//
+// Links in a pane, for a tour: type them into a pane (a digit stays in the
+// message once typing has begun), or have a pane print one with
+// window.__seamuxDemo.print("api", "see notes/error-codes.md"), by the
+// workspace's key in world.mjs (checkout, api, ui, search, docs). The
+// terminal draws on a WebGL canvas; to find a line's text in the DOM, set
+// localStorage "seamux.scrollLab" to {"renderer":"dom"} before the page loads
+// (xterm then draws a .xterm-rows div per line), and hover a link before
+// clicking it. A path with a file extension is taken to exist, Markdown and
+// pictures render, a path under a missing/ folder is gone, and
+// window.__seamuxDemo.opened lists what the app asked to open elsewhere
+// (open_url, open_in_editor, open_in_cmux).
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { QUESTION, HOME, REPO, TREES, GH, WORKSPACES, byKey, treeOf } from "./world.mjs";
 import { FakeClaude } from "./scrollclaude.mjs";
@@ -1376,4 +1388,12 @@ mockIPC(
 // Live: the spinners turn, the wait clocks move, and views keep their frames.
 setInterval(push, 2000);
 setTimeout(push, 300);
-window.__seamuxDemo = { answer, reply, push, ws, panes, handlers, opened };
+// Have workspace `key`'s pane print `line` (a link to follow, for a tour).
+function print(key, line) {
+  const w = byKey[key];
+  const p = w && panes.get(w.surface);
+  if (!p) throw `no pane for ${key}`;
+  p.extra.push(String(line));
+}
+
+window.__seamuxDemo = { answer, reply, push, ws, panes, handlers, opened, print };
