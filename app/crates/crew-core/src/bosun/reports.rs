@@ -95,6 +95,9 @@ pub fn parse(v: &Value) -> Result<Report, String> {
             Some(Value::Array(a)) => a.iter().map(|x| Via::parse(x.as_str().unwrap_or(""))).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{id}: {title}: {e}"))?,
             Some(x) => return Err(format!("{id}: {title}: via {x} is not a list")),
         };
+        if sections.iter().any(|s: &Section| s.title.eq_ignore_ascii_case(&title)) {
+            return Err(format!("{id}: two sections are titled {title:?}"));
+        }
         sections.push(Section { title, via, ask });
     }
     if sections.is_empty() {
@@ -448,6 +451,162 @@ pub fn prepare(dir: &Path, item: &queue::Item, root: &Path) -> Result<queue::Ite
     prepare_with(dir, item, &Found::look(root), super::launch::now_secs(), &super::launch::seamux_bin())
 }
 
+// ---- results and the banner ----
+
+/// A section's status, as the rail and the doc show it.
+const STATUSES: &[&str] = &["ok", "needs", "unchecked"];
+/// How long a run's file is kept.
+const RUN_KEEP_SECS: i64 = 14 * 24 * 3600;
+
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max { flat } else { flat.chars().take(max - 1).collect::<String>().trim_end().to_string() + "…" }
+}
+
+/// `report done <run>`: the Bosun's results for a run it was typed, logged
+/// as one answer-log entry with a `report` field (the rail's report card),
+/// the doc link kept for the next run, and the run marked done for the
+/// supervisor's banner pass. A section the supervisor found down stays
+/// "Not checked: <why>" whatever the results say. The entry as logged.
+pub fn done(dir: &Path, run: &str, v: &Value, now_secs: i64) -> Result<Value, String> {
+    // One `report done` at a time (reports.lock is update_state's, so not that one).
+    let _lock = crate::status::lock_file(dir, "report-done.lock");
+    let mut rv = read_run(dir, run).ok_or(format!("no run {run:?} (seamux bosun report list names each report's last run)"))?;
+    if rv["built"] != true {
+        return Err(format!("run {run} was never typed into the Bosun"));
+    }
+    if rv["done"] == true {
+        return Err(format!("run {run} is already done"));
+    }
+    let id = rv["report"].as_str().unwrap_or("").to_string();
+    let title = rv["title"].as_str().unwrap_or("").to_string();
+    let sent = v.get("sections").and_then(Value::as_array).ok_or("the results need a sections list")?;
+    let mut sections = Vec::new();
+    let mut sources = Vec::new();
+    for p in rv["sections"].as_array().cloned().unwrap_or_default() {
+        let t = p["title"].as_str().unwrap_or("").to_string();
+        if p["runnable"] == false {
+            let why = p["why"].as_str().unwrap_or("").to_string();
+            sections.push(json!({"title": t, "status": "unchecked", "line": format!("Not checked: {why}"), "why": why}));
+            continue;
+        }
+        let s = sent.iter().find(|s| text(s, "title").eq_ignore_ascii_case(&t)).ok_or(format!("no result for the section {t:?}"))?;
+        let status = text(s, "status");
+        if !STATUSES.contains(&status.as_str()) {
+            return Err(format!("{t}: status {status:?}: use ok, needs or unchecked"));
+        }
+        let line = one_line(&text(s, "line"), 200);
+        if line.is_empty() {
+            return Err(format!("{t}: no line"));
+        }
+        let why = one_line(&text(s, "why"), 200);
+        let mut sec = json!({"title": t, "status": status, "line": line});
+        if status == "unchecked" {
+            sec["why"] = json!(if why.is_empty() { line.clone() } else { why });
+        }
+        sections.push(sec);
+        for src in s.get("sources").and_then(Value::as_array).into_iter().flatten() {
+            let f = |k: &str| src.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            if !f("ref").is_empty() {
+                sources.push(json!({"kind": f("kind"), "ref": f("ref"), "label": f("label")}));
+            }
+        }
+    }
+    let doc = text(v, "doc");
+    if !doc.is_empty() && !doc.starts_with("https://") {
+        return Err(format!("doc {doc:?}: send the doc's https link"));
+    }
+    let mut doc_why = one_line(&text(v, "docWhy"), 200);
+    if rv["doc"]["to"] == true && doc.is_empty() && doc_why.is_empty() {
+        doc_why = rv["doc"]["why"].as_str().map(str::to_string).unwrap_or_else(|| "no doc link was sent".into());
+    }
+    if !doc.is_empty() {
+        sources.push(json!({"kind": "doc", "ref": doc, "label": format!("{title} doc")}));
+    }
+    let answer = Some(text(v, "answer")).filter(|a| !a.is_empty()).unwrap_or_else(|| {
+        sections.iter().map(|s| format!("- {}: {}", s["title"].as_str().unwrap_or(""), s["line"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n")
+    });
+    let mut report = json!({"id": id, "run": run, "title": title, "sections": sections});
+    if !doc.is_empty() {
+        report["doc"] = json!(doc);
+    }
+    if !doc_why.is_empty() {
+        report["docWhy"] = json!(doc_why);
+    }
+    let entry = json!({"id": run, "question": title, "answer": answer, "sources": sources, "asker": format!("report:{id}"), "report": report});
+    // A done that logged and then failed later is tried again without a
+    // second entry: today's log already holds this run's.
+    // log::add files an entry under the real day, whatever `now_secs` says.
+    let today = super::launch::local_day_hour(super::launch::now_secs()).0;
+    let logged = match super::log::list(dir, &today).unwrap_or_default().into_iter().find(|e| e["id"] == run) {
+        Some(e) => e,
+        None => super::log::add_as(dir, &entry, true)?,
+    };
+    if !doc.is_empty() {
+        update_state(dir, &id, |k| k.doc = doc.clone())?;
+    }
+    let needs: Vec<String> = sections
+        .iter()
+        .filter(|s| s["status"] == "needs")
+        .map(|s| format!("{}: {}", s["title"].as_str().unwrap_or(""), s["line"].as_str().unwrap_or("")))
+        .collect();
+    rv["done"] = json!(true);
+    rv["doneAt"] = json!(now_secs);
+    rv["needs"] = json!(needs);
+    rv["bannered"] = json!(false);
+    write_run(dir, run, &rv)?;
+    Ok(logged)
+}
+
+/// The banner one finished run posts, when it posts one: (title, body).
+pub fn banner_of(rv: &Value) -> Option<(String, String)> {
+    let needs: Vec<&str> = rv["needs"].as_array()?.iter().filter_map(Value::as_str).collect();
+    let first = needs.first()?;
+    if rv["banner"] == false {
+        return None;
+    }
+    let more = if needs.len() > 1 { format!(" · {} more", needs.len() - 1) } else { String::new() };
+    Some((format!("Bosun · {}", rv["title"].as_str().unwrap_or("a report")), format!("{first}{more}")))
+}
+
+/// The supervisor's pass, once per poll: each run that is done and not yet
+/// bannered posts its banner (a note file in `notes`, ADR 0087) if it found
+/// something for the person, and is marked so it never posts twice. Runs
+/// older than two weeks are deleted. The runs bannered.
+pub fn banner_pass(dir: &Path, notes: &Path, now_secs: i64) -> Vec<String> {
+    let mut posted = Vec::new();
+    for e in fs::read_dir(runs_dir(dir)).into_iter().flatten().flatten() {
+        let path = e.path();
+        if path.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        let Some(mut rv) = loops::read_json(&path) else { continue };
+        let run = rv["run"].as_str().unwrap_or("").to_string();
+        if now_secs - rv["queuedAt"].as_i64().unwrap_or(now_secs) > RUN_KEEP_SECS {
+            let _ = fs::remove_file(&path);
+            continue;
+        }
+        if rv["done"] != true || rv["bannered"] != false || !queue::valid_id(&run) {
+            continue;
+        }
+        // Marked first: a run that can't be marked posts nothing, rather
+        // than the same banner on every poll.
+        rv["bannered"] = json!(true);
+        if let Err(e) = write_run(dir, &run, &rv) {
+            super::supervise::warn(&format!("reports-banner-{run}"), &format!("bosun reports: could not mark run {run} bannered, so it posts no banner: {e}"));
+            continue;
+        }
+        if let Some((title, body)) = banner_of(&rv) {
+            if crate::notifications::write_note_with(notes, "bosun", &title, &body, "", "", &json!({"entry": run})) {
+                posted.push(run.clone());
+            } else {
+                super::supervise::warn(&format!("reports-note-{run}"), &format!("bosun reports: could not write run {run}'s banner to {}; its card is on the rail", notes.display()));
+            }
+        }
+    }
+    posted
+}
+
 // ---- starters ----
 
 /// The sections a starter report gets for each server it finds: (server
@@ -581,7 +740,7 @@ fn print_errors_or(rows: &[Value], empty: &str, each: impl Fn(&Value)) {
     }
 }
 
-const USAGE: &str = "usage: seamux bosun report [list] [--json] | report run <id> [--json] | report check [<id>] [--json]";
+const USAGE: &str = "usage: seamux bosun report [list] [--json] | report run <id> [--json] | report check [<id>] [--json] | report done <run> (results on stdin)";
 
 /// `seamux bosun report …`.
 pub fn main(args: &[String], dir: &Path) -> i32 {
@@ -621,6 +780,27 @@ pub fn main(args: &[String], dir: &Path) -> i32 {
                 1
             }
         },
+        ["done", run] => {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut s);
+            let v: Value = match serde_json::from_str(&s) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("bosun report done: stdin is not one JSON object: {e}");
+                    return 1;
+                }
+            };
+            match done(dir, run, &v, now) {
+                Ok(e) => {
+                    println!("{}", if json_out { e.to_string() } else { format!("logged run {run}") });
+                    0
+                }
+                Err(e) => {
+                    eprintln!("bosun report done: {e}");
+                    1
+                }
+            }
+        }
         ["check", rest @ ..] if rest.len() <= 1 => {
             let cfg = super::config::Config::load_from(dir);
             let found = Found::look(&cfg.root);
@@ -722,6 +902,7 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
             json!({"id": "x", "at": "09:00", "to": ["email"], "sections": [{"title": "t", "ask": "a"}]}),
             json!({"id": "x", "sections": [{"title": "t", "ask": "a"}]}),
             json!({"id": "../x", "at": "09:00", "sections": [{"title": "t", "ask": "a"}]}),
+            json!({"id": "x", "at": "09:00", "sections": [{"title": "PRs", "ask": "a"}, {"title": "prs", "ask": "b"}]}),
         ] {
             assert!(parse(&bad).is_err(), "{bad}");
         }
@@ -875,6 +1056,103 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         let r = parse(&morning()).unwrap();
         let t = prompt_text(&r, "r1", "", "09:00", &[], &Doc::Off, "", "/bin/seamux", Path::new("/u/my folder/bosun"));
         assert!(t.contains("bosun report done r1 < '/u/my folder/bosun/drafts/r1.json'"), "{t}");
+    }
+
+    /// A run of morning() built against found(): gh off PATH, datadog down.
+    fn built_run(d: &Path) -> String {
+        loops::write_json(&d.join("bosun.json"), &json!({"reports": [morning()]})).unwrap();
+        let run = run_now(d, "morning", 100).unwrap();
+        let item = queue::waiting(d).into_iter().find(|i| i.id == run).unwrap();
+        prepare_with(d, &item, &found(), 100, "/bin/seamux").unwrap();
+        run
+    }
+
+    #[test]
+    fn done_logs_the_run_and_keeps_down_sections_not_checked() {
+        let d = tmp("done");
+        let run = built_run(&d);
+        let results = json!({"doc": "https://claude.ai/artifact/abc", "sections": [
+            {"title": "pull requests", "status": "ok", "line": "pretends to have checked"},
+            {"title": "Monitors", "status": "ok", "line": "all quiet"},
+            {"title": "Tickets", "status": "needs", "line": "PROJ-9 is blocked on you\nsince Monday", "sources": [{"kind": "ticket", "ref": "PROJ-9", "label": "PROJ-9"}]},
+            {"title": "Notes", "status": "ok", "line": "nothing new"},
+        ]});
+        let e = done(&d, &run, &results, 200).unwrap();
+        assert_eq!((e["id"].as_str(), e["asker"].as_str(), e["question"].as_str()), (Some(run.as_str()), Some("report:morning"), Some("Morning report")));
+        let s = &e["report"]["sections"];
+        assert_eq!(s[0]["line"], "Not checked: gh is not on PATH", "a down source can't be reported as checked");
+        assert_eq!(s[1]["status"], "unchecked");
+        assert_eq!(s[1]["line"], "Not checked: datadog needs authentication");
+        assert_eq!((s[2]["status"].as_str(), s[2]["line"].as_str()), (Some("needs"), Some("PROJ-9 is blocked on you since Monday")));
+        assert_eq!(e["report"]["doc"], "https://claude.ai/artifact/abc");
+        assert!(e["sources"].as_array().unwrap().iter().any(|x| x["kind"] == "doc"));
+        assert!(e["answer"].as_str().unwrap().contains("- Tickets: PROJ-9"));
+        assert_eq!(super::super::log::list(&d, &super::super::launch::local_day_hour(super::super::launch::now_secs()).0).unwrap().len(), 1);
+        assert_eq!(kept(&load_state(&d), "morning").unwrap().doc, "https://claude.ai/artifact/abc");
+        assert!(done(&d, &run, &results, 300).unwrap_err().contains("already done"));
+        // A done whose run file was not marked (a failure after the log) is tried again: one entry.
+        let mut rv = read_run(&d, &run).unwrap();
+        rv["done"] = json!(false);
+        write_run(&d, &run, &rv).unwrap();
+        done(&d, &run, &results, 300).unwrap();
+        assert_eq!(super::super::log::list(&d, &super::super::launch::local_day_hour(super::super::launch::now_secs()).0).unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn done_refuses_bad_results() {
+        let d = tmp("bad-done");
+        let run = built_run(&d);
+        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine"});
+        for bad in [
+            json!({}),
+            json!({"sections": [ok("Tickets")]}),
+            json!({"sections": [ok("Tickets"), {"title": "Notes", "status": "great", "line": "x"}]}),
+            json!({"sections": [ok("Tickets"), {"title": "Notes", "status": "ok", "line": "  "}]}),
+            json!({"doc": "javascript:alert(1)", "sections": [ok("Tickets"), ok("Notes")]}),
+        ] {
+            assert!(done(&d, &run, &bad, 200).is_err(), "{bad}");
+        }
+        assert!(done(&d, "nope", &json!({"sections": []}), 200).is_err());
+        let unbuilt = run_now(&d, "morning", 100).unwrap();
+        assert!(done(&d, &unbuilt, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 200).unwrap_err().contains("never typed"));
+        // No doc link and no why: the run says so.
+        let e = done(&d, &run, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 200).unwrap();
+        assert_eq!(e["report"]["docWhy"], "no doc link was sent");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_run_that_needs_you_posts_one_banner_once() {
+        let d = tmp("banner");
+        let notes = d.join("state");
+        let run = built_run(&d);
+        assert!(banner_pass(&d, &notes, 200).is_empty(), "not done yet");
+        let needs = |t: &str, l: &str| json!({"title": t, "status": "needs", "line": l});
+        done(&d, &run, &json!({"sections": [needs("Tickets", "PROJ-9 is blocked on you"), needs("Notes", "a note waits")]}), 200).unwrap();
+        assert_eq!(banner_pass(&d, &notes, 210), [run.clone()]);
+        let files: Vec<_> = fs::read_dir(&notes).unwrap().flatten().collect();
+        assert_eq!(files.len(), 1);
+        let n: Value = serde_json::from_str(&fs::read_to_string(files[0].path()).unwrap()).unwrap();
+        assert_eq!((n["kind"].as_str(), n["title"].as_str(), n["entry"].as_str()), (Some("bosun"), Some("Bosun · Morning report"), Some(run.as_str())));
+        assert_eq!(n["body"], "Tickets: PROJ-9 is blocked on you · 1 more");
+        assert!(banner_pass(&d, &notes, 220).is_empty(), "once");
+        // A quiet run posts nothing; a run past two weeks is deleted.
+        let quiet = { let i = run_now(&d, "morning", 300).unwrap(); let it = queue::waiting(&d).into_iter().find(|x| x.id == i).unwrap(); prepare_with(&d, &it, &found(), 300, "/bin/seamux").unwrap(); i };
+        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine"});
+        done(&d, &quiet, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 310).unwrap();
+        assert!(banner_pass(&d, &notes, 320).is_empty());
+        banner_pass(&d, &notes, 300 + RUN_KEEP_SECS + 1);
+        assert!(read_run(&d, &quiet).is_none() && read_run(&d, &run).is_none());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_report_sent_to_no_banner_stays_quiet() {
+        let rv = json!({"title": "PRs", "needs": ["PRs: #1 waits"], "banner": false});
+        assert_eq!(banner_of(&rv), None);
+        let rv = json!({"title": "PRs", "needs": ["PRs: #1 waits"], "banner": true});
+        assert_eq!(banner_of(&rv), Some(("Bosun · PRs".into(), "PRs: #1 waits".into())));
     }
 
     #[test]

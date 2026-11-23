@@ -220,6 +220,9 @@ fn tick_loop(pane: String, dir: std::path::PathBuf, running: Arc<AtomicBool>) {
         super::loops::tick(&dir, now);
         // bosun-reports: reports queue placeholders; their prompts are built below.
         super::reports::tick(&dir, &cfg.root, now);
+        // A finished run that needs the person: its banner, as a note file
+        // the app posts (the Bosun's sandbox can't write crew's state folder).
+        super::reports::banner_pass(&dir, &crate::status::pane_dir(), now);
         let (today, hour) = launch::local_day_hour(now);
         let queued = if is_idle { super::queue::waiting(&dir) } else { Vec::new() };
         let Some(action) = due(&state, is_idle, &cfg, &today, hour, &queued) else { continue };

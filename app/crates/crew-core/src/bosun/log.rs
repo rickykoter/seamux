@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! <bosun>/log/<YYYY-MM-DD>.jsonl
-//!   {id, at, question, answer, sources: [{kind, ref, label}], asker}
+//!   {id, at, question, answer, sources: [{kind, ref, label}], asker, report?}
 //! ```
 //!
 //! Written only by `seamux bosun log add`; the app's rail reads it with
@@ -24,8 +24,14 @@ fn day_ok(day: &str) -> bool {
 }
 
 /// The entry `v` as it is kept: required fields checked, id and time filled
-/// in when missing, unknown fields dropped.
+/// in when missing, unknown fields dropped (`report` too: see normalize_as).
 pub fn normalize(v: &Value, now_ms: u64) -> Result<Value, String> {
+    normalize_as(v, now_ms, false)
+}
+
+/// `normalize`, keeping a report run's `report` field when `report` is set:
+/// only `report done` (reports.rs), which checks it, sets it.
+pub(crate) fn normalize_as(v: &Value, now_ms: u64, report: bool) -> Result<Value, String> {
     let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let question = text("question").ok_or("an entry needs a question")?;
     let answer = text("answer").ok_or("an entry needs an answer")?;
@@ -48,13 +54,24 @@ pub fn normalize(v: &Value, now_ms: u64) -> Result<Value, String> {
         return Err(format!("not an id: {id:?}"));
     }
     let at = v.get("at").and_then(Value::as_u64).unwrap_or(now_ms);
-    Ok(json!({"id": id, "at": at, "question": question, "answer": answer, "sources": sources, "asker": text("asker").unwrap_or_default()}))
+    let mut e = json!({"id": id, "at": at, "question": question, "answer": answer, "sources": sources, "asker": text("asker").unwrap_or_default()});
+    // A report run's sections and doc (reports.rs `report done`): kept as
+    // sent, for the rail's report card. Only an object with a sections list.
+    if let Some(r) = v.get("report").filter(|r| report && r.get("sections").is_some_and(Value::is_array)) {
+        e["report"] = r.clone();
+    }
+    Ok(e)
 }
 
 /// Append `entry` to today's file: the entry as kept.
 pub fn add(dir: &Path, entry: &Value) -> Result<Value, String> {
+    add_as(dir, entry, false)
+}
+
+/// `add`, keeping a checked `report` field (reports.rs `report done`).
+pub(crate) fn add_as(dir: &Path, entry: &Value, report: bool) -> Result<Value, String> {
     let now = crate::history::now_ms();
-    let e = normalize(entry, now)?;
+    let e = normalize_as(entry, now, report)?;
     let (day, _) = super::launch::local_day_hour((now / 1000) as i64);
     let d = log_dir(dir);
     fs::create_dir_all(&d).map_err(|err| format!("{}: {err}", d.display()))?;
@@ -116,6 +133,17 @@ mod tests {
         assert_eq!((e["question"].as_str(), e["at"].as_u64(), e.get("extra")), (Some("q"), Some(7), None));
         assert_eq!(e["sources"][0], json!({"kind": "file", "ref": "a.rs:3", "label": ""}));
         assert!(super::super::queue::valid_id(e["id"].as_str().unwrap()));
+    }
+
+    #[test]
+    fn a_report_runs_field_is_kept_and_a_bad_one_dropped() {
+        let r = json!({"id": "morning", "run": "r1", "sections": [{"title": "PRs", "status": "ok", "line": "none waiting"}]});
+        let e = normalize_as(&json!({"question": "Morning report", "answer": "a", "report": r}), 1, true).unwrap();
+        assert_eq!(e["report"], r);
+        let e = normalize(&json!({"question": "Morning report", "answer": "a", "report": r}), 1).unwrap();
+        assert!(e.get("report").is_none(), "log add can't make a report card");
+        let e = normalize_as(&json!({"question": "q", "answer": "a", "report": {"id": "x"}}), 1, true).unwrap();
+        assert!(e.get("report").is_none(), "no sections list");
     }
 
     #[test]

@@ -201,13 +201,24 @@ pub const NOTE_MAX_AGE_MS: u64 = 10 * 60_000;
 /// (crew's state dir, beside bash-guard's blocked files). Written whole,
 /// then renamed in, so the notifier never reads half a note.
 pub fn write_note(dir: &Path, kind: &str, title: &str, body: &str, ws: &str, pane: &str) -> bool {
+    write_note_with(dir, kind, title, body, ws, pane, &Value::Null)
+}
+
+/// `write_note` with more fields for its kind (a Bosun banner's `entry`);
+/// the fields write_note sets win over any of the same name.
+pub fn write_note_with(dir: &Path, kind: &str, title: &str, body: &str, ws: &str, pane: &str, extra: &Value) -> bool {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     if title.is_empty() {
         return false;
     }
     let id = format!("{}-{}-{}", now_ms(), std::process::id(), N.fetch_add(1, Ordering::Relaxed));
-    let note = json!({"kind": kind, "title": title, "body": body, "ws": ws, "pane": pane, "at": now_ms()});
+    let mut note = json!({"kind": kind, "title": title, "body": body, "ws": ws, "pane": pane, "at": now_ms()});
+    if let (Some(n), Some(x)) = (note.as_object_mut(), extra.as_object()) {
+        for (k, v) in x {
+            n.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
     let _ = fs::create_dir_all(dir);
     prune_notes(dir, now_ms());
     crate::py::write_atomic(&dir.join(format!("note-{id}.json")), note.to_string().as_bytes()).is_ok()
