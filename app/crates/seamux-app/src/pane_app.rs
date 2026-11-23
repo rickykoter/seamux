@@ -58,6 +58,8 @@ pub async fn open_in_editor(path: String, line: Option<u32>, col: Option<u32>) -
     if !p.is_absolute() || !p.exists() {
         return Err(format!("not a file here: {path:?}"));
     }
+    // VS Code comes forward and keeps the focus (shell.rs take_back).
+    crate::shell::allow_focus_away();
     let url = vscode_url(p, line, col);
     tauri::async_runtime::spawn_blocking(move || {
         let st = Command::new("/usr/bin/open").arg(&url).status().map_err(|e| e.to_string())?;
@@ -117,6 +119,8 @@ pub async fn open_url(url: String) -> Result<(), String> {
     if !url_ok(&url) {
         return Err(format!("not a link the app opens: {url:?}"));
     }
+    // The browser comes forward and keeps the focus (shell.rs take_back).
+    crate::shell::allow_focus_away();
     tauri::async_runtime::spawn_blocking(move || {
         let st = std::process::Command::new("/usr/bin/open").arg(&url).status().map_err(|e| e.to_string())?;
         if st.success() { Ok(()) } else { Err(format!("open {url} exited {st}")) }
@@ -248,6 +252,7 @@ pub async fn open_in_vscode(dir: String) -> Result<Opened, String> {
     if !dir.starts_with('/') || !std::path::Path::new(&dir).is_dir() {
         return Err(format!("not a folder: {dir:?}"));
     }
+    crate::shell::allow_focus_away();
     tauri::async_runtime::spawn_blocking(move || {
         let root = worktree_of(&dir);
         // Colored before it opens, so VS Code reads the colors as it starts.

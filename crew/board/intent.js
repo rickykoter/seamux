@@ -168,9 +168,14 @@ function __boardIntent(cfg) {
     catch (e) { return {}; }
   }
 
+  // Verbs the server answers by opening something outside the app (the
+  // browser, VS Code): the app is told first, so it lets that app keep focus.
+  var AWAY = { "pr": 1, "issue": 1, "jira": 1, "checks": 1, "code": 1 };
+
   function fire(t, rid) {
     var c = live();
     if (!c.port) return;
+    if (AWAY[t.a]) tell({ crew: "away" });
     var url = "http://127.0.0.1:" + c.port + "/do?t=" + encodeURIComponent(c.token) +
       "&a=" + encodeURIComponent(t.a) + "&r=" + encodeURIComponent(rid) +
       "&x=" + encodeURIComponent(t.x || "");

@@ -116,6 +116,9 @@ export class DockView {
     window.addEventListener("message", (e) => {
       if (!this.frame || e.source !== this.frame.contentWindow || e.origin !== this.origin) return;
       const d = e.data as { crew?: string; ws?: unknown; show?: unknown; pane?: unknown } | null;
+      // The board's server is about to open a link outside the app (a PR,
+      // its checks, VS Code): let that app keep the focus (shell.rs).
+      if (d?.crew === "away") void invoke("focus_away").catch(() => {});
       // A pane row names its pane: the sheet shows that pane's terminal.
       if (d?.crew === "select" && typeof d.ws === "string" && d.ws) {
         this.select(d.ws, true, typeof d.show === "string" ? d.show : "any", typeof d.pane === "string" ? d.pane : "");

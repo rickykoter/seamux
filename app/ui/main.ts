@@ -51,7 +51,10 @@ function show(s: Status): void {
   }
   const n = s.workspaces.length;
   // What only cmux can do (reply, jump, Open in cmux) hides on another backend.
-  document.body.dataset.backend = s.backend;
+  if (document.body.dataset.backend !== s.backend) {
+    document.body.dataset.backend = s.backend;
+    window.dispatchEvent(new CustomEvent("seamux:backend"));
+  }
   conn.className = "good";
   conn.title = s.backend === "cmux"
     ? `cmux, over the ${s.transport}${s.access_mode ? `, ${s.access_mode} mode` : ""}`
@@ -141,9 +144,12 @@ void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 // its pane in the Dock.
 // A seamux://focus link (ADR 0086) arrives the same way; one that launched
 // the app came before this listened, so it is taken once listening starts.
+// A link that arrives while listening comes both ways (open_link emits and
+// keeps it): handling the event takes the kept one too, so it jumps once.
 void listen<{ ws: string; pane: string }>("notify:jump", (e) => {
   tabs.select("dock");
   dockView.jump(e.payload.ws, e.payload.pane);
+  void invoke("notify_take_link").catch(() => null);
 }).then(async () => {
   const link = await invoke<{ ws: string; pane: string } | null>("notify_take_link").catch(() => null);
   if (link?.ws) {
@@ -172,7 +178,18 @@ window.addEventListener("seamux:bosun-asked", () => bosunView.afterAsk());
 
 // A pane's link opens its page in the Dock's side column, and only there
 // (sheet.ts linkSheet): with another view up, the Dock comes forward first.
-window.addEventListener("seamux:show-dock", () => tabs.select("dock"));
+// The Bosun's drop-down goes away first, so what opened is in view.
+window.addEventListener("seamux:show-dock", () => {
+  if (bosunView.isDown()) bosunView.setDrop(false);
+  if (tabs.current !== "dock") tabs.select("dock");
+});
+// A review's two homes: from the Dock's side column to the Lookout tab.
+window.addEventListener("seamux:review-in-lookout", (e) => {
+  const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+  if (!id) return;
+  tabs.select("review");
+  void reviewView.focus(id, "");
+});
 
 // A landing's log (a Dock card's chip): the change in the Lookout tab, at its
 // Land stage.

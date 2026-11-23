@@ -22,6 +22,18 @@
 //                                  controls hide
 //   &plain=checkout,api            those workspaces' panes are not native: the
 //                                  Dock shows Move to native for them
+//
+// Links in a pane, for a tour: type them into a pane (a digit stays in the
+// message once typing has begun), or have a pane print one with
+// window.__seamuxDemo.print("api", "see notes/error-codes.md"), by the
+// workspace's key in world.mjs (checkout, api, ui, search, docs). The
+// terminal draws on a WebGL canvas; to find a line's text in the DOM, set
+// localStorage "seamux.scrollLab" to {"renderer":"dom"} before the page loads
+// (xterm then draws a .xterm-rows div per line), and hover a link before
+// clicking it. A path with a file extension is taken to exist, Markdown and
+// pictures render, a path under a missing/ folder is gone, and
+// window.__seamuxDemo.opened lists what the app asked to open elsewhere
+// (open_url, open_in_editor, open_in_cmux).
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { QUESTION, HOME, REPO, TREES, GH, WORKSPACES, byKey, treeOf } from "./world.mjs";
 import { FakeClaude } from "./scrollclaude.mjs";
@@ -338,6 +350,15 @@ function history() {
   return out.sort((a, b) => a.at - b.at);
 }
 
+// What the app asked to open somewhere else (the browser, VS Code, cmux): kept
+// in order, and said on the console, so a tour can tell where a link went.
+const opened = [];
+function opening(cmd, args) {
+  opened.push({ cmd, ...args });
+  console.info(`[demo] ${cmd}`, JSON.stringify(args ?? {}));
+  return null;
+}
+
 // The Wake: what each workspace left behind.
 const SESS = { checkout: "3f6c1e2a-8b4d-4c7e-9a1f-2d3e4f5a6b70", api: "4a7d2f3b-9c5e-4d8f-8b2a-3e4f5a6b7c81", ui: "5b8e3a4c-ad6f-4e9a-9c3b-4f5a6b7c8d92", search: "6c9f4b5d-be7a-4fab-8d4c-5a6b7c8d9ea3", docs: "" };
 const DP = `${HOME}/.claude/deep-plan/plans`;
@@ -434,10 +455,10 @@ const PAGE_LIST = [
   ["ui", "plan", "/plan/coupons-ui", "coupons-ui", "working inc 1/2", false],
   ["search", "plan", "/plan/search-index", "search-index", "done", false],
 ];
+// Every workspace's open pages, as views.rs sends them: framed from the
+// stand-in's placeholder unless a real intent server is given (PAGES).
 const pages = () =>
-  PAGES
-    ? PAGE_LIST.filter(([k]) => ws.some((w) => w.key === k)).map(([k, kind, path, label, state, waiting]) => ({ ws: byKey[k].id, kind, path, label, state, waiting, since: ago(10) }))
-    : [];
+  PAGE_LIST.filter(([k]) => ws.some((w) => w.key === k)).map(([k, kind, path, label, state, waiting]) => ({ ws: byKey[k].id, kind, path, label, state, waiting, since: ago(10) }));
 let tucked = [
   { path: `${TREES}/legacy-cart`, level: "tuck", at: ago(60 * 26), name: "legacy-cart", branch: "sam/legacy-cart", workspaces: [], waiting: false, last: ago(60 * 26) },
   { path: `${TREES}/gift-cards`, level: "tuck", at: ago(60 * 50), name: "gift-cards", branch: "sam/gift-cards", workspaces: [], waiting: false, last: ago(60 * 49) },
@@ -807,7 +828,9 @@ function key(surface, k) {
 function input(surface, text) {
   const p = panes.get(surface);
   if (!p) throw "no such surface";
-  if (p.question !== undefined && p.question !== null && /^[1-9]$/.test(text)) {
+  // A digit picks an answer, as Claude's question box takes it, but only
+  // before anything is typed: a message's own digits (a port) stay in it.
+  if (p.question !== undefined && p.question !== null && /^[1-9]$/.test(text) && !p.input) {
     answer(Number(text));
     return;
   }
@@ -841,6 +864,12 @@ function labWrite(id, data) {
 }
 
 const ptys = new Map();
+
+/** The workspace a pane's terminal (by pty id) is in. */
+function wsOfPty(id) {
+  const t = ptys.get(id);
+  return t ? ws.find((w) => w.surface === t.surface || w.shell?.surface === t.surface) : undefined;
+}
 let nextPty = 1;
 const enc = new TextEncoder();
 
@@ -1052,6 +1081,7 @@ const handlers = {
   desk_cleanup_run: () => ({ ok: true, steps: [] }),
   hide_overlay: () => null,
   focus_tab: () => null,
+  focus_away: () => null,
   home_dir: () => HOME,
   intent_server: () => INTENT,
   // A plan's scenarios page key (shell.rs scenarios_key): the demo seals
@@ -1063,10 +1093,21 @@ const handlers = {
     const r = await fetch(`/__demo/page?path=${encodeURIComponent(path)}`).then((x) => x.json()).catch(() => ({ code: 0 }));
     return r.code;
   },
-  open_in_cmux: () => null,
+  // shell.rs cmux_path_ok: every seamux page and a plain query, nothing else.
+  open_in_cmux: (a) => {
+    const [path, query = ""] = String(a?.path ?? "").split("?", 2);
+    const ok = /^\/(plan|review|ask|agent|run|runs)\/[A-Za-z0-9._\/-]+$/.test(path) && !/\.\.|\/\//.test(path + "?" + query) && /^[A-Za-z0-9._=&%\/-]*$/.test(query);
+    if (!ok) throw `not a page cmux opens from here: ${JSON.stringify(a?.path)}`;
+    return opening("open_in_cmux", a);
+  },
   open_in_vscode: ({ dir }) => ({ folder: dir, note: null }),
-  open_in_editor: () => null,
-  open_url: () => null,
+  // A path under a missing/ folder is gone, as a file deleted since it was
+  // printed: VS Code says so, as the app's open_in_editor would.
+  open_in_editor: (a) => {
+    if (/\/missing\//.test(String(a?.path ?? ""))) throw `${a.path}: no such file`;
+    return opening("open_in_editor", a);
+  },
+  open_url: (a) => opening("open_url", a),
   copy_text: () => null,
   gh_card: ({ url }) => (/\/pull\/41\b/.test(url) ? CARD : null),
 
@@ -1084,8 +1125,19 @@ const handlers = {
   pty_line_key: () => null,
   pty_seen: () => null,
   pty_shell: () => false,
-  pty_paths: () => [],
-  pty_workspace: () => null,
+  // Links in a pane: a path with a file extension is taken to exist, in the
+  // pane's worktree when it is relative; the pane's workspace is its own.
+  pty_paths: ({ id, paths }) => {
+    const w = wsOfPty(id);
+    const base = w ? treeOf(w) : HOME;
+    return (paths ?? []).map((q) => {
+      const bare = q.replace(/:\d+(:\d+)?$/, "");
+      if (!/\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(bare)) return null;
+      const abs = bare.startsWith("/") ? bare : bare.startsWith("~/") ? HOME + bare.slice(1) : `${base}/${bare.replace(/^\.\//, "")}`;
+      return abs;
+    });
+  },
+  pty_workspace: ({ id }) => wsOfPty(id)?.id ?? null,
 
   workspace_sessions: ({ workspace }) => {
     const w = ws.find((x) => x.id === workspace);
@@ -1137,7 +1189,15 @@ const handlers = {
     const workspaces = [...trees.values(), { ws: `${TREES}/legacy-cart`, n: 6, last: iso(ago(60 * 26)), name: "legacy-cart", here: false }].sort((a, b) => (a.last < b.last ? 1 : -1));
     return { ws: dir ?? "", rows: rows.map(strip), limit: 500, truncated: false, workspaces };
   },
-  wake_open: () => ({ sheet: null, detail: "opened in cmux" }),
+  // A plan, ask or review row opens as a sheet page, as the app's does with
+  // here: the rest says it went to cmux.
+  wake_open: ({ id, here }) => {
+    const row = WAKE.find(([i]) => i === id);
+    const kind = row?.[2];
+    if (here && row?.[5].locator && ["plan", "ask", "review"].includes(kind)) return { sheet: `/${kind}/${row[5].locator}`, detail: "" };
+    opening("wake_open", { id, here });
+    return { sheet: null, detail: "opened in cmux" };
+  },
   wake_file: ({ id }) => {
     if (id !== 21) throw "the demo has no files to show";
     const page = `<!doctype html><body style="font:15px -apple-system,sans-serif;padding:28px;color:#222"><h2>Coupon totals</h2>
@@ -1230,8 +1290,16 @@ const handlers = {
   pane_stop_cancel: () => false,
   pty_shell_run: () => null,
   clip_read: () => ({ kind: "empty" }),
-  link_file: () => {
-    throw "the demo has no files to show";
+  // A file a pane links to, as links_app.rs shows it: Markdown rendered, a
+  // picture as itself. The demo has no PDFs or other files to show.
+  link_file: ({ path }) => {
+    const title = path.split("/").pop() || path;
+    if (/\.(md|markdown)$/i.test(path)) {
+      const page = `<!doctype html><body style="font:15px -apple-system,sans-serif;padding:24px;color:#222"><h1>${title}</h1><p>A demo file at <code>${path}</code>.</p><ul><li>BAD_CODE: the code is not one we know</li><li>EXPIRED: the code's date has passed</li></ul></body>`;
+      return { kind: "html", title, data: `data:text/html;base64,${btoa(page)}` };
+    }
+    if (/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) return { kind: "image", title, data: demoShot(title.length) };
+    throw "the demo has no such file to show";
   },
   session_last_exchange: ({ workspace }) => {
     const w = ws.find((x) => x.id === workspace);
@@ -1321,4 +1389,12 @@ mockIPC(
 // Live: the spinners turn, the wait clocks move, and views keep their frames.
 setInterval(push, 2000);
 setTimeout(push, 300);
-window.__seamuxDemo = { answer, reply, push, ws, panes, handlers };
+// Have workspace `key`'s pane print `line` (a link to follow, for a tour).
+function print(key, line) {
+  const w = byKey[key];
+  const p = w && panes.get(w.surface);
+  if (!p) throw `no pane for ${key}`;
+  p.extra.push(String(line));
+}
+
+window.__seamuxDemo = { answer, reply, push, ws, panes, handlers, opened, print };

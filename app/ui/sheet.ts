@@ -7,6 +7,8 @@ import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 import { face, GROUPS, groupOf, jump, ordered, round, WAKE, type GroupId } from "./sheetgroups";
+import { placeFor } from "./linkroute";
+import { awayLabel, openElsewhere, openFramed, type Away } from "./panelinks";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -15,12 +17,10 @@ export type Page = {
   /** /plan/<slug>, /review/<id>, /ask/<id>, /agent/<session>/<id> or /run/<session>/<id>. */
   path: string;
   title: string;
-  /** The cmux workspace it belongs to: its agent's chat shows beside the page, and Open in cmux goes there. */
+  /** The cmux workspace it belongs to: its agent's chat shows beside the page, and open elsewhere goes there. */
   workspace?: string;
   /** A worktree directory, when the workspace is not known (a Wake row): the pane working in it. */
   dir?: string;
-  /** What Open in cmux does instead of open_in_cmux (the Wake opens its rows its own way). */
-  toCmux?: () => Promise<unknown>;
 };
 
 /** A file the sheet shows itself: an image, a sandboxed HTML page or a PDF. */
@@ -584,7 +584,8 @@ type Tab = {
   shown?: Shown;
   /** A local web page's URL, framed as it is (openWeb). */
   web?: string;
-  toCmux?: (() => Promise<unknown>) | null;
+  /** Where the side column's icon sends it (panelinks.ts openElsewhere). */
+  away?: Away | null;
 };
 
 /** Whether the Dock shows the Wake beside the terminal when no page is up.
@@ -616,7 +617,10 @@ export class Sheet {
   private chat = new Chat();
   private say = document.createElement("span");
   private page: Page | null = null;
-  private toCmuxFn: (() => Promise<unknown>) | null = null;
+  /** Where the shown tab goes elsewhere, and the icon that sends it there. */
+  private away: Away | null = null;
+  private awayBtn = document.createElement("button");
+  private lookoutBtn = document.createElement("button");
   private tiles: Tile[] = [];
   /** The pane picked in the chat's tabs; "" is the default (an agent's). */
   private picked = "";
@@ -689,14 +693,26 @@ export class Sheet {
     // icons so the row stays short: VS Code (the chat's own), the side
     // column (⌘⇧E), and one way to cmux (the page beside its terminal, or
     // this pane; hidden on the tmux backend).
-    const toCmux = document.createElement("button");
-    toCmux.type = "button";
-    toCmux.className = "sheet-btn icon cmux-only";
-    toCmux.title = "Open in cmux: the page beside its terminal, or this pane";
-    toCmux.setAttribute("aria-label", toCmux.title);
-    toCmux.append(mark("M3 7 7 3M4 3h3v3"));
-    toCmux.addEventListener("click", () => void this.toCmux());
-    this.chat.adopt([this.say, this.wakeBtn, toCmux]);
+    // Open elsewhere: its tooltip names where (drawAway), on either backend.
+    const toAway = this.awayBtn;
+    toAway.type = "button";
+    toAway.className = "sheet-btn icon sheet-away";
+    toAway.append(mark("M3 7 7 3M4 3h3v3"));
+    toAway.addEventListener("click", () => void this.elsewhere());
+    // main.ts learns the backend after the first draw: say it right then.
+    window.addEventListener("seamux:backend", () => this.drawAway());
+    // A review beside the work moves to its other home, the Lookout tab.
+    const inLookout = this.lookoutBtn;
+    inLookout.type = "button";
+    inLookout.className = "sheet-btn quiet sheet-in-lookout";
+    inLookout.textContent = "Show in Lookout";
+    inLookout.title = "Show this review in the Lookout tab";
+    inLookout.hidden = true;
+    inLookout.addEventListener("click", () => {
+      const id = this.page?.path.startsWith("/review/") ? this.page.path.slice("/review/".length).split(/[?#]/)[0] : "";
+      if (id) window.dispatchEvent(new CustomEvent("seamux:review-in-lookout", { detail: { id } }));
+    });
+    this.chat.adopt([this.say, this.wakeBtn, inLookout, toAway]);
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
     this.tabsEl.className = "sheet-tabs";
@@ -741,6 +757,18 @@ export class Sheet {
       if (!f || e.origin !== new URL(f.src, location.href).origin) return;
       void invoke("open_url", { url: d.url }).catch((err) => (this.say.textContent = String(err)));
     });
+    // Any seamux page framed here hands over its other links (deep-plan's
+    // plan page: its trace and proof): a frame of this sheet, and
+    // openFramed takes it only from the intent server's origin.
+    window.addEventListener("message", (e) => {
+      const d = e.data as { seamux?: unknown } | null;
+      if (!d || typeof d !== "object" || d.seamux !== "open") return;
+      const f = [...this.stack.querySelectorAll("iframe")].find((x) => x.contentWindow === e.source);
+      // A seamux page's frame only: a web tab is framed from the intent
+      // origin too (/plan-evidence/), and its scripts are not the plan's.
+      if (!f || !/^\/(plan|review|ask|agent|run|runs)\//.test(new URL(f.src, location.href).pathname)) return;
+      void openFramed(d, e.origin);
+    });
     this.noteEl.className = "sheet-tabs-note";
     this.noteEl.setAttribute("role", "status");
     this.pageEl.append(this.tabsEl, this.stack, this.groupMenu);
@@ -779,6 +807,20 @@ export class Sheet {
   /** The place shown: a page opened for it joins its tabs. */
   here(): { workspace?: string; dir?: string } {
     return { ...this.place };
+  }
+
+  /** The workspace a link belongs to, from the panes and pages this sheet
+   *  holds (linkroute.ts placeFor). */
+  placeOfLink(target: { page?: string; file?: string }): string | undefined {
+    return placeFor(target, this.tiles, this.pages);
+  }
+
+  /** Show workspace `ws` in the Dock, as a family chip does: the sheet
+   *  enters it and the Dock follows (onPlace). */
+  goTo(ws: string): void {
+    if (ws === this.workspace() && this.active) return;
+    this.enter({ workspace: ws });
+    this.onPlace(ws);
   }
 
   /** The Dock's tab was selected: keys go to the shown pane (main.ts). */
@@ -929,12 +971,13 @@ export class Sheet {
   }
 
   /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
-  show(s: Shown, toCmux: () => Promise<unknown>, place: { workspace?: string; dir?: string } = {}): void {
+  show(s: Shown, away: Away | null, place: { workspace?: string; dir?: string } = {}): void {
     this.enter(place, false);
     this.pageHidden = false;
-    const key = `file:${s.title}`;
+    // Keyed by its path, so two README.md files keep a tab each.
+    const key = `file:${away?.kind === "file" ? away.path : s.title}`;
     this.drop(key);
-    this.addTab({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
+    this.addTab({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, away });
     this.select(key, true);
   }
 
@@ -953,19 +996,29 @@ export class Sheet {
     } catch {
       /* shown as written */
     }
-    this.addTab({ key, kind: "web", label, state: "", waiting: false, now: false, el: null, web: url, toCmux: () => invoke("open_url", { url }) });
+    this.addTab({ key, kind: "web", label, state: "", waiting: false, now: false, el: null, web: url, away: { kind: "web", url } });
     this.select(key, true);
   }
 
   async open(p: Page): Promise<void> {
     this.enter({ workspace: p.workspace, dir: p.dir }, false);
     this.pageHidden = false;
-    const t = this.tabs.find((x) => x.key === p.path);
+    // A page's tab is its path without the query (lookout's ?t=, the runs
+    // page's ?back=), so it reuses the workspace's live tab; the query stays
+    // in the frame's address (page.path).
+    const key = bareOf(p.path);
+    const t = this.tabs.find((x) => x.key === key);
+    const away = pageAway(p);
     if (t) {
+      // Another query (a fresh lookout token): the frame loads it again.
+      if (t.el && t.page && t.page.path !== p.path) {
+        t.el.remove();
+        t.el = null;
+      }
       t.page = p;
-      t.toCmux = p.toCmux ?? null;
-    } else this.addTab({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, toCmux: p.toCmux ?? null });
-    this.select(p.path, true);
+      t.away = away;
+    } else this.addTab({ key, kind: kindOf(key), label: p.title, state: "", waiting: false, now: false, el: null, page: p, away });
+    this.select(key, true);
   }
 
   /** Open the sheet for a place: another place starts its tabs afresh. */
@@ -1050,7 +1103,7 @@ export class Sheet {
         const had = this.tabs.find((t) => t.key === p.path);
         return {
           key: p.path, kind: p.kind, label: p.label, state: p.state, waiting: p.waiting, now: true, el: had?.el ?? null,
-          page: had?.page ?? { path: p.path, title: p.label, workspace: ws }, toCmux: had?.toCmux ?? null,
+          page: had?.page ?? { path: p.path, title: p.label, workspace: ws }, away: had?.away ?? pageAway({ path: p.path, workspace: ws }),
         };
       });
     // A page that left the list (answered, closed) keeps its tab while it is shown.
@@ -1285,6 +1338,19 @@ export class Sheet {
     this.select(key, true);
   }
 
+  /** A failed open, said where the sheet says its own errors (the tab
+   *  strip's note, or the chat row's when the page side is folded), for a
+   *  few seconds and not dimmed. */
+  notice(text: string): void {
+    const at = this.isFolded() ? this.say : this.noteEl;
+    at.textContent = text;
+    at.classList.remove("quiet");
+    clearTimeout(this.sayTimer);
+    this.sayTimer = window.setTimeout(() => {
+      if (at.textContent === text) at.textContent = "";
+    }, 6000);
+  }
+
   /** A quiet word at the end of the strip, where the eye is after a key,
    *  that goes again after a moment. With the column hidden, the strip is
    *  too: it goes in the terminal's row instead. */
@@ -1347,6 +1413,7 @@ export class Sheet {
   private fold(): void {
     const folded = this.isFolded();
     this.body.classList.toggle("page-folded", folded);
+    this.drawAway(folded);
     // One button, always there in the Dock: it says what it brings back, or hides.
     const t = this.tabs.find((x) => x.key === this.active);
     const what = this.active === WAKE || !t ? "Wake" : t.kind === "page" ? "page" : t.kind;
@@ -1392,7 +1459,7 @@ export class Sheet {
     this.active = key;
     this.byHand = hand;
     this.page = t.page ?? null;
-    this.toCmuxFn = t.toCmux ?? null;
+    this.away = t.away ?? null;
     this.say.textContent = "";
     // A page that could not load (the server was down) tries again.
     if (t.el?.dataset.failed) {
@@ -1548,7 +1615,8 @@ export class Sheet {
     };
     invoke<IntentServer>("intent_server").then(async (server) => {
       if (!server.up || !server.origin) return down(server.reason ?? "no answer");
-      let src = server.origin + t.key;
+      // The page's own address, query and all (a lookout ?t=); the tab is its bare path.
+      let src = server.origin + (t.page?.path ?? t.key);
       // A plan's scenarios page asks for its key, which only the app reads
       // (shell.rs scenarios_key): the intent server never hands it out.
       const scn = /^\/scenarios\/([a-z0-9][a-z0-9._-]*)$/.exec(t.key);
@@ -1566,13 +1634,29 @@ export class Sheet {
     }, (e) => down(String(e)));
   }
 
-  private async toCmux(): Promise<void> {
-    // The Dock with no page up: the pane itself.
-    if (this.body.classList.contains("page-folded")) return this.chat.jumpToPane();
-    if (!this.page && !this.toCmuxFn) return;
+  /** The icon says where the shown tab goes elsewhere. With the page side
+   *  folded it is the pane, which only cmux can take; on tmux there is then
+   *  nowhere else, and the icon hides. */
+  private drawAway(folded = this.body.classList.contains("page-folded")): void {
+    // The pane goes to cmux only on cmux (not on tmux, nor before the backend is known).
+    const cmux = document.body.dataset.backend === "cmux";
+    const label = folded ? (cmux ? "Open this pane in cmux" : "") : awayLabel(this.away ?? pageAway(this.page));
+    this.awayBtn.hidden = !label;
+    this.lookoutBtn.hidden = folded || !this.page?.path.startsWith("/review/");
+    this.awayBtn.title = label;
+    this.awayBtn.setAttribute("aria-label", label);
+  }
+
+  private async elsewhere(): Promise<void> {
+    // The Dock with no page up: the pane itself, in cmux.
+    if (this.body.classList.contains("page-folded")) {
+      if (document.body.dataset.backend === "cmux") return this.chat.jumpToPane();
+      return;
+    }
+    const a = this.away ?? pageAway(this.page);
+    if (!a) return;
     try {
-      if (this.toCmuxFn) await this.toCmuxFn();
-      else if (this.page) await openInCmux(this.page);
+      await openElsewhere(a);
     } catch (e) {
       this.say.textContent = String(e);
     }
@@ -1601,6 +1685,18 @@ function needsYou(n = 1): HTMLElement {
   return dot;
 }
 
+/** Where a page tab goes elsewhere: the page, beside its workspace. A plan's
+ *  scenarios page goes nowhere else, since only this app holds its key. */
+function pageAway(p: { path: string; workspace?: string } | null): Away | null {
+  if (!p || p.path.startsWith("/scenarios/")) return null;
+  return { kind: "page", path: p.path, workspace: p.workspace };
+}
+
+/** A page path without its query or fragment: the tab it is. */
+function bareOf(path: string): string {
+  return path.split("#")[0].split("?")[0];
+}
+
 function kindOf(path: string): string {
   return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan"
     : path.startsWith("/scenarios/") ? "scenarios"
@@ -1619,10 +1715,6 @@ export async function openInVSCode(dir: string, say: (m: string) => void): Promi
   }
 }
 
-export function openInCmux(p: Page): Promise<void> {
-  return invoke("open_in_cmux", { path: p.path, workspace: p.workspace ?? null });
-}
-
 /** The Dock's own sheet, its side column, once the Dock has made it. */
 let docked: Sheet | null = null;
 
@@ -1631,12 +1723,31 @@ export function setDockSheet(s: Sheet): void {
   docked = s;
 }
 
-/** Where a pane's link opens a page: the Dock's side column, beside the
- *  terminal and in the workspace it shows. With another view up (Lookout)
- *  the Dock comes forward first (main.ts): a page never opens anywhere else. */
-export function linkSheet(place: { workspace?: string; dir?: string }): { sheet: Sheet; place: { workspace?: string; dir?: string } } | null {
+/** Say a failed open in the Dock's side column (Sheet.notice). */
+export function noticeInDock(text: string): void {
+  docked?.notice(text);
+}
+
+/** The workspace a link belongs to, without moving the Dock. */
+export function peekPlace(target: { page?: string; file?: string }): string | undefined {
+  return docked?.placeOfLink(target);
+}
+
+/** Where a link opens a page: the Dock's side column, in the workspace the
+ *  link belongs to (linkroute.ts placeFor), else the one it came from, else
+ *  the one the Dock shows. The Dock comes forward first (main.ts), and the
+ *  Bosun's drop-down goes away: a page never opens anywhere else. */
+export function linkSheet(place: { workspace?: string; dir?: string }, target: { page?: string; file?: string } = {}): { sheet: Sheet; place: { workspace?: string; dir?: string } } | null {
   if (!docked) return null;
-  if (docked.el.getClientRects().length === 0) window.dispatchEvent(new CustomEvent("seamux:show-dock"));
+  // The Dock comes forward, and the Bosun's drop-down goes away (main.ts),
+  // before the link opens: what opens is then in view and keeps the focus.
+  window.dispatchEvent(new CustomEvent("seamux:show-dock"));
+  // The link's own workspace, then the pane's it came from; else the Dock's.
+  const own = docked.placeOfLink(target) ?? place.workspace;
+  if (own) {
+    docked.goTo(own);
+    return { sheet: docked, place: { workspace: own } };
+  }
   const here = docked.here();
   return { sheet: docked, place: here.workspace || here.dir ? here : place };
 }

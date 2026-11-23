@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Sheet, Shown } from "./sheet";
+import { openElsewhere } from "./panelinks";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, Viewer } from "./wakeview";
 import { age, badgeOf, bar, byUrl, countsSaid, doneSaid, GROUP_SAID, grouped, type Group, type Pr } from "./prs";
@@ -934,13 +935,18 @@ export class Wake {
   /** Open row `r`. A picture, video or page previews in the pane, unless
    *  `elsewhere` (the pane's own "open in a tab") or ⌘ sends it on. */
   private async open(r: Row, sub: string, e?: MouseEvent | KeyboardEvent, elsewhere = false): Promise<void> {
-    // Open in cmux, as /artifacts does: beside the workspace in front.
-    const toCmux = async () => {
-      const o = await invoke<{ detail: string }>("wake_open", { id: r.id, sub, here: false });
+    const file = !!r.path && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind);
+    // ⌘ and "open elsewhere", as a pane's link does: a file in VS Code; a page
+    // beside the Dock's workspace (cmux, or the browser on tmux); anything
+    // else (a commit, an artifact) the Wake's own way.
+    const away = async () => {
+      if (file) return await openElsewhere({ kind: "file", path: r.path });
+      const o = await invoke<{ sheet: string | null; detail: string }>("wake_open", { id: r.id, sub, here: true });
+      if (o.sheet) return await openElsewhere({ kind: "page", path: o.sheet, workspace: this.host.here().workspace });
       if (o.detail) this.toast(o.detail);
     };
     try {
-      if (e?.metaKey) return await toCmux();
+      if (e?.metaKey) return await away();
       if (!elsewhere && !sub && previewable(r)) {
         const i = this.vis.findIndex((x) => x.id === r.id);
         if (i >= 0 && i !== this.sel) this.select(i);
@@ -949,20 +955,25 @@ export class Wake {
         requestAnimationFrame(() => this.list.querySelector(".w-row.sel")?.scrollIntoView({ block: "nearest" }));
         return;
       }
+      // Markdown renders in the Dock, as a pane's link to it does.
+      if (file && /\.(md|markdown)$/i.test(r.path)) {
+        const shown = await invoke<Shown>("link_file", { path: r.path }).catch(() => null);
+        if (shown) return this.host.show(shown, { kind: "file", path: r.path }, this.host.here());
+      }
       if (r.path && PREVIEW.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind)) {
         try {
           // A video streams from the app's wakefile: scheme, too big for a data: URL.
           const shown: Shown = mediaOf(r.path) === "video"
             ? { kind: "video", title: r.path.split("/").pop() || r.title, data: fileUrl(r) }
             : await invoke<Shown>("wake_file", { id: r.id });
-          return this.host.show(shown, toCmux, this.host.here());
+          return this.host.show(shown, { kind: "file", path: r.path }, this.host.here());
         } catch (err) {
-          this.toast(`${String(err)} · opening it in cmux`, true);
-          return await toCmux();
+          this.toast(`${String(err)} · opening it elsewhere`, true);
+          return await away();
         }
       }
       const o = await invoke<{ sheet: string | null; detail: string }>("wake_open", { id: r.id, sub, here: true });
-      if (o.sheet) await this.host.open({ path: o.sheet, title: r.title || r.locator, toCmux, ...this.host.here() });
+      if (o.sheet) await this.host.open({ path: o.sheet, title: r.title || r.locator, ...this.host.here() });
       else if (o.detail) this.toast(o.detail);
     } catch (err) {
       this.toast(String(err), true);

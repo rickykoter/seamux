@@ -52,11 +52,28 @@ const SCROLL_LAB_BODY = `<body class="lab">
 /** The stand-in intent server: its port, and where it proxies pages to. */
 const intent = { port: 0, target: "" };
 
+/** What a framed seamux page posts for a new-tab link (deep-plan/serve/plan.js
+ *  does the same): the app opens it as a pane's link. */
+const HANDS_OVER = `<script>document.addEventListener("click",function(e){var a=window.parent!==window&&e.target.closest&&e.target.closest('a[target="_blank"][href]');if(!a)return;e.preventDefault();window.parent.postMessage({seamux:"open",url:a.href,shift:e.shiftKey,meta:e.metaKey},"*");});</script>`;
+
+/** A plan page's links, as a real one has them: its trace (a page on the
+ *  intent server outside seamux's page paths), its proof and GitHub. */
+function planLinks(path) {
+  const slug = path.split("/")[2] ?? "";
+  return `<nav class="links"><a target="_blank" href="/plan-evidence/${slug}/inc1">trace</a> · <a target="_blank" href="/plan/${slug}.proof/proof.md">proof.md</a> · <a target="_blank" href="https://github.com/">github</a></nav>${HANDS_OVER}`;
+}
+
+/** A page on another origin than the intent server's (the demo's own), that
+ *  posts the same message: the app must not take it. */
+const POSTER = `<!doctype html><meta charset="utf-8"><title>not the intent server</title>
+<body style="font:14px -apple-system,sans-serif;padding:20px"><p>A page on the demo's own origin, not the intent server's.</p>
+<p><a target="_blank" href="file:///etc/hosts">open /etc/hosts</a> · <a target="_blank" href="/plan/demo-coupons">a plan</a></p>${HANDS_OVER}</body>`;
+
 function placeholder(path) {
   return `<!doctype html><meta charset="utf-8"><title>demo</title>
 <style>:root{color-scheme:dark light}body{margin:0;height:100vh;display:grid;place-items:center;background:#1c1c1e;color:#a1a1a6;font:13px/1.5 -apple-system,system-ui,sans-serif}
 @media (prefers-color-scheme: light){body{background:#fbfbfd;color:#6e6e73}}p{max-width:420px;text-align:center}code{font:12px ui-monospace,Menlo,monospace}</style>
-<p>${path.replace(/[<>&]/g, "")} comes from the intent server.<br>Open the demo with <code>?intent=http://127.0.0.1:PORT</code> to show it here.</p>`;
+<p>${path.replace(/[<>&]/g, "")} comes from the intent server.<br>Open the demo with <code>?intent=http://127.0.0.1:PORT</code> to show it here.</p>${path.startsWith("/plan/") ? planLinks(path) : ""}`;
 }
 
 function startIntent() {
@@ -123,6 +140,10 @@ function demo() {
           return json({ port: intent.port, target: intent.target });
         }
         if (url.pathname === "/page") return void status(url.searchParams.get("path") ?? "/").then((code) => json({ code }));
+        if (url.pathname === "/poster") {
+          res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+          return void res.end(POSTER);
+        }
         res.writeHead(404);
         res.end();
       });

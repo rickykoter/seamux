@@ -342,17 +342,48 @@ pub fn hide_overlay<R: Runtime>(window: WebviewWindow<R>) {
 
 /// A page's companion tab key: plan-<slug>, review-<id> or ask-<id>.
 pub fn companion_key(path: &str) -> String {
+    // One tab per page: the query (a lookout token) is not part of it.
+    let path = path.split(['?', '#']).next().unwrap_or(path);
     let rest = path.trim_start_matches('/');
     let (kind, id) = rest.split_once('/').unwrap_or(("page", rest));
     format!("{kind}-{id}").to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).take(96).collect()
 }
 
-/// The intent-server pages the app may hand to cmux: a plan, a review or
-/// an ask, by a plain path (no `..`, no scheme, nothing to escape).
+/// The intent-server pages the app may hand to cmux: a plan, a review, an
+/// ask, a sub-agent's transcript, a run or the runs list, by a plain path
+/// (no `..`, no `//`, no scheme, nothing to escape) and an optional query of
+/// plain `key=value` pairs (lookout's `?t=`, the runs page's `?back=`).
 pub fn cmux_path_ok(path: &str) -> bool {
-    ["/plan/", "/review/", "/ask/"].iter().any(|p| path.starts_with(p) && path.len() > p.len())
-        && !path.contains("..")
-        && path.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+    let (p, q) = path.split_once('?').unwrap_or((path, ""));
+    ["/plan/", "/review/", "/ask/", "/agent/", "/run/", "/runs/"].iter().any(|k| p.starts_with(k) && p.len() > k.len())
+        && !p.contains("..")
+        && !p.contains("//")
+        && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+        && q.chars().all(|c| c.is_ascii_alphanumeric() || "-_.=&%/".contains(c))
+        && {
+            // Checked as the page will read it: %2e%2e is '..', %2F%2F is '//'.
+            let d = percent_decoded(q);
+            !d.contains("..") && !d.contains("//") && !d.contains("://")
+        }
+}
+
+/// `s` with each %XX decoded (an invalid escape is kept as written).
+fn percent_decoded(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Open an intent-server page in cmux, in `workspace`'s tab group when one
@@ -381,13 +412,13 @@ pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, wo
         // The workspace comes forward first, so its companion is on screen
         // and sized; then the page opens there, focused: the person asked.
         // The person asked for cmux here: it may come forward.
-        allow_cmux_focus();
+        allow_focus_away();
         if let Some(w) = &ws {
             c.workspace_select(w).map_err(|e| e.to_string())?;
         }
         crew_board::companion::open(&url, &companion_key(&path), ws.as_deref().unwrap_or(""), "", true)?;
         // Counted from when cmux has been asked, however long that took.
-        allow_cmux_focus();
+        allow_focus_away();
         Ok::<(), String>(())
     })
     .await
@@ -586,17 +617,26 @@ fn fill_screen<R: Runtime>(w: &WebviewWindow<R>) {
 // processes. While the window is up, a cmux that comes forward without the
 // person going there is sent back: the window takes the front again.
 
-/// Until when (ms since the epoch) cmux may come forward: the app's own
-/// handoffs (Open in cmux, the Wall's jump) open this for a moment.
-static CMUX_ALLOWED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Until when (ms since the epoch) another app may keep the focus: the app's
+/// own handoffs (Open in cmux, the Wall's jump, a link opened in the browser
+/// or VS Code, the board's PR and checks links) open this for a moment.
+static AWAY_ALLOWED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// The person asked to go to cmux: let it come forward for the next 3 s.
-pub fn allow_cmux_focus() {
-    CMUX_ALLOWED_UNTIL.store(now_ms() + 3000, std::sync::atomic::Ordering::Relaxed);
+/// The person asked to go elsewhere (cmux, the browser, VS Code): let the app
+/// that comes forward keep the focus for the next 3 s.
+pub fn allow_focus_away() {
+    AWAY_ALLOWED_UNTIL.store(now_ms() + 3000, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The page opened something outside the app that the app did not open
+/// itself (the board's server opens its PR, checks and VS Code links).
+#[tauri::command]
+pub fn focus_away() {
+    allow_focus_away();
 }
 
 /// cmux's bundle ids: the release and the nightly.
@@ -695,8 +735,8 @@ pub struct Seen {
     pub pointer_over: bool,
     pub clicked_elsewhere: bool,
     pub modifier: bool,
-    /// The person asked to go to cmux within the last 3 s.
-    pub cmux_allowed: bool,
+    /// The app opened something elsewhere within the last 3 s.
+    pub allowed: bool,
     /// How often focus was taken back from this same app in the last 10 s.
     pub taken_lately: usize,
 }
@@ -729,7 +769,7 @@ fn taken_from(app: &str, now: u64, now_taken: bool) -> usize {
 pub enum Verdict {
     TakeBack,
     Hidden,
-    CmuxAllowed,
+    Allowed,
     NoApp,
     Ours,
     /// Taken back from this app TAKEN_LIMIT times already, just now.
@@ -748,8 +788,8 @@ pub fn take_back(s: &Seen) -> Verdict {
     if !s.visible {
         return Verdict::Hidden;
     }
-    if s.cmux_allowed {
-        return Verdict::CmuxAllowed;
+    if s.allowed {
+        return Verdict::Allowed;
     }
     if s.ours {
         return Verdict::Ours;
@@ -797,7 +837,7 @@ fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
                     // A click on another app or screen, or Cmd-Tab: the person went there.
                     clicked_elsewhere: front::clicked_elsewhere_within(0.6),
                     modifier: front::modifier_within(0.6),
-                    cmux_allowed: now < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed),
+                    allowed: now < AWAY_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed),
                 };
                 let verdict = take_back(&seen);
                 crate::focus_log::lost(&seen, verdict);
@@ -1022,7 +1062,10 @@ mod tests {
         assert_eq!(take_back(&Seen { pointer_over: false, ..s.clone() }), Verdict::PointerAway);
         assert_eq!(take_back(&Seen { clicked_elsewhere: true, ..s.clone() }), Verdict::ClickedElsewhere);
         assert_eq!(take_back(&Seen { modifier: true, ..s.clone() }), Verdict::Modifier);
-        assert_eq!(take_back(&Seen { cmux_allowed: true, ..unasked("com.cmuxterm.app") }), Verdict::CmuxAllowed);
+        assert_eq!(take_back(&Seen { allowed: true, ..unasked("com.cmuxterm.app") }), Verdict::Allowed);
+        // A link the app opened in the browser or VS Code: that app keeps it.
+        assert_eq!(take_back(&Seen { allowed: true, ..unasked("com.apple.Safari") }), Verdict::Allowed);
+        assert_eq!(take_back(&Seen { allowed: true, ..unasked("com.microsoft.VSCode") }), Verdict::Allowed);
     }
 
     #[test]
@@ -1047,6 +1090,14 @@ mod tests {
         assert_eq!(super::taken_from(app, 2_000, true), 2);
         assert_eq!(super::taken_from("test.taken.other", 2_000, false), 0);
         assert_eq!(super::taken_from(app, 12_500, false), 0);
+    }
+
+    #[test]
+    fn an_open_elsewhere_allows_focus_away_for_a_moment() {
+        super::allow_focus_away();
+        let until = super::AWAY_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed);
+        let now = super::now_ms();
+        assert!(until > now && until <= now + 3000, "{until} vs {now}");
     }
 
     #[test]
@@ -1217,18 +1268,38 @@ mod tests {
         assert_eq!(companion_key("/plan/seamux-views"), "plan-seamux-views");
         assert_eq!(companion_key("/review/seamux-views-inc1"), "review-seamux-views-inc1");
         assert_eq!(companion_key("/ask/20261022-031500-AB12"), "ask-20261022-031500-ab12");
+        // Every page open elsewhere can send makes a key cmux takes.
+        for p in ["/agent/3f6c1e2a-8b4d/a91c", "/runs/3f6c", "/review/rv-1?t=ab12CD", "/agent/s/a?back=%2Fruns%2Fs"] {
+            assert!(crew_board::companion::key_ok(&companion_key(p)), "{p} -> {}", companion_key(p));
+        }
+        // One tab per page, and no token in the key.
+        assert_eq!(companion_key("/review/rv-1?t=AAA"), companion_key("/review/rv-1?t=BBB"));
+        assert_eq!(companion_key("/review/rv-1?t=AAA"), "review-rv-1");
     }
 
     #[test]
-    fn only_plan_review_and_ask_pages_go_to_cmux() {
+    fn every_seamux_page_goes_to_cmux_and_nothing_else() {
         assert!(cmux_path_ok("/plan/seamux-views"));
         assert!(cmux_path_ok("/review/seamux-views-inc1"));
         assert!(cmux_path_ok("/ask/a1b2"));
+        assert!(cmux_path_ok("/agent/3f6c1e2a-8b4d/a91c"));
+        assert!(cmux_path_ok("/run/3f6c1e2a-8b4d/b2"));
+        assert!(cmux_path_ok("/runs/3f6c1e2a-8b4d"));
+        // lookout serve's token, and the runs page's way back.
+        assert!(cmux_path_ok("/review/rv-1?t=ab12CD"));
+        assert!(cmux_path_ok("/agent/s/a?back=%2Fruns%2Fs"));
         assert!(!cmux_path_ok("/plan/"));
         assert!(!cmux_path_ok("/usage"));
         assert!(!cmux_path_ok("/plan/../../etc"));
-        assert!(!cmux_path_ok("/plan/x?t=1"));
+        assert!(!cmux_path_ok("/plan/x?back=../../etc"));
+        assert!(!cmux_path_ok("/plan//evil.example"));
+        assert!(!cmux_path_ok("/plan/x?u=//evil.example"));
+        assert!(!cmux_path_ok("/runs/s?back=%2F%2Fevil.example"));
+        assert!(!cmux_path_ok("/plan/x?back=%2e%2e%2Fetc"));
+        assert!(!cmux_path_ok("/plan/x?u=https%3A%2F%2Fevil.example"));
         assert!(!cmux_path_ok("/plan/x y"));
+        assert!(!cmux_path_ok("/plan/x?t=a b"));
+        assert!(!cmux_path_ok("/plan/x#frag"));
         assert!(!cmux_path_ok("http://evil/plan/x"));
     }
 
