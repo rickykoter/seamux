@@ -187,7 +187,12 @@ export function matchedWhere(e: Entry, query: string): string {
 /** Text cut into runs that match a filter word (at a word start) and runs
  *  that don't, for the rail to mark what it found. */
 export function hits(text: string, query: string): { s: string; hit: boolean }[] {
-  const words = query.split(/\s+/).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  // Longest first: the alternation takes the first word that fits, so "ret" must not win over "retry".
+  const words = query
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   if (!words.length || !text) return [{ s: text, hit: false }];
   const re = new RegExp(`(?<=^|[^\\p{L}\\p{N}])(?:${words.join("|")})`, "giu");
   const out: { s: string; hit: boolean }[] = [];
@@ -459,7 +464,8 @@ export function sourceTarget(s: Source, root = ""): Target {
   if (m) return m[2] ? { path: m[1], line: Number(m[2]) } : { path: m[1] };
   // Relative: no spaces (a query has them), a folder in it (a key or a name has none), no scheme.
   const rel = /^([\w.@-][^\s:]*\/[^\s:]+)(?::(\d+))?(?::\d+)?$/.exec(r);
-  if (rel && root && (s.kind || "file").toLowerCase() === "file") {
+  // A ".." step would leave the code root: such a ref opens nowhere.
+  if (rel && root && (s.kind || "file").toLowerCase() === "file" && !rel[1].split("/").includes("..")) {
     const path = `${root.replace(/\/$/, "")}/${rel[1].replace(/^\.\//, "")}`;
     return rel[2] ? { path, line: Number(rel[2]) } : { path };
   }

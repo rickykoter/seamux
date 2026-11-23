@@ -145,6 +145,8 @@ export class BosunView {
   /** A re-checked answer's id, to the answer it came back as (however the Bosun worded it). */
   private answered = new Map<string, string>();
   private settleUntil = 0;
+  /** A Copy button showing "Copied": its resting children, and the timer that puts them back. */
+  private copyRest = new WeakMap<HTMLButtonElement, { was: ChildNode[]; timer: number }>();
   /** An Ask went out from Radar or Lookout: until then, the log is read from any tab so its answer can light the tab. */
   private watchUntil = 0;
   private dropNew = el("span", "bosun-drop-new");
@@ -589,7 +591,11 @@ export class BosunView {
       [...newer], this.status?.tmux ?? null, this.status?.live ?? null, this.status?.state ?? "", this.span, this.days.length, total, this.ensureErr,
     ]);
     this.foldDot.hidden = !this.fresh.size;
-    if (key === this.railKey && !this.scrollTo) return;
+    // A card asked to come into view is taken up by this draw, drawn or not
+    // (a filter may hide it): a later draw must not jump to it.
+    const target = this.scrollTo;
+    this.scrollTo = "";
+    if (key === this.railKey && !target) return;
     this.railKey = key;
 
     // Keep keyboard focus on the same card's same control across the redraw.
@@ -650,10 +656,7 @@ export class BosunView {
       const sel = `[data-id="${CSS.escape(keep.id)}"] [data-act="${CSS.escape(keep.act ?? "open")}"]`;
       this.railList.querySelector<HTMLElement>(sel)?.focus({ preventScroll: true });
     } else if (keep?.act === "older") this.railList.querySelector<HTMLElement>('[data-act="older"]')?.focus({ preventScroll: true });
-    if (this.scrollTo) {
-      this.railList.querySelector(`[data-id="${CSS.escape(this.scrollTo)}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      this.scrollTo = "";
-    }
+    if (target) this.railList.querySelector(`[data-id="${CSS.escape(target)}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   private empty(): HTMLElement {
@@ -802,11 +805,17 @@ export class BosunView {
     this.pending.set(e.id, mine);
     this.redraw();
     let slow = 0;
+    const send = invoke<string>("bosun_send", { text: recheck(e) });
+    const refused = (err: unknown) => {
+      const said = String(err).replace(/\.$/, "");
+      // The Bosun's pane is the one thing a person can do something about: say it in their words.
+      const why = /\bpane\b/i.test(said) ? "Couldn't send it: the Bosun stopped. Start it again beside the answers, then Retry." : `Couldn't send it: ${said}.`;
+      Object.assign(mine, { state: "failed", err: why });
+      this.live.textContent = why;
+      console.error("bosun re-check", err);
+    };
     try {
-      const qid = await Promise.race([
-        invoke<string>("bosun_send", { text: recheck(e) }),
-        new Promise<never>((_, no) => (slow = window.setTimeout(() => no("timeout"), SEND_MS))),
-      ]);
+      const qid = await Promise.race([send, new Promise<never>((_, no) => (slow = window.setTimeout(() => no("timeout"), SEND_MS)))]);
       Object.assign(mine, { state: "waiting", qid });
       this.live.textContent = "Re-check queued.";
     } catch (err) {
@@ -815,14 +824,18 @@ export class BosunView {
         // keep waiting (found by its words) rather than offer a Retry that asks twice.
         mine.state = "waiting";
         this.live.textContent = "Re-check sent; the queue was slow to confirm it.";
-      } else {
-        const said = String(err).replace(/\.$/, "");
-        // The Bosun's pane is the one thing a person can do something about: say it in their words.
-        const why = /\bpane\b/i.test(said) ? "Couldn't send it: the Bosun stopped. Start it again beside the answers, then Retry." : `Couldn't send it: ${said}.`;
-        Object.assign(mine, { state: "failed", err: why });
-        this.live.textContent = why;
-      }
-      console.error("bosun re-check", err);
+        // The send still answers later: its queue id, or the refusal it was.
+        send.then(
+          (qid) => {
+            if (this.pending.get(e.id) === mine && mine.state === "waiting") mine.qid = qid;
+          },
+          (late) => {
+            if (this.pending.get(e.id) !== mine || mine.state !== "waiting") return;
+            refused(late);
+            this.redraw();
+          },
+        );
+      } else refused(err);
     } finally {
       window.clearTimeout(slow);
     }
@@ -1007,7 +1020,11 @@ export class BosunView {
 
   /** Copy, and say so on the button itself for a moment: a check and "Copied", or "Couldn't copy". */
   private async copy(b: HTMLButtonElement, text: string): Promise<void> {
-    const was = [...b.childNodes];
+    // The button's resting look is taken once: a second click while it
+    // says "Copied" must not keep "Copied" as the look to go back to.
+    const rest = this.copyRest.get(b) ?? { was: [...b.childNodes], timer: 0 };
+    this.copyRest.set(b, rest);
+    window.clearTimeout(rest.timer);
     let ok = true;
     try {
       await navigator.clipboard.writeText(text);
@@ -1018,9 +1035,10 @@ export class BosunView {
     b.classList.toggle("bad", !ok);
     b.replaceChildren(icon(ok ? "check" : "x"), el("span", "bosun-tool-t", ok ? "Copied" : "Couldn't copy"));
     this.live.textContent = ok ? "Copied." : "Couldn't copy.";
-    window.setTimeout(() => {
+    rest.timer = window.setTimeout(() => {
       b.classList.remove("done", "bad");
-      b.replaceChildren(...was);
+      b.replaceChildren(...rest.was);
+      this.copyRest.delete(b);
       this.live.textContent = "";
     }, 1400);
   }
