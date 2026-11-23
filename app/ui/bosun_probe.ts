@@ -161,6 +161,8 @@ ok("a GitHub source names its repo too", JSON.stringify(sourceRow({ kind: "gh", 
 ok("a labelled file still shows its file and line", sourceRow({ kind: "file", ref: "shop/app/retry.rb:42", label: "retry cap" }, "/Users/me/code").where === "retry.rb:42 · ~/code/shop/app");
 ok("a filter's words are marked where they start a word", JSON.stringify(hits("Retries cap; retry.rb and preretry", "retry")) === JSON.stringify([{ s: "Retries cap; ", hit: false }, { s: "retry", hit: true }, { s: ".rb and preretry", hit: false }]), hits("Retries cap; retry.rb and preretry", "retry"));
 ok("no filter, nothing marked", hits("abc", " ").length === 1 && !hits("abc", " ")[0].hit);
+ok("a longer word is marked whole, whatever order the words were typed in", hits("retry.rb", "ret retry").find((h) => h.hit)?.s === "retry");
+ok("a code-root file that steps out of the root opens nowhere", sourceTarget({ kind: "file", ref: "../../etc/hosts", label: "" }, "/Users/me/code") === null && sourceTarget({ kind: "file", ref: "shop/../../x", label: "" }, "/Users/me/code") === null);
 ok("a match past the card's two lines says where it is", matchedWhere(e("c", "2026-11-22T10:00:00Z", "q?", "Yes: it needs the payments contract change first, and then it can go. Retries cap at 5 (shop/app/retry.rb:42)."), "retry.rb").startsWith("answer: "));
 ok("a file source names its file and folder", JSON.stringify(sourceRow({ kind: "file", ref: "/Users/me/code/shop/contracts/payments.json", label: "" })) === '{"to":"file","name":"payments.json","where":"~/code/shop/contracts"}');
 ok("a file:line source keeps its line in the name", sourceRow({ kind: "file", ref: "/u/a/b.ts:88", label: "" }).name === "b.ts:88");
