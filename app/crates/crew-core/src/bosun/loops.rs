@@ -92,6 +92,9 @@ fn hhmm(m: u32) -> String {
 
 fn parse_hhmm(s: &str) -> Option<u32> {
     let (h, m) = s.trim().split_once(':')?;
+    if h.is_empty() || m.len() != 2 || !h.chars().chain(m.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
     let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
     (h < 24 && m < 60 && !s.trim().starts_with('+')).then_some(h * 60 + m)
 }
@@ -191,10 +194,15 @@ pub enum Step {
 
 /// Whether `l` is due at `now_secs` (`now` its local reading), given what it last did.
 pub fn step(l: &Loop, last: Option<&Last>, now_secs: i64, now: &Local) -> Step {
-    if !l.enabled {
-        return Step::Wait;
-    }
     let slot = latest_slot(l, now).unwrap_or_default();
+    if !l.enabled {
+        // A disabled loop's times pass unrun, so re-enabling it later the
+        // same day does not fire the slot it missed.
+        return match last {
+            Some(last) if matches!(l.sched, Sched::At(_)) && !slot.is_empty() && slot > last.slot => Step::Begin(Last { slot, ..last.clone() }),
+            _ => Step::Wait,
+        };
+    }
     let Some(last) = last else {
         return Step::Begin(Last { last: now_secs, slot, queued: String::new() });
     };
@@ -298,10 +306,26 @@ pub fn load(dir: &Path) -> Vec<Result<Loop, String>> {
     if !cfg.contains_key("loops") {
         cfg.insert("loops".into(), starters());
         if let Err(e) = write_json(&path, &Value::Object(cfg.clone())) {
-            eprintln!("bosun loops: could not write the starter loops: {e}");
+            super::supervise::warn("loops-starters", &format!("bosun loops: could not write the starter loops: {e}"));
         }
     }
-    cfg.get("loops").and_then(Value::as_array).map(|a| a.iter().map(parse).collect()).unwrap_or_default()
+    let mut seen: Vec<String> = Vec::new();
+    cfg.get("loops")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    let l = parse(v)?;
+                    // Two loops with one id would share one state entry.
+                    if seen.contains(&l.id) {
+                        return Err(format!("{}: another loop already has this id", l.id));
+                    }
+                    seen.push(l.id.clone());
+                    Ok(l)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The id of every entry in bosun.json's loops, whether or not it parses:
@@ -347,6 +371,8 @@ pub fn tick_at(dir: &Path, now_secs: i64, now: &Local, seamux: &str) -> Vec<Stri
     if loops.is_empty() {
         return Vec::new();
     }
+    // run_now and the supervisor both rewrite loops-state.json: one at a time.
+    let _lock = crate::status::lock_file(dir, "loops.lock");
     let mut state = load_state(dir);
     let mut changed = false;
     let mut queued = Vec::new();
@@ -375,7 +401,7 @@ pub fn tick_at(dir: &Path, now_secs: i64, now: &Local, seamux: &str) -> Vec<Stri
                         queued.push(l.id.clone());
                     }
                     // Not marked: the next tick tries again.
-                    Err(e) => eprintln!("bosun loops: could not queue {}: {e}", l.id),
+                    Err(e) => super::supervise::warn(&format!("loops-queue-{}", l.id), &format!("bosun loops: could not queue {}: {e}", l.id)),
                 }
             }
         }
@@ -387,7 +413,7 @@ pub fn tick_at(dir: &Path, now_secs: i64, now: &Local, seamux: &str) -> Vec<Stri
     state.retain(|k, _| ids.iter().any(|id| id == k));
     if changed || state.len() != before {
         if let Err(e) = write_json(&dir.join(STATE), &Value::Object(state)) {
-            eprintln!("bosun loops: could not save {STATE}: {e}");
+            super::supervise::warn("loops-state", &format!("bosun loops: could not save {STATE}: {e}"));
         }
     }
     queued
@@ -403,6 +429,7 @@ pub fn run_now(dir: &Path, id: &str, now_secs: i64) -> Result<String, String> {
     let l = load(dir).into_iter().filter_map(Result::ok).find(|l| l.id == id).ok_or(format!("no loop {id:?} in bosun.json"))?;
     let item = crate::backend::tmux::new_id().to_ascii_lowercase();
     queue::enqueue_as(dir, &item, &prompt_text(&l, &item, "", &super::launch::seamux_bin()), &format!("loop:{id}"))?;
+    let _lock = crate::status::lock_file(dir, "loops.lock");
     let mut state = load_state(dir);
     let mut last = last_of(&state, id).unwrap_or_default();
     last.last = now_secs;

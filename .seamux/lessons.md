@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L12 -->
+<!-- next: L14 -->
 
 ## L1
 applies: **
@@ -71,3 +71,15 @@ applies: **
 from: demo-mock-catchup inc 4 (correction c864d2d03), 2026-11-22
 
 After an amend on a plan with a scenarios check, name the promises it changed and have the person review the scenarios (scenarios show, in their own shell) before the next judge run: a sealed scenario keeps checking the old promise.
+
+## L12
+applies: **
+from: bosun inc 4 (correction cc2b6929b), 2026-11-22
+
+When resolving a merge conflict, resolve each conflicting hunk by hand. Never use git checkout --ours or --theirs on a file both sides changed: it takes one side's whole file and silently drops the other side's edits, and a probe can still pass with the loss.
+
+## L13
+applies: app/crates/**, crew/**
+from: bosun (correction ce543aeae), 2026-11-23
+
+A live check on a temp store also runs the background passes the app runs (seamux crew-sync, the doctor scan) and a person's input in the pane, or it misses what they change. A workspace kept out of the lists is checked against every reader that keeps its own list.

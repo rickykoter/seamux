@@ -36,6 +36,14 @@ fn rule_path(p: &Path) -> String {
     format!("/{}/**", s.trim_end_matches('/'))
 }
 
+/// The files in the Bosun's folder that steer it: its config (root, sandbox
+/// lists, loops), the settings and brief made from it, and the state the
+/// supervisor and its hooks keep. The Bosun may write the rest of its folder
+/// (queue, answers, log, drafts), never these: rewriting bosun.json would
+/// let a prompt injected through a ticket or a page widen its own sandbox on
+/// the next restart. The hooks and the supervisor run outside the sandbox.
+pub const PROTECTED: &[&str] = &["bosun.json", "settings.json", "brief.md", "state.json", "reset-day"];
+
 /// The ways Claude may write the seamux command: as `seamux` and as the
 /// full path the Bosun's prompts name.
 fn dispatch_forms(seamux: &str) -> Vec<String> {
@@ -66,9 +74,14 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
     // match the command as typed, so the bare name and the full path each
     // get one; any other form (a wrapper, sh -c) stays sandboxed and fails.
     let dispatch: Vec<String> = dispatch_forms(seamux).iter().map(|c| format!("{c} bosun dispatch *")).collect();
+    let protected: Vec<String> = PROTECTED.iter().map(|f| dir.join(f).to_string_lossy().into_owned()).collect();
+    let mut deny = vec![format!("Edit({})", rule_path(&cfg.root))];
+    deny.extend(protected.iter().map(|p| format!("Edit(/{p})")));
+    let mut deny_write = vec![root];
+    deny_write.extend(protected.iter().cloned());
     json!({
         "permissions": {
-            "deny": [format!("Edit({})", rule_path(&cfg.root))],
+            "deny": deny,
             "ask": dispatch.iter().map(|d| format!("Bash({d})")).collect::<Vec<_>>(),
             "allow": [format!("Edit({})", rule_path(dir)), format!("Read({})", rule_path(dir))],
             // A working directory too: shell input redirection reads only from
@@ -80,7 +93,7 @@ pub fn settings(cfg: &Config, dir: &Path, seamux: &str) -> Value {
             "failIfUnavailable": true,
             "allowUnsandboxedCommands": false,
             "excludedCommands": dispatch,
-            "filesystem": {"denyWrite": [root], "allowWrite": allow_write},
+            "filesystem": {"denyWrite": deny_write, "allowWrite": allow_write},
             "network": network,
         },
         "hooks": {
@@ -176,13 +189,18 @@ mod tests {
     #[test]
     fn settings_deny_edits_on_the_root_and_sandbox_its_writes() {
         let s = settings(&cfg(), Path::new("/u/.claude/crew/bosun"), "/bin/seamux");
-        assert_eq!(s["permissions"]["deny"], json!(["Edit(//u/code/**)"]));
+        assert_eq!(s["permissions"]["deny"][0], "Edit(//u/code/**)");
+        assert!(s["permissions"]["deny"].as_array().unwrap().contains(&json!("Edit(//u/.claude/crew/bosun/bosun.json)")), "its own config is not its to edit");
         assert_eq!(s["permissions"]["allow"][0], "Edit(//u/.claude/crew/bosun/**)");
         assert_eq!(s["permissions"]["additionalDirectories"], json!(["/u/.claude/crew/bosun"]), "its folder is a working directory");
         assert_eq!(s["sandbox"]["enabled"], true);
         assert_eq!(s["sandbox"]["allowUnsandboxedCommands"], false, "no retry outside the sandbox");
         assert_eq!(s["sandbox"]["failIfUnavailable"], true, "no Bosun without its sandbox");
-        assert_eq!(s["sandbox"]["filesystem"]["denyWrite"], json!(["/u/code"]));
+        let dw = s["sandbox"]["filesystem"]["denyWrite"].as_array().unwrap().clone();
+        assert_eq!(dw[0], "/u/code");
+        for f in PROTECTED {
+            assert!(dw.contains(&json!(format!("/u/.claude/crew/bosun/{f}"))), "{f} is denied to Bash");
+        }
         assert_eq!(s["sandbox"]["filesystem"]["allowWrite"], json!(["/u/.claude/crew/bosun", "/u/.cache/gh"]));
         assert_eq!(s["sandbox"]["network"]["allowedDomains"], json!(["github.com"]));
         assert_eq!(s["hooks"]["SessionStart"][0]["hooks"][0]["command"], "/bin/seamux bosun prime");

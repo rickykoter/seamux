@@ -126,7 +126,9 @@ pub fn status_at(t: &TmuxBackend, dir: &Path) -> Result<Value, String> {
     let st = launch::State::load(dir);
     let row = t.kind_row(KIND)?;
     let pane = row.as_ref().and_then(|r| r.live.clone().or(r.gone.clone())).unwrap_or_default();
-    let live = row.as_ref().is_some_and(|r| r.live.is_some());
+    // Live means the supervisor still runs: a pane whose `bosun run` returned
+    // is only a shell, and the app's keep-alive should ensure (replace) it.
+    let live = row.as_ref().and_then(|r| r.live.as_deref()).is_some_and(|p| supervised(t, p) != Some(false));
     let state = if live { crate::status::read(&crate::status::pane_dir(), &pane).map(|p| p.state).unwrap_or_default() } else { String::new() };
     Ok(json!({
         "ws": row.as_ref().map(|r| r.ws.clone()).unwrap_or_default(),
@@ -166,14 +168,20 @@ pub fn prime_with_log(cfg: &Config, dir: &Path, today: &str, source: &str) -> St
 }
 
 /// The text after the subcommand, flags (and their values) left out.
+/// The text after the subcommand and its flags. Only the subcommand's own
+/// flags (`valued`, and `--json`) are flags; any other word is text, so a
+/// question that mentions `--fix` keeps it. After a bare `--` all is text.
 fn words(args: &[String], valued: &[&str]) -> (String, Vec<(String, String)>) {
     let mut text = Vec::new();
     let mut flags = Vec::new();
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
-        if valued.contains(&a.as_str()) {
+        if a == "--" {
+            text.extend(it.by_ref().cloned());
+            break;
+        } else if valued.contains(&a.as_str()) {
             flags.push((a.clone(), it.next().cloned().unwrap_or_default()));
-        } else if a.starts_with("--") {
+        } else if a == "--json" {
             flags.push((a.clone(), String::new()));
         } else {
             text.push(a.clone());
@@ -203,7 +211,8 @@ fn usage() -> i32 {
 }
 
 pub fn main(args: &[String]) -> i32 {
-    let json_out = args.iter().any(|a| a == "--json");
+    // --json counts only before a bare `--` (after it, all is the text).
+    let json_out = args.iter().take_while(|a| *a != "--").any(|a| a == "--json");
     let sub = args.first().map(String::as_str).filter(|a| !a.starts_with("--")).unwrap_or("");
     let dir = config::dir();
     let t = TmuxBackend::default();
@@ -283,6 +292,7 @@ pub fn main(args: &[String]) -> i32 {
             let (text, flags) = words(args, &["--from", "--timeout", "--id"]);
             let timeout = std::time::Duration::from_secs(flag(&flags, "--timeout").and_then(|t| t.parse().ok()).unwrap_or(900));
             let id = match flag(&flags, "--id") {
+                Some(id) if !queue::valid_id(id) => return fail("ask", format!("not an id: {id:?}")),
                 Some(id) => id.to_string(),
                 None => {
                     let who = flag(&flags, "--from").map(str::to_string).unwrap_or_else(|| {
@@ -394,6 +404,16 @@ mod tests {
         let cfg = Config { root: PathBuf::from("/u/code"), reset_hour: 4, allow_write: vec![], allowed_domains: vec![] };
         let n = prime_note(&cfg, "2026-11-22", "clear");
         assert!(n.contains("2026-11-22") && n.contains("/u/code") && n.contains("new day"));
+    }
+
+    #[test]
+    fn a_question_keeps_its_own_dashes() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (t, f) = words(&v(&["ask", "why", "does", "crew", "doctor", "--fix", "fail", "--from", "me"]), &["--from"]);
+        assert_eq!((t.as_str(), flag(&f, "--from")), ("why does crew doctor --fix fail", Some("me")));
+        let (t, f) = words(&v(&["ask", "--json", "--", "what", "does", "--json", "do"]), &["--from"]);
+        assert_eq!(t, "what does --json do");
+        assert!(flag(&f, "--json").is_some());
     }
 
     #[test]
