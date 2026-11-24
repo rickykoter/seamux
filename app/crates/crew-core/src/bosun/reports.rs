@@ -408,7 +408,7 @@ pub fn prompt_text(r: &Report, run: &str, slot: &str, checked_at: &str, sections
     }
     let draft = dir.join("drafts").join(format!("{run}.json")).to_string_lossy().into_owned();
     out.push_str(&format!(
-        "\nRun it by the bosun skill's report reference. Then write the results to {draft} and send them with `{q} bosun report done {run} < {}`.",
+        "\nLoad the bosun skill and run it by its report reference (references/report.md), which says what the results need: `report done` refuses a file without them. Then write the results to {draft} and send them with `{q} bosun report done {run} < {}`.",
         crate::native::sh_quote(&draft)
     ));
     out
@@ -504,6 +504,13 @@ pub fn done(dir: &Path, run: &str, v: &Value, now_secs: i64) -> Result<Value, St
     let id = rv["report"].as_str().unwrap_or("").to_string();
     let title = rv["title"].as_str().unwrap_or("").to_string();
     let sent = v.get("sections").and_then(Value::as_array).ok_or("the results need a sections list")?;
+    // The fields the report reference asks for are required: a file written
+    // without the reference (the skill not loaded) is refused, saying what
+    // is missing, rather than logged half-filled.
+    let answer = text(v, "answer");
+    if answer.trim().is_empty() {
+        return Err("no answer: the results need an answer, the run for a person (a line per section), as the bosun skill's report reference says".into());
+    }
     let mut sections = Vec::new();
     let mut sources = Vec::new();
     for p in rv["sections"].as_array().cloned().unwrap_or_default() {
@@ -527,13 +534,18 @@ pub fn done(dir: &Path, run: &str, v: &Value, now_secs: i64) -> Result<Value, St
         if status == "unchecked" {
             sec["why"] = json!(if why.is_empty() { line.clone() } else { why });
         }
-        sections.push(sec);
-        for src in s.get("sources").and_then(Value::as_array).into_iter().flatten() {
-            let f = |k: &str| src.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-            if !f("ref").is_empty() {
-                sources.push(json!({"kind": f("kind"), "ref": f("ref"), "label": f("label")}));
-            }
+        let srcs = s.get("sources").and_then(Value::as_array).cloned().unwrap_or_default();
+        if status != "unchecked" && srcs.is_empty() {
+            return Err(format!("{t}: no sources: a checked section names where its line comes from, as {{\"kind\", \"ref\", \"label\"}}"));
         }
+        for src in &srcs {
+            let f = |k: &str| src.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+            if f("kind").is_empty() || f("ref").is_empty() {
+                return Err(format!("{t}: a source without a kind or a ref ({src}): each is {{\"kind\", \"ref\", \"label\"}}"));
+            }
+            sources.push(json!({"kind": f("kind"), "ref": f("ref"), "label": f("label")}));
+        }
+        sections.push(sec);
     }
     let doc = text(v, "doc");
     if !doc.is_empty() && !doc.starts_with("https://") {
@@ -541,14 +553,14 @@ pub fn done(dir: &Path, run: &str, v: &Value, now_secs: i64) -> Result<Value, St
     }
     let mut doc_why = one_line(&text(v, "docWhy"), 200);
     if rv["doc"]["to"] == true && doc.is_empty() && doc_why.is_empty() {
-        doc_why = rv["doc"]["why"].as_str().map(str::to_string).unwrap_or_else(|| "no doc link was sent".into());
+        match rv["doc"]["why"].as_str() {
+            Some(why) => doc_why = why.to_string(),
+            None => return Err("no doc and no docWhy: send the doc's https link, or docWhy saying why the doc was not updated".into()),
+        }
     }
     if !doc.is_empty() {
         sources.push(json!({"kind": "doc", "ref": doc, "label": format!("{title} doc")}));
     }
-    let answer = Some(text(v, "answer")).filter(|a| !a.is_empty()).unwrap_or_else(|| {
-        sections.iter().map(|s| format!("- {}: {}", s["title"].as_str().unwrap_or(""), s["line"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n")
-    });
     let mut report = json!({"id": id, "run": run, "title": title, "sections": sections});
     if !doc.is_empty() {
         report["doc"] = json!(doc);
@@ -580,6 +592,22 @@ pub fn done(dir: &Path, run: &str, v: &Value, now_secs: i64) -> Result<Value, St
         .filter(|s| s["status"] == "needs")
         .map(|s| format!("{}: {}", s["title"].as_str().unwrap_or(""), s["line"].as_str().unwrap_or("")))
         .collect();
+    // The run file shows what was found, beside what the supervisor checked.
+    if let Some(ps) = rv["sections"].as_array_mut() {
+        for p in ps.iter_mut() {
+            let t = p["title"].as_str().unwrap_or("").to_string();
+            if let Some(sec) = sections.iter().find(|s| s["title"] == t.as_str()) {
+                p["status"] = sec["status"].clone();
+                p["line"] = sec["line"].clone();
+            }
+        }
+    }
+    if !doc.is_empty() {
+        rv["doc"]["url"] = json!(doc);
+    }
+    if !doc_why.is_empty() {
+        rv["doc"]["docWhy"] = json!(doc_why);
+    }
     rv["done"] = json!(true);
     rv["doneAt"] = json!(now_secs);
     rv["needs"] = json!(needs);
@@ -784,7 +812,10 @@ pub fn doctor_lines(dir: &Path, found: &Found) -> Vec<(String, String)> {
         return vec![line("note", "no Bosun reports: bosun.json's reports list is empty".into())];
     }
     let mut out = Vec::new();
-    if let Err(e) = &found.servers {
+    let sandboxed = found.sandboxed();
+    if sandboxed {
+        out.push(line("note", format!("Bosun reports: MCP sources and the Claude Doc were not checked: {}", super::sources::SANDBOXED)));
+    } else if let Err(e) = &found.servers {
         out.push(line("warn", format!("Bosun reports: could not read claude mcp list ({e}), so no mcp: source could be checked")));
     }
     let state = load_state(dir);
@@ -807,7 +838,14 @@ pub fn doctor_lines(dir: &Path, found: &Found) -> Vec<(String, String)> {
         }
         running += 1;
         for c in check_sections(r, found).iter().filter(|c| !c.runnable()) {
+            // From inside the sandbox, a section is down only by its cmd: sources.
+            if sandboxed && c.via.iter().any(|(v, _)| matches!(v, Via::Mcp(_))) {
+                continue;
+            }
             out.push(line("warn", format!("Bosun report {} · {}: not checkable yet: {}", r.id, c.section.title, c.why())));
+        }
+        if sandboxed {
+            continue;
         }
         if let Doc::Down(why) = doc_for(r, &kept(&state, &r.id).unwrap_or_default(), found) {
             out.push(line("warn", format!("Bosun report {}: its Claude Doc can't be updated: {why}", r.id)));
@@ -815,7 +853,7 @@ pub fn doctor_lines(dir: &Path, found: &Found) -> Vec<(String, String)> {
     }
     if running == 0 {
         out.push(line("note", "every Bosun report is turned off (enabled: false), so none was checked".into()));
-    } else if !out.iter().any(|(l, _)| l == "warn") {
+    } else if !sandboxed && !out.iter().any(|(l, _)| l == "warn") {
         out.insert(0, line("ok", format!("Bosun reports: every section's sources work ({running} report{})", if running == 1 { "" } else { "s" })));
     }
     for (word, _, _) in KNOWN {
@@ -824,6 +862,28 @@ pub fn doctor_lines(dir: &Path, found: &Found) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// Claude Code's own folder: CLAUDE_CONFIG_DIR, else ~/.claude.
+fn claude_home() -> PathBuf {
+    crate::py::env_or("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| crate::py::home().join(".claude"))
+}
+
+/// A warn line when the bosun plugin is not installed, or is turned off, in
+/// `claude_home`: the Bosun then has no bosun skill, never reads the report
+/// reference, and sends results `report done` refuses.
+pub fn skill_line(claude_home: &Path) -> Option<(String, String)> {
+    let read = |f: &str| fs::read_to_string(claude_home.join(f)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
+    let installed = read("plugins/installed_plugins.json");
+    let ids: Vec<String> = installed["plugins"].as_object().map(|m| m.keys().filter(|k| k.starts_with("bosun@")).cloned().collect()).unwrap_or_default();
+    let fix = "install it from the seamux checkout you keep (./install.sh, or /plugin install bosun@seamux), then restart the Bosun";
+    let Some(id) = ids.first() else {
+        return Some(("warn".into(), format!("the bosun plugin is not installed, so the Bosun runs reports without its skill and their results come back off format: {fix}")));
+    };
+    if read("settings.json")["enabledPlugins"][id.as_str()] == false {
+        return Some(("warn".into(), format!("the bosun plugin ({id}) is turned off, so the Bosun runs reports without its skill: turn it on with /plugin, then restart the Bosun")));
+    }
+    None
 }
 
 fn print_errors_or(rows: &[Value], empty: &str, each: impl Fn(&Value)) {
@@ -903,7 +963,7 @@ pub fn main(args: &[String], dir: &Path) -> i32 {
             // crew doctor reads these lines, as it reads pricing --doctor's.
             let cfg = super::config::Config::load_from(dir);
             let found = if needs_seed(dir) { Found { servers: Ok(Vec::new()), path: String::new(), domains: Vec::new() } } else { Found::look(&cfg.root, &super::launch::launched_domains(dir)) };
-            for (level, msg) in doctor_lines(dir, &found) {
+            for (level, msg) in skill_line(&claude_home()).into_iter().chain(doctor_lines(dir, &found)) {
                 println!("{level}\t{msg}");
             }
             0
@@ -1075,6 +1135,35 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
             {"title": "Two\nlines\there", "via": ["cmd:nope"], "ask": "a"}]}]})).unwrap();
         let lines = doctor_lines(&d, &found());
         assert!(lines.iter().any(|(l, m)| l == "warn" && m.contains("m · Two lines here: not checkable yet: nope is not on PATH")), "one line each: {lines:?}");
+    }
+
+    #[test]
+    fn doctor_inside_the_sandbox_leaves_mcp_unchecked_instead_of_down() {
+        let d = tmp("doctor-sbx");
+        loops::write_json(&d.join("bosun.json"), &json!({"reports": [{"id": "m", "at": ["09:00"], "sections": [
+            {"title": "Tickets", "via": ["mcp:atlassian"], "ask": "a"},
+            {"title": "Pull requests", "via": ["cmd:gh"], "ask": "b"}]}]})).unwrap();
+        let f = Found { servers: Err(super::super::sources::SANDBOXED.into()), ..found() };
+        assert!(f.sandboxed());
+        let lines = doctor_lines(&d, &f);
+        let has = |lvl: &str, text: &str| lines.iter().any(|(l, m)| l == lvl && m.contains(text));
+        assert!(has("note", "were not checked: this ran inside Claude Code's sandbox"), "{lines:?}");
+        assert!(!lines.iter().any(|(_, m)| m.contains("Tickets") || m.contains("Claude Doc can't")), "an mcp: section is not called down: {lines:?}");
+        assert!(has("warn", "Pull requests: not checkable yet"), "a cmd: source still is: {lines:?}");
+        assert!(!lines.iter().any(|(l, _)| l == "ok"), "{lines:?}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn doctor_warns_when_the_bosun_plugin_is_missing_or_off() {
+        let d = tmp("skill");
+        assert!(skill_line(&d).unwrap().1.contains("not installed"));
+        fs::create_dir_all(d.join("plugins")).unwrap();
+        fs::write(d.join("plugins/installed_plugins.json"), r#"{"version": 2, "plugins": {"crew@seamux": [], "bosun@seamux": []}}"#).unwrap();
+        assert_eq!(skill_line(&d), None);
+        fs::write(d.join("settings.json"), r#"{"enabledPlugins": {"bosun@seamux": false}}"#).unwrap();
+        assert!(skill_line(&d).unwrap().1.contains("turned off"));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -1264,11 +1353,11 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
     fn done_logs_the_run_and_keeps_down_sections_not_checked() {
         let d = tmp("done");
         let run = built_run(&d);
-        let results = json!({"doc": "https://claude.ai/artifact/abc", "sections": [
+        let results = json!({"doc": "https://claude.ai/artifact/abc", "answer": "- Tickets: PROJ-9 is blocked on you\n- Notes: nothing new", "sections": [
             {"title": "pull requests", "status": "ok", "line": "pretends to have checked"},
             {"title": "Monitors", "status": "ok", "line": "all quiet"},
             {"title": "Tickets", "status": "needs", "line": "PROJ-9 is blocked on you\nsince Monday", "sources": [{"kind": "ticket", "ref": "PROJ-9", "label": "PROJ-9"}]},
-            {"title": "Notes", "status": "ok", "line": "nothing new"},
+            {"title": "Notes", "status": "ok", "line": "nothing new", "sources": [{"kind": "file", "ref": "notes.md", "label": "notes"}]},
         ]});
         let e = done(&d, &run, &results, 200).unwrap();
         assert_eq!((e["id"].as_str(), e["asker"].as_str(), e["question"].as_str()), (Some(run.as_str()), Some("report:morning"), Some("Morning report")));
@@ -1282,6 +1371,11 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         assert!(e["answer"].as_str().unwrap().contains("- Tickets: PROJ-9"));
         assert_eq!(super::super::log::list(&d, &super::super::launch::local_day_hour(super::super::launch::now_secs()).0).unwrap().len(), 1);
         assert_eq!(kept(&load_state(&d), "morning").unwrap().doc, "https://claude.ai/artifact/abc");
+        let rv = read_run(&d, &run).unwrap();
+        assert_eq!(rv["doc"]["url"], "https://claude.ai/artifact/abc", "the run file keeps the doc link");
+        let by = |t: &str| rv["sections"].as_array().unwrap().iter().find(|p| p["title"] == t).unwrap().clone();
+        assert_eq!((by("Tickets")["status"].as_str(), by("Tickets")["line"].as_str()), (Some("needs"), Some("PROJ-9 is blocked on you since Monday")));
+        assert_eq!(by("Monitors")["status"], "unchecked", "each section's status and line is kept in the run file");
         assert!(done(&d, &run, &results, 300).unwrap_err().contains("already done"));
         // A done whose run file was not marked (a failure after the log) is tried again: one entry.
         let mut rv = read_run(&d, &run).unwrap();
@@ -1297,8 +1391,8 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         let d = tmp("stray");
         let run = built_run(&d);
         super::super::log::add(&d, &json!({"id": run, "question": "Morning report", "answer": "logged by hand"})).unwrap();
-        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine"});
-        let e = done(&d, &run, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 200).unwrap();
+        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine", "sources": [{"kind": "query", "ref": "q", "label": "q"}]});
+        let e = done(&d, &run, &json!({"answer": "fine", "docWhy": "skipped", "sections": [ok("Tickets"), ok("Notes")]}), 200).unwrap();
         assert_eq!(e["report"]["run"], json!(run), "the report entry is logged");
         let _ = fs::remove_dir_all(&d);
     }
@@ -1307,22 +1401,38 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
     fn done_refuses_bad_results() {
         let d = tmp("bad-done");
         let run = built_run(&d);
-        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine"});
-        for bad in [
-            json!({}),
-            json!({"sections": [ok("Tickets")]}),
-            json!({"sections": [ok("Tickets"), {"title": "Notes", "status": "great", "line": "x"}]}),
-            json!({"sections": [ok("Tickets"), {"title": "Notes", "status": "ok", "line": "  "}]}),
-            json!({"doc": "javascript:alert(1)", "sections": [ok("Tickets"), ok("Notes")]}),
+        let src = json!([{"kind": "query", "ref": "status = open", "label": "open tickets"}]);
+        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine", "sources": src});
+        let good = |secs: Value| json!({"answer": "- all fine", "doc": "https://claude.ai/artifact/abc", "sections": secs});
+        let with = |k: &str, v: Value| {
+            let mut g = good(json!([ok("Tickets"), ok("Notes")]));
+            g[k] = v;
+            g
+        };
+        let mut no_answer = good(json!([ok("Tickets"), ok("Notes")]));
+        no_answer.as_object_mut().unwrap().remove("answer");
+        let mut no_doc = good(json!([ok("Tickets"), ok("Notes")]));
+        no_doc.as_object_mut().unwrap().remove("doc");
+        for (bad, says) in [
+            (json!({}), "sections"),
+            (good(json!([ok("Tickets")])), "Notes"),
+            (good(json!([ok("Tickets"), {"title": "Notes", "status": "great", "line": "x", "sources": src}])), "status"),
+            (good(json!([ok("Tickets"), {"title": "Notes", "status": "ok", "line": "  ", "sources": src}])), "no line"),
+            (with("doc", json!("javascript:alert(1)")), "https"),
+            (no_answer, "no answer"),
+            (good(json!([ok("Tickets"), {"title": "Notes", "status": "ok", "line": "fine"}])), "no sources"),
+            (good(json!([ok("Tickets"), {"title": "Notes", "status": "ok", "line": "fine", "sources": [{"ref": "x", "label": "x"}]}])), "kind"),
+            (no_doc, "docWhy"),
         ] {
-            assert!(done(&d, &run, &bad, 200).is_err(), "{bad}");
+            let e = done(&d, &run, &bad, 200).unwrap_err();
+            assert!(e.contains(says), "{bad}: {e}");
         }
         assert!(done(&d, "nope", &json!({"sections": []}), 200).is_err());
         let unbuilt = run_now(&d, "morning", 100).unwrap();
-        assert!(done(&d, &unbuilt, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 200).unwrap_err().contains("never typed"));
-        // No doc link and no why: the run says so.
-        let e = done(&d, &run, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 200).unwrap();
-        assert_eq!(e["report"]["docWhy"], "no doc link was sent");
+        assert!(done(&d, &unbuilt, &good(json!([ok("Tickets"), ok("Notes")])), 200).unwrap_err().contains("never typed"));
+        // An unchecked section needs no source; a docWhy stands in for the doc.
+        let e = done(&d, &run, &json!({"answer": "a", "docWhy": "the connector timed out", "sections": [ok("Tickets"), {"title": "Notes", "status": "unchecked", "line": "Not checked: notes timed out"}]}), 200).unwrap();
+        assert_eq!(e["report"]["docWhy"], "the connector timed out");
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -1332,8 +1442,9 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         let notes = d.join("state");
         let run = built_run(&d);
         assert!(banner_pass(&d, &notes, 200).is_empty(), "not done yet");
-        let needs = |t: &str, l: &str| json!({"title": t, "status": "needs", "line": l});
-        done(&d, &run, &json!({"sections": [needs("Tickets", "PROJ-9 is blocked on you"), needs("Notes", "a note waits")]}), 200).unwrap();
+        let src = json!([{"kind": "ticket", "ref": "PROJ-9", "label": "PROJ-9"}]);
+        let needs = |t: &str, l: &str| json!({"title": t, "status": "needs", "line": l, "sources": src});
+        done(&d, &run, &json!({"answer": "two wait", "docWhy": "test", "sections": [needs("Tickets", "PROJ-9 is blocked on you"), needs("Notes", "a note waits")]}), 200).unwrap();
         assert_eq!(banner_pass(&d, &notes, 210), [run.clone()]);
         let files: Vec<_> = fs::read_dir(&notes).unwrap().flatten().collect();
         assert_eq!(files.len(), 1);
@@ -1343,8 +1454,8 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         assert!(banner_pass(&d, &notes, 220).is_empty(), "once");
         // A quiet run posts nothing; a run past two weeks is deleted.
         let quiet = { let i = run_now(&d, "morning", 300).unwrap(); let it = queue::waiting(&d).into_iter().find(|x| x.id == i).unwrap(); prepare_with(&d, &it, &found(), 300, "/bin/seamux").unwrap(); i };
-        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine"});
-        done(&d, &quiet, &json!({"sections": [ok("Tickets"), ok("Notes")]}), 310).unwrap();
+        let ok = |t: &str| json!({"title": t, "status": "ok", "line": "fine", "sources": src});
+        done(&d, &quiet, &json!({"answer": "fine", "docWhy": "test", "sections": [ok("Tickets"), ok("Notes")]}), 310).unwrap();
         assert!(banner_pass(&d, &notes, 320).is_empty());
         banner_pass(&d, &notes, 300 + RUN_KEEP_SECS + 1);
         assert!(read_run(&d, &quiet).is_none() && read_run(&d, &run).is_none());

@@ -48,7 +48,11 @@ seamux bosun dispatch <repo> <branch> --json --brief-text '<the brief>'
 
 Type it exactly as one command: no `cd`, no `&&`, no pipe, no `sh -c`, no
 `env`. The ask rule matches only that form. Anything else stays in the
-sandbox and fails. Quote the brief in single quotes; write a single quote
+sandbox and fails. The brief holds no backtick and no `$(`, even inside the
+single quotes: Claude Code reads either one as a command substitution and
+keeps the whole call in the sandbox after the person approves it, so it
+fails on `.git/FETCH_HEAD`. Write code names and commands as plain text, and
+dispatch refuses a brief that has one. Quote the brief in single quotes; write a single quote
 inside it as `'\''`. The person reads the brief in the prompt and decides.
 
 - **Approved**: it prints `{"path", "branch", "workspace"}`.

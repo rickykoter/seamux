@@ -53,7 +53,8 @@ seamux bosun answer <id> < <dir>/drafts/<id>.md
 #    "sources": [{"kind": "file", "ref": "shop/.ruby-version:1", "label": "..."}]}
 seamux bosun log add < <dir>/drafts/<id>.json
 # real work: a branch ending in a 6-hex id, a brief opening "From the Bosun, log <id>.",
-#   shown to the person first and passed inline so the approval prompt shows it;
+#   shown to the person first and passed inline so the approval prompt shows it,
+#   with no backtick or $( in it (either keeps the call in the sandbox);
 #   then log it with that id and a {"kind": "workspace", "ref": <path>, "label": <branch>} source
 seamux bosun dispatch <repo> <slug>-<id> --json --brief-text '<the brief>'
 # a report run ("[Report <id> run <run>]"): its results, as the report reference says;

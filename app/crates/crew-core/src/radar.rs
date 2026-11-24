@@ -29,6 +29,9 @@ pub struct Contact {
     pub color: Option<String>,
     /// The agent's state ("working", "needs_input", "idle"), or "" with none.
     pub state: String,
+    /// What the workspace waits on the person for ("a question or permission
+    /// prompt", "a finished turn to review"), or "" when nothing does.
+    pub waits: String,
     /// Repo-relative paths changed since the base branch, and untracked ones.
     pub editing: Vec<String>,
     pub planned: Vec<Planned>,
@@ -103,6 +106,8 @@ pub struct Seat {
     pub root: String,
     pub color: Option<String>,
     pub state: String,
+    /// See `Contact::waits`.
+    pub waits: String,
 }
 
 /// The repo's name from its common dir: `…/seamux/.git` is "seamux".
@@ -141,6 +146,7 @@ pub fn assemble(seats: &[Seat], trees: &BTreeMap<String, Tree>, plans: &[Plan]) 
             branch: t.branch.clone(),
             color: s.color.clone(),
             state: s.state.clone(),
+            waits: s.waits.clone(),
             editing,
             planned,
             partial: t.partial,
@@ -493,7 +499,7 @@ mod tests {
     use serde_json::json;
 
     fn seat(ws: &str, root: &str) -> Seat {
-        Seat { ws: ws.into(), pane: format!("{ws}-p"), title: ws.into(), root: root.into(), color: None, state: String::new() }
+        Seat { ws: ws.into(), pane: format!("{ws}-p"), title: ws.into(), root: root.into(), color: None, state: String::new(), waits: String::new() }
     }
 
     #[test]

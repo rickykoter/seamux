@@ -465,8 +465,14 @@ try:
 except ValueError:
     ps = []
 bad = 0
+def found(name):
+    return next((x for x in ps if x.get("id", "").split("@")[0] == name and x.get("id", "").endswith("@seamux")), None)
 for name in ("deep-plan", "restack", "bash-guard", "lookout", "humanize", "crew", "bosun", "seamux-mods"):
-    p = next((x for x in ps if x.get("id", "").split("@")[0] == name and x.get("id", "").endswith("@seamux")), None)
+    p = found(name)
+    if not p and name == "bosun" and found("crew"):
+        # crew runs the Bosun, which needs this plugin's skill to run its reports.
+        print(f"  \033[33mwarn\033[0m bosun: not installed, so the Bosun runs without its skill (./install.sh adds it; --no-bosun leaves it out)")
+        bad += 1; continue
     if not p:
         print(f"  \033[2m·    {name}: not installed\033[0m"); continue
     state = "enabled" if p.get("enabled") else "DISABLED"

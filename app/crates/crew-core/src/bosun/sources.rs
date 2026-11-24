@@ -141,6 +141,15 @@ pub fn parse_mcp_list(text: &str) -> Vec<Server> {
         .collect()
 }
 
+/// Why no MCP server was checked from inside a sandbox.
+pub const SANDBOXED: &str = "this ran inside Claude Code's sandbox (the Bosun's Bash tool), where claude mcp list can't reach the servers; run it from a terminal, or read the run's prompt, which the supervisor checks outside the sandbox";
+
+/// Whether this process runs inside Claude Code's sandbox, which sets
+/// SANDBOX_RUNTIME for the commands it wraps.
+pub fn in_sandbox() -> bool {
+    std::env::var("SANDBOX_RUNTIME").is_ok_and(|v| !v.is_empty())
+}
+
 /// Run `claude mcp list` in `root` (project servers count) and read its rows,
 /// killing it past `limit`.
 pub fn mcp_list(root: &Path, limit: Duration) -> Result<Vec<Server>, String> {
@@ -228,7 +237,17 @@ impl Found {
         if !login.is_empty() {
             path = if path.is_empty() { login } else { format!("{path}:{login}") };
         }
-        Found { servers: mcp_list(root, MCP_LIST_LIMIT), path, domains: domains.to_vec() }
+        // Inside Claude Code's sandbox (the Bosun's Bash tool), claude mcp
+        // list can't reach the servers, so every one would read as down
+        // while the session itself, which talks to them outside the sandbox,
+        // reaches them fine.
+        let servers = if in_sandbox() { Err(SANDBOXED.to_string()) } else { mcp_list(root, MCP_LIST_LIMIT) };
+        Found { servers, path, domains: domains.to_vec() }
+    }
+
+    /// Whether the MCP servers went unchecked because this ran in a sandbox.
+    pub fn sandboxed(&self) -> bool {
+        self.servers.as_ref().is_err_and(|e| e == SANDBOXED)
     }
 
     /// Ok when `via` works, else why not, in words for "Not checked: <why>".

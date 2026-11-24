@@ -33,7 +33,7 @@ fn build() -> Frame {
         }
         let title = if t.workspace_title.is_empty() { t.label.clone() } else { t.workspace_title.clone() };
         let state = if t.agent.is_some() { t.state.clone() } else { String::new() };
-        seats.push(Seat { ws: t.workspace.clone(), pane: t.surface.clone(), title, root, color: t.color.clone(), state });
+        seats.push(Seat { ws: t.workspace.clone(), pane: t.surface.clone(), title, root, color: t.color.clone(), state, waits: String::new() });
     }
     let mut roots: Vec<String> = seats.iter().map(|s| s.root.clone()).collect();
     roots.sort();

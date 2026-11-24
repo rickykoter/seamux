@@ -19,6 +19,6 @@ Mark a section "needs" when something there waits on the person: an alert or mon
 
 Doc: https://claude.ai/artifact/5d1f0c2a-0b7e-4c1d-9f3a-2e8b6a4c7d10. Add this run's section at the top, above the last run's.
 
-Run it by the bosun skill's report reference. Then write the results to ~/.claude/crew/bosun/drafts/7c58d2e1.json and send them with `seamux bosun report done 7c58d2e1 < ~/.claude/crew/bosun/drafts/7c58d2e1.json`.
+Load the bosun skill and run it by its report reference (references/report.md), which says what the results need: `report done` refuses a file without them. Then write the results to ~/.claude/crew/bosun/drafts/7c58d2e1.json and send them with `seamux bosun report done 7c58d2e1 < ~/.claude/crew/bosun/drafts/7c58d2e1.json`.
 
 You have already run the one command the first section needs: `gh search prs --state=open --review-requested=@me` printed a single PR, acme/shop #412 "retry cap", review requested 2026-11-21, checks passing, and nothing else. This is a dry run: no repository, shell or Docs connector is wired into this session, so don't go looking, and treat the doc as one you can write. Tell me exactly what you would do, in order, show the section you would add to the doc and where it goes, and show the results file you would write and the command you would run.
