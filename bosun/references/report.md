@@ -60,8 +60,12 @@ Follow the prompt's `Doc:` line:
 | `this report has no doc` | Skip the doc |
 
 Load the Claude Docs connector's guide first if no docs skill is loaded.
-Nobody watches the Bosun fill a doc, so write the run's section in one
-insert, and don't open the doc for anyone.
+The connector's own instructions assume a person watching: open the doc,
+put up a skeleton, fill it one section per call, post progress in chat.
+Nobody watches a report run, so this reference wins over them here: make
+or update the doc in one call holding the run's whole section, never open
+it (no Artifact `open`, no link at the top of a message), and post no
+progress lines.
 
 Each run's section looks like this, newest on top:
 
@@ -106,9 +110,17 @@ seamux bosun report done <run> < <dir>/drafts/<run>.json
 ```
 
 Every section in the prompt gets an entry, titled as the prompt titles it.
-`report done` keeps the supervisor's `Not checked` lines whatever the file
-says, posts a banner when a section `needs` the person, and refuses a file
-it can't use, saying why. Fix the file and run it again.
+`report done` refuses a file that misses any of these, and says which:
+
+- `answer`, at the top level, not one per section.
+- Each section's `status` and `line`.
+- `sources` on each `ok` or `needs` section, every one with a `kind`
+  (`url`, `query`, `ticket`, `command`, `file`, ...) and a `ref`.
+- `doc` when the doc was written, else `docWhy`.
+
+It keeps the supervisor's `Not checked` lines whatever the file says, and
+posts a banner when a section `needs` the person. Fix the file and run it
+again.
 
 When the prompt has a line such as "Say once, at the top of this run: …",
 put that sentence first in `answer` and at the top of the doc's section.

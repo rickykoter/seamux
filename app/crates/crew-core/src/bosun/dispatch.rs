@@ -49,7 +49,35 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     if a.brief.trim().is_empty() {
         return Err("--brief-text TEXT: the new session's first message".into());
     }
+    if let Some(what) = sandbox_keeper(&a.brief) {
+        return Err(format!(
+            "the brief holds {what}, and Claude Code keeps any call with one inside the sandbox even when the person approves it, so dispatch can't make the worktree. Write code names and commands without backticks or $( and run it again"
+        ));
+    }
     Ok(a)
+}
+
+/// What in the brief keeps the call sandboxed: Claude Code's sandbox treats a
+/// backtick or `$(` anywhere in a command, even inside single quotes, as a
+/// command substitution and leaves the call out of excludedCommands. The ask
+/// rule still prompts, so the person approves a run that then fails.
+pub fn sandbox_keeper(brief: &str) -> Option<&'static str> {
+    if brief.contains('`') {
+        Some("a backtick")
+    } else if brief.contains("$(") {
+        Some("$(")
+    } else {
+        None
+    }
+}
+
+/// A step's error, with the cause named when the sandbox refused it.
+fn explain(e: String) -> String {
+    if e.contains("Operation not permitted") {
+        format!("{e}\nThis ran inside the Bosun's sandbox, so the call didn't match excludedCommands. Type it as the bosun skill's dispatch reference says: the bare command, nothing chained, no backtick or $( in the brief.")
+    } else {
+        e
+    }
 }
 
 /// Make the worktree and open its workspace with the brief: {path, branch, workspace}.
@@ -61,7 +89,8 @@ pub fn run(a: &Args) -> Result<Value, String> {
     let open = |cwd: &Path, cmd: &str| t.open_workspace(cwd, cmd);
     let made = worktree::create(&s, &r, &open, &mut |step, phase, note| {
         eprintln!("dispatch: {} {phase:?}{}", step.key(), if note.is_empty() { String::new() } else { format!(": {note}") });
-    })?;
+    })
+    .map_err(explain)?;
     Ok(json!({"path": made.path.to_string_lossy(), "branch": made.branch, "workspace": made.workspace_id.unwrap_or(made.workspace_ref)}))
 }
 
@@ -81,5 +110,15 @@ mod tests {
         assert!(parse(&v(&["shop", "fix-x", "--brief", "/t/b.md"])).is_err(), "a brief file is refused: the prompt must show it");
         assert!(parse(&v(&["shop", "--brief-text", "b"])).is_err(), "no branch");
         assert!(parse(&v(&["shop", "x", "--brief-text", "b", "--nope"])).is_err());
+    }
+
+    #[test]
+    fn a_brief_the_sandbox_would_keep_is_refused_before_any_step() {
+        let e = parse(&v(&["shop", "x", "--brief-text", "From the Bosun, log a1.\nRun `make test`."])).unwrap_err();
+        assert!(e.contains("backtick"), "{e}");
+        assert!(parse(&v(&["shop", "x", "--brief-text", "Check $(date)."])).unwrap_err().contains("$("));
+        assert!(parse(&v(&["shop", "x", "--brief-text", "Costs $5 (about)."])).is_ok(), "a dollar sign alone is fine");
+        assert!(explain("fetch failed: cannot open '.git/FETCH_HEAD': Operation not permitted".into()).contains("sandbox"));
+        assert_eq!(explain("no repo shop".into()), "no repo shop");
     }
 }

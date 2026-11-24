@@ -82,6 +82,8 @@ pub fn seats(reg: &Value, pane_files: &Path, tucked: &[String], root_of: &dyn Fn
     let mut out = Vec::new();
     for w in workspaces {
         let mine: Vec<_> = panes.iter().filter(|p| p.workspace.eq_ignore_ascii_case(&w.id)).collect();
+        let files: Vec<crate::status::Pane> = mine.iter().filter_map(|p| crate::status::read(pane_files, &p.id)).collect();
+        let waits = waits_of(&files);
         let agent = mine.iter().find_map(|p| crate::status::read(pane_files, &p.id).map(|f| (*p, f.state)));
         let (pane, state) = match &agent {
             Some((p, st)) => (p.id.clone(), st.clone()),
@@ -92,9 +94,35 @@ pub fn seats(reg: &Value, pane_files: &Path, tucked: &[String], root_of: &dyn Fn
         if root.is_empty() || tucked.contains(&root) {
             continue;
         }
-        out.push(Seat { ws: w.id, pane, title: w.title, root, color: None, state });
+        out.push(Seat { ws: w.id, pane, title: w.title, root, color: None, state, waits });
     }
     out
+}
+
+/// What a workspace waits on the person for, from its panes' files (the
+/// board's attention and review lanes): "" when nothing does. An idle pane
+/// alone is not waiting: its turn ended and nobody asked anything.
+pub fn waits_of(panes: &[crate::status::Pane]) -> String {
+    let r = crate::status::rollup_of(panes);
+    let mut why = Vec::new();
+    if r.state == "needs_input" {
+        why.push("a question or permission prompt".to_string());
+    }
+    if let Some(q) = &r.asked {
+        let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
+        let short = if flat.chars().count() > 100 { flat.chars().take(99).collect::<String>() + "…" } else { flat };
+        why.push(format!("a question at the end of its turn: {short}"));
+    }
+    if panes.iter().any(|p| p.waiting()) {
+        why.push("a background agent's permission prompt".to_string());
+    }
+    if panes.iter().any(|p| p.limited.is_some()) {
+        why.push("a turn stopped by a usage limit".to_string());
+    }
+    if why.is_empty() && panes.iter().any(|p| p.review) {
+        why.push("a finished turn to review".to_string());
+    }
+    why.join("; ")
 }
 
 fn dp_state() -> PathBuf {
@@ -134,6 +162,9 @@ fn radar_text(f: &Frame) -> String {
         for c in &r.contacts {
             let state = if c.state.is_empty() { String::new() } else { format!(", {}", c.state) };
             out.push_str(&format!("  {} [{}{state}]{}\n", c.title, c.branch, if c.partial { " (git read partial)" } else { "" }));
+            if !c.waits.is_empty() {
+                out.push_str(&format!("    waits on you: {}\n", c.waits));
+            }
             if !c.editing.is_empty() {
                 out.push_str(&format!("    editing: {}\n", c.editing.join(", ")));
             }
@@ -332,6 +363,25 @@ mod tests {
     }
 
     #[test]
+    fn a_seat_says_what_it_waits_on_you_for() {
+        let d = tmp("waits");
+        let files = d.join("cache");
+        fs::create_dir_all(&files).unwrap();
+        let pane = |key: &str, v: Value| fs::write(crate::status::path(&files, key), v.to_string()).unwrap();
+        pane("P1", json!({"ws": "W1", "state": "needs_input", "question": {}, "at": 1}));
+        pane("P2", json!({"ws": "W2", "state": "idle", "asked": "Merge it now,\n or wait for CI?", "at": 1}));
+        pane("P3", json!({"ws": "W3", "state": "idle", "review": true, "at": 1}));
+        pane("P4", json!({"ws": "W4", "state": "idle", "at": 1}));
+        let reg = json!({"version": 1,
+            "workspaces": (1..=4).map(|i| json!({"id": format!("W{i}"), "title": format!("t{i}"), "cwd": format!("/r/{i}")})).collect::<Vec<_>>(),
+            "panes": (1..=4).map(|i| json!({"id": format!("P{i}"), "ws": format!("W{i}"), "cwd": format!("/r/{i}")})).collect::<Vec<_>>()});
+        let got = seats(&reg, &files, &[], &|c: &str| c.to_string());
+        let waits: Vec<&str> = got.iter().map(|s| s.waits.as_str()).collect();
+        assert_eq!(waits, ["a question or permission prompt", "a question at the end of its turn: Merge it now, or wait for CI?", "a finished turn to review", ""], "idle alone waits on nobody");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn tucked_and_live_snoozes_are_hidden_and_muted_is_not() {
         let d = tmp("tuck");
         let a = d.join("a");
@@ -367,7 +417,7 @@ mod tests {
         git(&main, &["worktree", "add", "-q", "-b", "dev/x", &wt.to_string_lossy()]);
         fs::write(main.join("shared.rs"), "a").unwrap();
         fs::write(wt.join("shared.rs"), "b").unwrap();
-        let seat = |id: &str, root: &Path| Seat { ws: id.into(), pane: format!("p{id}"), title: id.into(), root: real(&root.to_string_lossy()), color: None, state: String::new() };
+        let seat = |id: &str, root: &Path| Seat { ws: id.into(), pane: format!("p{id}"), title: id.into(), root: real(&root.to_string_lossy()), color: None, state: String::new(), waits: String::new() };
         let f = radar_of(&[seat("A", &main), seat("B", &wt)], &d.join("no-state"), &d.join("no-keys"));
         assert_eq!(f.repos.len(), 1, "{f:?}");
         assert_eq!(f.repos[0].contacts.len(), 2);
