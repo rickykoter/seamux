@@ -118,19 +118,40 @@ export const BPMN_FILES = {
   "diagram-js.css": "73f990dcd6cd2ed696aa63a3c73822a97f0ea69a221d76ebe6cf24b01111df21",
   "bpmn-js.css": "a1add5dca479c779a54adda507f26796f4d61a5ae15f6cc14a1b017ff65b4015",
 };
-export const isBpmn = p => /\.bpmn$/i.test(p || "");
+// The layout for a diagram with no positions in it (Flowable's .bpmn20.xml,
+// usually): app/ui/bpmnlayout.ts with bpmn-auto-layout 1.3.0, bundled by
+// `npm run vendor:lookout` in app/ (the same bytes each build), as the
+// global SeamuxBpmnLayout. Licenses in LICENSE-layout.
+export const BPMN_LAYOUT = ["bpmn-layout.min.js", "454654fad921b34b4d1c1aa88c1dfda0a78ddc0c40327bd8df9f4ed607a8a8ef"];
+// A .bpmn file, or a .bpmn20.xml as Flowable and Activiti name theirs.
+export const isBpmn = p => /\.(bpmn|bpmn20\.xml)$/i.test(p || "");
+// Whether the XML places any shape; one with none needs the layout to draw.
+export const hasBpmnDiagram = xml => /<(?:[\w.-]+:)?BPMNShape[\s/>]/.test(xml || "");
 
-// { js, css } when every file is there and matches its pin, else { why }.
-export function bpmnAssets() {
+// The file at its pin, else why not.
+function pinned(name, sha) {
+  const p = path.join(BPMN_DIR, name);
+  if (!fs.existsSync(p)) return { why: name + " is missing from this install" };
+  if (sha256File(p) !== sha) return { why: name + " failed its sha256 check; not loaded" };
+  return { text: fs.readFileSync(p, "utf8") };
+}
+
+// { js, css } when every viewer file is there and matches its pin, else
+// { why }. `layout` adds the layout bundle to the js; when that one file is
+// missing or off its pin, the viewer still comes, with { layoutWhy }, so a
+// diagram that stores its positions still draws.
+export function bpmnAssets({ layout = false } = {}) {
   const got = {};
   for (const [name, sha] of Object.entries(BPMN_FILES)) {
-    const p = path.join(BPMN_DIR, name);
-    if (!fs.existsSync(p)) return { why: "bpmn-js is missing from this install (" + name + ")" };
-    if (sha256File(p) !== sha) return { why: "bpmn-js failed its sha256 check (" + name + "); not loaded" };
-    got[name] = fs.readFileSync(p, "utf8");
+    const f = pinned(name, sha);
+    if (f.why) return { why: "bpmn-js: " + f.why };
+    got[name] = f.text;
   }
-  return { js: got["bpmn-navigated-viewer.production.min.js"],
-           css: got["diagram-js.css"] + "\n" + got["bpmn-js.css"] };
+  const out = { js: got["bpmn-navigated-viewer.production.min.js"], css: got["diagram-js.css"] + "\n" + got["bpmn-js.css"] };
+  if (!layout) return out;
+  const l = pinned(...BPMN_LAYOUT);
+  if (l.why) return { ...out, layoutWhy: l.why };
+  return { ...out, js: out.js + "\n;" + l.text };
 }
 
 // The language for a path, with the file's first line for scripts that carry a

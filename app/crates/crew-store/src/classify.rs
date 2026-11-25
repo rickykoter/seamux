@@ -13,8 +13,15 @@ use std::sync::OnceLock;
 
 pub const PROMPT_MAX: usize = 500;
 pub const IMAGE_EXT: [&str; 9] = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic", ".bmp", ".tiff"];
-// A BPMN diagram is a document to look at, not source: the Wake renders it.
-pub const DOC_EXT: [&str; 5] = [".md", ".markdown", ".html", ".htm", ".bpmn"];
+pub const DOC_EXT: [&str; 4] = [".md", ".markdown", ".html", ".htm"];
+
+/// Whether `path` is a BPMN diagram: `.bpmn`, or `.bpmn20.xml` as Flowable
+/// and Activiti name theirs. A diagram is a document to look at, not
+/// source: the Wake renders it.
+pub fn is_bpmn(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    p.ends_with(".bpmn") || p.ends_with(".bpmn20.xml")
+}
 
 macro_rules! re {
     ($name:ident, $pat:expr) => {
@@ -156,7 +163,7 @@ pub fn classify(p: &Paths, path: &str, cwd: &str, root: &str) -> Option<&'static
         return Some("image");
     }
     if [cwd, root].iter().any(|c| !c.is_empty() && under(path, &crate::paths::norm(c))) {
-        return if DOC_EXT.contains(&ext.as_str()) { Some("doc") } else { None };
+        return if DOC_EXT.contains(&ext.as_str()) || is_bpmn(path) { Some("doc") } else { None };
     }
     if p.is_temp(path) {
         return Some("temp");
@@ -199,6 +206,14 @@ mod tests {
             Some("a b")
         );
         assert_eq!(prompt_of(&json!({"type": "user", "message": {"content": 42}})), None);
+    }
+
+    #[test]
+    fn bpmn_is_either_name_flowable_uses() {
+        assert!(is_bpmn("/a/loan.bpmn"));
+        assert!(is_bpmn("/a/task-need.v1.BPMN20.xml"));
+        assert!(!is_bpmn("/a/pom.xml"));
+        assert!(!is_bpmn("/a/bpmn20.xml.bak"));
     }
 
     #[test]

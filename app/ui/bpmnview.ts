@@ -4,6 +4,8 @@
 // package.json) draws it as SVG in the app's own DOM. The viewer only lays
 // out shapes and sets label text, so the diagram runs no code of its own.
 // Its script loads on first use, so pages with no diagram never pay for it.
+// A file with no diagram in it (a Flowable .bpmn20.xml, often) is laid out
+// by bpmnlayout.ts first, and says so in its corner.
 
 import "bpmn-js/dist/assets/diagram-js.css";
 import "bpmn-js/dist/assets/bpmn-js.css";
@@ -37,6 +39,17 @@ function colours(): { fill: string; stroke: string } {
   };
 }
 
+/** The corner note on a diagram seamux laid out: the file has no positions,
+ *  so the boxes are not where its author's modeler would put them. */
+function laidOutNote(text: string): HTMLElement {
+  const n = document.createElement("div");
+  n.className = "bpmn-laid-out";
+  n.textContent = text;
+  n.style.cssText =
+    "position: absolute; top: 6px; left: 8px; z-index: 1; font-size: 11px; opacity: 0.7; pointer-events: none; color: var(--ef-fg);";
+  return n;
+}
+
 /** A viewer for `xml` in `box`, in the colours of now. bpmn-js bakes the
  *  colours into each shape, so a theme change needs a new viewer. */
 async function viewerFor(box: HTMLElement, xml: string): Promise<Viewer> {
@@ -55,14 +68,21 @@ async function viewerFor(box: HTMLElement, xml: string): Promise<Viewer> {
 /** Draw `xml` into `host` (emptied first), fitted to it. Drag pans, the
  *  wheel scrolls, ⌘/ctrl-wheel zooms. Throws, with bpmn-js's reason, when
  *  the XML is not a diagram. A double-click fits it again. */
-export async function drawBpmn(host: HTMLElement, xml: string): Promise<void> {
+export async function drawBpmn(host: HTMLElement, source: string): Promise<void> {
   const box = document.createElement("div");
   box.className = "bpmn-box";
-  box.style.cssText = "width: 100%; height: 100%;";
+  box.style.cssText = "position: relative; width: 100%; height: 100%;";
   host.replaceChildren(box);
   let v: Viewer;
+  let xml: string;
   try {
+    const { withDiagram, layoutNote } = await import("./bpmnlayout");
+    const d = await withDiagram(source).catch((e: unknown) => {
+      throw new Error(e instanceof Error ? e.message.split("\n")[0] : String(e));
+    });
+    xml = d.xml;
     v = await viewerFor(box, xml);
+    if (d.laidOut) box.append(laidOutNote(layoutNote("seamux", d.processes)));
   } catch (e) {
     box.remove();
     throw e;

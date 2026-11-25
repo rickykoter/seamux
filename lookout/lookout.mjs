@@ -96,7 +96,10 @@ export function renderPage(id) {
   let mapJs = "";
   try { mapJs = fs.readFileSync(path.join(HERE, "page", "plan-map.js"), "utf8"); } catch { /* the view says it is missing */ }
   // bpmn-js only for a review with a diagram: it is most of the page's weight.
-  const bpmn = Object.values(rows).some(d => d && d.bpmn) ? V.bpmnAssets() : {};
+  // The layout too when a side stores no positions (a Flowable .bpmn20.xml).
+  const diagrams = Object.values(rows).filter(d => d && d.bpmn);
+  const layout = diagrams.some(d => d.bpmn.bare);
+  const bpmn = diagrams.length ? V.bpmnAssets({ layout }) : {};
   const noScriptEnd = s => (s || "").replace(/<\/script/gi, "<\\/script");
   const noStyleEnd = s => (s || "").replace(/<\/style/gi, "<\\/style");
   // One pass over the template, so a placeholder that appears INSIDE the
@@ -104,7 +107,7 @@ export function renderPage(id) {
   const fill = {
     "__TITLE__": () => V.escapeHtml(pageTitle(id)),
     "/*__CSS__*/": () => css,
-    "__DATA__": () => scriptJson({ review: r, rows, bpmnWhy: bpmn.why || "",
+    "__DATA__": () => scriptJson({ review: r, rows, bpmnWhy: bpmn.why || "", bpmnLayoutWhy: bpmn.layoutWhy || "",
       planView: r.planMap ? comparePlan(r.planMap, r.files, (r.source || {}).inc) : null }),
     "/*__JS__*/": () => js.replace(/<\/script/gi, "<\\/script"),
     "/*__MAP_JS__*/": () => mapJs.replace(/<\/script/gi, "<\\/script"),
@@ -278,6 +281,8 @@ function cmdOpen() {
       // would read as an added or deleted diagram. A patch-file review has
       // neither side, and a page past its budget takes no more.
       const whole = (f.status === "A" || bp.old != null) && (f.status === "D" || bp.new != null);
+      // bare: a side stores no positions, so the page needs the layout for it.
+      bp.bare = [bp.old, bp.new].some(x => x != null && !V.hasBpmnDiagram(x));
       if (whole && size && bpmnBytes + size <= BPMN_BUDGET) { drawn.bpmn = bp; bpmnBytes += size; }
     }
     rows[f.path] = drawn;

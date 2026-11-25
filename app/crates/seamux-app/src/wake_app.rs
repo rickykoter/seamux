@@ -132,6 +132,9 @@ pub struct Shown {
 
 /// How the sheet shows a file, by its extension, and its media type.
 pub fn show_kind(path: &str) -> Option<(&'static str, &'static str)> {
+    if crew_store::classify::is_bpmn(path) {
+        return Some(("bpmn", "application/xml"));
+    }
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     Some(match ext.as_str() {
         "png" => ("image", "image/png"),
@@ -145,7 +148,6 @@ pub fn show_kind(path: &str) -> Option<(&'static str, &'static str)> {
         "m4v" => ("video", "video/x-m4v"),
         "mov" => ("video", "video/quicktime"),
         "webm" => ("video", "video/webm"),
-        "bpmn" => ("bpmn", "application/xml"),
         _ => return None,
     })
 }
@@ -296,12 +298,15 @@ mod tests {
         assert_eq!(show_kind("demo.MOV"), Some(("video", "video/quicktime")));
         assert_eq!(show_kind("demo.mp4"), Some(("video", "video/mp4")));
         assert_eq!(show_kind("flow.BPMN"), Some(("bpmn", "application/xml")));
+        assert_eq!(show_kind("task-need.v1.bpmn20.xml"), Some(("bpmn", "application/xml")));
+        assert_eq!(show_kind("pom.xml"), None);
     }
 
     #[test]
     fn the_scheme_never_serves_html() {
         assert_eq!(served_type("a.html"), None);
         assert_eq!(served_type("a.bpmn"), None, "BPMN travels as XML to the page, never by the scheme");
+        assert_eq!(served_type("p.bpmn20.xml"), None);
         assert_eq!(served_type("a.png"), Some("image/png"));
         assert_eq!(served_type("a.webm"), Some("video/webm"));
         assert_eq!(served_type("a.pdf"), Some("application/pdf"));

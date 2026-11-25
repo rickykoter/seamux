@@ -95,6 +95,7 @@ ok("link: [::1] is local", route("http://[::1]:8080/x", intent) === "local");
 ok("link: the web is the browser's", route("https://github.com/a/b/pull/1", intent) === "browser" && route("https://localhost.example.com/", intent) === "browser");
 ok("link: a file URL is a file", route("file:///tmp/a.png", intent) === "file");
 ok("link: no intent server, a plan link is a dev page", route("http://127.0.0.1:7777/plan/x", null) === "local");
+ok("link: the Dock draws BPMN, Flowable's .bpmn20.xml too", ["a.bpmn", "p.v1.BPMN20.xml"].every((f) => DOCK_FILE.test(f)) && !DOCK_FILE.test("pom.xml"));
 ok("link: the Dock shows images, PDFs and Markdown", ["a.png", "b.JPG", "c.pdf", "README.md"].every((f) => DOCK_FILE.test(f)) && !DOCK_FILE.test("main.rs") && !DOCK_FILE.test("x.md.rs"));
 
 // ---- a path Claude wrapped onto the next row ------------------------------

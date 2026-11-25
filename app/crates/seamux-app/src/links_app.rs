@@ -76,6 +76,7 @@ mod tests {
         assert_eq!(dock_kind("/a/spec.pdf"), Some("pdf"));
         assert_eq!(dock_kind("/a/README.md"), Some("markdown"));
         assert_eq!(dock_kind("/a/loan.bpmn"), Some("bpmn"));
+        assert_eq!(dock_kind("/a/timer-loop.v1.bpmn20.xml"), Some("bpmn"));
         assert_eq!(dock_kind("/a/main.rs"), None);
         assert_eq!(dock_kind("/a/page.html"), None, "HTML source is code to edit");
         assert_eq!(dock_kind("/a/clip.mov"), None);

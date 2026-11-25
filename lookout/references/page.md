@@ -147,12 +147,16 @@ tree (single-child folders folded together), one file's diff on the right.
 - **Collapsed files**: lockfiles, minified bundles, `linguist-generated`
   paths, binaries and changes over 1500 lines start collapsed behind a
   "Show diff" button (binaries and very large files cannot be drawn).
-- **BPMN diagrams**: a `.bpmn` file opens on its diagram, with Before and
+- **BPMN diagrams**: a `.bpmn` or `.bpmn20.xml` (Flowable's name) file opens on its diagram, with Before and
   After side by side. Added elements are green, changed ones blue (renamed,
   reworded or moved), removed ones red. "XML diff" switches to the text, and
   findings and comments sit on its lines. The viewer is bpmn.io's bpmn-js,
   shipped in `vendor/bpmn-js` and pinned by sha256 in `lib/vendor.mjs`. A
-  review inlines it only when it has a diagram.
+  review inlines it only when it has a diagram. A file that stores no
+  diagram positions (Flowable's, often) is laid out by bpmn-auto-layout
+  (`vendor/bpmn-js/bpmn-layout.min.js`, also pinned, inlined only then),
+  its unnamed steps labelled by id; there a step counts as changed by its
+  XML alone, since the layout moves everything.
 
 If highlight.js is missing the page is drawn plain with a banner naming why;
 `lookout setup` fixes it.
