@@ -634,3 +634,31 @@ button.chip:hover { color: var(--fg); border-color: var(--fg); }
 /* A GitHub reply's author and time are its link to GitHub. */
 .msg.by-gh a.gh-who { color: inherit; text-decoration: none; }
 .msg.by-gh a.gh-who:hover, .msg.by-gh a.gh-who:focus-visible { color: var(--accent-t); text-decoration: underline; }
+
+/* A .bpmn file's diagram (review.js bpmnView): before beside after, marked in
+   the file list's status colours (added, modified, deleted). */
+.bpmn-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 8px 16px 0; font-size: var(--fs-2); color: var(--muted); }
+.bpmn-bar .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.bpmn-bar .seg button { background: var(--bg); color: inherit; border: 0; padding: 3px 10px; font: inherit; cursor: pointer; }
+.bpmn-bar .seg button.on { background: var(--ef-bg2); color: var(--ef-fg); font-weight: 600; }
+.bpmn-key .k { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+.bpmn-key .k::before { content: ""; width: 10px; height: 10px; border-radius: 2px; border: 2px solid currentColor; }
+.bpmn-key .k.add { color: var(--st-a); }
+.bpmn-key .k.chg { color: var(--st-m); }
+.bpmn-key .k.del { color: var(--st-d); }
+.bpmn-open { background: none; border: 0; padding: 0; font: inherit; color: var(--role-link); cursor: pointer; text-decoration: underline; }
+.bpmn { margin: 8px 16px 16px; }
+.bpmn-sum { font-size: var(--fs-2); color: var(--muted); margin-bottom: 6px; }
+.bpmn-sides { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.bpmn-sides.two { grid-template-columns: 1fr 1fr; }
+@media (max-width: 900px) { .bpmn-sides.two { grid-template-columns: 1fr; } }
+.bpmn-side { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--ef-bg); min-width: 0; }
+.bpmn-label { font-size: var(--fs-2); font-weight: 600; padding: 4px 10px; border-bottom: 1px solid var(--border); }
+.bpmn-canvas { height: calc(100vh - 220px); min-height: 320px; position: relative; }
+.bpmn-err { padding: 16px; color: var(--ef-text-bad); }
+.bpmn-canvas .djs-shape.lk-add .djs-visual > :first-child { stroke: var(--st-a) !important; stroke-width: 3px !important; fill: var(--ef-bg-green) !important; }
+.bpmn-canvas .djs-shape.lk-chg .djs-visual > :first-child { stroke: var(--st-m) !important; stroke-width: 3px !important; fill: var(--ef-bg-blue) !important; }
+.bpmn-canvas .djs-shape.lk-del .djs-visual > :first-child { stroke: var(--st-d) !important; stroke-width: 3px !important; fill: var(--ef-bg-red) !important; }
+.bpmn-canvas .djs-connection.lk-add .djs-visual > path { stroke: var(--st-a) !important; stroke-width: 3px !important; }
+.bpmn-canvas .djs-connection.lk-chg .djs-visual > path { stroke: var(--st-m) !important; stroke-width: 3px !important; }
+.bpmn-canvas .djs-connection.lk-del .djs-visual > path { stroke: var(--st-d) !important; stroke-width: 3px !important; }

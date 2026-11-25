@@ -215,12 +215,13 @@ const R1 = repo("r1");
   const html = fs.readFileSync(out.page, "utf8");
   ok("page: every placeholder is filled exactly once", !/^<title>__TITLE__/m.test(html) &&
      html.includes("<title>lookout · r1-dev-feature</title>") && !html.includes("<style>/*__CSS__*/") &&
-     !html.includes("/*__MAP_JS__*/") &&
-     // Two plain scripts: the Map view's renderer (page/plan-map.js), then review.js.
-     (html.match(/<script>/g) || []).length === 2);
-  // The template's three script elements close, and nothing from the diff does.
+     !html.includes("/*__MAP_JS__*/") && !html.includes("/*__BPMN_JS__*/") && !html.includes("/*__BPMN_CSS__*/") &&
+     // Three plain scripts: the Map view's renderer (page/plan-map.js), bpmn-js
+     // (empty here: no diagram in the diff), then review.js.
+     (html.match(/<script>/g) || []).length === 3 && !html.includes("BpmnJS="));
+  // The template's four script elements close, and nothing from the diff does.
   ok("page: data from the diff cannot close the script element",
-     (html.match(/<\/script/gi) || []).length === 3, (html.match(/<\/script/gi) || []).length);
+     (html.match(/<\/script/gi) || []).length === 4, (html.match(/<\/script/gi) || []).length);
   const data = JSON.parse(html.match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
   ok("page: the embedded data round-trips", data.review.id === out.id && data.rows["page.html"].hunks.length === 1);
 
@@ -3231,6 +3232,48 @@ if (want("replay fixture")) {
   ok("replay: a lookout that is not there is a harness failure", bad.status === 2 && /no lookout at/.test(bad.stderr));
   const scen = spawnSync("node", [replay, "--no-model", "--scenario", "sideways"], { encoding: "utf8", env: ENV });
   ok("replay: an unknown scenario is refused", scen.status === 2 && /--scenario wants/.test(scen.stderr));
+}
+
+// ---------------------------------------------------------------- bpmn
+// A .bpmn file carries both sides' XML, even collapsed, and the page inlines
+// the pinned bpmn-js only then; a bundle off its pin is never inlined.
+if (want("bpmn")) {
+  const d = repo("bpmn");
+  const flow = name => `<?xml version="1.0"?>\n<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" id="D">\n` +
+    `  <process id="P"><task id="T" name="${name}"/></process>\n` + Array.from({ length: 900 }, (_, i) => `  <!-- ${i} -->`).join("\n") + "\n</definitions>\n";
+  write(d, "flow.bpmn", flow("one")); write(d, "a.txt", "1\n");
+  sh(d, `${G} add -A && ${G} commit -q -m one && git checkout -q -b feat`);
+  write(d, "flow.bpmn", flow("two").replace(/<!-- (\d+) -->/g, "<!-- n$1 -->"));
+  sh(d, `${G} commit -qam two`);
+  const out = JSON.parse(cli(d, "open", "--base", "main", "--no-open", "--no-jev", "--json").stdout);
+  const rows = JSON.parse(fs.readFileSync(S.paths(out.id).rows, "utf8"));
+  const f = S.read(out.id).files.find(x => x.path === "flow.bpmn");
+  ok("bpmn: a large diagram change still starts collapsed as XML", f && f.collapsed, JSON.stringify(f));
+  ok("bpmn: both sides' XML travel in its rows", rows["flow.bpmn"].bpmn &&
+    /name="one"/.test(rows["flow.bpmn"].bpmn.old) && /name="two"/.test(rows["flow.bpmn"].bpmn.new), JSON.stringify(rows["flow.bpmn"]).slice(0, 300));
+  const html = fs.readFileSync(out.page, "utf8");
+  ok("bpmn: the page inlines the pinned viewer and its styles", html.includes("bpmn-navigated-viewer v" + VD.BPMN_VERSION) && html.includes(".djs-container"));
+  ok("bpmn: nothing in the bundle closes its script element", (html.match(/<\/script/gi) || []).length === 4);
+  const data = JSON.parse(html.match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
+  ok("bpmn: no reason given when the viewer is in", data.bpmnWhy === "");
+
+  // A bundle off its pin: the page says why and carries no viewer.
+  const bad = path.join(TMP, "bpmn-bad");
+  fs.cpSync(VD.BPMN_DIR, bad, { recursive: true });
+  fs.appendFileSync(path.join(bad, "bpmn-js.css"), "/* changed */");
+  const r = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--base", "main", "--no-open", "--no-jev", "--json"],
+    { encoding: "utf8", env: { ...ENV, LOOKOUT_BPMN_DIR: bad }, cwd: d });
+  const h2 = fs.readFileSync(JSON.parse(r.stdout).page, "utf8");
+  const d2 = JSON.parse(h2.match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
+  ok("bpmn: a bundle off its pin is not inlined, and the page says why", !h2.includes("BpmnJS=") && /sha256/.test(d2.bpmnWhy), d2.bpmnWhy);
+  // Past the page's budget for diagram XML, the file shows as XML only.
+  const small = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--base", "main", "--no-open", "--no-jev", "--json", "--id", "bpmn-budget"],
+    { encoding: "utf8", env: { ...ENV, LOOKOUT_BPMN_BUDGET: "100" }, cwd: d });
+  const rs = JSON.parse(fs.readFileSync(S.paths(JSON.parse(small.stdout).id).rows, "utf8"));
+  ok("bpmn: a diagram past the page's budget carries no XML, and the page no viewer",
+    !rs["flow.bpmn"].bpmn && !fs.readFileSync(JSON.parse(small.stdout).page, "utf8").includes("BpmnJS="));
+  for (const [name, sha256] of Object.entries(VD.BPMN_FILES))
+    ok("bpmn: the shipped " + name + " matches its pin", sha(path.join(VD.BPMN_DIR, name)) === sha256);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

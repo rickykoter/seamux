@@ -6,6 +6,15 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **BPMN diagrams render.** A `.bpmn` file now shows as its diagram instead
+  of raw XML in three places: the Wake's preview and its tab, and the Dock
+  when you click a pane's link to the file. A `.bpmn` that Claude writes in
+  the workspace also gets a Wake row. In lookout, a changed `.bpmn` opens on
+  Before and After diagrams with added, changed and removed elements marked,
+  and "XML diff" switches back to the text. Both use bpmn.io's bpmn-js
+  18.31.1: the app bundles it from npm, and lookout ships a sha256-pinned
+  copy. Under cmux or tmux, which have no viewer, a `.bpmn` opens in the
+  editor.
 - **Scenarios that stay true to the plan.** A scenarios failure names its
   cause (product, harness, scenario, or deep-plan's own start and
   unscored), and each run prints how long each phase took and what the

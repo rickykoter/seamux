@@ -219,3 +219,6 @@
 .w-pr-land.needs { color: var(--role-attend-t); border-color: var(--role-attend); }
 .w-pr-land.failed { color: var(--bad-t); }
 .w-pr-land:hover { border-color: var(--accent); }
+
+/* A BPMN diagram (bpmnview.ts) fills the stage; bpmn-js draws on the app's background. */
+.wv-bpmn { width: 100%; height: 100%; background: var(--ef-bg); }

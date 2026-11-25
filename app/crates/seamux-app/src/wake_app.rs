@@ -51,7 +51,12 @@ pub async fn wake_open(id: i64, sub: String, here: bool) -> Result<Opened, Strin
         if let (true, Target::Page(p)) = (here, &t) {
             return Ok(Opened { sheet: Some(p.clone()), detail: String::new() });
         }
-        let needs_server = matches!(t, Target::Page(_) | Target::File(_));
+        // A file the app draws (BPMN) opens in the editor there, with no page to serve.
+        let needs_server = match &t {
+            Target::Page(_) => true,
+            Target::File(f) => !wake::app_draws(f),
+            _ => false,
+        };
         let port = match port() {
             Some(p) => p,
             None if needs_server => return Err("the intent server has not started, so cmux has no page to open".into()),
@@ -119,7 +124,7 @@ pub const SHOW_MAX: u64 = 12 * 1024 * 1024;
 /// A Wake file for the sheet, as a data: URL and how to show it.
 #[derive(Serialize)]
 pub struct Shown {
-    /// image, video, html or pdf
+    /// image, video, html, pdf or bpmn (the XML, drawn by the page)
     pub kind: &'static str,
     pub title: String,
     pub data: String,
@@ -140,6 +145,7 @@ pub fn show_kind(path: &str) -> Option<(&'static str, &'static str)> {
         "m4v" => ("video", "video/x-m4v"),
         "mov" => ("video", "video/quicktime"),
         "webm" => ("video", "video/webm"),
+        "bpmn" => ("bpmn", "application/xml"),
         _ => return None,
     })
 }
@@ -215,7 +221,7 @@ const THUMB_MAX: u64 = 4 * 1024 * 1024;
 /// What the scheme serves: images, videos and PDFs, never HTML (a page from
 /// this origin would run its scripts).
 fn served_type(path: &str) -> Option<&'static str> {
-    show_kind(path).filter(|(k, _)| *k != "html").map(|(_, m)| m)
+    show_kind(path).filter(|(k, _)| !matches!(*k, "html" | "bpmn")).map(|(_, m)| m)
 }
 
 /// Answer a `wakefile:` request: the file of the row its path names, when
@@ -289,11 +295,13 @@ mod tests {
         assert_eq!(show_kind("noext"), None);
         assert_eq!(show_kind("demo.MOV"), Some(("video", "video/quicktime")));
         assert_eq!(show_kind("demo.mp4"), Some(("video", "video/mp4")));
+        assert_eq!(show_kind("flow.BPMN"), Some(("bpmn", "application/xml")));
     }
 
     #[test]
     fn the_scheme_never_serves_html() {
         assert_eq!(served_type("a.html"), None);
+        assert_eq!(served_type("a.bpmn"), None, "BPMN travels as XML to the page, never by the scheme");
         assert_eq!(served_type("a.png"), Some("image/png"));
         assert_eq!(served_type("a.webm"), Some("video/webm"));
         assert_eq!(served_type("a.pdf"), Some("application/pdf"));

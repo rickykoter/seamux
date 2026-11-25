@@ -2,7 +2,7 @@
 // links_probe.ts can check it under node. panelinks.ts and bang.ts act on it.
 
 /** Files the Dock shows itself (links_app.rs dock_kind); others go to VS Code. */
-export const DOCK_FILE = /\.(png|jpe?g|gif|webp|svg|pdf|md|markdown)$/i;
+export const DOCK_FILE = /\.(png|jpe?g|gif|webp|svg|pdf|md|markdown|bpmn)$/i;
 /** seamux's pages, by path, wherever they are served. */
 const SEAMUX_PAGE = /^\/(plan|review|ask|agent|run|runs)\/[^/]+/;
 /** A page on this machine. */

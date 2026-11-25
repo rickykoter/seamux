@@ -103,6 +103,36 @@ export function loadHljs() {
 }
 export function hljsMissing() { loadHljs(); return HL ? "" : HL_WHY; }
 
+// ---------------------------------------------------------------- BPMN
+
+// bpmn.io's viewer (bpmn-js), for a review that changes a .bpmn file: the
+// page draws the diagram before and after. Unlike highlight.js it runs in the
+// page, inlined only when the review has a diagram. The plugin ships it
+// (vendor/bpmn-js, the same build app/package.json pins), and every file must
+// match its pin or the page goes without.
+export const BPMN_VERSION = "18.31.1";
+export const BPMN_DIR = process.env.LOOKOUT_BPMN_DIR ||
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "vendor", "bpmn-js");
+export const BPMN_FILES = {
+  "bpmn-navigated-viewer.production.min.js": "134280f49f2ca8bbc90797fa656177e2b787ae0a62249fe3dadb8038eb88e9db",
+  "diagram-js.css": "73f990dcd6cd2ed696aa63a3c73822a97f0ea69a221d76ebe6cf24b01111df21",
+  "bpmn-js.css": "a1add5dca479c779a54adda507f26796f4d61a5ae15f6cc14a1b017ff65b4015",
+};
+export const isBpmn = p => /\.bpmn$/i.test(p || "");
+
+// { js, css } when every file is there and matches its pin, else { why }.
+export function bpmnAssets() {
+  const got = {};
+  for (const [name, sha] of Object.entries(BPMN_FILES)) {
+    const p = path.join(BPMN_DIR, name);
+    if (!fs.existsSync(p)) return { why: "bpmn-js is missing from this install (" + name + ")" };
+    if (sha256File(p) !== sha) return { why: "bpmn-js failed its sha256 check (" + name + "); not loaded" };
+    got[name] = fs.readFileSync(p, "utf8");
+  }
+  return { js: got["bpmn-navigated-viewer.production.min.js"],
+           css: got["diagram-js.css"] + "\n" + got["bpmn-js.css"] };
+}
+
 // The language for a path, with the file's first line for scripts that carry a
 // shebang and no extension (hooks, engines). "" means plain text.
 export function languageFor(file, firstLine = "") {
