@@ -1333,9 +1333,21 @@ function engineVersion() {
 // changes, so the hundreds of runs a session makes cost one read each.
 // The old ~/.claude/skills copy never writes it: that copy is the fallback the
 // pointer exists to supersede, and naming it would only hide the plugin.
-function writeEnginePointer() {
-  if (!process.env.DEEP_PLAN_ENGINE_FILE &&
-      HERE === path.join(os.homedir(), ".claude", "skills", "deep-plan")) return null;
+//
+// Who writes it (ADR, plan gate-family-friction): a run with
+// DEEP_PLAN_ENGINE_FILE set (the probe's own file), `setup` and `engine`
+// (the explicit ways to point it here: `explicit`), and the plugin's own root,
+// which the SessionStart hook runs with CLAUDE_PLUGIN_ROOT set. Any other run
+// reads it and leaves it: one direct run of a worktree's engine used to take
+// the pointer, and every session after it then ran that unmerged copy.
+function pointerWriter({ here = HERE, env = process.env, explicit = false } = {}) {
+  if (env.DEEP_PLAN_ENGINE_FILE) return true;
+  if (here === path.join(os.homedir(), ".claude", "skills", "deep-plan")) return false;
+  if (explicit) return true;
+  return !!env.CLAUDE_PLUGIN_ROOT && canon(env.CLAUDE_PLUGIN_ROOT) === canon(here);
+}
+function writeEnginePointer({ explicit = false } = {}) {
+  if (!pointerWriter({ explicit })) return null;
   const m = mermaidPath();
   const body = JSON.stringify({ root: HERE, version: engineVersion(), ...(m ? { mermaid: m } : {}) }, null, 2) + "\n";
   let cur = null;
@@ -1363,7 +1375,7 @@ function setup(force) {
     if (f.ok) say(`  ok    ${f.how} -> ${MERMAID_HOME} (sha256 verified)`);
     else { console.error(`  FAIL  mermaid: ${f.why}`); bad++; }
   }
-  const body = writeEnginePointer();
+  const body = writeEnginePointer({ explicit: true });
   say(body ? `  ok    engine pointer -> ${ENGINE_FILE} (root ${HERE})`
            : `  skip  engine pointer: this is the old ~/.claude/skills copy`);
   const shimSrc = path.join(HERE, "lib", "deep-plan.shim");
@@ -7150,10 +7162,11 @@ for (let i = 0; i < rest.length; i++) {
   else args.push(rest[i]);
 }
 
-// Every run refreshes the pointer, so whichever copy ran last is the one the
-// out-of-session callers find. Never at the cost of the command itself.
+// The runs that may write the pointer refresh it (pointerWriter): the plugin's
+// own root at every session start, setup and engine. Never at the cost of the
+// command itself.
 let pointerBody = null;
-try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk: the verb still runs */ }
+try { pointerBody = writeEnginePointer({ explicit: cmd === "setup" || cmd === "engine" }); } catch { /* read-only home, full disk: the verb still runs */ }
 
 // ---------------------------------------------------------------- sync on transitions
 // A command that changed a plan's state pushes that plan to its branch when

@@ -291,6 +291,36 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
   ok("DEEP_PLAN_ENGINE wins with no pointer at all",
     r.status === 0 && JSON.parse(r.stdout).root === HERE);
 
+  // Who writes the pointer: with no DEEP_PLAN_ENGINE_FILE it is the plugin's
+  // own root (CLAUDE_PLUGIN_ROOT, the SessionStart hook's run), setup and
+  // engine. An ordinary run of any other copy (a worktree's, run directly)
+  // reads it and leaves it, so one such run cannot move every session onto it.
+  const PH = path.join(TMP, "pointer-home");
+  const PF = path.join(PH, ".claude", "deep-plan", "engine.json");
+  fs.mkdirSync(path.dirname(PF), { recursive: true });
+  const bare = { ...ENV, HOME: PH };
+  delete bare.DEEP_PLAN_ENGINE_FILE;
+  delete bare.CLAUDE_PLUGIN_ROOT;
+  const ptrRun = (verb, extra = {}) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), verb],
+    { encoding: "utf8", env: { ...bare, ...extra }, cwd: TMP });
+  const kept = `{\n  "root": "/elsewhere/kept/deep-plan",\n  "version": "0.0.1"\n}\n`;
+  fs.writeFileSync(PF, kept);
+  r = ptrRun("status");
+  ok("pointer: an ordinary run of another copy leaves the pointer as it was",
+    r.status === 0 && fs.readFileSync(PF, "utf8") === kept, r.stderr);
+  fs.rmSync(PF);
+  r = ptrRun("status");
+  ok("pointer: …and writes none where there was none", r.status === 0 && !fs.existsSync(PF), r.stderr);
+  r = ptrRun("status", { CLAUDE_PLUGIN_ROOT: path.join(TMP, "some-other-plugin") });
+  ok("pointer: a CLAUDE_PLUGIN_ROOT that names another copy writes nothing", r.status === 0 && !fs.existsSync(PF), r.stderr);
+  r = ptrRun("status", { CLAUDE_PLUGIN_ROOT: HERE });
+  ok("pointer: the plugin's own root (the SessionStart run) writes it",
+    r.status === 0 && fs.existsSync(PF) && JSON.parse(fs.readFileSync(PF, "utf8")).root === HERE, r.stderr);
+  fs.writeFileSync(PF, kept);
+  r = ptrRun("engine");
+  ok("pointer: the engine verb points it here, and prints what it wrote",
+    r.status === 0 && JSON.parse(fs.readFileSync(PF, "utf8")).root === HERE && JSON.parse(r.stdout).root === HERE, r.stderr);
+
   // The plugin's own bin/: on the Bash tool's PATH, without CLAUDE_PLUGIN_ROOT,
   // possibly reached through a symlink.
   const LB = path.join(TMP, "linkbin");
