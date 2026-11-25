@@ -12,6 +12,7 @@ import * as S from "./lib/store.mjs";
 import { hostLine, detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as N from "./lib/news.mjs";
+import * as A from "./lib/artifact.mjs";
 import { waitsOnPerson } from "./lib/ops.mjs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
@@ -27,7 +28,9 @@ const USAGE = `chartroom ${VERSION}: charts kept with the repo, reviewed in a lo
   chartroom list [--json]
   chartroom show <id> [--json]
   chartroom status <id> <exploring|chosen|superseded> [--decision TEXT]
+  chartroom export <id> [--json]           a page to publish as an Artifact, only on the person's yes
   chartroom link <id> <claude.ai artifact url> [--version N]
+  chartroom pull <id> <rows dir or file>    replay the published page's comments and picks
   chartroom threads <id> [--open] [--json]
   chartroom reply <id> <t#> <text>
   chartroom resolve|reopen <id> <t#> [text]
@@ -166,6 +169,26 @@ const verbs = {
     let c;
     try { c = S.link(l.dir, pos[0], pos[1], flags.version); } catch (e) { die(e.message); }
     out({ chart: c }, describe(c));
+  },
+
+  export() {
+    need(1, "a chart id");
+    const l = where();
+    let r;
+    try { r = A.exportPage(l, pos[0]); } catch (e) { die(e.message); }
+    out(r, `wrote ${r.path} (${Math.round(r.bytes / 1024)} KB)\n` +
+      `capabilities: ${JSON.stringify(r.capabilities)}\n${r.note}`);
+  },
+
+  pull() {
+    need(2, "a chart id and the rows (an ArtifactData out_dir, or a JSON file)");
+    const l = where();
+    let rows, r;
+    try { rows = A.readRows(pos[1]); } catch (e) { die(`cannot read rows from ${pos[1]}: ${e.message}`); }
+    try { r = A.pull(l, pos[0], rows); } catch (e) { die(e.message); }
+    out(r, `${pos[0]}: ${r.applied.length} applied, ${r.skipped.length} skipped` +
+      r.skipped.map(x => `\n  skipped ${x.rid}: ${x.why}`).join("") +
+      (r.applied.length ? "\nthe session hears them at its next prompt, marked as from the published page" : ""));
   },
 
   threads() {

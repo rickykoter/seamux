@@ -350,7 +350,7 @@
       $("repo").textContent = st.repo || "";
       var mode = $("mode");
       mode.hidden = !st.mode;
-      mode.textContent = st.mode === "hidden" ? "hidden from git" : st.mode === "home" ? "outside git" : st.mode === "published" ? "published" : "shared in git";
+      mode.textContent = st.mode === "hidden" ? "hidden from git" : st.mode === "home" ? "outside git" : /^published/.test(st.mode) ? st.mode : "shared in git";
       $("conn").hidden = true;
       if (!changed) return;
       renderRegister();
@@ -581,6 +581,8 @@
   window.chartroomStudio = { S: S, T: T, h: h, toast: toast, refresh: refresh, renderChart: renderChart, version: version, paneIn: paneIn };
   window.addEventListener("hashchange", function () { var w = readHash(); if (w.id) select(w.id, w.n, w.key); });
   refresh();
+  // A published page hears its rows through the transport, not a poll.
+  if (T.subscribe) T.subscribe(function () { refresh(); });
   if (T.live) {
     var tick = function () { setTimeout(function () { refresh().then(tick, tick); }, document.hidden ? 10000 : 2000); };
     tick();

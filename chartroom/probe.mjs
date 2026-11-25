@@ -536,6 +536,90 @@ if (want("threads: server, CLI, hook and wait")) {
   cli(d, "serve", "--stop");
 }
 
+if (want("publish: export and pull")) {
+  const vm = await import("node:vm");
+  const A = await import("./lib/artifact.mjs");
+  const d = repo();
+  const dir = S.resolve(d).dir;
+  cli(d, "new", "ux", "Pay </title><script>x</script> page $& $'");
+  const id = S.list(dir)[0].id;
+  ok("export: a chart with no versions is refused", /no versions/.test(cli(d, "export", id).stderr));
+  write(d, "a.html", "<html><body><button id=pay>Pay</button><script>var s = '</script>';<\/script></body></html>");
+  write(d, "b.html", "<p>B <!-- note --> \u2028 line, costs $128.50 $& $' $` $$ end</p>");
+  cli(d, "add", id, "a.html", "b.html");
+  cli(d, "add", id, "a.html");
+  const e = json(cli(d, "export", id, "--json"));
+  ok("export: written under CHARTROOM_HOME/exports, never into the chart dir", e && e.path.startsWith(path.join(ENV.CHARTROOM_HOME, "exports") + path.sep) &&
+    !fs.readdirSync(path.join(dir, id)).some(n => /export|\.artifact/.test(n)), e && e.path);
+  ok("export: names the capabilities and asks for a yes", JSON.stringify(e.capabilities) === JSON.stringify(A.CAPABILITIES) && /ask the person first, every time/.test(e.note));
+  const html = fs.readFileSync(e.path, "utf8");
+  ok("export: no doctype, html, head or body of its own (the Artifact skeleton adds them)", !/<!doctype|<html|<head>|<body>/i.test(html));
+  ok("export: the title is the chart's, escaped, with its $ sequences as written", html.includes("<title>Pay &lt;/title&gt;&lt;script&gt;x&lt;/script&gt; page $&amp; $'</title>"), html.slice(0, 200));
+  ok("export: nothing loads from the local server", !html.includes("/static/") && !html.includes("127.0.0.1"));
+  const dataTag = /<script type="application\/json" id="chartroom-data">([\s\S]*?)<\/script>/.exec(html);
+  const data = dataTag && JSON.parse(dataTag[1]);
+  ok("export: the data parses, with every version's panes", data && Object.keys(data.panes).sort().join() === "1/a,1/b,2/a" && data.chart.id === id);
+  ok("export: a pane's own </script> cannot end the data early", dataTag && !/<\/script/i.test(dataTag[1]) && data.panes["1/a"].includes("var s = '</script>'"));
+  ok("export: every pane carries the anchor", Object.values(data.panes).every(p => p.includes("data-chartroom-anchor")));
+  ok("export: $ sequences in a pane arrive as written", data.panes["1/b"].includes("costs $128.50 $& $' $` $$ end"));
+  ok("export: every pane carries the pane CSP as a meta tag", Object.values(data.panes).every(p => /<meta http-equiv="Content-Security-Policy" content="default-src 'none'; [^"]*connect-src 'none'/.test(p)) &&
+    data.panes["1/b"].startsWith("<meta http-equiv="));
+  ok("export: no sandbox or frame-ancestors in the meta (a meta tag cannot carry them)", !/sandbox|frame-ancestors/.test(A.PANE_META_CSP));
+  ok("export: the local folder's name is not published", data.repo === "" && !html.includes(path.basename(d)));
+  ok("withCsp: after <head>, or after a doctype when there is no head", A.withCsp("<html><head><title>t</title>").startsWith('<html><head><meta http-equiv') &&
+    A.withCsp("<!doctype html><p>x</p>").startsWith("<!doctype html><meta http-equiv"));
+  ok("withCsp: a <header> is not a <head>", A.withCsp("<!doctype html><header>h</header>").startsWith("<!doctype html><meta http-equiv") &&
+    A.withCsp('<html><head lang="en"><title>t</title>').startsWith('<html><head lang="en"><meta http-equiv'));
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  ok("export: two inline scripts (ops and transport, then the studio), and both parse", scripts.length === 2 &&
+    scripts.every(s => { try { new vm.Script(s); return true; } catch { return false; } }), scripts.length);
+  ok("export: the ops are inlined without export", /function applyOp\(/.test(scripts[0]) && !/^export /m.test(scripts[0]));
+  ok("export: the studio's css is inlined", /<style>\n\/\* everforest:start \*\//.test(html));
+
+  // readRows takes every shape lookout's does.
+  const rowsDir = path.join(TMP, "rows-" + id, "annotations");
+  fs.mkdirSync(rowsDir, { recursive: true });
+  const at = i => `2026-01-01T00:00:0${i}.000Z`;
+  const put = (rid, row) => fs.writeFileSync(path.join(rowsDir, rid + ".json"), JSON.stringify(row));
+  // A reply that sorts before its thread (a viewer with a slow clock): tried again after the others.
+  put("r0", { by: "human", at: at(0), chart: id, op: "reply", item: "row:r1", text: "early reply" });
+  put("r1", { by: "human", at: at(1), chart: id, op: "comment", version: 2, pane: "a", pin: { path: "#pay", dx: 1, dy: 2, text: "Pay" }, text: "from the page" });
+  put("r2", { by: "human", at: at(2), chart: id, op: "pick", version: 1, pane: "b" });
+  put("r3", { by: "agent", at: at(3), chart: id, op: "pick", version: 1, pane: "a" });
+  put("r4", { by: "human", at: at(4), chart: "someone-else", op: "comment", version: 1, pane: "a", text: "x" });
+  put("r5", { by: "human", at: at(5), chart: id, op: "comment", version: 9, pane: "a", text: "no such version" });
+  fs.writeFileSync(path.join(rowsDir, "r6.json"), "{not json");
+  put("r7", { by: "human", at: at(7), chart: id, op: "resolve", item: "row:r1", text: "done" });
+  ok("readRows: a folder or its parent", A.readRows(path.dirname(rowsDir)).length === 8 && A.readRows(rowsDir).length === 8);
+  const arrFile = path.join(TMP, "rows-arr.json");
+  fs.writeFileSync(arrFile, JSON.stringify({ documents: [{ id: "annotations/q1", data: { by: "human" } }, { by: "human", text: "no id" }] }));
+  const ar = A.readRows(arrFile);
+  ok("readRows: an object of {id, data}, and rows without ids get a stable hash", ar[0].rid === "q1" && /^h[0-9a-f]{16}$/.test(ar[1].rid) &&
+    A.readRows(arrFile)[1].rid === ar[1].rid);
+
+  const p1 = json(cli(d, "pull", id, path.dirname(rowsDir), "--json"));
+  const th = S.readThreads(dir, id);
+  ok("pull: the comment, the pick, the resolve, then the early reply on its second pass", p1 && p1.applied.map(x => x.rid).sort().join() === "r0,r1,r2,r7" &&
+    p1.applied[p1.applied.length - 1].rid === "r0", JSON.stringify(p1));
+  ok("pull: an agent row, another chart's row, a refused op and a broken file are skipped with reasons",
+    p1 && ["r3", "r4", "r5", "r6"].every(r => p1.skipped.some(s => s.rid === r)) && /not the page's human/.test(JSON.stringify(p1.skipped)) &&
+    /someone-else/.test(JSON.stringify(p1.skipped)) && /not a row/.test(JSON.stringify(p1.skipped)), JSON.stringify(p1 && p1.skipped));
+  const t1 = th.threads[0];
+  ok("pull: row:<id> names the thread its row made", t1 && t1.messages.some(m => m.text === "early reply") && t1.resolved === true);
+  ok("pull: every pulled message is marked as from the page", t1 && t1.messages.every(m => m.via === "artifact"));
+  ok("pull: the pick sets the chart chosen, marked as from the page", S.read(dir, id).chosen.pane === "b" && th.picks[0].via === "artifact");
+  const p2 = json(cli(d, "pull", id, path.dirname(rowsDir), "--json"));
+  ok("pull: a second pull looks at nothing twice", p2 && p2.applied.length === 0 && p2.skipped.length === 0, JSON.stringify(p2));
+  cli(d, "open", id);
+  const ctx = (() => { try { return JSON.parse(spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd: d, env: ENV,
+    input: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd: d }) }).stdout).hookSpecificOutput.additionalContext; } catch { return ""; } })();
+  ok("hook: pulled rows are told as from the published page, author not verified", /from the published page; the author is not verified/.test(ctx) &&
+    (ctx.match(/not verified/g) || []).length >= 3, ctx.slice(0, 400));
+  ok("pull: an unknown chart is refused", /no chart/.test(cli(d, "pull", "nope", path.dirname(rowsDir)).stderr));
+  ok("pull: unreadable rows are refused", /cannot read rows/.test(cli(d, "pull", id, path.join(TMP, "missing")).stderr));
+  cli(d, "serve", "--stop");
+}
+
 if (want("plugin: manifest and shim")) {
   const pj = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8"));
   ok("plugin.json: named chartroom with a version", pj.name === "chartroom" && /^\d+\.\d+\.\d+$/.test(pj.version));
