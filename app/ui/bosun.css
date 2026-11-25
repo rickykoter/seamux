@@ -148,6 +148,9 @@
 .bosun-rep-item.has-detail:hover { border-color: var(--line2); }
 .bosun-rep-detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); font-size: var(--fs-2); }
 .bosun-rep-detail > :last-child { margin-bottom: 0; }
+/* A detail that opens with the line stands in for it: the cut line hides while open. */
+.bosun-rep-fold.repeats[open] > summary .bosun-rep-item-t { display: none; }
+.bosun-rep-fold.repeats > .bosun-rep-detail { margin-top: 0; padding-top: 0; border-top: 0; font-size: inherit; }
 /* A table scrolls sideways in its own box, never the pane. */
 .bosun-md-table { margin: 0 0 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
 .bosun-md-table table { border-collapse: collapse; width: 100%; font-size: var(--fs-2); }

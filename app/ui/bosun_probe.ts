@@ -2,7 +2,7 @@
 // rail's days and cards, the whistle's mood and what ⌘B does. A pure
 // module, which Node runs as TypeScript.
 import {
-  ago, askAgain, askText, card, needsCount, reportExtra, reportOf, statusLabel, chipTitle, chips, hits, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matchedWhere, matches,
+  ago, askAgain, askText, card, detailRepeatsLine, needsCount, reportExtra, reportOf, statusLabel, chipTitle, chips, hits, dayBefore, dayLabel, daysToLoad, dropAct, filterRail, firstLine, freshIds, fromLabel, kindLabel, landed, matchedWhere, matches,
   mdBlocks, mdInline, mood, newerAnswers, olderDays, pendingNote, rail, recheck, reviewAsk, sameQuestion, sourceRow, sourceTarget, tilde, workspaceAsk,
   type Entry, type LogPage,
 } from "./bosun_model.ts";
@@ -210,6 +210,9 @@ ok("a match on a status alone says which section", matchedWhere(run(good), "fine
 ok("Run again queues the report, not its title", JSON.stringify(askAgain(run(good))) === '{"cmd":"bosun_report_run","args":{"id":"morning"}}');
 ok("Re-check on an answer queues its question", JSON.stringify(askAgain(e("a", "2026-11-23T09:00:00Z", " is X? ", "a"))) === '{"cmd":"bosun_send","args":{"text":"is X?"}}');
 ok("a run whose answer is only its section lines adds nothing", reportExtra({ ...run(good), answer: good.sections.map((s) => `- ${s.title}: ${s.line}`).join("\n") }, rr!) === "");
+ok("a detail that is the whole of a cut line repeats it", detailRepeatsLine("Same as 07:30: two PRs wait and #6…", "Same as 07:30:  two PRs wait and #6395 still fails CI."));
+ok("a detail that opens with the whole line repeats it", detailRepeatsLine("2 tickets changed", "2 tickets changed\n\n| Key | Status |\n| --- | --- |"));
+ok("a detail that says something else does not", !detailRepeatsLine("2 tickets changed", "| Key | Status |\n| --- | --- |") && !detailRepeatsLine("", "x"));
 ok("a section's detail is kept, a blank one dropped", reportOf(run({ ...good, sections: [{ ...good.sections[0], detail: "| a |\n| --- |\n| b |" }, { ...good.sections[1], detail: "  " }] }))?.sections.map((x) => x.detail ?? "-").join() === "| a |\n| --- |\n| b |,-");
 const recap = "Say once: the Datadog key rotates Friday.\nPull requests (needs): #812 waits 2 days on your review, and two more besides\n- **Tickets**: nothing changed\nMonitors (unchecked): Not checked: datadog needs authentication\nTickets: PROJ-9 was reopened an hour ago\nPull request owners were asked in Slack.";
 ok("an answer's recap of each section is left out, whatever it adds, and the rest stays", reportExtra({ ...run(good), answer: recap }, rr!) === "Say once: the Datadog key rotates Friday.\nTickets: PROJ-9 was reopened an hour ago\nPull request owners were asked in Slack.", reportExtra({ ...run(good), answer: recap }, rr!));

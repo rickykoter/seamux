@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TermSlot } from "./native";
 import { follow, openFile } from "./panelinks";
 import {
-  ago, askAgain, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, hits, kindLabel, landed, matchedWhere, mdBlocks, mdInline, mood, newerAnswers, olderDays,
+  ago, askAgain, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, hits, kindLabel, landed, matchedWhere, mdBlocks, mdInline, detailRepeatsLine, mood, newerAnswers, olderDays,
   needsCount, pendingNote, rail, reportExtra, sourceRow, sourceTarget, statusLabel, tilde,
   type Card, type Chip, type Entry, type LogPage, type Mood, type ReportRun, type SectionStatus, type Span, type Status,
 } from "./bosun_model";
@@ -1058,7 +1058,9 @@ export class BosunView {
       // kept per run, so a poll's redraw leaves them as they were.
       const key = `${r.run}\n${s.title}`;
       const fold = document.createElement("details");
-      fold.className = "bosun-rep-fold";
+      // When the detail opens with the line itself (the whole of a line cut
+      // to fit, say), the open section shows it once, in full.
+      fold.className = `bosun-rep-fold${detailRepeatsLine(s.line, s.detail) ? " repeats" : ""}`;
       fold.open = this.openSections.has(key);
       const sum = document.createElement("summary");
       // The why stays in sight with the line, open or closed.
