@@ -6682,7 +6682,13 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   ok("admin: …but not a write chained beside it, nor a commit", b("git switch next && rm src/a.ts") === 2 && b("git commit -m x") === 2);
   ok("admin: a Bash write into .seamux passes too", b("echo '{}' > .seamux/restack.json") === 0);
   put(st => { st.phase = "review"; });
-  ok("admin: in review the carve-outs do not apply", e(".seamux/verify.json") === 2 && b("git switch -c next") === 2);
+  ok("admin: in review, branch admin passes before the quiz",
+    b("git switch -c next") === 0 && b("git fetch origin && git rebase origin/main") === 0 && b("git push -u origin HEAD 2>&1 | tail -2") === 0);
+  const rv = edit(path.join(AD, ".seamux", "verify.json"));
+  ok("admin: in review the .seamux carve-out does not apply, and the refusal names branch admin",
+    rv.status === 2 && /Alignment check not taken\. Branch admin \(git switch, rebase/.test(rv.stderr), rv.stderr.slice(0, 300));
+  ok("admin: in review, a write chained beside a rebase, a commit and product code stay refused",
+    b("git rebase origin/main && rm src/a.ts") === 2 && b("git commit -m x") === 2 && e("src/a.ts") === 2 && b("echo '{}' > .seamux/restack.json") === 2);
 
   // An open increment: an edit outside its files goes through and is flagged.
   put(st => { st.phase = "implementing"; st.increments[1].status = "working"; });
