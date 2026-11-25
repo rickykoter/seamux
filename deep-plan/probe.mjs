@@ -9487,6 +9487,107 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
 // The repo policy (ADR 0108): read from the base branch, levels per path,
 // render's ceiling, and ship. origin is a bare repo under TMP and gh is the
 // fake, so nothing reaches GitHub.
+// A child cut from its parent's branch, the parent squash-merged: the
+// child's ship verdict and its family news say the restack, and ship acts on
+// no other worktree (the #261 Bosun family, replayed).
+if (want("stacked child: ship and news say how to restack")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const ORIGIN = path.join(TMP, "stk-origin.git"), SEED = path.join(TMP, "stk-seed");
+  const PAR = path.join(TMP, "stk-par"), KID = path.join(TMP, "stk-kid"), TWO = path.join(TMP, "stk-two");
+  execSync(`git init -q --bare -b main ${ORIGIN}`);
+  fs.mkdirSync(SEED, { recursive: true }); fs.writeFileSync(path.join(SEED, "README.md"), "seed\n");
+  execSync(`git init -q -b main && git add -A && ${G} commit -q -m seed && git remote add origin ${ORIGIN} && git push -q origin main`, { cwd: SEED });
+  execSync(`git clone -q ${ORIGIN} ${PAR} && git -C ${PAR} checkout -q -b par`);
+  fs.writeFileSync(path.join(PAR, "p.txt"), "the parent's change\n");
+  execSync(`git add p.txt && ${G} commit -q -m parent && git push -q origin par`, { cwd: PAR });
+  execSync(`git worktree add -q -b kid ${KID} par && git worktree add -q -b two ${TWO} origin/main`, { cwd: PAR });
+  fs.writeFileSync(path.join(KID, "k.txt"), "the child's own change\n");
+  execSync(`git add k.txt && ${G} commit -q -m child`, { cwd: KID });
+  const MAP = path.join(TMP, "stk-gh.json"), GLOG = path.join(TMP, "stk-gh-log.jsonl");
+  const SENV = { ...ENV, DEEP_PLAN_GH: path.join(HERE, "tools", "fake-gh"), FAKE_GH_MAP: MAP, FAKE_GH_LOG: GLOG };
+  const sc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: SENV, cwd: TMP });
+  const ghMap = m => { fs.writeFileSync(MAP, JSON.stringify(m)); fs.rmSync(GLOG, { force: true }); };
+  const ghCalls = () => fs.existsSync(GLOG) ? fs.readFileSync(GLOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l).argv.join(" ")) : [];
+  const gradeRight = slug => {
+    const k = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return sc("grade", slug, ...Object.entries(k.answers).map(([q, a]) => `${q}=${a.letter}`));
+  };
+  for (const [slug, root] of [["example-stk-kid", KID], ["example-stk-two", TWO]]) {
+    const c = JSON.parse(JSON.stringify(spec)); c.slug = slug; c.deliverables = c.deliverables.map(d => ({ ...d, files: [] }));
+    sc("render", tmpSpec(c), "--root", root); gradeRight(slug);
+  }
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  let r = sc("render", tmpSpec({ ...fam, slug: "example-stk",
+    workstreams: [{ slug: "example-stk-kid", owns: ["k.txt"] }, { slug: "example-stk-two", owns: ["t.txt"] }] }), "--root", PAR);
+  gradeRight("example-stk");
+  ok("stacked: the family renders", r.status === 0, r.stderr.slice(0, 400));
+  const fork = execSync(`git merge-base HEAD par`, { cwd: KID, encoding: "utf8" }).trim();
+  const verdict = slug => { const x = sc("ship", slug, "--dry-run", "--json"); try { return JSON.parse(x.stdout); } catch { return { gates: [], raw: x.stdout + x.stderr }; } };
+  const gateOf = (v, g = "stacked") => (v.gates || []).find(x => x.gate === g);
+  const PRV = "pr view par";
+
+  // The parent's PR is open: the child waits for it, already told the command.
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN", headRefName: "par", baseRefName: "main" } } });
+  let v = verdict("example-stk-kid"), g = gateOf(v);
+  ok("stacked: while the parent's PR is open, the child's verdict waits for it to land",
+    g && !g.ok && /stacked on example-stk \(PR #7, open\), which lands first/.test(g.why) && (v.waits || []).some(w => /lands first/.test(w)), JSON.stringify(v).slice(0, 600));
+  ok("stacked: …said below auto-pr too, and the line names the --onto command at the fork point",
+    v.level !== "auto-pr" && v.level !== "auto-merge" && g && g.why.includes(`git fetch origin && git rebase --onto origin/main ${fork.slice(0, 12)}`) &&
+    /each conflicting hunk by hand/.test(g.why), JSON.stringify(v).slice(0, 600));
+  const pv = verdict("example-stk");
+  ok("stacked: the parent's verdict lists the stacked child, as a gate that passes",
+    gateOf(pv) && gateOf(pv).ok && /example-stk-kid is stacked on this branch/.test(gateOf(pv).why) && !/example-stk-two/.test(gateOf(pv).why) &&
+    !(pv.waits || []).some(w => /stacked/.test(w)), JSON.stringify(pv).slice(0, 600));
+  ok("stacked: a child cut from the base has no stacked gate", !gateOf(verdict("example-stk-two")));
+  ok("stacked: news says nothing while the parent has not landed", !/landed/.test(sc("family", "news", "example-stk-kid").stdout));
+
+  // The parent's ship record says merged: the news says so from local state.
+  const SHIPF = path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-stk.ship.json");
+  fs.writeFileSync(SHIPF, JSON.stringify({ status: "merged", pr: 7, head: "x" }));
+  r = sc("family", "news", "example-stk-kid");
+  ok("stacked: with the parent's ship record merged, news gives the restack line",
+    new RegExp(`example-stk \\(parent\\) landed \\(ship merged PR #7\\), and example-stk-kid still carries its commits up to ${fork.slice(0, 8)}: between increments, restack with git fetch origin && git rebase --onto origin/main ${fork.slice(0, 12)}`).test(r.stdout), r.stdout);
+  fs.rmSync(SHIPF);
+
+  // A person squash-merges the parent on GitHub (main moved first).
+  fs.writeFileSync(path.join(SEED, "m.txt"), "main moved\n");
+  execSync(`git add m.txt && ${G} commit -q -m main && git fetch -q origin par && git merge -q --squash origin/par && ${G} commit -q -m 'parent (#7)' && git push -q origin main`, { cwd: SEED });
+  const squash = execSync("git rev-parse HEAD", { cwd: SEED, encoding: "utf8" }).trim();
+  execSync("git fetch -q origin", { cwd: KID });
+  r = sc("family", "news", "example-stk-kid");
+  ok("stacked: with no ship record, news finds the squash on the base by its patch",
+    new RegExp(`example-stk \\(parent\\) landed \\(origin/main holds it as ${squash.slice(0, 8)}\\)`).test(r.stdout), r.stdout);
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "MERGED", headRefName: "par", baseRefName: "main" } } });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: once the parent's PR is merged, the child waits on its own restack, with the command",
+    g && !g.ok && /example-stk's PR #7 is merged, and this branch still carries its commits up to/.test(g.why) &&
+    g.why.includes(`git rebase --onto origin/main ${fork.slice(0, 12)}`), g && g.why);
+  // The parent's agent switches its worktree to main after the merge: the
+  // branch the family index recorded still names the parent's tip (inc5 f2).
+  execSync("git switch -q main", { cwd: PAR });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: with the parent's worktree back on main, the gate still reads the parent's branch",
+    g && !g.ok && /PR #7 is merged/.test(g.why) && g.why.includes(fork.slice(0, 12)), g && g.why);
+  ok("stacked: …and so does the news", /example-stk \(parent\) landed/.test(sc("family", "news", "example-stk-kid").stdout));
+  execSync("git switch -q -c hotfix", { cwd: PAR });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: with the parent's worktree on an unrelated branch, the recorded branch still wins (inc5 f3)",
+    g && !g.ok && /PR #7 is merged/.test(g.why) && g.why.includes(fork.slice(0, 12)), g && g.why);
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "CLOSED", headRefName: "par", baseRefName: "main" } } });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: a parent PR closed unmerged leaves it to a person", g && !g.ok && /closed without merging[^\n]*a person decides/.test(g.why), g && g.why);
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "MERGED", headRefName: "par", baseRefName: "main" } } });
+  ok("stacked: ship reads the parent's PR and acts on nothing", ghCalls().every(c => /^pr view par /.test(c)) &&
+    execSync("git rev-parse HEAD", { cwd: KID, encoding: "utf8" }).trim() !== squash, ghCalls().join("\n"));
+
+  // The child runs the command it was given: its branch is its own commits on main.
+  execSync(`git fetch -q origin && ${G} rebase -q --onto origin/main ${fork.slice(0, 12)}`, { cwd: KID });
+  const own = execSync("git log --format=%s origin/main..HEAD", { cwd: KID, encoding: "utf8" }).trim();
+  ok("stacked: the restack leaves only the child's own commit on the new main", own === "child", own);
+  ok("stacked: after the restack the gate and the news line are gone",
+    !gateOf(verdict("example-stk-kid")) && !/landed/.test(sc("family", "news", "example-stk-kid").stdout));
+}
+
 if (want("policy and ship: levels from the base branch")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const ORIGIN = path.join(TMP, "pol-origin.git"), SEED = path.join(TMP, "pol-seed"), PR_ = path.join(TMP, "pol-root");

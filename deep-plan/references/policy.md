@@ -107,6 +107,13 @@ too. It then checks each gate and takes one step:
   one; otherwise it starts a detached wait of its own, which looks again
   every minute and stops if HEAD moves or any gate breaks.
 
+On a family child whose branch still carries its parent's commits, a
+`stacked` gate comes first, at every level: the child waits while the
+parent's PR is open, and once it is merged, waits on its own `git rebase
+--onto`, which the gate spells out (families.md). On the parent, the same
+gate passes and lists the stacked children. Ship acts only on the plan's
+own branch.
+
 A branch that changes anything under `.seamux/` (the policy, the recipes,
 the scenarios harness) is capped at auto-pr: a person merges it. Exit 3
 means ship waits on something, and the output says what. Its record is

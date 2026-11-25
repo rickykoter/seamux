@@ -86,7 +86,18 @@ export function checksNow(cwd) {
 // know, whether or not its head is local HEAD. {pr} or {error}; a branch with
 // no PR is {pr: null}.
 export function prView(cwd) {
-  const v = gh(["pr", "view", "--json", "number,url,headRefOid,isDraft,state,baseRefName,headRefName,mergeable"], cwd);
+  return viewPr(cwd, []);
+}
+
+// The PR whose head is `branch`, open, merged or closed (gh pr view takes a
+// branch name): ship's stacked gate reads a family parent's PR from a child's
+// worktree with it. {pr}, {pr: null} when the branch has none, or {error}.
+export function prViewBranch(cwd, branch) {
+  return viewPr(cwd, [branch]);
+}
+
+function viewPr(cwd, which) {
+  const v = gh(["pr", "view", ...which, "--json", "number,url,headRefOid,isDraft,state,baseRefName,headRefName,mergeable"], cwd);
   if (v.err) return { error: v.err };
   if (v.status !== 0) return /no pull requests found|no open pull requests/i.test(v.errText) ? { pr: null }
     : { error: `gh pr view exited ${v.status}: ${v.errText.split("\n").pop() || "no message"}` };

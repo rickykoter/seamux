@@ -18,6 +18,7 @@ import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { STATE_DIR, KEYS_DIR, readState, allStates, canon, checksOf, checksAggregate, planPaths } from "./state.mjs";
 import { matchesGlob } from "./verify.mjs";
+import { headAt, parentTip, forkOf, squashOf, shipRecord, restackLine as stackRestack } from "./stack.mjs";
 
 export const FAMILIES_DIR = path.join(STATE_DIR, "families");
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -219,6 +220,9 @@ export function buildIndex(spec, parentRoot) {
     repoName: parentRepo ? parentRepo.name : "", owns: [], shared: [], contracts: [], consumes: [], after: [],
     derived: derivedOf(spec, parentRoot),
     base: parentRepo ? baseRef(parentRoot) || "" : "",
+    // The parent's own branch, for a stacked child's restack (lib/stack.mjs
+    // parentTip): its ref outlives the parent's worktree switching away.
+    branch: parentRepo ? ((headAt(parentRoot) || {}).branch || "") : "",
   });
   for (const w of ws) {
     const st = readState(w.slug);
@@ -762,6 +766,25 @@ function authorizedLine(me) {
   return inc ? `Increment ${inc.n} (${inc.title}) of ${me.slug} is authorized${inc.by ? ` by ${inc.by}` : ""} and not started: start it.` : "";
 }
 
+// A child still stacked on a parent that has landed (lib/stack.mjs): the
+// parent's ship record says merged, or the base holds the parent's branch as
+// one squash. Said at every look while it is true, like an authorized
+// increment, since the child acts on it. Local refs only: a squash that
+// differs is caught by the child's ship verdict instead.
+function restackNews(idx, me) {
+  if (me.role !== "child" || !me.base) return "";
+  const parent = idx.members.find(m => m.role === "parent");
+  const p = parent && parentTip(parent, me.root, me.base);
+  if (!p) return "";
+  const f = forkOf(me.root, p.head, me.base);
+  if (!f || !f.stacked) return "";
+  const rec = shipRecord(parent.slug);
+  const how = rec && rec.status === "merged" ? `ship merged PR #${rec.pr}` : (s => s ? `${me.base} holds it as ${s.slice(0, 8)}` : "")(squashOf(me.root, p.head, me.base));
+  if (!how) return "";
+  return `${parent.slug} (parent) landed (${how}), and ${me.slug} still carries its commits up to ${f.fork.slice(0, 8)}: ` +
+    `between increments, restack with ${stackRestack(me.base, f.fork)}.`;
+}
+
 // What changed around a member since its cursor, as factual lines. A first
 // look (no cursor) is an orientation instead: who the family is and what
 // this member owns. Nothing here fetches: the base ref is as fresh as the
@@ -782,6 +805,8 @@ export function gatherNews(idx, me, seen, { git = true } = {}) {
     if (waits.length) lines.push(`Its next go waits on ${waitText(waits)}.`);
     const go = authorizedLine(me);
     if (go) lines.push(go);
+    const rs = git ? restackNews(idx, me) : "";
+    if (rs) lines.push(rs);
     lines.push(`\`deep-plan family news ${me.slug}\` repeats what changed in the family; \`deep-plan family check ${idx.parent}\` lists overlaps.`);
     return { lines, seen: nextSeen };
   }
@@ -789,6 +814,8 @@ export function gatherNews(idx, me, seen, { git = true } = {}) {
   const lines = [];
   const go = authorizedLine(me);
   if (go) lines.push(go);
+  const rs = git ? restackNews(idx, me) : "";
+  if (rs) lines.push(rs);
   // Increments finished anywhere else in the family.
   for (const m of others) {
     const st = readState(m.slug);

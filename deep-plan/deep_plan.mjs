@@ -44,6 +44,7 @@ import * as PACK from "./lib/pack.mjs";
 import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
 import * as CI from "./lib/ci.mjs";
+import * as STACK from "./lib/stack.mjs";
 import * as SCN from "./lib/scenarios.mjs";
 import { JUDGE_TIMEOUT_S, staleLines } from "./lib/judge.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
@@ -5355,6 +5356,8 @@ function shipVerdict({ st, root, fetch = true }) {
         : full.ok ? `every scenarios check passed, and ${full.why}`
         : `every scenarios check passed, but ${full.why}: deep-plan scenarios judge ${st.slug}`);
   }
+  // Before the level's early return, so a stacked child hears it at every level.
+  stackedGate(st, root, ref, v, gate);
   if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
   const remote = branch ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
@@ -5383,6 +5386,46 @@ function shipVerdict({ st, root, fetch = true }) {
   v.gates.push({ gate: "ci", ok: true, why: `all ${c.passed.length} PR check(s) passed` });
   v.action = "merge";
   return v;
+}
+
+// The stacked gate (lib/stack.mjs). A family child whose branch carries its
+// parent's commits not yet in the base waits: for the parent's PR to land
+// while it is open, then for its own restack once it is merged, with the exact
+// command. The parent's own verdict lists the children stacked on it, as a
+// gate that passes: information, never a wait. The parent's head is its
+// branch's ref, the branch the family index recorded at render, whatever its
+// worktree has checked out since (STACK.parentTip).
+function stackedGate(st, root, ref, v, gate) {
+  const idx = st && ref ? familyOf(st.slug) : null;
+  const me = idx && idx.members.find(m => m.slug === st.slug);
+  const parent = idx && idx.members.find(m => m.role === "parent");
+  if (!me || !parent) return;
+  const onBase = h => !h || !h.branch || h.branch === ref.replace(/^origin\//, "");
+  if (me.role === "parent") {
+    const here = STACK.headAt(root);
+    if (onBase(here)) return;
+    const kids = idx.members.filter(m => m.role === "child")
+      .filter(m => { const f = STACK.forkOf(m.root, here.head, ref); return f && f.stacked; }).map(m => m.slug);
+    if (kids.length)
+      v.gates.push({ gate: "stacked", ok: true, why: `${kids.join(", ")} ${kids.length > 1 ? "are" : "is"} stacked on this branch: ` +
+        `once this PR is merged, each restacks itself with git rebase --onto (its ship verdict and family news give the command)` });
+    return;
+  }
+  const p = STACK.parentTip(parent, root, ref);
+  if (!p) return;
+  const f = STACK.forkOf(root, p.head, ref);
+  if (!f || !f.stacked) return;
+  const line = STACK.restackLine(ref, f.fork), at = f.fork.slice(0, 8);
+  const pv = CI.prViewBranch(root, p.branch);
+  const pr = pv.pr;
+  if (pv.error) gate("stacked", false, `this branch carries ${parent.slug}'s commits up to ${at}, and the parent's PR could not be read (${pv.error})`);
+  else if (pr && pr.state === "MERGED")
+    gate("stacked", false, `${parent.slug}'s PR #${pr.number} is merged, and this branch still carries its commits up to ${at}: restack with ${line}`);
+  else if (pr && pr.state === "OPEN")
+    gate("stacked", false, `this branch is stacked on ${parent.slug} (PR #${pr.number}, open), which lands first; once it is merged, restack with ${line}`);
+  else if (pr)
+    gate("stacked", false, `${parent.slug}'s PR #${pr.number} was closed without merging, and this branch carries its commits up to ${at}: a person decides what happens to them`);
+  else gate("stacked", false, `this branch is stacked on ${parent.slug}, which has no PR yet and lands first; once it is merged, restack with ${line}`);
 }
 
 function shipLines(v) {
