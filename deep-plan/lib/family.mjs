@@ -208,6 +208,18 @@ function normClaims(list, homeRepo, errs, where) {
 
 const contains = (a, b) => a === b || b.startsWith(a.endsWith(path.sep) ? a : a + path.sep);
 
+// The branch the parent's worktree has checked out, while it is one of its
+// own (not detached, not the base); otherwise the one an earlier index
+// recorded, so a re-render after the parent switched to main keeps it.
+function parentBranch(slug, parentRoot) {
+  const b = (headAt(parentRoot) || {}).branch || "";
+  const base = (baseRef(parentRoot) || "").replace(/^origin\//, "");
+  if (b && b !== base) return b;
+  const prev = readIndex(slug);
+  const was = prev && (prev.members || []).find(m => m.role === "parent");
+  return (was && was.branch) || "";
+}
+
 // Resolve a parent spec into the index, or say why it cannot be. `errors`
 // refuse a render; `index` is written only when there are none.
 export function buildIndex(spec, parentRoot) {
@@ -222,7 +234,7 @@ export function buildIndex(spec, parentRoot) {
     base: parentRepo ? baseRef(parentRoot) || "" : "",
     // The parent's own branch, for a stacked child's restack (lib/stack.mjs
     // parentTip): its ref outlives the parent's worktree switching away.
-    branch: parentRepo ? ((headAt(parentRoot) || {}).branch || "") : "",
+    branch: parentRepo ? parentBranch(spec.slug, parentRoot) : "",
   });
   for (const w of ws) {
     const st = readState(w.slug);

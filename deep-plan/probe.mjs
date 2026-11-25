@@ -5441,6 +5441,16 @@ if (want("delegated go")) {
     h = hb(SQ, "deep-plan go example-dlg-kid next");
     ok("delegated go: a turn that already ran a go still lets the parent's delegated go through", h.status === 0, h.stderr);
     ok("delegated go: …and the hook claims no lever for it", !fs.existsSync(path.join(TD, SQ + ".claimed")));
+    // From the child's root, `cd <parent root> && deep-plan go kid next`: the
+    // hook (the call's cwd) claims a lever, the CLI (the parent's cwd) counts
+    // none, and gives the claim back (delivery f3).
+    const ST = "dd1e0000-0000-4000-8000-000000000004";
+    fs.mkdirSync(path.join(TD, ST + ".claimed"), { recursive: true });
+    const r2 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "go", "example-dlg-kid", "next"],
+      { encoding: "utf8", cwd: DR, env: { ...CC, CLAUDE_CODE_SESSION_ID: ST } });
+    ok("delegated go: a claim the hook made for it is given back, and no lever recorded",
+      r2.status === 0 && !fs.existsSync(path.join(TD, ST + ".claimed")) && !fs.existsSync(path.join(TD, ST + ".acted")), r2.stderr);
+    cli("reset", "example-dlg-kid", "2");
     for (const c of ["deep-plan go example-dlg-kid next --force", "deep-plan go example-dlg-kid next --by human", "deep-plan go example-dlg next", "deep-plan go example-dlg-two next"]) {
       h = hb(SQ, c);
       ok(`delegated go: after a go this turn, ${c.slice(10)} is still refused`, h.status === 2 && /already ran go in this turn/.test(h.stderr), h.stderr);
@@ -9517,8 +9527,9 @@ if (want("stacked child: ship and news say how to restack")) {
     sc("render", tmpSpec(c), "--root", root); gradeRight(slug);
   }
   const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
-  let r = sc("render", tmpSpec({ ...fam, slug: "example-stk",
-    workstreams: [{ slug: "example-stk-kid", owns: ["k.txt"] }, { slug: "example-stk-two", owns: ["t.txt"] }] }), "--root", PAR);
+  const famSpec = { ...fam, slug: "example-stk",
+    workstreams: [{ slug: "example-stk-kid", owns: ["k.txt"] }, { slug: "example-stk-two", owns: ["t.txt"] }] };
+  let r = sc("render", tmpSpec(famSpec), "--root", PAR);
   gradeRight("example-stk");
   ok("stacked: the family renders", r.status === 0, r.stderr.slice(0, 400));
   const fork = execSync(`git merge-base HEAD par`, { cwd: KID, encoding: "utf8" }).trim();
@@ -9573,6 +9584,14 @@ if (want("stacked child: ship and news say how to restack")) {
   g = gateOf(verdict("example-stk-kid"));
   ok("stacked: with the parent's worktree on an unrelated branch, the recorded branch still wins (inc5 f3)",
     g && !g.ok && /PR #7 is merged/.test(g.why) && g.why.includes(fork.slice(0, 12)), g && g.why);
+  // A re-render once the parent's worktree is back on main keeps the branch
+  // the index recorded (delivery f1).
+  execSync("git switch -q main", { cwd: PAR });
+  r = sc("render", tmpSpec(famSpec), "--root", PAR);
+  const pIdx = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-stk", "index.json"), "utf8"));
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: a re-render with the parent on main keeps the recorded branch, and the gate",
+    r.status === 0 && pIdx.members.find(m => m.role === "parent").branch === "par" && g && /PR #7 is merged/.test(g.why), r.stderr.slice(0, 300) + (g && g.why));
   ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "CLOSED", headRefName: "par", baseRefName: "main" } } });
   g = gateOf(verdict("example-stk-kid"));
   ok("stacked: a parent PR closed unmerged leaves it to a person", g && !g.ok && /closed without merging[^\n]*a person decides/.test(g.why), g && g.why);

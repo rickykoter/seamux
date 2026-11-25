@@ -7151,12 +7151,16 @@ const [, , cmd, ...rest] = process.argv;
 // refused go or a typo does not use up the turn. Not for the board's calls
 // through deep-plan's server, which may have inherited a session's env. Not
 // for a parent's go on a child it is delegated (delegatedGo): that is the
-// parent agent's own word, and the hook claimed no lever for it.
+// parent agent's own word. Its lever is still given back: the hook judges a
+// go from the call's cwd and the CLI from its own, so after a `cd` into the
+// parent's root the hook may have claimed one the CLI does not count.
 {
   const call = { verb: cmd || "", words: rest };
   const word = onHumansWord([call]);
-  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE && !delegatedGo(call))
-    process.on("exit", code => { if (code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
+  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE) {
+    const delegated = delegatedGo(call);
+    process.on("exit", code => { if (!delegated && code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
+  }
 }
 const flags = {};
 const args = [];
