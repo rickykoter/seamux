@@ -169,6 +169,14 @@ export function reportExtra(e: Entry, r: ReportRun): string {
     .trim();
 }
 
+/** Whether a section's detail opens with its line, so the open section can
+ *  show that text once: the line cut with "…" to fit, or the line whole. */
+export function detailRepeatsLine(line: string, detail: string): boolean {
+  const flat = (x: string) => x.replace(/\s+/g, " ").trim();
+  const head = flat(line).replace(/…$/, "").trim();
+  return head.length > 0 && flat(detail).startsWith(head);
+}
+
 /** A section's dot, for its tooltip and the screen reader. */
 export function statusLabel(s: SectionStatus): string {
   return s === "needs" ? "Needs you" : s === "ok" ? "Fine" : "Not checked";
