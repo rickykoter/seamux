@@ -9,7 +9,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as S from "./lib/store.mjs";
-import { hostLine, detectHost } from "./lib/host.mjs";
+import { hostLine, detectHost, sessionIds } from "./lib/host.mjs";
+import * as SV from "./lib/serve.mjs";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8")).version;
@@ -24,6 +27,8 @@ const USAGE = `chartroom ${VERSION}: charts kept with the repo, reviewed in a lo
   chartroom status <id> <exploring|chosen|superseded> [--decision TEXT]
   chartroom link <id> <claude.ai artifact url> [--version N]
   chartroom share [on|off|status]
+  chartroom open [id] [--no-open] [--json]   the studio, beside the terminal where it can be
+  chartroom serve [--status|--stop|--foreground]
   chartroom doctor [--json]
 `;
 
@@ -66,6 +71,18 @@ function describe(c) {
     (c.purpose ? `  purpose: ${c.purpose}\n` : "") +
     (c.decision ? `  decision: ${c.decision}\n` : "") +
     `  versions: ${c.versions.length}${last ? ` (latest v${last.n}: ${panes})` : ""}` + pub;
+}
+
+// The workspace's companion pane under cmux (crew-board companion.rs), when
+// seamux is installed; false otherwise. Best-effort, never a failure.
+function companionOpen(url, room) {
+  const bin = process.env.SEAMUX_BIN || path.join(os.homedir(), ".local", "bin", "seamux");
+  const ws = sessionIds().workspace;
+  if (!ws || !fs.existsSync(bin)) return false;
+  const args = ["companion", "open", url, "--key", "chartroom-" + room, "--workspace", ws];
+  if (process.env.CMUX_SURFACE_ID) args.push("--surface", process.env.CMUX_SURFACE_ID);
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 20000, env: { ...process.env, CMUX_QUIET: "1" } });
+  return r.status === 0;
 }
 
 // ------------------------------------------------------------ verbs
@@ -153,6 +170,41 @@ const verbs = {
       out(r, `not shared: ${S.EXCLUDE_LINE} is excluded again` +
         (r.tracked ? `\n.chartroom/ still holds committed files, so git keeps them; git rm -r --cached .chartroom stops that` : ""));
     }
+  },
+
+  open() {
+    const l = where();
+    const id = pos[0] || "";
+    if (id && !S.exists(l.dir, id)) die(`no chart ${id} in ${rel(l.dir)} (chartroom list)`);
+    const h = detectHost();
+    if (h.host === "remote") {
+      return out({ host: h.host, url: "" }, "no live page on this host (host: remote): nobody can reach this sandbox's localhost; " +
+        "chartroom export makes a page to publish, on the person's yes");
+    }
+    const rec = SV.ensureServer({ cli: path.join(HERE, "chartroom.mjs") });
+    if (!rec) die(`chartroom serve did not start (see ${SV.logFile()})`);
+    const room = SV.addRoom(l);
+    const url = SV.urlFor(rec, `/room/${room}/`) + (id ? "#" + id : "");
+    let opened = false, how = "";
+    if (!flags["no-open"]) {
+      if (h.host === "cmux") { opened = companionOpen(url, room); how = opened ? "opened beside the terminal" : ""; }
+      else if (h.host === "seamux") how = "click it in the terminal to open it in the Dock beside this session";
+      else if (h.host === "desktop") how = "open it in the browser pane (preview_start)";
+    }
+    out({ url, host: h.host, opened, room },
+      `served at ${url} (host: ${h.host})` + (how ? `\n  ${how}` : ""));
+  },
+
+  serve() {
+    if (flags.foreground) {
+      SV.serveForeground({ version: VERSION, root: HERE });
+      return;
+    }
+    if (flags.stop) { const stopped = SV.stopServer(); return out({ stopped }, stopped ? "stopped" : "no chartroom server was running"); }
+    const rec = flags.status ? SV.liveServer() : SV.ensureServer({ cli: path.join(HERE, "chartroom.mjs") });
+    if (!rec) return flags.status ? out({ running: false }, "no chartroom server is running") : die(`chartroom serve did not start (see ${SV.logFile()})`);
+    out({ running: true, port: rec.port, pid: rec.pid, root: rec.root, version: rec.version },
+      `chartroom serve: http://127.0.0.1:${rec.port} (pid ${rec.pid}, ${rec.root})`);
   },
 
   doctor() {

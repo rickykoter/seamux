@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sections } from "../tools/probe_sections.mjs";
@@ -233,6 +234,166 @@ if (want("host: the copy agrees with lookout's")) {
     ok("host: the host lists agree", JSON.stringify(H.HOSTS) === JSON.stringify(L.HOSTS) &&
       JSON.stringify(H.DESKTOP_ENTRYPOINTS) === JSON.stringify(L.DESKTOP_ENTRYPOINTS));
   }
+}
+
+// A raw request, so a test can send any Host or Origin it likes.
+function req(port, method, p, { headers = {}, body } = {}) {
+  return new Promise(resolve => {
+    const data = body === undefined ? undefined : (typeof body === "string" ? body : JSON.stringify(body));
+    const hs = { Host: `127.0.0.1:${port}`, ...headers };
+    if (data !== undefined && hs["Content-Length"] === undefined) hs["Content-Length"] = Buffer.byteLength(data);
+    const q = http.request({ host: "127.0.0.1", port, path: p, method, headers: hs }, res => {
+      const parts = [];
+      res.on("data", c => parts.push(c));
+      res.on("end", () => {
+        const text = Buffer.concat(parts).toString("utf8");
+        let j = null; try { j = JSON.parse(text); } catch { /* html */ }
+        resolve({ status: res.statusCode, headers: res.headers, text, json: j });
+      });
+    });
+    q.on("error", e => resolve({ status: 0, text: e.message, headers: {} }));
+    if (data !== undefined) q.write(data);
+    q.end();
+  });
+}
+const waitFor = async (fn, ms = 5000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await new Promise(r => setTimeout(r, 50)); } return null; };
+
+if (want("serve: guards, routes and the pane sandbox")) {
+  const d = repo();
+  const dir = S.resolve(d).dir;
+  cli(d, "new", "ux", "Checkout");
+  write(d, "a.html", "<html><body><h1>Pay</h1><button id=pay>Pay now</button></body></html>");
+  write(d, "b.html", "<p>no body tag</p>");
+  cli(d, "add", "checkout", "a.html", "b.html", "--note", "first");
+  const o = json(cli(d, "open", "checkout", "--json"));
+  ok("open: prints a served URL with the room and chart", o && /^http:\/\/127\.0\.0\.1:\d+\/room\/[a-f0-9]{12}\/#checkout$/.test(o.url), JSON.stringify(o));
+  const rec = JSON.parse(fs.readFileSync(path.join(ENV.CHARTROOM_HOME, "serve.json"), "utf8"));
+  ok("serve.json: mode 0600", (fs.statSync(path.join(ENV.CHARTROOM_HOME, "serve.json")).mode & 0o777) === 0o600);
+  const port = rec.port, room = o.room, T = rec.token;
+  const rooms = JSON.parse(fs.readFileSync(path.join(ENV.CHARTROOM_HOME, "rooms.json"), "utf8"));
+  ok("rooms.json: the room names this repo's chart dir", rooms[room] && rooms[room].dir === dir);
+  const again = json(cli(d, "open", "--json"));
+  ok("open again: the same server and room", again.url.startsWith(`http://127.0.0.1:${port}/room/${room}/`));
+  ok("serve --status: running on that port", json(cli(d, "serve", "--status", "--json"))?.port === port);
+
+  let r = await req(port, "GET", "/health");
+  ok("health: answers as chartroom", r.status === 200 && r.json?.server === "chartroom");
+  r = await req(port, "GET", "/health", { headers: { Host: "evil.example:" + port } });
+  ok("host guard: another Host is refused", r.status === 403, r.status);
+  r = await req(port, "GET", `/room/${room}/`);
+  ok("studio: served with the boot (room and token)", r.status === 200 && r.text.includes(`"room":"${room}"`) && r.text.includes(T));
+  ok("studio: has its own CSP", /default-src 'self'/.test(r.headers["content-security-policy"] || ""));
+  ok("studio: loads its css and js from /static", r.text.includes('href="/static/studio.css"') && r.text.includes('src="/static/studio.js"'));
+  r = await req(port, "GET", "/static/studio.js");
+  ok("static: studio.js is served", r.status === 200 && /javascript/.test(r.headers["content-type"]));
+  ok("static: anything else is not", (await req(port, "GET", "/static/../lib/serve.mjs")).status === 404 &&
+    (await req(port, "GET", "/static/anchor.js")).status === 404);
+  ok("room: an unknown room is 404", (await req(port, "GET", "/room/000000000000/")).status === 404);
+
+  r = await req(port, "GET", `/room/${room}/api/state`);
+  ok("api: no token, refused", r.status === 403);
+  r = await req(port, "GET", `/room/${room}/api/state?t=${"x".repeat(T.length)}`);
+  ok("api: a wrong token, refused", r.status === 403);
+  r = await req(port, "GET", `/room/${room}/api/state?t=${T}`);
+  ok("api state: every chart, with a signature", r.status === 200 && r.json.charts.length === 1 && r.json.charts[0].id === "checkout" && /^[a-f0-9]{16}$/.test(r.json.sig));
+  const sig1 = r.json.sig;
+  r = await req(port, "GET", `/room/${room}/api/chart/checkout?t=${T}`);
+  ok("api chart: the chart and its threads", r.status === 200 && r.json.chart.versions.length === 1 && Array.isArray(r.json.threads));
+  ok("api chart: an unknown chart is 404", (await req(port, "GET", `/room/${room}/api/chart/nope?t=${T}`)).status === 404);
+  write(d, "c.html", "<p>three</p>");
+  cli(d, "add", "checkout", "c.html");
+  r = await req(port, "GET", `/room/${room}/api/state?t=${T}`);
+  ok("api state: a new version changes the signature", r.json.sig !== sig1);
+
+  r = await req(port, "GET", `/room/${room}/pane/checkout/1/a`);
+  const csp = r.headers["content-security-policy"] || "";
+  ok("pane: served without a token", r.status === 200 && r.text.includes("Pay now"));
+  ok("pane: CSP sandbox with scripts and no same-origin", /sandbox allow-scripts(;|$)/.test(csp) && !/allow-same-origin/.test(csp), csp);
+  ok("pane: no network but the CDNs", /connect-src 'none'/.test(csp) && /img-src data: blob:/.test(csp) && /script-src 'unsafe-inline' https:\/\/cdnjs/.test(csp), csp);
+  ok("pane: the anchor is injected before </body>", /<script data-chartroom-anchor>[\s\S]*<\/script>\n<\/body>/.test(r.text));
+  ok("pane: the token is nowhere in it", !r.text.includes(T));
+  r = await req(port, "GET", `/room/${room}/pane/checkout/1/b`);
+  ok("pane: a page with no </body> gets the anchor at the end", r.status === 200 && /data-chartroom-anchor[\s\S]*<\/script>\n$/.test(r.text));
+  for (const bad of ["/pane/checkout/9/a", "/pane/checkout/1/zz", "/pane/..%2f..%2fx/1/a", "/pane/checkout/0/a", "/pane/checkout/1/a.html"])
+    ok("pane: refused " + bad, (await req(port, "GET", `/room/${room}${bad}`)).status === 404);
+  // A symlinked pane that points out of the room is refused.
+  fs.symlinkSync(path.join(d, "a.html"), path.join(dir, "checkout", "v1", "evil.html"));
+  ok("pane: a symlink out of the room is refused", (await req(port, "GET", `/room/${room}/pane/checkout/1/evil`)).status === 404);
+
+  // POST guards, in order.
+  const op = `/room/${room}/api/op`;
+  const origin = `http://127.0.0.1:${port}`;
+  r = await req(port, "POST", op, { headers: { "Content-Type": "application/json" }, body: { t: T, op: "x" } });
+  ok("post: no Origin, refused", r.status === 403 && /cross-origin/.test(r.json?.error));
+  r = await req(port, "POST", op, { headers: { Origin: "http://evil.example", "Content-Type": "application/json" }, body: { t: T } });
+  ok("post: another Origin, refused", r.status === 403);
+  r = await req(port, "POST", op, { headers: { Origin: origin, "Content-Type": "text/plain" }, body: { t: T } });
+  ok("post: not JSON, 415", r.status === 415);
+  r = await req(port, "POST", op, { headers: { Origin: origin, "Content-Type": "application/json", "Content-Length": String(70 * 1024) }, body: "{}" });
+  ok("post: too large, 413", r.status === 413);
+  r = await req(port, "POST", op, { headers: { Origin: origin, "Content-Type": "application/json" }, body: { t: "nope" } });
+  ok("post: a wrong token, 403", r.status === 403 && /token/.test(r.json?.error));
+  r = await req(port, "POST", op, { headers: { Origin: origin, "Content-Type": "application/json" }, body: "[1]" });
+  ok("post: not an object, 400", r.status === 400);
+  r = await req(port, "POST", `/room/${room}/api/state`, { headers: { Origin: origin, "Content-Type": "application/json" }, body: { t: T } });
+  ok("post: only /api/op takes a POST", r.status === 404);
+  ok("put: 405", (await req(port, "PUT", op, { body: "{}" })).status === 405);
+
+  ok("serve --stop: stops it", json(cli(d, "serve", "--stop", "--json"))?.stopped === true);
+  ok("serve --stop: serve.json is gone", await waitFor(() => !fs.existsSync(path.join(ENV.CHARTROOM_HOME, "serve.json"))));
+  ok("open: on remote, no live page", /no live page/.test(spawnSync("node", [path.join(HERE, "chartroom.mjs"), "open"],
+    { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_REMOTE: "true" }, cwd: d }).stdout));
+  ok("open: refuses an unknown chart", /no chart/.test(cli(d, "open", "nope").stderr));
+}
+
+if (want("serve: idle exit")) {
+  const d = repo();
+  const env = { ...ENV, CHARTROOM_SERVE_IDLE_MS: "600" };
+  const o = JSON.parse(spawnSync("node", [path.join(HERE, "chartroom.mjs"), "open", "--json"], { encoding: "utf8", env, cwd: d }).stdout);
+  const rec = JSON.parse(fs.readFileSync(path.join(ENV.CHARTROOM_HOME, "serve.json"), "utf8"));
+  ok("idle: the server is up", o.url && rec.pid);
+  ok("idle: it exits on its own and removes serve.json", await waitFor(() => !fs.existsSync(path.join(ENV.CHARTROOM_HOME, "serve.json")), 6000));
+  // A link printed before the exit works again once the server restarts:
+  // the new one takes the port the last one used.
+  const o2 = JSON.parse(spawnSync("node", [path.join(HERE, "chartroom.mjs"), "open", "--json"], { encoding: "utf8", env, cwd: d }).stdout);
+  ok("restart: the same port, so the old link works", o2.url === o.url, `${o.url} then ${o2.url}`);
+  ok("restart: the old link answers", (await req(Number(new URL(o.url).port), "GET", new URL(o.url).pathname)).status === 200);
+  // The port taken by something else: any free one.
+  const blocker = http.createServer(() => {});
+  const taken = Number(new URL(o2.url).port);
+  spawnSync("node", [path.join(HERE, "chartroom.mjs"), "serve", "--stop"], { encoding: "utf8", env, cwd: d });
+  await waitFor(() => !fs.existsSync(path.join(ENV.CHARTROOM_HOME, "serve.json")));
+  await new Promise(r => blocker.listen(taken, "127.0.0.1", r));
+  const o3 = JSON.parse(spawnSync("node", [path.join(HERE, "chartroom.mjs"), "open", "--json"], { encoding: "utf8", env, cwd: d }).stdout || "{}");
+  ok("restart: a taken port falls back to another", o3.url && Number(new URL(o3.url).port) !== taken, o3.url);
+  blocker.close();
+  spawnSync("node", [path.join(HERE, "chartroom.mjs"), "serve", "--stop"], { encoding: "utf8", env, cwd: d });
+}
+
+if (want("page: studio and anchor files")) {
+  const html = fs.readFileSync(path.join(HERE, "page", "studio.html"), "utf8");
+  for (const slot of ["<!-- chartroom:css -->", "<!-- chartroom:js -->", "<!-- chartroom:boot -->"])
+    ok("studio.html: has the slot " + slot, html.includes(slot));
+  for (const id of ["register-list", "versions", "tabs", "frames", "threads", "notes", "keys"])
+    ok("studio.html: has #" + id, html.includes(`id="${id}"`));
+  const css = fs.readFileSync(path.join(HERE, "page", "studio.css"), "utf8");
+  ok("studio.css: carries the Everforest block (theme_sync)", /everforest:start \*\/\n:root \{/.test(css) && css.includes("--role-attend"));
+  const js = fs.readFileSync(path.join(HERE, "page", "studio.js"), "utf8");
+  ok("studio.js: iframes are sandboxed with scripts only", /sandbox: "allow-scripts"/.test(js) && !/allow-same-origin/.test(js));
+  ok("studio.js: only its own frames' messages are heard", /f\.el\.contentWindow === e\.source/.test(js));
+  ok("studio.js: a published link must be a claude.ai artifact to be a link", /safe \? h\("a"/.test(js) && js.includes("claude\\.ai"));
+  const SVm = await import("./lib/serve.mjs");
+  const tagged = SVm.withAnchor("<p>İİİ</p></BODY ></html>", "/*a*/");
+  ok("withAnchor: placed before </BODY > even after letters that grow when lowercased",
+    tagged.startsWith("<p>İİİ</p><script data-chartroom-anchor>") && tagged.endsWith("</script>\n</BODY ></html>"), tagged);
+  ok("withAnchor: the last </body> wins", SVm.withAnchor("<b></body></body>", "x").endsWith("</script>\n</body>"));
+  const anchor = fs.readFileSync(path.join(HERE, "page", "anchor.js"), "utf8");
+  ok("anchor.js: only the parent's messages are heard", /e\.source !== parentWin/.test(anchor));
+  ok("no emoji in the pages", ![html, css, js, anchor].some(t => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(t)));
+  // No DOM here: the outline rule itself is tried in a real browser (the
+  // increment's manual check); the probe only proves the script parses.
+  const vm = await import("node:vm");
+  ok("anchor.js: parses", (() => { try { new vm.Script(anchor); return true; } catch (e) { return e.message; } })() === true);
 }
 
 if (want("plugin: manifest and shim")) {

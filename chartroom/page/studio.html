@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chartroom</title>
+<!-- chartroom:css -->
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <svg class="mark" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+      <circle cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <circle cx="12" cy="12" r="7.2" fill="none" stroke="currentColor" stroke-width=".6" opacity=".55"/>
+      <path d="M12 3.2 L14 12 L12 20.8 L10 12 Z" fill="currentColor" opacity=".25"/>
+      <path d="M12 3.2 L14 12 L10 12 Z" fill="currentColor"/>
+      <path d="M3.2 12 H5 M19 12 H20.8 M12 1.5 V3 M12 21 V22.5" stroke="currentColor" stroke-width="1.2"/>
+    </svg>
+    <span class="brand">chartroom</span>
+    <span id="repo" class="quiet"></span>
+    <span id="mode" class="chip quiet" hidden></span>
+    <span class="gap"></span>
+    <span id="conn" class="quiet" hidden></span>
+    <button id="keys-btn" class="icon-btn" aria-expanded="false" aria-controls="keys" title="Keys (?)">?</button>
+  </header>
+
+  <aside id="register" aria-label="Charts">
+    <div id="register-list"></div>
+  </aside>
+
+  <main id="main">
+    <div id="empty" class="empty" hidden>
+      <p class="empty-title">No charts here yet</p>
+      <p class="quiet">Ask Claude to chart a UX, an architecture or a domain, or run <code>chartroom new ux &lt;title&gt;</code> in the repo.</p>
+    </div>
+    <section id="chart" hidden>
+      <div id="head">
+        <div class="head-line">
+          <h1 id="title"></h1>
+          <span id="kind" class="chip quiet"></span>
+          <span id="status" class="chip"></span>
+        </div>
+        <p id="purpose" class="quiet"></p>
+      </div>
+      <div id="bar">
+        <div id="versions" role="tablist" aria-label="Versions"></div>
+        <span class="gap"></span>
+        <div id="tabs" role="tablist" aria-label="Panes"></div>
+        <span id="pick-slot"></span>
+      </div>
+      <div id="stage">
+        <div id="frames"></div>
+        <div id="flip-badge" hidden></div>
+        <div id="toast" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <aside id="rail" aria-label="Threads and notes">
+    <section id="threads-sec">
+      <h2>Threads</h2>
+      <div id="threads"><p class="quiet small">No comments on this chart yet.</p></div>
+    </section>
+    <section id="notes-sec">
+      <h2>Notes</h2>
+      <div id="notes"></div>
+    </section>
+  </aside>
+</div>
+
+<div id="keys" class="keys" hidden role="dialog" aria-label="Keys">
+  <h2>Keys</h2>
+  <dl>
+    <dt>1 to 9</dt><dd>show that option or view</dd>
+    <dt>hold Space</dt><dd>flip to the previous version, with what changed outlined</dd>
+    <dt>[ and ]</dt><dd>previous or next version</dd>
+    <dt>j and k</dt><dd>next or previous chart</dd>
+    <dt>?</dt><dd>these keys</dd>
+  </dl>
+</div>
+<!-- chartroom:boot -->
+<!-- chartroom:js -->
+</body>
+</html>
