@@ -5408,6 +5408,53 @@ if (want("delegated go")) {
   ok("delegation: status rows carry who gave each go", incRow.by === "parent");
   cli("done", "example-dlg-kid", "1", "--force");
 
+  // The Bosun's refusals, replayed: a parent's delegated go is its own word,
+  // so neither per-turn rule counts it, and it uses up no lever. One per
+  // command, holds, --force and --by human still go by the old rules.
+  {
+    const CC = { ...NOCC, CLAUDECODE: "1" };
+    const TD = path.join(ENV.DEEP_PLAN_STATE_DIR, "turns");
+    const hk = (sid, tool, input, cwd = DR) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")],
+      { encoding: "utf8", env: CC, input: JSON.stringify({ session_id: sid, tool_name: tool, tool_input: input, cwd }) });
+    const hb = (sid, command, cwd = DR) => hk(sid, "Bash", { command }, cwd);
+    const SP = "dd1e0000-0000-4000-8000-000000000001", SQ = "dd1e0000-0000-4000-8000-000000000002", SR = "dd1e0000-0000-4000-8000-000000000003";
+    let h = hk(SP, "Edit", { file_path: path.join(DR, "x.ts") });
+    ok("delegated go: the parent's edit between its own increments is refused (the turn now has a refusal)",
+      h.status === 2 && fs.existsSync(path.join(TD, SP + ".denied")), h.stderr);
+    h = hb(SP, "deep-plan go example-dlg-kid next");
+    ok("delegated go: …and its go on the delegated child still goes through in that turn", h.status === 0, h.stderr);
+    h = hb(SP, "deep-plan go example-dlg next");
+    ok("delegated go: …while its go on its own plan is refused as answering the gate",
+      h.status === 2 && /the gate refused an edit in this turn/.test(h.stderr), h.stderr);
+    h = hb(SP, "deep-plan go example-dlg-kid next", KID);
+    ok("delegated go: the same go from the child's root is not the parent's, and is refused", h.status === 2, h.stderr);
+
+    // One per turn: the CLI records no lever for a delegated go, and a lever
+    // already used this turn does not hold one back.
+    const r1 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "go", "example-dlg-kid", "next"],
+      { encoding: "utf8", cwd: DR, env: { ...CC, CLAUDE_CODE_SESSION_ID: SQ } });
+    ok("delegated go: the CLI gives it and records no lever for the turn",
+      r1.status === 0 && st("example-dlg-kid").increments[1].by === "parent" && !fs.existsSync(path.join(TD, SQ + ".acted")), r1.stderr);
+    cli("reset", "example-dlg-kid", "2");
+    fs.mkdirSync(TD, { recursive: true });
+    fs.writeFileSync(path.join(TD, SQ + ".acted"), JSON.stringify({ at: Date.now(), what: "go" }) + "\n");
+    h = hb(SQ, "deep-plan go example-dlg-kid next");
+    ok("delegated go: a turn that already ran a go still lets the parent's delegated go through", h.status === 0, h.stderr);
+    ok("delegated go: …and the hook claims no lever for it", !fs.existsSync(path.join(TD, SQ + ".claimed")));
+    for (const c of ["deep-plan go example-dlg-kid next --force", "deep-plan go example-dlg-kid next --by human", "deep-plan go example-dlg next", "deep-plan go example-dlg-two next"]) {
+      h = hb(SQ, c);
+      ok(`delegated go: after a go this turn, ${c.slice(10)} is still refused`, h.status === 2 && /already ran go in this turn/.test(h.stderr), h.stderr);
+    }
+    h = hb(SR, "deep-plan go example-dlg-kid next && deep-plan go example-dlg-kid 3");
+    ok("delegated go: two in one command are still refused", h.status === 2 && /per command/.test(h.stderr), h.stderr);
+    as(DR, true, "family", "hold", "example-dlg-kid", "probe hold");
+    fs.writeFileSync(path.join(TD, SR + ".acted"), JSON.stringify({ at: Date.now(), what: "go" }) + "\n");
+    h = hb(SR, "deep-plan go example-dlg-kid next");
+    ok("delegated go: a held child's go is no delegated go, so the per-turn rule refuses it", h.status === 2 && /already ran go/.test(h.stderr), h.stderr);
+    as(DR, true, "family", "unhold", "example-dlg-kid");
+    ok("delegated go: await-go waits four hours by default", /4 hours by default/.test(cli("help").stdout + cli("help").stderr));
+  }
+
   // A hold: the parent's written reason, and its own go refused while it holds.
   ok("delegation: the child cannot hold itself", as(KID, true, "family", "hold", "example-dlg-kid", "x").status !== 0);
   r = as(DR, true, "family", "hold", "example-dlg-kid", "the session type is still moving");

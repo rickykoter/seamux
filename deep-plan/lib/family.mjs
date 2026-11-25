@@ -648,6 +648,25 @@ export function goRefusal(slug, by) {
   return "";
 }
 
+// Whether a parsed deep-plan call ({verb, words}) is a parent's go on a child
+// its spec delegates to it, run from the parent's root: the parent agent's own
+// word (ADR 0029), so the per-turn rules that keep an agent from answering the
+// gate on the person's behalf do not count it. A --force or --by human is a
+// person's word and stays theirs; a hold or a take-back makes it no go at all.
+// The child's own limit stays: go refuses while its increment is open.
+export function delegatedGo(call, { cwd = process.cwd(), env = process.env } = {}) {
+  if (!call || call.verb !== "go") return false;
+  const w = call.words || [];
+  if (w.includes("--force") || w.includes("--by=human") || w.some((x, k) => x === "--by" && w[k + 1] === "human")) return false;
+  const slug = w.find(x => !x.startsWith("-"));
+  if (!slug) return false;
+  try {
+    const o = goOwner(slug);
+    if (!o || !o.delegated) return false;
+    return goBy(slug, { cwd, env }) === "parent" && goRefusal(slug, "parent") === "";
+  } catch { return false; }
+}
+
 // ---------------------------------------------------------------- protection
 
 // Whether live plan or family work sits at `dir`: the one answer crew's close

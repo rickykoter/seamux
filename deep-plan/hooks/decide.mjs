@@ -13,7 +13,7 @@ import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, owne
   actedThisTurn, bashWriteTargets, canon, planFor } from "../lib/state.mjs";
 import { matchesGlob } from "../lib/verify.mjs";
 import path from "node:path";
-import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
+import { trespass, waitingOn, waitText, goOwner, delegatedGo } from "../lib/family.mjs";
 import { sessionIds } from "../lib/host.mjs";
 import { sealedTouch, logAccess, logSlugs } from "../lib/scenarios.mjs";
 
@@ -101,9 +101,14 @@ if (tool === "Bash") {
   // an edit is the agent answering the gate itself. The human's word in chat
   // starts a new turn, which clears it.
   const word = onHumansWord(calls);
+  // A parent's go on a child its spec delegates (lib/family.mjs delegatedGo)
+  // is the parent agent's own word, not the person's: when every such call in
+  // the command is one, the refused-edit rule, the one-per-turn rule and the
+  // lever claim do not apply. One per command still does.
+  const delegated = !!word && calls.filter(c => onHumansWord([c])).every(c => delegatedGo(c, { cwd }));
   // Unless the human's prompt this turn plainly said go: the agent then tried
   // an edit before running the go it was given.
-  if (word && deniedThisTurn(who.session) && !promptApproves(who.session)) {
+  if (word && !delegated && deniedThisTurn(who.session) && !promptApproves(who.session)) {
     const c = calls.find(x => onHumansWord([x])) || calls[0];
     process.stderr.write(`deep-plan gate [${slugOf(c)}]: the gate refused an edit in this turn: ask the human, ` +
       `and run ${word} only after they answer. (Their reply starts a new turn; it goes through then.)\n`);
@@ -118,7 +123,7 @@ if (tool === "Bash") {
   // One per human turn: the documented flow is the human says go and the
   // agent runs it once. A second go (or --force, --by human, close) before the
   // human speaks again is the agent going on its own.
-  const acted = word ? actedThisTurn(who.session) : null;
+  const acted = word && !delegated ? actedThisTurn(who.session) : null;
   if (acted) {
     const c = calls.find(x => onHumansWord([x])) || calls[0];
     process.stderr.write(`deep-plan gate [${slugOf(c)}]: this session already ran ${acted.what || "a go"} in this turn: ` +
@@ -126,8 +131,8 @@ if (tool === "Bash") {
     process.exit(2);
   }
   // Claimed once the rest of the gate allows it (below), so a refusal here
-  // never takes the turn's one.
-  leverWord = word;
+  // never takes the turn's one. A delegated go claims nothing.
+  leverWord = delegated ? "" : word;
 }
 
 const d = decideToolCall(tool, input, cwd);

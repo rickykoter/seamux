@@ -56,7 +56,7 @@ import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
   memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
-  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath, baseRef,
+  goOwner, goBy, goHow, goRefusal, delegatedGo, updateControl, pruneControl, controlPath, baseRef,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
@@ -6697,6 +6697,11 @@ function awaitPull(slug, w, leftMs) {
   if (!r.same) w.writer = r.writer || "another session";
 }
 
+// Four hours: the 30-minute default exited while parents were still working
+// on their own increment, and each exit cost the child a restart. Exit 2 at
+// the timeout still means run it again (ADR 0030).
+const AWAIT_GO_TIMEOUT_S = 14400;
+
 function awaitGo(slug, timeoutSec) {
   const until = Date.now() + timeoutSec * 1000;
   // A child that starts waiting in a family and then is in none (its parent
@@ -7101,10 +7106,13 @@ const [, , cmd, ...rest] = process.argv;
 // close) is recorded for the gate hook's one-per-human-turn rule
 // (turns/<session>.acted); the hook only reads it. Recorded on success, so a
 // refused go or a typo does not use up the turn. Not for the board's calls
-// through deep-plan's server, which may have inherited a session's env.
+// through deep-plan's server, which may have inherited a session's env. Not
+// for a parent's go on a child it is delegated (delegatedGo): that is the
+// parent agent's own word, and the hook claimed no lever for it.
 {
-  const word = onHumansWord([{ verb: cmd || "", words: rest }]);
-  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE)
+  const call = { verb: cmd || "", words: rest };
+  const word = onHumansWord([call]);
+  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE && !delegatedGo(call))
     process.on("exit", code => { if (code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
 }
 const flags = {};
@@ -7436,7 +7444,7 @@ switch (cmd) {
   case "await-go": {
     const slug = args[0] || die("await-go <slug> [--timeout S]");
     if (flags.timeout !== undefined && !(flags.timeout > 0)) die("--timeout takes a number of seconds above 0");
-    process.exit(awaitGo(slug, flags.timeout || 1800));
+    process.exit(awaitGo(slug, flags.timeout || AWAIT_GO_TIMEOUT_S));
   }
   case "protects": {
     // Whether live plan or family work sits at a directory: what crew's close
@@ -7760,7 +7768,8 @@ switch (cmd) {
                                               waits, and recorded overlaps
   await-go <slug> [--timeout S]               block until an increment is authorized, print
                                               its number (exit 0); 2 at the timeout (run it
-                                              again), 3 when nothing is left to wait for
+                                              again; 4 hours by default), 3 when nothing is
+                                              left to wait for
   family take-back <child> [--by human]       a person takes a delegated child's go back
                                               from the parent; give-back returns it
   family hold <child> "<reason>"              the parent holds a child's go, saying why;
