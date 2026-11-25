@@ -1,5 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Shown } from "./sheet";
+import { drawBpmn, xmlOf } from "./bpmnview";
 import { splitter } from "./splitter";
 import type { Row } from "./wake";
 
@@ -8,11 +9,11 @@ import type { Row } from "./wake";
 // leaves the Wake: the list keeps its place, and the pick follows the pane.
 
 /** The files the pane shows (wake_app.rs show_kind). */
-export const PREVIEW = /\.(png|jpe?g|gif|webp|svg|html?|pdf|mp4|m4v|mov|webm)$/i;
+export const PREVIEW = /\.(png|jpe?g|gif|webp|svg|html?|pdf|mp4|m4v|mov|webm|bpmn)$/i;
 /** Kinds that open their own way (a page, a review, a browser), whatever the path says. */
 const OWN_WAY = ["plan", "review", "ask", "commit", "artifact"];
 
-export type Media = "image" | "video" | "html" | "pdf";
+export type Media = "image" | "video" | "html" | "pdf" | "bpmn";
 
 export function mediaOf(path: string): Media | null {
   const ext = (/\.([a-z0-9]+)$/i.exec(path)?.[1] ?? "").toLowerCase();
@@ -20,6 +21,7 @@ export function mediaOf(path: string): Media | null {
   if (["mp4", "m4v", "mov", "webm"].includes(ext)) return "video";
   if (ext === "html" || ext === "htm") return "html";
   if (ext === "pdf") return "pdf";
+  if (ext === "bpmn") return "bpmn";
   return null;
 }
 
@@ -318,8 +320,14 @@ export class Viewer {
       // Pages travel as a data: URL, framed with scripts off (as the sheet does).
       this.stage.classList.remove("actual");
       this.stage.replaceChildren(el("p", "wv-note", "loading…"));
-      invoke<Shown>("wake_file", { id: r.id }).then((s) => {
+      invoke<Shown>("wake_file", { id: r.id }).then(async (s) => {
         if (seq !== this.seq) return;
+        if (s.kind === "bpmn") {
+          // Drawn in place: bpmn-js fits the diagram to the box it is in.
+          const box = el("div", "wv-bpmn");
+          this.stage.replaceChildren(box);
+          return drawBpmn(box, xmlOf(s.data));
+        }
         const f = el("iframe", "wv-frame");
         f.title = file;
         if (s.kind === "html") {
@@ -328,7 +336,7 @@ export class Viewer {
           f.srcdoc = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
         } else f.src = s.data;
         this.stage.replaceChildren(f);
-      }, (e) => failed(String(e)));
+      }).catch((e) => failed(e instanceof Error ? e.message : String(e)));
     }
   }
 

@@ -21,9 +21,17 @@ use crate::state::state_dir;
 pub const WAKE_VIEW: &str = "wake-view"; // the tab files and pages open in, beside the Wake
 pub const WAKE_TAB: &str = "wake"; // the tab the Wake itself lives in
 pub const WAKE_LIMIT: usize = 2000; // rows per answer; the page says when it is cut
-const VIEW_IN_WAKE: [&str; 13] = [
-    ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".m4v", ".mov", ".webm",
+const VIEW_IN_WAKE: [&str; 14] = [
+    ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".m4v", ".mov", ".webm", ".bpmn",
 ];
+/// Files only the app draws (BPMN, with its bundled bpmn-js): cmux and tmux
+/// have no viewer for them, so there they open in the editor.
+const APP_DRAWS: [&str; 1] = [".bpmn"];
+
+/// Whether `path` is a file only the app draws, which cmux opens in the editor.
+pub fn app_draws(path: &str) -> bool {
+    APP_DRAWS.contains(&ext(path).as_str())
+}
 const BROWSER_HOSTS: [&str; 2] = ["claude.ai", "github.com"];
 const ARTIFACTS_SLOT: &str = r#"<script id="boot" type="application/json">__BOOT__</script>"#;
 const PUBLISHABLE: [&str; 10] = [".html", ".htm", ".md", ".markdown", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"];
@@ -459,6 +467,7 @@ pub fn open_target(t: &Target, port: u16) -> (bool, String) {
     let base = format!("http://127.0.0.1:{port}");
     match t {
         Target::Page(p) => wake_tab(WAKE_VIEW, &format!("{base}{p}"), ""),
+        Target::File(f) if app_draws(f) => open_in_editor(f),
         // No cmux tab to hold a local file: its default app (a browser for HTML).
         Target::File(f) if crate::backend::tmux().is_some() => open_local(f),
         Target::File(f) => wake_tab(WAKE_VIEW, &format!("file://{}", quote(f, "/")), ""),

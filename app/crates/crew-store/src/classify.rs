@@ -13,7 +13,8 @@ use std::sync::OnceLock;
 
 pub const PROMPT_MAX: usize = 500;
 pub const IMAGE_EXT: [&str; 9] = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic", ".bmp", ".tiff"];
-pub const DOC_EXT: [&str; 4] = [".md", ".markdown", ".html", ".htm"];
+// A BPMN diagram is a document to look at, not source: the Wake renders it.
+pub const DOC_EXT: [&str; 5] = [".md", ".markdown", ".html", ".htm", ".bpmn"];
 
 macro_rules! re {
     ($name:ident, $pat:expr) => {

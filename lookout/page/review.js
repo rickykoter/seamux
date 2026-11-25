@@ -1141,6 +1141,7 @@
   function goToLine(p, side, line) {
     if (!(R.files || []).some(f => f.path === p)) return;
     select(p);
+    showXml(p);
     if ((R.files.find(f => f.path === p) || {}).collapsed && !opened.has(p)) { opened.add(p); drawFile(); }
     const tr = document.querySelector(`#diff tr.line[data-${side === "old" ? "old" : "new"}="${line}"]`);
     if (!tr) return;
@@ -1306,8 +1307,14 @@
     }
     $("file-head").replaceChildren(...fileHead(f).filter(Boolean));
     const drawn = ROWS[f.path] || { note: "missing" };
+    // A BPMN file opens on its diagram; the bar above switches to the XML.
+    const diagram = drawn.bpmn ? bpmnBar(f) : null;
+    if (diagram && diagramOn(f.path)) {
+      $("diff").replaceChildren(strip(f.path), diagram, bpmnView(f, drawn.bpmn));
+      return;
+    }
     if (drawn.note || (f.collapsed && !opened.has(f.path))) {
-      $("diff").replaceChildren(strip(f.path), notice(f, drawn));
+      $("diff").replaceChildren(strip(f.path), diagram || "", notice(f, drawn));
       return;
     }
     // An added or deleted file has one side; split would draw half a page of nothing.
@@ -1319,10 +1326,138 @@
     gutter = new Map([...anch.at].map(([k, list]) => [k, list.filter(isOpen).sort(worstFirst)]).filter(([, list]) => list.length));
     $("diff").replaceChildren(
       strip(f.path),
+      diagram || "",
       anch.outside.length ? el("div", { class: "outside" }, el("div", { class: "outside-head" }, "On lines this diff does not show"),
         ghOffLines(anch.outside),
         el("div", { class: "threads" }, anch.outside.map(card))) : "",
       useSplit ? split(drawn, anch) : unified(drawn, anch));
+  }
+
+  // ---------------------------------------------------------------- BPMN
+  // A .bpmn file draws as its diagram (bpmn.io's viewer, inlined by
+  // lookout.mjs only when the review has one), before beside after, with
+  // what changed marked. Findings and comments stay on the XML diff's lines.
+  let bpmnOn = store.get("lookout.bpmn", "diagram") !== "xml";
+  // A jump to a line or a finding lands on the XML, where they are drawn.
+  // It switches only that file: the saved choice, and every other .bpmn
+  // file, still open on the diagram.
+  const xmlHere = new Set();
+  const diagramOn = p => bpmnOn && !xmlHere.has(p);
+  function showXml(p) {
+    if (!diagramOn(p) || !(ROWS[p] && ROWS[p].bpmn)) return;
+    xmlHere.add(p);
+    drawFile();
+  }
+  function bpmnBar(f) {
+    const open = items().filter(x => x.file === f.path && isOpen(x)).length;
+    const pick = on => {
+      bpmnOn = on;
+      store.set("lookout.bpmn", on ? "diagram" : "xml");
+      if (on) xmlHere.delete(f.path);
+      drawFile();
+    };
+    const shown = diagramOn(f.path);
+    const b = (label, on) => el("button", { type: "button", class: shown === on ? "on" : "",
+      "aria-pressed": String(shown === on), onclick: () => pick(on) }, label);
+    return el("div", { class: "bpmn-bar" }, el("span", { class: "seg" }, b("Diagram", true), b("XML diff", false)),
+      shown ? el("span", { class: "bpmn-key" },
+        el("span", { class: "k add" }, "added"), el("span", { class: "k chg" }, "changed"),
+        el("span", { class: "k del" }, "removed"), " · drag to pan, ⌘/ctrl-wheel to zoom, double-click to fit") : null,
+      shown && open ? el("button", { type: "button", class: "bpmn-open", onclick: () => showXml(f.path) },
+        `${plural(open, "finding or comment", "findings and comments")} on the XML`) : null);
+  }
+
+  // id → what the element says, for each element that has an id: its own
+  // attributes and its id-less children (a condition, documentation), plus
+  // where the diagram draws it, so a moved or reworded element reads changed.
+  function bpmnSigs(xml) {
+    const out = new Map();
+    let doc;
+    try { doc = new DOMParser().parseFromString(xml, "application/xml"); } catch { return out; }
+    if (doc.getElementsByTagName("parsererror").length) return out;
+    const DI = "http://www.omg.org/spec/BPMN/20100524/DI";
+    const ser = new XMLSerializer();
+    const where = new Map();
+    for (const d of doc.getElementsByTagNameNS(DI, "*")) {
+      // Shapes and edges only: a plane holds every shape, so its process would always read changed.
+      if (d.localName !== "BPMNShape" && d.localName !== "BPMNEdge") continue;
+      const ref = d.getAttribute("bpmnElement");
+      if (ref) where.set(ref, ser.serializeToString(d).replace(/\s+id="[^"]*"/, ""));
+    }
+    // Only what the diagram draws (a shape or an edge): the definitions,
+    // the process and message definitions have no mark to show, so no count.
+    for (const e of doc.querySelectorAll("[id]")) {
+      if (!where.has(e.getAttribute("id"))) continue;
+      const own = e.cloneNode(true);
+      for (const c of [...own.querySelectorAll("[id]")]) c.remove();
+      out.set(e.getAttribute("id"), ser.serializeToString(own).replace(/>\s+</g, "><").replace(/\s+/g, " ") + (where.get(e.getAttribute("id")) || ""));
+    }
+    return out;
+  }
+
+  // The diagram last drawn, kept while the reader stays on its file: a
+  // redraw (a comment, a refresh) re-attaches it, pan and zoom intact.
+  let bpmnKept = null;     // { path, bp, node, viewers }
+  function dropBpmn() {
+    if (bpmnKept) for (const v of bpmnKept.viewers) try { v.destroy(); } catch { /* already gone */ }
+    bpmnKept = null;
+  }
+  // bpmn-js bakes the colours into each shape: a theme change draws afresh.
+  try {
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      if (!bpmnKept) return;
+      // Redraw only when the diagram is what the reader sees, not the Overview or the Map.
+      const seen = bpmnKept.path === current && !overview && !mapOn;
+      dropBpmn();
+      if (seen) drawFile();
+    });
+  } catch { /* an old engine: the colours stay until the next file */ }
+  function bpmnView(f, bp) {
+    if (bpmnKept && bpmnKept.path === f.path && bpmnKept.bp === bp) return bpmnKept.node;
+    dropBpmn();
+    if (!window.BpmnJS) return el("div", { class: "notice" },
+      el("div", null, "The diagram can't be drawn: " + (D.bpmnWhy || "bpmn-js is not in this page") + "."),
+      el("button", { type: "button", onclick: () => showXml(f.path) }, "Show the XML diff"));
+    const before = bpmnSigs(bp.old || ""), after = bpmnSigs(bp.new || "");
+    const marks = { old: new Map(), new: new Map() };
+    for (const [id, s] of after) marks.new.set(id, !before.has(id) ? "add" : before.get(id) !== s ? "chg" : "");
+    for (const [id, s] of before) marks.old.set(id, !after.has(id) ? "del" : after.get(id) !== s ? "chg" : "");
+    const n = k => [...marks.new.values(), ...marks.old.values()].filter(v => v === k).length / (k === "chg" ? 2 : 1);
+    const sides = [["old", "Before", bp.old], ["new", "After", bp.new]].filter(s => s[2] != null);
+    const wrap = el("div", { class: "bpmn-sides" + (sides.length > 1 ? " two" : "") });
+    const summary = el("div", { class: "bpmn-sum" },
+      sides.length < 2 ? (bp.new == null ? "Deleted: the diagram as it was." : "Added: the diagram as it is now.")
+        : `${plural(n("add"), "element")} added, ${n("chg")} changed, ${n("del")} removed`);
+    const node = el("div", { class: "bpmn" }, summary, wrap);
+    const viewers = [];
+    bpmnKept = { path: f.path, bp, node, viewers };
+    for (const [side, label, xml] of sides) {
+      const canvas = el("div", { class: "bpmn-canvas" });
+      wrap.append(el("section", { class: "bpmn-side" }, el("div", { class: "bpmn-label" }, label), canvas));
+      // Drawn once the canvas is on the page: the viewer fits to its size.
+      requestAnimationFrame(() => drawBpmn(canvas, xml, marks[side], sides.length > 1, viewers));
+    }
+    return node;
+  }
+
+  async function drawBpmn(box, xml, marks, compare, viewers) {
+    const css = getComputedStyle(document.documentElement);
+    const v = new window.BpmnJS({ container: box, bpmnRenderer: {
+      defaultFillColor: css.getPropertyValue("--ef-bg").trim() || "#fdf6e3",
+      defaultStrokeColor: css.getPropertyValue("--ef-fg").trim() || "#5c6a72",
+      defaultLabelColor: css.getPropertyValue("--ef-fg").trim() || "#5c6a72" } });
+    viewers.push(v);
+    try { await v.importXML(xml); }
+    catch (e) {
+      box.replaceChildren(el("div", { class: "bpmn-err" }, "Not a diagram bpmn-js can draw: " + String(e && e.message || e).split("\n")[0]));
+      return;
+    }
+    const canvas = v.get("canvas"), reg = v.get("elementRegistry");
+    const root = canvas.getRootElement();
+    if (compare) for (const [id, m] of marks) if (m && reg.get(id) && reg.get(id) !== root) canvas.addMarker(id, "lk-" + m);
+    const fit = () => { try { canvas.zoom("fit-viewport", "auto"); } catch { /* not laid out */ } };
+    fit();
+    box.addEventListener("dblclick", fit);
   }
 
   // Above that list, why GitHub's threads are in it: their lines are on the
@@ -1364,6 +1499,7 @@
     const prev = curFinding;
     curFinding = id;
     if (x.file !== current) select(x.file);
+    showXml(x.file);
     const f = (R.files || []).find(y => y.path === x.file);
     if (f && f.collapsed && !opened.has(f.path)) { opened.add(f.path); drawFile(); }
     if (!isOpen(x)) { expandedClosed.add(id); drawFile(); }

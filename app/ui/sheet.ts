@@ -7,6 +7,7 @@ import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 import { face, GROUPS, groupOf, jump, ordered, round, WAKE, type GroupId } from "./sheetgroups";
+import { drawBpmn, xmlOf } from "./bpmnview";
 import { placeFor } from "./linkroute";
 import { awayLabel, openElsewhere, openFramed, type Away } from "./panelinks";
 
@@ -24,7 +25,7 @@ export type Page = {
 };
 
 /** A file the sheet shows itself: an image, a sandboxed HTML page or a PDF. */
-export type Shown = { kind: "image" | "video" | "html" | "pdf"; title: string; data: string };
+export type Shown = { kind: "image" | "video" | "html" | "pdf" | "bpmn"; title: string; data: string };
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -1585,6 +1586,16 @@ export class Sheet {
         ib.className = "sheet-imgbox";
         ib.append(v);
         box.append(ib);
+      } else if (s.kind === "bpmn") {
+        const bb = document.createElement("div");
+        bb.className = "sheet-bpmn";
+        box.append(bb);
+        drawBpmn(bb, xmlOf(s.data)).catch((e) => {
+          const n = document.createElement("p");
+          n.className = "note";
+          n.textContent = `${s.title} is not a diagram bpmn-js can draw (${e instanceof Error ? e.message : String(e)}).`;
+          bb.replaceChildren(n);
+        });
       } else {
         const frame = document.createElement("iframe");
         frame.title = s.title;

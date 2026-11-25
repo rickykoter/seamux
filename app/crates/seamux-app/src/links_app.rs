@@ -27,7 +27,7 @@ table{{border-collapse:collapse}}td,th{{border:1px solid var(--line);padding:4px
     )
 }
 
-/// How the Dock shows `path`, if it shows it at all: image, pdf or
+/// How the Dock shows `path`, if it shows it at all: image, pdf, bpmn or
 /// markdown. Anything else stays VS Code's.
 pub fn dock_kind(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -36,6 +36,7 @@ pub fn dock_kind(path: &str) -> Option<&'static str> {
     }
     match show_kind(path)? {
         ("image", _) => Some("image"),
+        ("bpmn", _) => Some("bpmn"),
         ("pdf", _) => Some("pdf"),
         _ => None,
     }
@@ -74,6 +75,7 @@ mod tests {
         assert_eq!(dock_kind("/a/shot.PNG"), Some("image"));
         assert_eq!(dock_kind("/a/spec.pdf"), Some("pdf"));
         assert_eq!(dock_kind("/a/README.md"), Some("markdown"));
+        assert_eq!(dock_kind("/a/loan.bpmn"), Some("bpmn"));
         assert_eq!(dock_kind("/a/main.rs"), None);
         assert_eq!(dock_kind("/a/page.html"), None, "HTML source is code to edit");
         assert_eq!(dock_kind("/a/clip.mov"), None);

@@ -56,6 +56,9 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
+// The most BPMN XML one page carries, both sides of every diagram together
+// (each side is already capped by sideText). Past it, a diagram shows as XML.
+const BPMN_BUDGET = Number(process.env.LOOKOUT_BPMN_BUDGET) || 6_000_000;   // the override is for the probe
 const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn", "--pr", "--intro", "--dimension", "--reviewer", "--cwd", "--timeout"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
@@ -92,17 +95,23 @@ export function renderPage(id) {
   // The Map view's renderer: a copy of shared/plan-map.js (tools/map_sync.py).
   let mapJs = "";
   try { mapJs = fs.readFileSync(path.join(HERE, "page", "plan-map.js"), "utf8"); } catch { /* the view says it is missing */ }
+  // bpmn-js only for a review with a diagram: it is most of the page's weight.
+  const bpmn = Object.values(rows).some(d => d && d.bpmn) ? V.bpmnAssets() : {};
+  const noScriptEnd = s => (s || "").replace(/<\/script/gi, "<\\/script");
+  const noStyleEnd = s => (s || "").replace(/<\/style/gi, "<\\/style");
   // One pass over the template, so a placeholder that appears INSIDE the
   // substituted content (a review of this very file does) is never rescanned.
   const fill = {
     "__TITLE__": () => V.escapeHtml(pageTitle(id)),
     "/*__CSS__*/": () => css,
-    "__DATA__": () => scriptJson({ review: r, rows,
+    "__DATA__": () => scriptJson({ review: r, rows, bpmnWhy: bpmn.why || "",
       planView: r.planMap ? comparePlan(r.planMap, r.files, (r.source || {}).inc) : null }),
     "/*__JS__*/": () => js.replace(/<\/script/gi, "<\\/script"),
     "/*__MAP_JS__*/": () => mapJs.replace(/<\/script/gi, "<\\/script"),
+    "/*__BPMN_JS__*/": () => noScriptEnd(bpmn.js),
+    "/*__BPMN_CSS__*/": () => noStyleEnd(bpmn.css),
   };
-  const html = tpl.replace(/__TITLE__|\/\*__CSS__\*\/|__DATA__|\/\*__JS__\*\/|\/\*__MAP_JS__\*\//g, m => fill[m]());
+  const html = tpl.replace(/__TITLE__|\/\*__CSS__\*\/|__DATA__|\/\*__JS__\*\/|\/\*__MAP_JS__\*\/|\/\*__BPMN_JS__\*\/|\/\*__BPMN_CSS__\*\//g, m => fill[m]());
   S.writeAtomic(p.html, html);
   return p.html;
 }
@@ -250,6 +259,7 @@ function cmdOpen() {
   const gen = src.kind === "patch" ? new Set() : generatedByAttr(src.root, files.map(f => f.path));
   const plain = flag("plain") || !!V.hljsMissing();
   const rows = {}, texts = {}, hunks = {};
+  let bpmnBytes = 0;
   const meta = files.map(f => {
     const changed = f.adds + f.dels;
     const generated = looksGenerated(f.path) || gen.has(f.path);
@@ -259,6 +269,17 @@ function cmdOpen() {
     const skip = generated || large || f.binary;
     const newText = skip ? null : sideText(src, "new", f);
     const drawn = buildRows(f, skip ? null : sideText(src, "old", f), newText, { plain: plain || skip });
+    // A BPMN diagram travels whole, both sides, so the page can draw it
+    // before and after even when the XML diff starts collapsed.
+    if (V.isBpmn(f.path) && !f.binary) {
+      const bp = { old: sideText(src, "old", f), new: newText ?? sideText(src, "new", f) };
+      const size = (bp.old || "").length + (bp.new || "").length;
+      // Each side the change has must be here: a side past sideText's cap
+      // would read as an added or deleted diagram. A patch-file review has
+      // neither side, and a page past its budget takes no more.
+      const whole = (f.status === "A" || bp.old != null) && (f.status === "D" || bp.new != null);
+      if (whole && size && bpmnBytes + size <= BPMN_BUDGET) { drawn.bpmn = bp; bpmnBytes += size; }
+    }
     rows[f.path] = drawn;
     // What the edge providers read: the new side, or (from a patch file) the
     // lines the hunks carry. Collapsed files are read by nobody.
