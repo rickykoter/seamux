@@ -6,6 +6,14 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Flowable's BPMN files render too.** A `.bpmn20.xml` file, the name
+  Flowable and Activiti use, is treated as a diagram wherever a `.bpmn` is:
+  the Wake, the Dock and lookout. Flowable files written in code usually
+  store no diagram positions, so seamux lays them out with bpmn.io's
+  bpmn-auto-layout 1.3.0 and labels each unnamed step with its id; a note in
+  the corner says the layout is seamux's. Flowable's own attributes and
+  extension elements do not get in the way. In lookout, an arrow that is
+  added or removed no longer marks the steps at its ends as changed.
 - **BPMN diagrams render.** A `.bpmn` file now shows as its diagram instead
   of raw XML in three places: the Wake's preview and its tab, and the Dock
   when you click a pane's link to the file. A `.bpmn` that Claude writes in

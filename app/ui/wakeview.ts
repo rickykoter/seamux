@@ -9,7 +9,7 @@ import type { Row } from "./wake";
 // leaves the Wake: the list keeps its place, and the pick follows the pane.
 
 /** The files the pane shows (wake_app.rs show_kind). */
-export const PREVIEW = /\.(png|jpe?g|gif|webp|svg|html?|pdf|mp4|m4v|mov|webm|bpmn)$/i;
+export const PREVIEW = /\.(png|jpe?g|gif|webp|svg|html?|pdf|mp4|m4v|mov|webm|bpmn|bpmn20\.xml)$/i;
 /** Kinds that open their own way (a page, a review, a browser), whatever the path says. */
 const OWN_WAY = ["plan", "review", "ask", "commit", "artifact"];
 
@@ -21,7 +21,7 @@ export function mediaOf(path: string): Media | null {
   if (["mp4", "m4v", "mov", "webm"].includes(ext)) return "video";
   if (ext === "html" || ext === "htm") return "html";
   if (ext === "pdf") return "pdf";
-  if (ext === "bpmn") return "bpmn";
+  if (/\.(bpmn|bpmn20\.xml)$/i.test(path)) return "bpmn";
   return null;
 }
 
