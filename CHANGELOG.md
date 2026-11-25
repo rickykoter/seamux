@@ -6,6 +6,10 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Diagrams in patch-file reviews.** `lookout open --patch` now draws an
+  added or deleted `.bpmn` or `.bpmn20.xml` file, rebuilt from the patch's
+  own lines. A changed diagram in a patch still shows as XML, since a patch
+  holds only part of each side.
 - **Flowable's BPMN files render too.** A `.bpmn20.xml` file, the name
   Flowable and Activiti use, is treated as a diagram wherever a `.bpmn` is:
   the Wake, the Dock and lookout. Flowable files written in code usually
