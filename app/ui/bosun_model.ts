@@ -10,7 +10,8 @@ export type Entry = { id: string; at: number; question: string; answer: string; 
 /** A section's result in a report run: needs the person, fine, or not checked. */
 export type SectionStatus = "needs" | "ok" | "unchecked";
 /** One section of a report run, as `seamux bosun report done` logs it (crew_core::bosun::reports). */
-export type ReportSection = { title: string; status: SectionStatus; line: string; why?: string };
+/** `detail` is the section in full, as markdown, shown when its card is opened. */
+export type ReportSection = { title: string; status: SectionStatus; line: string; why?: string; detail?: string };
 /** A report run's `report` field: which report, its doc (or why there is none), its sections. */
 export type ReportRun = { id: string; run: string; title: string; doc?: string; docWhy?: string; sections: ReportSection[] };
 /** bosun_log's answer: one day's entries, and the days that have a log, newest first. */
@@ -131,7 +132,10 @@ export function reportOf(e: Entry): ReportRun | null {
   if (!r || typeof r !== "object" || !Array.isArray(r.sections) || typeof r.id !== "string" || !r.id) return null;
   const sections = r.sections
     .filter((s) => s && typeof s.title === "string" && typeof s.line === "string" && STATUSES.includes(s.status))
-    .map((s) => ({ title: s.title, status: s.status, line: s.line, ...(s.why ? { why: String(s.why) } : {}) }));
+    .map((s) => ({
+      title: s.title, status: s.status, line: s.line, ...(s.why ? { why: String(s.why) } : {}),
+      ...(typeof s.detail === "string" && s.detail.trim() ? { detail: s.detail } : {}),
+    }));
   if (!sections.length) return null;
   const doc = typeof r.doc === "string" && r.doc.startsWith("https://") ? r.doc : undefined;
   return {
@@ -140,14 +144,21 @@ export function reportOf(e: Entry): ReportRun | null {
   };
 }
 
-/** What a report run's answer says beyond its section lines (the lines
- *  `report done` writes when the Bosun sends none): "" when nothing. */
+/** What a report run's answer says beyond its section lines: "" when
+ *  nothing. A line that recaps a section ("Title: ...", "- Title (ok): ...",
+ *  "**Title**: ...") is left out, whatever follows, since the section's card
+ *  shows it; anything else (a note said once, a summary) stays. */
 export function reportExtra(e: Entry, r: ReportRun): string {
-  const said = new Set(r.sections.flatMap((s) => [`${s.title}: ${s.line}`, `- ${s.title}: ${s.line}`].map((x) => x.trim().toLowerCase())));
+  const titles = r.sections.map((s) => s.title.trim().toLowerCase()).filter(Boolean);
+  const recap = (l: string) => {
+    const t = l.trim().replace(/^[-*+]\s+/, "").replace(/^\*\*(.+?)\*\*/, "$1").toLowerCase();
+    return titles.some((x) => t.startsWith(x) && /^\s*(\([a-z ]+\))?\s*:/.test(t.slice(x.length)));
+  };
   return e.answer
     .split("\n")
-    .filter((l) => l.trim() && !said.has(l.trim().toLowerCase()))
+    .filter((l) => !recap(l))
     .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -361,33 +372,47 @@ export function askAgain(e: Entry): { cmd: "bosun_report_run"; args: { id: strin
 
 // ---- the answer's text ----
 
-/** A run of text inside a line: plain, `code`, **bold**, or a bare URL. */
-export type Span = { t: "text" | "code" | "b" | "url"; s: string };
+/** A run of text inside a line: plain, `code`, **bold**, *italic*, a bare
+ *  URL, or a markdown link (`s` its text, `href` its https or http target). */
+export type Span = { t: "text" | "code" | "b" | "i" | "url"; s: string } | { t: "link"; s: string; href: string };
 /** A block of an answer: a heading, a paragraph, a list, or fenced code. */
 export type Block =
   | { t: "h"; level: number; spans: Span[] }
   | { t: "p"; spans: Span[] }
   | { t: "ul" | "ol"; items: Span[][] }
-  | { t: "pre"; s: string };
+  | { t: "pre"; s: string }
+  | { t: "table"; head: Span[][]; rows: Span[][][] };
 
-/** The inline marks the Bosun writes: code ticks, bold, and bare links. */
+/** The inline marks the Bosun writes: code ticks, bold, italic, markdown
+ *  links to http(s), and bare links. A link to anything else stays text. */
 export function mdInline(line: string): Span[] {
   const out: Span[] = [];
-  const re = /`([^`]+)`|\*\*(.+?)\*\*|(https?:\/\/[^\s<>()\]]*[^\s<>()\].,;:!?'"])/g;
+  const re = /`([^`]+)`|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*(.+?)\*\*|(?<![\w*])\*([^*\s][^*\n]*?)\*(?![\w*])|(https?:\/\/[^\s<>()\]]*[^\s<>()\].,;:!?'"])/g;
   let last = 0;
   for (const m of line.matchAll(re)) {
     if (m.index! > last) out.push({ t: "text", s: line.slice(last, m.index) });
     if (m[1] !== undefined) out.push({ t: "code", s: m[1] });
-    else if (m[2] !== undefined) out.push({ t: "b", s: m[2] });
-    else out.push({ t: "url", s: m[3] });
+    else if (m[2] !== undefined) out.push({ t: "link", s: m[2], href: m[3] });
+    else if (m[4] !== undefined) out.push({ t: "b", s: m[4] });
+    else if (m[5] !== undefined) out.push({ t: "i", s: m[5] });
+    else out.push({ t: "url", s: m[6] });
     last = m.index! + m[0].length;
   }
   if (last < line.length) out.push({ t: "text", s: line.slice(last) });
   return out;
 }
 
+/** A table row's cells: `| a | b |` is ["a", "b"]. An escaped pipe stays in its cell. */
+function cells(l: string): string[] {
+  return l.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+}
+
+/** A table's separator row: `| --- | :-: |`. It needs a pipe, so a `---` rule under a line is not one. */
+const TABLE_SEP = /^(?=.*\|)\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
 /** An answer's markdown as blocks, for the reading pane to draw as plain
- *  elements (never as HTML): headings, paragraphs, lists, fenced code. */
+ *  elements (never as HTML): headings, paragraphs, lists, fenced code, and
+ *  tables (a row with pipes, then a separator row, then rows). */
 export function mdBlocks(text: string): Block[] {
   const out: Block[] = [];
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
@@ -403,6 +428,20 @@ export function mdBlocks(text: string): Block[] {
       const code: string[] = [];
       while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
       out.push({ t: "pre", s: code.join("\n") });
+      continue;
+    }
+    if (l.includes("|") && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+      flush();
+      const head = cells(l).map(mdInline);
+      const rows: Span[][][] = [];
+      i += 1;
+      while (i + 1 < lines.length && lines[i + 1].includes("|") && lines[i + 1].trim()) {
+        i += 1;
+        const r = cells(lines[i]).map(mdInline);
+        // Every row as wide as the head: short ones padded, long ones cut.
+        rows.push(head.map((_, k) => r[k] ?? []));
+      }
+      out.push({ t: "table", head, rows });
       continue;
     }
     const h = /^(#{1,6})\s+(.*)$/.exec(l);

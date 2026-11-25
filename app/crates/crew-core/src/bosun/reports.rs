@@ -486,6 +486,19 @@ fn one_line(s: &str, max: usize) -> String {
     if flat.chars().count() <= max { flat } else { flat.chars().take(max - 1).collect::<String>().trim_end().to_string() + "…" }
 }
 
+/// The most a section's detail keeps, in characters.
+const DETAIL_MAX: usize = 6000;
+
+/// A section's detail: markdown kept line for line (newlines matter to
+/// lists and tables), trimmed, and cut at DETAIL_MAX with a note that it was.
+fn detail_of(s: &str) -> String {
+    let t = s.replace("\r\n", "\n").trim().to_string();
+    if t.chars().count() <= DETAIL_MAX {
+        return t;
+    }
+    t.chars().take(DETAIL_MAX).collect::<String>().trim_end().to_string() + "\n\n(cut here: the rest is in the doc)"
+}
+
 /// `report done <run>`: the Bosun's results for a run it was typed, logged
 /// as one answer-log entry with a `report` field (the rail's report card),
 /// the doc link kept for the next run, and the run marked done for the
@@ -533,6 +546,15 @@ pub fn done(dir: &Path, run: &str, v: &Value, now_secs: i64) -> Result<Value, St
         let mut sec = json!({"title": t, "status": status, "line": line});
         if status == "unchecked" {
             sec["why"] = json!(if why.is_empty() { line.clone() } else { why });
+        }
+        // The section in full, as markdown (lists, tables, links), shown when
+        // its card is opened. A line cut to fit stands in for one not sent.
+        let full = text(s, "line").split_whitespace().collect::<Vec<_>>().join(" ");
+        let detail = detail_of(&text(s, "detail"));
+        if !detail.is_empty() {
+            sec["detail"] = json!(detail);
+        } else if full != line {
+            sec["detail"] = json!(full);
         }
         let srcs = s.get("sources").and_then(Value::as_array).cloned().unwrap_or_default();
         if status != "unchecked" && srcs.is_empty() {
@@ -1376,6 +1398,8 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         let by = |t: &str| rv["sections"].as_array().unwrap().iter().find(|p| p["title"] == t).unwrap().clone();
         assert_eq!((by("Tickets")["status"].as_str(), by("Tickets")["line"].as_str()), (Some("needs"), Some("PROJ-9 is blocked on you since Monday")));
         assert_eq!(by("Monitors")["status"], "unchecked", "each section's status and line is kept in the run file");
+        let sec = |t: &str| e["report"]["sections"].as_array().unwrap().iter().find(|s| s["title"] == t).unwrap().clone();
+        assert!(sec("Notes").get("detail").is_none(), "a short line and no detail: nothing to open");
         assert!(done(&d, &run, &results, 300).unwrap_err().contains("already done"));
         // A done whose run file was not marked (a failure after the log) is tried again: one entry.
         let mut rv = read_run(&d, &run).unwrap();
@@ -1383,6 +1407,24 @@ plugin:engineering:google calendar:  (HTTP) - - Not configured\n";
         write_run(&d, &run, &rv).unwrap();
         done(&d, &run, &results, 300).unwrap();
         assert_eq!(super::super::log::list(&d, &super::super::launch::local_day_hour(super::super::launch::now_secs()).0).unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_sections_detail_is_kept_as_markdown_and_a_cut_line_stands_in_for_it() {
+        let d = tmp("detail");
+        let run = built_run(&d);
+        let src = json!([{"kind": "query", "ref": "q", "label": "q"}]);
+        let long = format!("{} end", "word ".repeat(60));
+        let table = "| PR | Age |\n| --- | --- |\n| #1 | 2d |";
+        let e = done(&d, &run, &json!({"answer": "a", "docWhy": "test", "sections": [
+            {"title": "Tickets", "status": "ok", "line": "two tickets", "detail": format!("  {table}\r\n\n- more  "), "sources": src},
+            {"title": "Notes", "status": "ok", "line": long, "sources": src}]}), 200).unwrap();
+        let s = &e["report"]["sections"];
+        assert_eq!(s[2]["detail"], format!("{table}\n\n- more"), "newlines kept, ends trimmed: {}", s[2]);
+        assert!(s[3]["line"].as_str().unwrap().ends_with('…'));
+        assert_eq!(s[3]["detail"], long.split_whitespace().collect::<Vec<_>>().join(" "), "the whole line, when it was cut");
+        assert!(detail_of(&"x".repeat(DETAIL_MAX + 10)).ends_with("(cut here: the rest is in the doc)"));
         let _ = fs::remove_dir_all(&d);
     }
 
