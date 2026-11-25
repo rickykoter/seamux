@@ -211,7 +211,10 @@ app_version() {
 
 # Where --from builds: a folder as it is (uncommitted edits included), or a
 # commit exported into a cache folder. Exports share one cargo target folder,
-# so trying commit after commit rebuilds only what changed.
+# so trying commit after commit rebuilds only what changed. An export is the
+# whole commit, not app/ alone: the pages' checks import deep-plan/lib. It is
+# written beside its place and moved in with a stamp, so an export cut short
+# (or one made when only app/ was exported) is made again.
 resolve_from() {
   local sha cache="${XDG_CACHE_HOME:-$HOME/.cache}/seamux/app-from"
   if [ -z "$FROM" ]; then
@@ -229,8 +232,8 @@ resolve_from() {
     fi
     [ -n "$sha" ] || die "--from $FROM: not a folder, and not a commit in $HERE (even after git fetch)"
     SRC="$cache/$sha" FROM_SHA="$sha"
-    if [ ! -f "$SRC/app/Cargo.toml" ]; then
-      run "mkdir -p $(q "$SRC") && git -C $(q "$HERE") archive $(q "$sha") app | tar -x -C $(q "$SRC")" \
+    if [ ! -f "$SRC/.seamux-export" ]; then
+      run "rm -rf $(q "$SRC") $(q "$SRC.part") && mkdir -p $(q "$SRC.part") && git -C $(q "$HERE") archive $(q "$sha") | tar -x -C $(q "$SRC.part") && touch $(q "$SRC.part/.seamux-export") && mv $(q "$SRC.part") $(q "$SRC")" \
         || die "--from $FROM: could not export $sha"
     fi
     did "exported $FROM ($(git -C "$HERE" rev-parse --short "$sha")) to $SRC"
@@ -290,9 +293,12 @@ install_app() {
   v="$(app_version)"; [ -n "$v" ] || die "no version in app/Cargo.toml"
   target="${CARGO_TARGET:-$SRC/app/target}"
   build="$target/release"
-  run "(cd $(q "$SRC/app") && npm ci --silent && npm run build --silent >/dev/null)"
+  run "(cd $(q "$SRC/app") && npm ci --silent && npm run build --silent >/dev/null)" \
+    || die "the pages did not build (npm run build in $SRC/app); the installed app is unchanged"
   did "pages built (app/dist)"
-  run "CARGO_TARGET_DIR=$(q "$target") cargo build --release --quiet --manifest-path $(q "$SRC/app/Cargo.toml") -p seamux-app -p seamux-cli"
+  # An exported commit has no .git: name it, so the build stamps the commit.
+  run "${FROM_SHA:+SEAMUX_BUILD_SHA=$(q "$FROM_SHA") }CARGO_TARGET_DIR=$(q "$target") cargo build --release --quiet --manifest-path $(q "$SRC/app/Cargo.toml") -p seamux-app -p seamux-cli" \
+    || die "the app did not build (cargo build in $SRC/app); the installed app is unchanged"
   did "seamux-app and seamux built (release)"
   # Assemble the bundle in a fresh folder under the build output.
   if [ "$DRY" = 1 ]; then
