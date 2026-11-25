@@ -377,10 +377,20 @@ function validate(spec, force) {
     }
     const lens = opts.map(o => o.length);
     const correct = opts[q.answer] || "";
-    if (correct.length === Math.max(...lens) && lens.filter(l => l === correct.length).length === 1 && opts.length > 2)
-      errs.push(`quiz ${q.id}: the correct option is the single longest — the classic length tell`);
-    if (Math.max(...lens) / Math.max(1, Math.min(...lens)) > 2.2)
-      errs.push(`quiz ${q.id}: option lengths spread wider than 2.2×`);
+    // Both length rules say the numbers and the fix: without them each retry
+    // was a guess, and a fix for one often broke the other. The bounds named
+    // are the ones that keep the other rule passing.
+    const shortest = Math.min(...lens), longest = Math.max(...lens);
+    const distractors = lens.filter((_, i) => i !== q.answer);
+    if (correct.length === longest && lens.filter(l => l === correct.length).length === 1 && opts.length > 2) {
+      const next = Math.max(...distractors);
+      errs.push(`quiz ${q.id}: the correct option is the single longest (${correct.length} characters; the longest distractor is ${next}) — ` +
+        `the classic length tell. Lengthen a distractor to at least ${correct.length} characters, or shorten the correct one to ${next} or fewer, ` +
+        `keeping every option between ${Math.ceil(longest / 2.2)} and ${Math.floor(shortest * 2.2)} characters (the 2.2× spread)`);
+    }
+    if (longest / Math.max(1, shortest) > 2.2)
+      errs.push(`quiz ${q.id}: option lengths spread wider than 2.2× (shortest ${shortest} characters, longest ${longest}): ` +
+        `bring every option to between ${shortest} and ${Math.floor(shortest * 2.2)} characters, or lengthen the shortest to at least ${Math.ceil(longest / 2.2)}`);
     for (const tok of correct.split(/\W+/)) {
       if (tok.length > 6 && (q.prompt || "").includes(tok) &&
           !opts.some((o, i) => i !== q.answer && o.includes(tok)))
@@ -3159,6 +3169,23 @@ async function render(specPath, opts) {
   let adrDrafts;
   try { adrDrafts = adrs.map(a => adrDraftText(spec, planRoot, a)); }
   catch (e) { die("spec refused — adr: " + e.message); }
+  // Progress follows the increment number; a loop whose batches changed under
+  // started work would hand it to another increment (lib/loop.mjs). Refused
+  // here, before the first write: a refusal after the archive and the pages
+  // left an amend half done, and a retry then found nothing to amend.
+  {
+    const moved = movedProgress(prior0 && prior0.increments, priorSpec, spec);
+    if (moved.length && !opts.force) {
+      console.error("deep-plan: spec refused — a loop's batches changed under started work:");
+      for (const m of moved) console.error("  ✗ " + m);
+      console.error("Change a loop's targets only before its first batch starts. After that, leave the loop as it is and add " +
+        "a deliverable at the end for what you found; --force re-renders anyway (the human's call).");
+      process.exit(1);
+    } else if (moved.length) { console.error(`deep-plan: --force past ${moved.length} moved increment(s) — logged`); violations.push(...moved); }
+  }
+  // The diagram engine too: with no bundle and no fetch, mermaidB64 refuses,
+  // and that must happen before anything is written.
+  const b64 = mermaidB64();
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   fs.mkdirSync(KEYS_DIR, { recursive: true });
 
@@ -3187,7 +3214,6 @@ async function render(specPath, opts) {
   const firstSha = ((prior0 && prior0.increments) || []).map(i => i.startSha).find(Boolean) || "";
   const map = buildMap(spec, planRoot, (prior0 && prior0.map) || null, firstSha);
 
-  const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs, map));
   const extras = writeSpecArtifacts(spec, b64);
@@ -3218,18 +3244,7 @@ async function render(specPath, opts) {
   // keys are listed after the spread so the spec still wins on `title` and the
   // defaults still apply.
   const old = new Map((st.increments || []).map(i => [i.n, i]));
-  // Progress follows the increment number; a loop whose batches changed under
-  // started work would hand it to another increment (lib/loop.mjs).
-  {
-    const moved = movedProgress(st.increments, priorSpec, spec);
-    if (moved.length && !opts.force) {
-      console.error("deep-plan: spec refused — a loop's batches changed under started work:");
-      for (const m of moved) console.error("  ✗ " + m);
-      console.error("Change a loop's targets only before its first batch starts. After that, leave the loop as it is and add " +
-        "a deliverable at the end for what you found; --force re-renders anyway (the human's call).");
-      process.exit(1);
-    } else if (moved.length) { console.error(`deep-plan: --force past ${moved.length} moved increment(s) — logged`); violations.push(...moved); }
-  }
+  // (A loop's moved progress was refused above, before the first write.)
   st.increments = (spec.deliverables || []).map((d, i) => {
     const prev = old.get(i + 1) || {};
     return { ...prev,

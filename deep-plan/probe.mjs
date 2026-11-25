@@ -171,6 +171,26 @@ ok("quiz linter: leading word rejected", cli("render", tmpSpec(bad)).status !== 
 bad = JSON.parse(JSON.stringify(spec));
 bad.quiz = bad.quiz.slice(0, 2);
 ok("quiz linter: fewer than 3 questions rejected", cli("render", tmpSpec(bad)).status !== 0);
+// The two length rules give the numbers and the fix, so one retry is enough.
+bad = JSON.parse(JSON.stringify(spec));
+bad.quiz[0].options = ["a".repeat(40), "b".repeat(30), "c".repeat(31)];
+bad.quiz[0].answer = 0;
+{
+  const rr = cli("render", tmpSpec(bad));
+  ok("quiz linter: the length tell names both lengths and the fix",
+    rr.status !== 0 && /single longest \(40 characters; the longest distractor is 31\)/.test(rr.stderr) &&
+    /Lengthen a distractor to at least 40 characters, or shorten the correct one to 31 or fewer/.test(rr.stderr) &&
+    /between 19 and 66 characters/.test(rr.stderr), rr.stderr);
+}
+bad = JSON.parse(JSON.stringify(spec));
+bad.quiz[0].options = ["a".repeat(30), "b".repeat(10), "c".repeat(30)];
+bad.quiz[0].answer = 0;
+{
+  const rr = cli("render", tmpSpec(bad));
+  ok("quiz linter: the spread rule names the shortest and longest, and the bounds",
+    rr.status !== 0 && /spread wider than 2\.2× \(shortest 10 characters, longest 30\)/.test(rr.stderr) &&
+    /between 10 and 22 characters, or lengthen the shortest to at least 14/.test(rr.stderr), rr.stderr);
+}
 bad = JSON.parse(JSON.stringify(spec));
 bad.diagrams[0].mermaid = 'flowchart LR\n  A --> B[\\"broken label]';
 {
@@ -8904,6 +8924,23 @@ if (want("refactor loops expand at render")) {
     ok("loops: changing the targets under a started batch is refused, naming the move",
       rr.status !== 0 && /a loop's batches changed under started work/.test(rr.stderr) && /increment 1 \(".*1\/3: t\/a\.rb, t\/b\.rb\)"\) is authorized/.test(rr.stderr) &&
       stOf("lp-m").increments[0].status === "authorized", rr.stderr);
+    // The refusal comes before render writes anything: the archived spec, the
+    // key, the plan and its pages, and the state are as they were, so an amend
+    // that hits it can be fixed and run again (note n105a0580).
+    const files = ["keys/lp-m.spec.json", "keys/lp-m.key.json", "plans/lp-m.md", "plans/lp-m.review.html",
+      "plans/lp-m.working.html", "state/lp-m.json"].map(f => path.join(TMP, f));
+    const snap = () => files.map(f => { try { return fs.readFileSync(f, "utf8"); } catch { return null; } });
+    const before = snap();
+    const moved = tmpSpec(mk("lp-m", { targets: ["t/a.rb", "t/c.rb", "t/d.rb", "t/e.rb"], batch: 2 }));
+    rr = lc("render", moved, "--root", LP);
+    ok("loops: a refused render writes nothing: spec, key, pages and state are byte-identical",
+      rr.status !== 0 && before.every(b => b !== null) && JSON.stringify(snap()) === JSON.stringify(before), rr.stderr);
+    rr = lc("amend", "lp-m", moved, "move the loop's targets");
+    ok("loops: an amend refused the same way writes nothing either",
+      rr.status !== 0 && /a loop's batches changed under started work/.test(rr.stderr) && JSON.stringify(snap()) === JSON.stringify(before), rr.stderr);
+    rr = lc("amend", "lp-m", moved, "move the loop's targets");
+    ok("loops: …so a retry meets the same refusal, not 'nothing to amend'",
+      rr.status !== 0 && /a loop's batches changed under started work/.test(rr.stderr) && !/nothing to amend/.test(rr.stderr), rr.stderr);
     rr = lc("render", tmpSpec(mk("lp-m")), "--root", LP);
     ok("loops: an unchanged loop re-renders with its progress where it was", rr.status === 0 && stOf("lp-m").increments[0].status === "authorized", rr.stderr);
   }
