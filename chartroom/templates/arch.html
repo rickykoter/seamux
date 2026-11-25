@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>View: name it</title>
+<!--
+  chartroom arch starter: ONE view of an architecture (context, containers,
+  a sequence, a data flow). Copy it per view (chartroom template arch
+  context.html, then sequence.html ...) and add them as views:
+  chartroom add <id> context.html sequence.html.
+
+  Edit the DIAGRAM block below: nodes sit in columns (col) and rows (row);
+  edges name the nodes they join and say what passes. The script draws boxes
+  and arrows as inline SVG; there is no library and no network.
+  - Name things as the code and the team do; one sentence of purpose per node.
+  - Every edge says what crosses it (a call, an event, a file), and how.
+  - Mark what this change adds or alters with "status": "new" or "changed".
+  - Facts you have not checked go in "unverified": true; they draw dashed.
+  Delete this comment when the view is real.
+-->
+<style>
+  :root {
+    --bg: #f6f7f5; --ink: #22292e; --muted: #5d6970; --line: #8f9a9f; --box: #ffffff;
+    --new: #2f7a4f; --changed: #a26a12; --ext: #eef1f3;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--font); padding: 20px 24px; }
+  header { max-width: 1100px; margin: 0 auto 12px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); max-width: 70ch; }
+  .wrap { max-width: 1100px; margin: 0 auto; overflow-x: auto; }
+  svg text { font-family: var(--font); }
+  .legend { max-width: 1100px; margin: 10px auto 0; display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -2px; border: 2px solid var(--line); background: var(--box); }
+  .legend .new::before { border-color: var(--new); } .legend .changed::before { border-color: var(--changed); }
+  .legend .ext::before { background: var(--ext); } .legend .unv::before { border-style: dashed; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Containers: what runs, and what talks to what</h1>
+  <p id="purpose">One sentence on what this view answers, for whom, and what it leaves out.</p>
+</header>
+<div class="wrap"><svg id="diagram" role="img" aria-labelledby="title"></svg></div>
+<div class="legend"><span>exists</span><span class="new">new in this change</span><span class="changed">changed</span><span class="ext">outside our system</span><span class="unv">not verified</span></div>
+
+<script type="application/json" id="DIAGRAM">
+{
+  "nodes": [
+    { "id": "user", "col": 0, "row": 1, "label": "Shopper", "note": "Browser or phone", "external": true },
+    { "id": "web", "col": 1, "row": 1, "label": "Storefront", "note": "Renders pages, holds the cart" },
+    { "id": "api", "col": 2, "row": 1, "label": "Orders API", "note": "Prices, places and tracks orders", "status": "changed" },
+    { "id": "pay", "col": 3, "row": 0, "label": "Payments", "note": "Card provider", "external": true },
+    { "id": "db", "col": 3, "row": 2, "label": "Orders DB", "note": "Postgres, one row per order" },
+    { "id": "mail", "col": 2, "row": 3, "label": "Receipts worker", "note": "Sends the receipt email", "status": "new", "unverified": true }
+  ],
+  "edges": [
+    { "from": "user", "to": "web", "label": "HTTPS" },
+    { "from": "web", "to": "api", "label": "POST /orders" },
+    { "from": "api", "to": "pay", "label": "charge (sync)" },
+    { "from": "api", "to": "db", "label": "insert order" },
+    { "from": "api", "to": "mail", "label": "order.placed event", "unverified": true }
+  ]
+}
+</script>
+<script>
+(function () {
+  var D = JSON.parse(document.getElementById("DIAGRAM").textContent);
+  var css = getComputedStyle(document.documentElement), v = function (n) { return css.getPropertyValue(n).trim(); };
+  var W = 190, H = 64, GX = 90, GY = 46, PAD = 20;
+  var cols = Math.max.apply(null, D.nodes.map(function (n) { return n.col; })) + 1;
+  var rows = Math.max.apply(null, D.nodes.map(function (n) { return n.row; })) + 1;
+  var svg = document.getElementById("diagram"), NS = "http://www.w3.org/2000/svg";
+  var w = PAD * 2 + cols * W + (cols - 1) * GX, h = PAD * 2 + rows * H + (rows - 1) * GY;
+  svg.setAttribute("viewBox", "0 0 " + w + " " + h); svg.setAttribute("width", w); svg.setAttribute("height", h);
+  var el = function (tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; };
+  var defs = el("defs", {});
+  var marker = el("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0 L10,5 L0,10 z", fill: v("--line") }, marker);
+  var at = {};
+  D.nodes.forEach(function (n) { at[n.id] = { x: PAD + n.col * (W + GX), y: PAD + n.row * (H + GY), n: n }; });
+  // Edges first, so boxes sit on top. Each runs side to side between boxes.
+  D.edges.forEach(function (e, i) {
+    var a = at[e.from], b = at[e.to]; if (!a || !b) return;
+    var right = b.x >= a.x;
+    var x1 = right ? a.x + W : a.x, y1 = a.y + H / 2, x2 = right ? b.x : b.x + W, y2 = b.y + H / 2;
+    if (a.x === b.x) { x1 = a.x + W / 2; x2 = b.x + W / 2; y1 = b.y > a.y ? a.y + H : a.y; y2 = b.y > a.y ? b.y : b.y + H; }
+    var mx = (x1 + x2) / 2;
+    var g = el("g", { id: "edge-" + e.from + "-" + e.to });
+    el("path", { d: "M" + x1 + "," + y1 + " C" + mx + "," + y1 + " " + mx + "," + y2 + " " + x2 + "," + y2, fill: "none", stroke: v("--line"),
+      "stroke-width": "1.6", "marker-end": "url(#arrow)", "stroke-dasharray": e.unverified ? "5 4" : "none" }, g);
+    // A box in the page's ground behind the label keeps it readable where it
+    // crosses its line, word gaps included.
+    var box = el("rect", { fill: v("--bg"), rx: "3" }, g);
+    var t = el("text", { x: mx, y: (y1 + y2) / 2 - 6, "text-anchor": "middle", "font-size": "11", fill: v("--muted") }, g);
+    t.textContent = e.label || "";
+    var bb = t.getBBox();
+    if (bb.width) { box.setAttribute("x", bb.x - 4); box.setAttribute("y", bb.y - 1); box.setAttribute("width", bb.width + 8); box.setAttribute("height", bb.height + 2); }
+  });
+  D.nodes.forEach(function (n) {
+    var p = at[n.id];
+    var stroke = n.status === "new" ? v("--new") : n.status === "changed" ? v("--changed") : v("--line");
+    var g = el("g", { id: "node-" + n.id });
+    el("rect", { x: p.x, y: p.y, width: W, height: H, rx: "8", fill: n.external ? v("--ext") : v("--box"), stroke: stroke,
+      "stroke-width": n.status ? "2.4" : "1.4", "stroke-dasharray": n.unverified ? "6 4" : "none" }, g);
+    var t1 = el("text", { x: p.x + 12, y: p.y + 24, "font-size": "14", "font-weight": "600", fill: v("--ink") }, g); t1.textContent = n.label;
+    var t2 = el("text", { x: p.x + 12, y: p.y + 44, "font-size": "11.5", fill: v("--muted") }, g); t2.textContent = n.note || "";
+  });
+})();
+</script>
+</body>
+</html>

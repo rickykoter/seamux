@@ -23,6 +23,7 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "pl
 const USAGE = `chartroom ${VERSION}: charts kept with the repo, reviewed in a local studio
 
   chartroom new <ux|arch|domain> <title> [--purpose TEXT] [--id ID]
+  chartroom template <ux|arch|domain> [file.html]   copy the kind's starter page (or print its path)
   chartroom add <id> <pane>... [--option|--view] [--note TEXT]
                  a pane is FILE.html, KEY=FILE.html or KEY:Label=FILE.html
   chartroom list [--json]
@@ -121,6 +122,20 @@ const verbs = {
     out({ chart: c, dir: l.dir, mode: l.mode },
       `made ${c.id} (${c.kind}) in ${rel(path.join(l.dir, c.id))}\n` +
       `next: write its panes as .html files, then chartroom add ${c.id} <file>...`);
+  },
+
+  template() {
+    need(1, "a kind");
+    const kind = pos[0];
+    if (!S.KINDS.includes(kind)) die(`kind must be one of ${S.KINDS.join(", ")}`, 2);
+    const src = path.join(HERE, "templates", kind + ".html");
+    if (!pos[1]) return out({ kind, path: src }, src);
+    const dest = path.resolve(pos[1]);
+    if (!/\.html?$/i.test(dest)) die("the copy must be an .html file", 2);
+    if (fs.existsSync(dest)) die(`${pos[1]} exists; pick another name`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+    out({ kind, path: dest, from: src }, `wrote ${rel(dest)} from the ${kind} starter; edit it, then chartroom add <id> ${rel(dest)}`);
   },
 
   add() {

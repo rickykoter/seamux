@@ -620,6 +620,32 @@ if (want("publish: export and pull")) {
   cli(d, "serve", "--stop");
 }
 
+if (want("skill: templates and the template verb")) {
+  const vm = await import("node:vm");
+  for (const kind of S.KINDS) {
+    const f = path.join(HERE, "templates", kind + ".html");
+    const html = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+    ok(`template ${kind}: exists and is a whole page`, /^<!doctype html>/i.test(html) && /<\/html>\s*$/.test(html));
+    ok(`template ${kind}: loads nothing from the network`, !/\b(src|href)\s*=\s*["']?(https?:)?\/\//i.test(html) && !/@import|url\(\s*["']?https?:/i.test(html));
+    ok(`template ${kind}: no emoji`, !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(html));
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+    ok(`template ${kind}: every inline script parses`, scripts.every(s => { try { new vm.Script(s); return true; } catch { return false; } }));
+    const data = [...html.matchAll(/<script type="application\/json" id="[A-Z]+">([\s\S]*?)<\/script>/g)].map(m => m[1]);
+    ok(`template ${kind}: its data block parses`, data.every(s => { try { JSON.parse(s); return true; } catch { return false; } }));
+    ok(`template ${kind}: ids for people to pin on`, (html.match(/\sid="[a-z][\w-]*"/g) || []).length >= 2);
+  }
+  const d = repo();
+  const r = cli(d, "template", "arch", "views/context.html");
+  ok("template verb: copies the starter", r.status === 0 && fs.readFileSync(path.join(d, "views", "context.html"), "utf8") === fs.readFileSync(path.join(HERE, "templates", "arch.html"), "utf8"), r.stderr);
+  ok("template verb: never overwrites", /exists/.test(cli(d, "template", "arch", "views/context.html").stderr));
+  ok("template verb: prints the path with no file", cli(d, "template", "ux").stdout.trim() === path.join(HERE, "templates", "ux.html"));
+  ok("template verb: refuses an unknown kind and a non-html copy", cli(d, "template", "poster").status === 2 && cli(d, "template", "ux", "x.txt").status === 2);
+  // The skill names every verb the CLI has.
+  const skill = fs.readFileSync(path.join(HERE, "SKILL.md"), "utf8");
+  for (const v of ["new", "template", "add", "open", "wait", "threads", "reply", "resolve", "status", "share", "export", "link", "pull"])
+    ok("SKILL.md: names chartroom " + v, new RegExp("chartroom " + v + "\\b").test(skill));
+}
+
 if (want("plugin: manifest and shim")) {
   const pj = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8"));
   ok("plugin.json: named chartroom with a version", pj.name === "chartroom" && /^\d+\.\d+\.\d+$/.test(pj.version));
