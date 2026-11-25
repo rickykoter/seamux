@@ -23,6 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { applyOp, normalize, emptyThreads } from "./ops.mjs";
 
 export const KINDS = ["ux", "arch", "domain"];
 export const STATUSES = ["exploring", "chosen", "superseded"];
@@ -345,4 +346,34 @@ export function shareOff(loc) {
   const added = addExclude(g);
   const tracked = hasTracked(g, DEFAULT_DIR);
   return { changed: added, tracked };
+}
+
+// ------------------------------------------------------------ ops
+
+// A room is a chart dir, named by a hash of its path (the server's routes,
+// the seen cursor).
+export const roomId = dir => crypto.createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 12);
+
+export function readThreads(dir, id) {
+  try { return normalize(JSON.parse(fs.readFileSync(chartPaths(dir, id).threads, "utf8"))); }
+  catch { return emptyThreads(); }
+}
+
+// One op on one chart, under its lock: [code, reply]. chart.json is written
+// only when the op changed it (a pick), threads.json on every success.
+export function applyChartOp(dir, id, body, by, at) {
+  if (!exists(dir, id)) return [404, { error: `no chart ${id}` }];
+  const p = chartPaths(dir, id);
+  return withLock(p.lock, () => {
+    const state = { chart: read(dir, id), threads: readThreads(dir, id) };
+    const before = JSON.stringify(state.chart);
+    const out = applyOp(state, body, at || new Date().toISOString(), by);
+    if (out[0] !== 200) return out;
+    writeAtomic(p.threads, JSON.stringify(state.threads, null, 2) + "\n");
+    if (JSON.stringify(state.chart) !== before) {
+      state.chart.updated = new Date().toISOString();
+      writeAtomic(p.json, JSON.stringify(state.chart, null, 2) + "\n");
+    }
+    return out;
+  });
 }

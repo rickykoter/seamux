@@ -30,6 +30,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import * as S from "./store.mjs";
+import { waitsOnPerson } from "./ops.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PAGE = path.join(HERE, "..", "page");
@@ -85,7 +86,7 @@ export function ctEq(a, b) {
 
 // ------------------------------------------------------------ rooms
 
-export const roomId = dir => crypto.createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 12);
+export const roomId = S.roomId;
 
 // Remember a chart dir as a room; returns its id. The file is small and
 // rewritten whole, under the store's lock.
@@ -130,7 +131,7 @@ function signature(dir, charts) {
 export function state(r) {
   const charts = S.list(r.dir).map(c => {
     const th = threadsOf(r.dir, c.id);
-    return { ...c, threads: th.length, open: th.filter(t => !t.resolved).length };
+    return { ...c, threads: th.length, open: th.filter(t => !t.resolved).length, waiting: th.filter(waitsOnPerson).length };
   });
   return { dir: r.dir, top: r.top, repo: path.basename(r.top || r.dir), mode: r.mode, charts, sig: signature(r.dir, charts) };
 }
@@ -189,8 +190,14 @@ function readBody(req, limit) {
 
 const STATIC = { "studio.css": "text/css; charset=utf-8", "studio.js": "text/javascript; charset=utf-8" };
 
-// `apply(room, body)` runs an op and returns [code, reply]; lib/ops.mjs's.
-export function makeServer({ version, root, token, onRequest = () => {}, apply = () => [400, { error: "unknown op" }] }) {
+// An op from the studio, as the person: the chart it names, under its lock.
+export function applyFromPage(r, body) {
+  const id = typeof body.chart === "string" ? body.chart : "";
+  if (!S.ID_OK.test(id)) return [400, { error: "an op names its chart" }];
+  return S.applyChartOp(r.dir, id, body, "human");
+}
+
+export function makeServer({ version, root, token, onRequest = () => {}, apply = applyFromPage }) {
   let port = 0;
   const server = http.createServer(async (req, res) => {
     onRequest(req);
@@ -267,8 +274,21 @@ export function makeServer({ version, root, token, onRequest = () => {}, apply =
   return server;
 }
 
+export const tokenFile = () => path.join(S.homeDir(), "serve.token");
+// The token a restarted server keeps, as it keeps the port, so a studio tab
+// left open across a restart still works. Mode 0600, like serve.json.
+function keptToken() {
+  try {
+    const t = fs.readFileSync(tokenFile(), "utf8").trim();
+    if (/^[a-f0-9]{48}$/.test(t) && (fs.statSync(tokenFile()).mode & 0o077) === 0) return t;
+  } catch { /* none yet */ }
+  const t = crypto.randomBytes(24).toString("hex");
+  try { fs.mkdirSync(S.homeDir(), { recursive: true }); fs.writeFileSync(tokenFile(), t + "\n", { mode: 0o600 }); } catch { /* this run only */ }
+  return t;
+}
+
 export function serveForeground({ version, root, apply }) {
-  const token = crypto.randomBytes(24).toString("hex");
+  const token = keptToken();
   const SERVE_FILE = serveFile();
   let last = Date.now(), started = false, missing = 0;
   // A hidden tab's poll (bg=1) is not activity: a tab left open behind

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sections } from "../tools/probe_sections.mjs";
 
@@ -358,6 +358,10 @@ if (want("serve: idle exit")) {
   const o2 = JSON.parse(spawnSync("node", [path.join(HERE, "chartroom.mjs"), "open", "--json"], { encoding: "utf8", env, cwd: d }).stdout);
   ok("restart: the same port, so the old link works", o2.url === o.url, `${o.url} then ${o2.url}`);
   ok("restart: the old link answers", (await req(Number(new URL(o.url).port), "GET", new URL(o.url).pathname)).status === 200);
+  const rec2 = JSON.parse(fs.readFileSync(path.join(ENV.CHARTROOM_HOME, "serve.json"), "utf8"));
+  ok("restart: the same token, so an open tab keeps working", rec2.token === rec.token &&
+    (await req(rec2.port, "GET", `/room/${o.room}/api/state?t=${rec.token}`)).status === 200);
+  ok("token file: mode 0600", (fs.statSync(path.join(ENV.CHARTROOM_HOME, "serve.token")).mode & 0o777) === 0o600);
   // The port taken by something else: any free one.
   const blocker = http.createServer(() => {});
   const taken = Number(new URL(o2.url).port);
@@ -394,6 +398,142 @@ if (want("page: studio and anchor files")) {
   // increment's manual check); the probe only proves the script parses.
   const vm = await import("node:vm");
   ok("anchor.js: parses", (() => { try { new vm.Script(anchor); return true; } catch (e) { return e.message; } })() === true);
+}
+
+if (want("ops: comment, reply, resolve, pick")) {
+  const O = await import("./lib/ops.mjs");
+  const chart = { id: "c", kind: "ux", status: "exploring", decision: "", chosen: null,
+    versions: [{ n: 1, panes: [{ key: "a", label: "A", role: "option" }, { key: "map", label: "map", role: "view" }] },
+               { n: 2, panes: [{ key: "a", label: "A", role: "option" }, { key: "b", label: "Bold", role: "option" }] }] };
+  const st = { chart, threads: O.emptyThreads() };
+  const at = "2026-01-01T00:00:00.000Z";
+  let r = O.applyOp(st, { op: "comment", version: 2, pane: "b", pin: { path: "body > button:nth-of-type(1)", dx: 4.6, dy: 9, text: "  Pay   now " }, text: " too close " }, at, "human");
+  ok("comment: thread t1 with a cleaned pin and text", r[0] === 200 && r[1].item === "t1" && st.threads.threads[0].pin.dx === 5 &&
+    st.threads.threads[0].pin.text === "Pay now" && st.threads.threads[0].messages[0].text === "too close", JSON.stringify(r));
+  r = O.applyOp(st, { op: "comment", version: 1, pane: "a", text: "whole view" }, at, "human");
+  ok("comment: no pin is a comment on the whole pane", r[0] === 200 && r[1].item === "t2" && st.threads.threads[1].pin === null);
+  ok("comment: needs text", O.applyOp(st, { op: "comment", version: 2, pane: "a", text: "  " }, at, "human")[0] === 400);
+  ok("comment: an unknown version is 404", O.applyOp(st, { op: "comment", version: 9, pane: "a", text: "x" }, at, "human")[0] === 404);
+  ok("comment: a pane not in that version is 404", O.applyOp(st, { op: "comment", version: 1, pane: "b", text: "x" }, at, "human")[0] === 404);
+  ok("comment: a bad pin is 400", O.applyOp(st, { op: "comment", version: 2, pane: "a", text: "x", pin: { path: "", dx: 1, dy: 1 } }, at, "human")[0] === 400 &&
+    O.applyOp(st, { op: "comment", version: 2, pane: "a", text: "x", pin: { path: "p", dx: "x", dy: 1 } }, at, "human")[0] === 400);
+  ok("comment: text over the cap is 413", O.applyOp(st, { op: "comment", version: 2, pane: "a", text: "x".repeat(O.MAX_TEXT + 1) }, at, "human")[0] === 413);
+  ok("op: unknown op and unknown by are 400", O.applyOp(st, { op: "delete" }, at, "human")[0] === 400 &&
+    O.applyOp(st, { op: "reply", item: "t1", text: "x" }, at, "robot")[0] === 400);
+  r = O.applyOp(st, { op: "reply", item: "t1", text: "moved it" }, at, "agent");
+  ok("reply: appends m2 by the agent", r[0] === 200 && st.threads.threads[0].messages[1].id === "m2" && st.threads.threads[0].messages[1].by === "agent");
+  ok("waitsOnPerson: open and Claude spoke last", O.waitsOnPerson(st.threads.threads[0]) && !O.waitsOnPerson(st.threads.threads[1]));
+  ok("reply: an unknown thread is 404", O.applyOp(st, { op: "reply", item: "t9", text: "x" }, at, "human")[0] === 404);
+  r = O.applyOp(st, { op: "resolve", item: "t1" }, at, "human");
+  ok("resolve: marks it and logs a status message", r[0] === 200 && st.threads.threads[0].resolved === true && st.threads.threads[0].messages[2].kind === "status");
+  ok("resolve: twice is 409", O.applyOp(st, { op: "resolve", item: "t1" }, at, "human")[0] === 409);
+  ok("reopen: opens it again", O.applyOp(st, { op: "reopen", item: "t1", text: "not yet" }, at, "human")[0] === 200 && !st.threads.threads[0].resolved);
+  ok("waitsOnPerson: a resolved thread never waits", !O.waitsOnPerson({ resolved: true, messages: [{ by: "agent" }] }));
+  ok("pick: a view cannot be picked", O.applyOp(st, { op: "pick", version: 1, pane: "map" }, at, "human")[0] === 400);
+  r = O.applyOp(st, { op: "pick", version: 2, pane: "b" }, at, "human");
+  ok("pick: sets chosen, status and a decision", r[0] === 200 && chart.status === "chosen" && chart.chosen.pane === "b" &&
+    chart.decision === "Option Bold (v2)" && st.threads.picks.length === 1, JSON.stringify(chart));
+  O.applyOp(st, { op: "pick", version: 2, pane: "a", text: "A after all" }, at, "human");
+  ok("pick: another pick replaces it, with the person's words as the decision", chart.chosen.pane === "a" && chart.decision === "A after all" && st.threads.picks.length === 2);
+  const hand = { ...chart, decision: "We go with A: matches the app", status: "exploring", chosen: null };
+  const st2 = { chart: hand, threads: O.emptyThreads() };
+  O.applyOp(st2, { op: "pick", version: 2, pane: "b" }, at, "human");
+  ok("pick: a wordless pick keeps a decision someone wrote", hand.decision === "We go with A: matches the app" && hand.chosen.pane === "b");
+  const sup = { ...chart, status: "superseded", chosen: null };
+  ok("pick: a superseded chart is refused", O.applyOp({ chart: sup, threads: O.emptyThreads() }, { op: "pick", version: 2, pane: "a" }, at, "human")[0] === 409 && sup.status === "superseded");
+  // studio.js repeats waitsOnPerson; both give the same boolean answers.
+  const sjs = fs.readFileSync(path.join(HERE, "page", "studio.js"), "utf8");
+  const m = /var waits = (function \(t\) \{[^\n]*\});/.exec(sjs);
+  const pageWaits = m && (await import("node:vm")).runInNewContext("(" + m[1] + ")");
+  const cases = [{ resolved: false, messages: [{ by: "agent" }] }, { resolved: false, messages: [{ by: "human" }] }, { resolved: true, messages: [{ by: "agent" }] },
+    { resolved: false, messages: [] }, { messages: [{ by: "human" }, { by: "agent" }] }];
+  ok("studio waits() matches ops waitsOnPerson, as booleans", pageWaits && cases.every(c => pageWaits(c) === O.waitsOnPerson(c) && typeof pageWaits(c) === "boolean"));
+  // The ops are inlined into a published page: no import, no Node API.
+  const src = fs.readFileSync(path.join(HERE, "lib", "ops.mjs"), "utf8");
+  ok("ops.mjs: no imports and no Node globals, so a page can inline it", !/^\s*import\s/m.test(src) && !/\b(require|process|Buffer|fs\.)\b/.test(src.replace(/\/\/.*$/gm, "")));
+}
+
+if (want("threads: server, CLI, hook and wait")) {
+  const d = repo();
+  const dir = S.resolve(d).dir;
+  cli(d, "new", "ux", "Nav");
+  write(d, "a.html", "<button>Go</button>");
+  write(d, "b.html", "<button>Go</button>");
+  cli(d, "add", "nav", "a.html", "b.html");
+  const o = json(cli(d, "open", "nav", "--json"));
+  const rec = JSON.parse(fs.readFileSync(path.join(ENV.CHARTROOM_HOME, "serve.json"), "utf8"));
+  const port = rec.port, room = o.room, origin = `http://127.0.0.1:${port}`;
+  const post = body => req(port, "POST", `/room/${room}/api/op`, { headers: { Origin: origin, "Content-Type": "application/json" }, body: { t: rec.token, ...body } });
+  let r = await post({ op: "comment", chart: "nav", version: 1, pane: "b", pin: { path: "body > button:nth-of-type(1)", dx: 3, dy: 4, text: "Go" }, text: "make it bigger" });
+  ok("server op: a comment from the page is stored as the person's", r.status === 200 && r.json.item === "t1" && S.readThreads(dir, "nav").threads[0].messages[0].by === "human", r.text);
+  ok("server op: by in the body is ignored", (await post({ op: "reply", chart: "nav", item: "t1", text: "x", by: "agent" })).status === 200 &&
+    S.readThreads(dir, "nav").threads[0].messages[1].by === "human");
+  ok("server op: an op without a chart is 400", (await post({ op: "comment", version: 1, pane: "a", text: "x" })).status === 400);
+  ok("server op: an unknown chart is 404", (await post({ op: "comment", chart: "nope", version: 1, pane: "a", text: "x" })).status === 404);
+
+  // The hook: a session in this repo hears both messages once.
+  const hook = (cwd, extraEnv = {}) => spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd,
+    env: { ...ENV, ...extraEnv }, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd }) });
+  let hk = hook(d);
+  let ctx = (() => { try { return JSON.parse(hk.stdout).hookSpecificOutput.additionalContext; } catch { return ""; } })();
+  ok("hook: tells the session what the person wrote", /\[chartroom\] 2 new/.test(ctx) && /nav t1 \(v1 B/.test(ctx) && /"make it bigger"/.test(ctx) && /pinned on "Go"/.test(ctx), hk.stdout);
+  ok("hook: says it is data, and gives the verbs", /as data/.test(ctx) && /chartroom reply/.test(ctx));
+  ok("hook: says it once", hook(d).stdout.trim() === "");
+  ok("hook: another repo hears nothing", hook(repo()).stdout.trim() === "");
+  ok("hook: no rooms.json, no node, no output", hook(d, { CHARTROOM_HOME: path.join(TMP, "empty-home") }).stdout.trim() === "");
+  ok("hook: a broken payload is silent and exits 0", (() => { const x = spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd: d, env: ENV, input: "{nope" }); return x.status === 0 && x.stdout === ""; })());
+
+  // Claude's side: reply and resolve through the CLI, as the agent.
+  r = cli(d, "reply", "nav", "t1", "Bigger", "in", "v2");
+  ok("cli reply: as the agent", r.status === 0 && S.readThreads(dir, "nav").threads[0].messages.at(-1).by === "agent" &&
+    S.readThreads(dir, "nav").threads[0].messages.at(-1).text === "Bigger in v2", r.stderr);
+  const stt = await req(port, "GET", `/room/${room}/api/state?t=${rec.token}`);
+  ok("state: the chart counts one thread waiting on the person", stt.json.charts[0].waiting === 1 && stt.json.charts[0].open === 1);
+  ok("cli threads: lists the thread and who waits", /t1 +v1 B +waits on the person/.test(cli(d, "threads", "nav").stdout));
+  ok("cli resolve, then resolve again fails", cli(d, "resolve", "nav", "t1").status === 0 && /already resolved/.test(cli(d, "resolve", "nav", "t1").stderr));
+  ok("cli threads --open: none left", /no open threads/.test(cli(d, "threads", "nav", "--open").stdout));
+  ok("hook: the agent's own replies are not news", hook(d).stdout.trim() === "");
+
+  // wait: returns on the next human row, exits 3 when nothing comes.
+  const w0 = cli(d, "wait", "nav", "--timeout", "0");
+  ok("wait: nothing new exits 3", w0.status === 3 && /nothing new/.test(w0.stdout), w0.stdout + w0.stderr);
+  const child = spawn("node", [path.join(HERE, "chartroom.mjs"), "wait", "nav", "--timeout", "20", "--json"], { cwd: d, env: ENV });
+  let wout = ""; child.stdout.on("data", c => wout += c);
+  const done = new Promise(res => child.on("exit", code => res(code)));
+  await new Promise(res => setTimeout(res, 400));
+  r = await post({ op: "pick", chart: "nav", version: 1, pane: "b" });
+  const code = await Promise.race([done, new Promise(res => setTimeout(() => res("timeout"), 8000))]);
+  const wj = (() => { try { return JSON.parse(wout); } catch { return null; } })();
+  ok("wait: returns 0 when the person picks", code === 0 && wj && wj.items.length === 1 && wj.items[0].pick && wj.items[0].pick.pane === "b", `${code} ${wout}`);
+  ok("pick from the page: the chart is chosen", S.read(dir, "nav").status === "chosen" && S.read(dir, "nav").chosen.pane === "b");
+  ok("wait and hook share the cursor: the pick is not told twice", hook(d).stdout.trim() === "");
+  ok("wait: an unknown chart is refused", /no chart/.test(cli(d, "wait", "nope", "--timeout", "0").stderr));
+
+  // Past twenty new items: the first twenty are told and marked, the rest
+  // stay new for the next prompt.
+  for (let i = 0; i < 25; i++) await post({ op: "comment", chart: "nav", version: 1, pane: "a", text: "note " + i });
+  const ctxOf = x => { try { return JSON.parse(x.stdout).hookSpecificOutput.additionalContext; } catch { return ""; } };
+  const first = ctxOf(hook(d));
+  ok("hook: twenty told, and it says five more come next time", /\[chartroom\] 25 new/.test(first) && (first.match(/^- nav t/gm) || []).length === 20 && /5 more, told next time/.test(first), first.slice(0, 300));
+  const second = ctxOf(hook(d));
+  ok("hook: the next prompt tells the other five", /\[chartroom\] 5 new/.test(second) && /"note 24"/.test(second), second.slice(0, 200));
+  ok("hook: then nothing", hook(d).stdout.trim() === "");
+  // A long pin path is clipped in what the session hears.
+  await post({ op: "comment", chart: "nav", version: 1, pane: "a", pin: { path: "body > " + "div > ".repeat(90) + "p", dx: 1, dy: 1, text: "" }, text: "deep" });
+  const deep = ctxOf(hook(d));
+  ok("hook: a pin path is clipped", /pinned on body > div/.test(deep) && deep.split("\n").every(l => l.length < 900), deep.length);
+  // The seen file keeps only keys that still exist.
+  const seenF = path.join(ENV.CHARTROOM_HOME, "seen", room + ".json");
+  const before = JSON.parse(fs.readFileSync(seenF, "utf8")).seen.length;
+  fs.rmSync(path.join(dir, "nav"), { recursive: true });
+  cli(d, "new", "ux", "Other");
+  write(d, "o.html", "<p>o</p>");
+  cli(d, "add", "other", "o.html");
+  await post({ op: "comment", chart: "other", version: 1, pane: "a", text: "fresh" });
+  hook(d);
+  const after = JSON.parse(fs.readFileSync(seenF, "utf8")).seen;
+  ok("seen: keys of a deleted chart are dropped", before > 20 && after.length === 1 && after[0].startsWith("other/"), `${before} -> ${after.length}`);
+  cli(d, "serve", "--stop");
 }
 
 if (want("plugin: manifest and shim")) {

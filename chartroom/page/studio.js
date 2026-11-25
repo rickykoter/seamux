@@ -104,7 +104,8 @@
             h("span", { cls: "dot st-" + c.status, title: c.status }),
             h("span", { text: c.status }),
             v ? h("span", { text: "v" + v.n }) : h("span", { cls: "quiet", text: "no versions" }),
-            c.open ? h("span", { cls: "count", title: c.open + " open threads", text: String(c.open) }) : null,
+            c.waiting ? h("span", { cls: "count", title: c.waiting + " thread(s) wait on you", text: String(c.waiting) })
+              : c.open ? h("span", { cls: "count quiet-count", title: c.open + " open thread(s)", text: String(c.open) }) : null,
           ]),
         ]);
         list.appendChild(row);
@@ -181,6 +182,8 @@
     var cur = p ? ensureFrame(v.n, p.key) : null;
     var old = pp ? ensureFrame(prev.n, pp.key) : null;
     S.frames.forEach(function (f) { f.el.classList.toggle("shown", f === (S.flipping && old ? old : cur)); });
+    // Pin mode follows the page in view.
+    S.frames.forEach(function (f) { if (f.el.contentWindow) f.el.contentWindow.postMessage({ chartroom: 1, type: "mode", pin: !!S.pinMode && f.el.classList.contains("shown") }, "*"); });
     var badge = $("flip-badge");
     badge.hidden = !(S.flipping && old);
     if (S.flipping && old) badge.textContent = "v" + prev.n + " (previous) · release Space for v" + v.n;
@@ -215,6 +218,7 @@
   function select(id, n, key) {
     if (!id) { S.id = ""; S.detail = null; renderRegister(); renderChart(); writeHash(); return Promise.resolve(); }
     var same = id === S.id;
+    if (!same) { S.draft = null; S.focus = ""; S.forceThreads = true; }
     S.id = id;
     return T.chart(id).then(function (d) {
       if (S.id !== id) return;
@@ -289,6 +293,7 @@
   // ---------------------------------------------------------- keys
 
   function key(k, down) {
+    if (window.chartroomThreads && window.chartroomThreads.key(k, down)) return true;
     if (k === " ") { flip(down); return true; }
     if (!down) return false;
     if (k === "?") { toggleKeys(); return true; }
@@ -372,12 +377,206 @@
         }
         renderChart(); writeHash();
       });
-    }).catch(function () {
+    }).catch(function (e) {
       var c = $("conn");
       c.hidden = false;
-      c.textContent = "server not answering: chartroom open restarts it";
+      c.textContent = /HTTP 403/.test(String(e && e.message)) ? "this page is out of date: reload it"
+        : "server not answering: chartroom open restarts it";
     });
   }
+
+  // ---------------------------------------------------------- threads, pins, picks
+
+  S.pinMode = false;   // the next click in the chart drops a pin
+  S.draft = null;      // { version, pane, pin } being written
+  S.focus = "";        // a thread id to show
+  S.placed = {};       // frame key -> { found: [n], gone: [n] }
+
+  var num = function (t) { return Number(String(t.id).slice(1)); };
+  // lib/ops.mjs's waitsOnPerson; the page cannot import it, so the rule is
+  // repeated here and the probe holds the two to the same answers.
+  var waits = function (t) { return !!(t && !t.resolved && t.messages && t.messages.length && t.messages[t.messages.length - 1].by === "agent"); };
+  var who = function (by) { return by === "human" ? "you" : "Claude"; };
+  var threadsNow = function () { return (S.detail && S.detail.threads) || []; };
+
+  function shownFrame() { var f = null; S.frames.forEach(function (x) { if (x.el.classList.contains("shown")) f = x; }); return f; }
+
+  // Every frame gets the pins made on its pane at its version or before.
+  function placePins(f) {
+    if (!f || !f.el.contentWindow) return;
+    var pins = threadsNow().filter(function (t) { return t.pin && t.pane === f.key && t.version <= f.n; }).map(function (t) {
+      return { n: num(t), path: t.pin.path, dx: t.pin.dx, dy: t.pin.dy, text: t.pin.text, waits: waits(t), resolved: !!t.resolved, focus: t.id === S.focus };
+    });
+    f.el.contentWindow.postMessage({ chartroom: 1, type: "place", pins: pins }, "*");
+  }
+  function placeAll() { S.frames.forEach(placePins); }
+
+  function setPinMode(on) {
+    S.pinMode = !!on;
+    S.frames.forEach(function (f) { if (f.el.contentWindow) f.el.contentWindow.postMessage({ chartroom: 1, type: "mode", pin: S.pinMode && f === shownFrame() }, "*"); });
+    var b = $("pin-btn");
+    if (b) { b.classList.toggle("on", S.pinMode); b.setAttribute("aria-pressed", S.pinMode ? "true" : "false"); }
+    $("stage").classList.toggle("pinning", S.pinMode);
+    if (S.pinMode) toast("Click the chart to pin a comment (Esc to stop)");
+  }
+
+  function send(body) {
+    return T.op(Object.assign({ chart: S.id }, body)).then(function (r) { return refresh().then(function () { return r; }); })
+      .catch(function (e) { toast("Not saved: " + e.message); throw e; });
+  }
+
+  function renderPickSlot() {
+    var slot = $("pick-slot");
+    slot.textContent = "";
+    var c = S.detail && S.detail.chart;
+    var v = c && version(c, S.n);
+    var p = v && paneIn(v, S.key, 0);
+    if (!p) return;
+    slot.appendChild(h("button", { id: "pin-btn", cls: "act" + (S.pinMode ? " on" : ""), "aria-pressed": S.pinMode ? "true" : "false",
+      title: "Pin a comment on the chart (c)", on: { click: function () { setPinMode(!S.pinMode); } } }, [pinIcon(), h("span", { text: "Comment" })]));
+    if (p.role !== "option") return;
+    var chosen = c.chosen && c.chosen.version === v.n && c.chosen.pane === p.key;
+    slot.appendChild(chosen
+      ? h("span", { cls: "chip st-chosen", text: "Chosen: " + p.label })
+      : h("button", { cls: "act pick", title: "Choose this option", on: { click: function () {
+          send({ op: "pick", version: v.n, pane: p.key }).then(function () { toast("Picked " + p.label); }, function () {});
+        } } }, [h("span", { text: "Pick " + p.label })]));
+  }
+
+  function pinIcon() {
+    var ns = "http://www.w3.org/2000/svg";
+    var s = document.createElementNS(ns, "svg");
+    s.setAttribute("viewBox", "0 0 16 16"); s.setAttribute("width", "14"); s.setAttribute("height", "14"); s.setAttribute("aria-hidden", "true");
+    var c = document.createElementNS(ns, "circle");
+    c.setAttribute("cx", "8"); c.setAttribute("cy", "6.5"); c.setAttribute("r", "4.5"); c.setAttribute("fill", "none"); c.setAttribute("stroke", "currentColor"); c.setAttribute("stroke-width", "1.6");
+    var l = document.createElementNS(ns, "path");
+    l.setAttribute("d", "M8 11 V15"); l.setAttribute("stroke", "currentColor"); l.setAttribute("stroke-width", "1.6");
+    s.appendChild(c); s.appendChild(l);
+    return s;
+  }
+
+  function composer(draft) {
+    var label = (draft.pin ? "Pin on " + (draft.pin.text ? "“" + draft.pin.text.slice(0, 40) + "”" : "the chart") : "Comment on this view") +
+      " · v" + draft.version + " " + draft.pane.toUpperCase();
+    var ta = h("textarea", { rows: "3", placeholder: "What should change? (Cmd+Enter saves)", "aria-label": "Comment" });
+    var save = function () {
+      var text = ta.value.trim();
+      if (!text) { ta.focus(); return; }
+      send({ op: "comment", version: draft.version, pane: draft.pane, pin: draft.pin, text: text })
+        .then(function (r) { S.draft = null; S.focus = r.item; S.scrollTo = r.item; S.forceThreads = true; renderRail(); }, function () {});
+    };
+    ta.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); save(); }
+      if (e.key === "Escape") { e.preventDefault(); S.draft = null; renderRail(); }
+    });
+    // Focus once, when the person has just dropped the pin; a redraw must
+    // never pull focus (in the seamux app it would take it from the terminal).
+    if (!draft.focused) { draft.focused = true; setTimeout(function () { ta.focus(); }, 0); }
+    return h("div", { cls: "thread draft" }, [h("div", { cls: "thread-k", text: label }), ta,
+      h("div", { cls: "thread-acts" }, [
+        h("button", { cls: "act", text: "Cancel", on: { click: function () { S.draft = null; renderRail(); } } }),
+        h("button", { cls: "act primary", text: "Save", on: { click: save } })])]);
+  }
+
+  function threadCard(t, here) {
+    var c = S.detail.chart;
+    var v = version(c, t.version);
+    var p = v && paneIn(v, t.pane, 0);
+    var f = shownFrame();
+    var placed = f && S.placed[S.id + "/" + f.n + "/" + f.key];
+    var gone = here && t.pin && placed && placed.gone.indexOf(num(t)) >= 0;
+    var state = t.resolved ? "resolved" : waits(t) ? "waits on you" : "open";
+    var ta = h("textarea", { rows: "2", placeholder: "Reply (Cmd+Enter)", "aria-label": "Reply to " + t.id });
+    var reply = function () {
+      var text = ta.value.trim();
+      if (text) send({ op: "reply", item: t.id, text: text }).then(function () { S.focus = t.id; }, function () {});
+    };
+    ta.addEventListener("keydown", function (e) { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); reply(); } });
+    var card = h("div", { cls: "thread" + (t.resolved ? " resolved" : "") + (waits(t) ? " waits" : "") + (t.id === S.focus ? " focus" : ""), id: "thread-" + t.id,
+      on: { click: function (e) { if (e.target.closest("button,textarea")) return; S.focus = t.id; placeAll(); markFocus(); } } }, [
+      h("div", { cls: "thread-k" }, [
+        h("span", { cls: "pin-no" + (waits(t) ? " waits" : "") + (t.resolved ? " resolved" : ""), text: String(num(t)) }),
+        h("span", { text: "v" + t.version + " " + (p ? p.label : t.pane) + (t.pin ? (t.pin.text ? " · “" + t.pin.text.slice(0, 32) + "”" : " · pinned") : " · whole view") }),
+        h("span", { cls: "gap" }),
+        h("span", { cls: "state", text: state }),
+      ]),
+      gone ? h("div", { cls: "gone small", text: "Not on v" + f.n + ": the element it was pinned on is gone or changed." }) : null,
+    ].concat(t.messages.map(function (m) {
+      return h("div", { cls: "msg" + (m.by === "agent" ? " agent" : "") }, [
+        h("span", { cls: "msg-by", text: who(m.by) + (m.kind === "status" ? " marked it " + m.to : "") }),
+        m.text ? h("div", { cls: "msg-text", text: m.text }) : null]);
+    })).concat([
+      t.resolved ? null : ta,
+      h("div", { cls: "thread-acts" }, [
+        t.resolved ? null : h("button", { cls: "act", text: "Reply", on: { click: reply } }),
+        h("button", { cls: "act", text: t.resolved ? "Reopen" : "Resolve", on: { click: function () {
+          send({ op: t.resolved ? "reopen" : "resolve", item: t.id, text: ta.value.trim() }).then(function () {}, function () {});
+        } } })]),
+    ]));
+    return card;
+  }
+
+  function markFocus() {
+    document.querySelectorAll("#threads .thread").forEach(function (el) { el.classList.toggle("focus", el.id === "thread-" + S.focus); });
+    var el = S.focus && document.getElementById("thread-" + S.focus);
+    if (el && S.scrollTo === S.focus) { S.scrollTo = ""; el.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+  }
+
+  window.chartroomThreads = {
+    // opts.noPlace: a redraw for a "placed" answer must not ask the frames to
+    // place again, or the two would answer each other forever.
+    render: function (S_, T_, opts) {
+      renderPickSlot();
+      var box = $("threads");
+      // Keep what is being typed: a poll that redraws must not eat a reply.
+      var typingIn = document.activeElement && box.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA";
+      if (typingIn && !S.forceThreads) return;
+      S.forceThreads = false;
+      box.textContent = "";
+      var c = S.detail && S.detail.chart;
+      if (!c) return;
+      var v = version(c, S.n);
+      var p = v && paneIn(v, S.key, 0);
+      if (p) box.appendChild(h("button", { cls: "act wide", text: "Comment on this whole view", on: { click: function () {
+        S.draft = { version: v.n, pane: p.key, pin: null }; S.forceThreads = true; renderRail();
+      } } }));
+      if (S.draft) box.appendChild(composer(S.draft));
+      var all = threadsNow().slice().sort(function (a, b) { return (waits(b) - waits(a)) || (a.resolved - b.resolved) || (num(a) - num(b)); });
+      var here = all.filter(function (t) { return p && t.pane === p.key && t.version <= S.n; });
+      var elsewhere = all.filter(function (t) { return here.indexOf(t) < 0; });
+      if (!all.length && !S.draft) box.appendChild(h("p", { cls: "quiet small", text: "No comments yet. Press c, or Comment, then click the chart to pin one." }));
+      here.forEach(function (t) { box.appendChild(threadCard(t, true)); });
+      if (elsewhere.length) {
+        box.appendChild(h("h3", { cls: "sub", text: "Elsewhere in this chart" }));
+        elsewhere.forEach(function (t) { box.appendChild(threadCard(t, false)); });
+      }
+      markFocus();
+      if (!(opts && opts.noPlace)) placeAll();
+    },
+    message: function (S_, T_, from, m) {
+      var key = S.id + "/" + from.n + "/" + from.key;
+      if (m.type === "ready") placePins(from);
+      if (m.type === "placed") {
+        var gone = (m.gone || []).filter(Number.isFinite).sort(function (a, b) { return a - b; });
+        var was = S.placed[key] ? S.placed[key].gone.join(",") : null;
+        S.placed[key] = { found: (m.found || []).filter(Number.isFinite), gone: gone };
+        // Redraw only when which pins are gone changed, and never place again from here.
+        if (from === shownFrame() && was !== gone.join(",")) { S.forceThreads = true; window.chartroomThreads.render(S, T, { noPlace: true }); }
+      }
+      if (m.type === "pin" && S.pinMode && from === shownFrame() && m.pin && typeof m.pin.path === "string") {
+        S.draft = { version: from.n, pane: from.key, pin: { path: String(m.pin.path).slice(0, 600), dx: Number(m.pin.dx) || 0, dy: Number(m.pin.dy) || 0, text: String(m.pin.text || "").slice(0, 120) } };
+        setPinMode(false);
+        S.forceThreads = true; renderRail();
+      }
+      if (m.type === "focus" && Number.isFinite(m.n)) { S.focus = "t" + m.n; S.scrollTo = S.focus; placeAll(); markFocus(); }
+    },
+    key: function (k, down) {
+      if (!down) return false;
+      if (k === "c") { setPinMode(!S.pinMode); return true; }
+      if (k === "Escape" && (S.pinMode || S.draft)) { setPinMode(false); S.draft = null; S.forceThreads = true; renderRail(); return true; }
+      return false;
+    },
+  };
 
   window.chartroomStudio = { S: S, T: T, h: h, toast: toast, refresh: refresh, renderChart: renderChart, version: version, paneIn: paneIn };
   window.addEventListener("hashchange", function () { var w = readHash(); if (w.id) select(w.id, w.n, w.key); });

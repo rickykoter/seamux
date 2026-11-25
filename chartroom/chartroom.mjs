@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import * as S from "./lib/store.mjs";
 import { hostLine, detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
+import * as N from "./lib/news.mjs";
+import { waitsOnPerson } from "./lib/ops.mjs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 
@@ -26,6 +28,10 @@ const USAGE = `chartroom ${VERSION}: charts kept with the repo, reviewed in a lo
   chartroom show <id> [--json]
   chartroom status <id> <exploring|chosen|superseded> [--decision TEXT]
   chartroom link <id> <claude.ai artifact url> [--version N]
+  chartroom threads <id> [--open] [--json]
+  chartroom reply <id> <t#> <text>
+  chartroom resolve|reopen <id> <t#> [text]
+  chartroom wait [id] [--timeout SECONDS]   until the person comments or picks (exit 3: nothing yet)
   chartroom share [on|off|status]
   chartroom open [id] [--no-open] [--json]   the studio, beside the terminal where it can be
   chartroom serve [--status|--stop|--foreground]
@@ -38,7 +44,7 @@ const argv = process.argv.slice(2);
 // A bare --version is the engine's version; link's --version N is a flag.
 const verb = argv[0] && !argv[0].startsWith("-") ? argv[0] : (argv[0] === "--version" ? "version" : "help");
 const rest = verb === "version" && argv[0] === "--version" ? [] : argv.slice(verb === argv[0] ? 1 : 0);
-const VALUED = new Set(["--purpose", "--id", "--note", "--decision", "--version"]);
+const VALUED = new Set(["--purpose", "--id", "--note", "--decision", "--version", "--timeout"]);
 const flags = {}, pos = [];
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
@@ -83,6 +89,16 @@ function companionOpen(url, room) {
   if (process.env.CMUX_SURFACE_ID) args.push("--surface", process.env.CMUX_SURFACE_ID);
   const r = spawnSync(bin, args, { encoding: "utf8", timeout: 20000, env: { ...process.env, CMUX_QUIET: "1" } });
   return r.status === 0;
+}
+
+// reply, resolve and reopen, as Claude (by "agent").
+function threadOp(op) {
+  need(op === "reply" ? 3 : 2, op === "reply" ? "a chart id, a thread and the text" : "a chart id and a thread");
+  const [id, item, ...words] = pos;
+  const l = where();
+  const [code, res] = S.applyChartOp(l.dir, id, { op, item, text: words.join(" ") }, "agent");
+  if (code !== 200) die(res.error || "refused");
+  out({ ok: true, item: res.item }, `${id} ${res.item}: ${op === "reply" ? "replied" : op === "resolve" ? "resolved" : "reopened"}`);
 }
 
 // ------------------------------------------------------------ verbs
@@ -150,6 +166,44 @@ const verbs = {
     let c;
     try { c = S.link(l.dir, pos[0], pos[1], flags.version); } catch (e) { die(e.message); }
     out({ chart: c }, describe(c));
+  },
+
+  threads() {
+    need(1, "a chart id");
+    const l = where();
+    if (!S.exists(l.dir, pos[0])) die(`no chart ${pos[0]} in ${rel(l.dir)}`);
+    const th = S.readThreads(l.dir, pos[0]);
+    const list = th.threads.filter(t => !flags.open || !t.resolved);
+    const text = list.length ? list.map(t => {
+      const head = `${t.id}  v${t.version} ${t.pane.toUpperCase()}  ${t.resolved ? "resolved" : waitsOnPerson(t) ? "waits on the person" : "open"}` +
+        (t.pin ? `  pin: ${t.pin.text ? JSON.stringify(t.pin.text) : t.pin.path}` : "  (whole pane)");
+      return head + "\n" + t.messages.map(m => `    ${m.by}${m.kind === "status" ? " marked it " + m.to : ""}: ${m.text}`.replace(/: $/, "")).join("\n");
+    }).join("\n") : (flags.open ? "no open threads" : "no threads yet");
+    out({ threads: list, picks: th.picks }, text);
+  },
+
+  reply() { threadOp("reply"); },
+  resolve() { threadOp("resolve"); },
+  reopen() { threadOp("reopen"); },
+
+  wait() {
+    const l = where();
+    const id = pos[0] || "";
+    if (id && !S.exists(l.dir, id)) die(`no chart ${id} in ${rel(l.dir)}`);
+    const room = S.roomId(l.dir);
+    const secs = flags.timeout === undefined ? 1800 : Number(flags.timeout);
+    if (!Number.isFinite(secs) || secs < 0) die("--timeout takes seconds", 2);
+    const end = Date.now() + secs * 1000;
+    const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    for (;;) {
+      const { shown, total } = N.claim(l.dir, room, id);
+      if (shown.length) {
+        return out({ total, items: shown.map(x => ({ key: x.key, chart: x.chart.id, thread: x.thread ? x.thread.id : null, text: x.msg ? x.msg.text : null, pick: x.pick || null })) },
+          N.describe(shown, total));
+      }
+      if (Date.now() >= end) { out({ items: [] }, `nothing new from the person in ${secs}s`); process.exit(3); }
+      sleep(Math.min(1000, Math.max(0, end - Date.now())));
+    }
   },
 
   share() {
