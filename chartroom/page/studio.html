@@ -20,7 +20,7 @@
     <span id="repo" class="quiet"></span>
     <span id="mode" class="chip quiet" hidden></span>
     <span class="gap"></span>
-    <span id="conn" class="quiet" hidden></span>
+    <span id="conn" class="conn" hidden role="alert"></span>
     <button id="keys-btn" class="icon-btn" aria-expanded="false" aria-controls="keys" title="Keys (?)">?</button>
   </header>
 
@@ -31,7 +31,7 @@
   <main id="main">
     <div id="empty" class="empty" hidden>
       <p class="empty-title">No charts here yet</p>
-      <p class="quiet">Ask Claude to chart a UX, an architecture or a domain, or run <code>chartroom new ux &lt;title&gt;</code> in the repo.</p>
+      <p class="quiet">Ask Claude to mock up a screen, draw an architecture or map a domain. Each chart shows up here as Claude makes it.</p>
     </div>
     <section id="chart" hidden>
       <div id="head">
@@ -48,8 +48,14 @@
         <div id="tabs" role="tablist" aria-label="Panes"></div>
         <span id="pick-slot"></span>
       </div>
+      <div id="stage-note" hidden role="status"></div>
       <div id="stage">
         <div id="frames"></div>
+        <div id="no-versions" class="empty" hidden>
+          <p class="empty-title">No versions yet</p>
+          <p class="quiet">Claude draws the first one with <code>chartroom add</code>. It shows here as soon as it lands.</p>
+        </div>
+        <div id="pin-hint" hidden role="status">Click or tap the chart where your comment belongs. Esc stops.</div>
         <div id="flip-badge" hidden></div>
         <div id="toast" hidden></div>
       </div>
@@ -69,14 +75,15 @@
 </div>
 
 <div id="keys" class="keys" hidden role="dialog" aria-label="Keys">
-  <h2>Keys</h2>
+  <div class="keys-head"><h2>Keys</h2><button type="button" class="act" id="keys-close">Close</button></div>
   <dl>
     <dt>1 to 9</dt><dd>show that option or view</dd>
     <dt>hold Space</dt><dd>flip to the previous version, with what changed outlined</dd>
     <dt>[ and ]</dt><dd>previous or next version</dd>
     <dt>j and k</dt><dd>next or previous chart</dd>
     <dt>c</dt><dd>pin a comment: the next click on the chart drops it</dd>
-    <dt>Esc</dt><dd>stop pinning, or drop the comment being written</dd>
+    <dt>Cmd+Enter</dt><dd>save the comment or send the reply you are writing</dd>
+    <dt>Esc</dt><dd>stop pinning, close this panel, or (pressed twice) drop a comment</dd>
     <dt>?</dt><dd>these keys</dd>
   </dl>
 </div>

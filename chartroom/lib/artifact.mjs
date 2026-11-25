@@ -56,7 +56,7 @@ function transport() {
   return `(function () {
   var DATA = JSON.parse(document.getElementById("chartroom-data").textContent);
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
-  var rows = [], db = null, listeners = [], made = {}, madeBy = {};
+  var rows = [], db = null, settled = false, listeners = [], made = {}, madeBy = {};
   // The chart with every row applied, as \`chartroom pull\` will replay it.
   // A thread made on this page is named by the row that made it
   // ("row:<id>"), never by its t-number, which each viewer counts alone.
@@ -82,7 +82,9 @@ function transport() {
       var th = st.threads.threads;
       var c = Object.assign({}, st.chart, { threads: th.length, open: th.filter(function (t) { return !t.resolved; }).length,
         waiting: th.filter(waitsOnPerson).length });
-      return Promise.resolve({ repo: DATA.repo, mode: db ? "published" : "published, read-only", charts: [c], sig: sig() });
+      // Until the page's storage answers, say so: never claim read-only first.
+      return Promise.resolve({ repo: DATA.repo, mode: db ? "published" : settled ? "published, read-only" : "published, connecting",
+        charts: [c], sig: sig() + (settled ? "" : ":c") + (db ? ":w" : "") });
     },
     chart: function () { var st = current(); return Promise.resolve({ chart: st.chart, threads: st.threads.threads }); },
     pane: function (id, n, key) { return { srcdoc: DATA.panes[n + "/" + key] || "<p>This pane was not exported.</p>" }; },
@@ -105,14 +107,17 @@ function transport() {
   var tell = function () { listeners.forEach(function (fn) { try { fn(); } catch (e) { /* the page goes on */ } }); };
   var use = window.claude && window.claude.use ? window.claude.use("db") : Promise.resolve(null);
   use.then(function (d) {
-    db = d;
+    db = d; settled = true;
     if (!db) { tell(); return; }
     db.collection("annotations").orderBy("at").onSnapshot(function (snap) {
       rows = snap.docs.map(function (d) { return { rid: String(d.id), row: d.data() }; })
         .sort(function (a, b) { return String((a.row || {}).at).localeCompare(String((b.row || {}).at)) || a.rid.localeCompare(b.rid); });
       tell();
-    }, function () { tell(); });
-  }, function () { tell(); });
+    }, function () {
+      window.CHARTROOM_TRANSPORT.error = "Lost the connection to this page's comments: reload to try again";
+      tell();
+    });
+  }, function () { settled = true; tell(); });
 })();`;
 }
 

@@ -35,7 +35,8 @@
   h1 { font-size: 22px; margin: 0; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
   label { display: grid; gap: 4px; margin-bottom: 12px; font-size: 14px; }
-  input { font: inherit; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  input { font: inherit; padding: 9px 10px; border: 1px solid #9aa4ae; border-radius: 6px; }
+  input[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
   .hint { color: var(--muted); font-size: 13px; }
   .error { color: var(--danger); font-size: 13px; }
   .primary { width: 100%; padding: 12px; border: 0; border-radius: 8px; background: var(--accent); color: var(--on-accent); font: 600 16px var(--font); }

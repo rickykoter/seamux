@@ -209,9 +209,18 @@ a { color: var(--accent-t); }
 #frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 1px solid var(--border); border-radius: 4px;
   background: var(--stage); visibility: hidden; }
 #frames iframe.shown { visibility: visible; }
-#flip-badge { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); padding: 4px 12px; border-radius: 999px;
-  background: var(--card); border: 1px solid var(--accent); font-size: var(--fs-2, 12px); pointer-events: none; }
-#toast { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 6px;
+/* The flip and pin-mode notes sit on the stage's own frame, never over the chart's header. */
+#flip-badge, #pin-hint { position: absolute; left: 22px; bottom: 22px; padding: 6px 14px; border-radius: 999px; pointer-events: none;
+  background: var(--accent); color: var(--role-on-primary); font-size: var(--fs-2, 12px); font-weight: 600; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+.ver.was { border-style: dashed; }
+#stage-note { padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--card); font-size: var(--fs-2, 12px); color: var(--fg); }
+.sub.attend { color: var(--attend-t); }
+.thread:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.keys-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.keys-head h2 { margin: 0; }
+#no-versions { max-width: none; margin: 0; position: absolute; inset: 10px; display: flex; flex-direction: column; justify-content: center; align-items: center;
+  border: 1px dashed var(--border); border-radius: 4px; text-align: center; padding: 24px; }
+#toast { position: absolute; bottom: 20px; right: 22px; max-width: 60%; padding: 6px 14px; border-radius: 6px;
   background: var(--card); border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 
 /* rail */
@@ -227,14 +236,24 @@ a { color: var(--accent-t); }
 .act:hover { background: var(--hover); }
 .act.on { background: var(--sel); border-color: var(--accent); color: var(--accent-t); }
 .act.primary { background: var(--role-primary); color: var(--role-on-primary); border-color: var(--role-primary); }
-.act.pick { border-color: var(--st-chosen); color: var(--st-chosen-t); }
+/* Pick is the one decision on the page: the only filled control in the bar. */
+.act.pick { background: var(--role-primary); color: var(--role-on-primary); border-color: var(--role-primary); font-weight: 600; }
+.act:disabled { opacity: .45; cursor: default; }
+#pick-slot { margin-left: 4px; padding-left: 12px; border-left: 1px solid var(--border); }
+#pick-slot:empty { display: none; }
+.act:focus-visible, .ver:focus-visible, .tab:focus-visible, .link:focus-visible, .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.link { background: none; border: 0; padding: 2px 0; color: var(--accent-t); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; font-size: var(--fs-2, 12px); text-align: left; }
+.hint { margin-right: auto; color: var(--muted); font-size: var(--fs-1, 11px); align-self: center; }
+.ro { color: var(--muted); border: 1px dashed var(--border); border-radius: 6px; padding: 6px 8px; margin: 0 0 10px; }
+.conn { color: var(--role-broken-t); font-size: var(--fs-2, 12px); }
 .act.wide { width: 100%; justify-content: center; margin-bottom: 10px; }
 #pick-slot { display: flex; gap: 6px; align-items: center; }
 #stage.pinning #frames iframe.shown { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .thread { padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); cursor: default; }
 .thread.waits { border-color: var(--attend); }
 .thread.focus { box-shadow: 0 0 0 2px var(--accent); }
-.thread.resolved { opacity: .7; }
+.thread.resolved { background: transparent; }
+.thread.resolved .msg-text { color: var(--muted); }
 .thread.draft { border-color: var(--accent); }
 .thread-k { display: flex; align-items: center; gap: 6px; font-size: var(--fs-2, 12px); color: var(--muted); margin-bottom: 4px; }
 .thread-k .state { white-space: nowrap; }
@@ -242,7 +261,9 @@ a { color: var(--accent-t); }
 .pin-no { flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--role-working); color: var(--ef-ink);
   font-weight: 700; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; }
 .pin-no.waits { background: var(--attend); }
-.pin-no.resolved { background: var(--ef-grey0); }
+.pin-no.resolved { background: transparent; border: 1.5px solid var(--ef-grey0); color: var(--role-text-quiet); }
+.pin-no.gone { background: transparent; border: 1.5px dashed var(--role-text-quiet); color: var(--role-text-quiet); }
+.thread-k .where { min-width: 0; overflow-wrap: anywhere; }
 .msg { padding: 4px 0; border-top: 1px dashed var(--border); }
 .msg:first-of-type { border-top: 0; }
 .msg-by { font-size: var(--fs-1, 11px); color: var(--muted); }
@@ -257,7 +278,7 @@ a { color: var(--accent-t); }
 .count.quiet-count { background: none; color: var(--muted); border: 1px solid var(--border); font-weight: 400; }
 
 /* keys */
-.keys { position: fixed; top: 44px; right: 14px; z-index: 10; width: 320px; padding: 10px 14px; border-radius: 8px;
+.keys { position: fixed; bottom: 14px; right: 14px; z-index: 10; width: 320px; padding: 10px 14px; border-radius: 8px;
   background: var(--card); border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(0,0,0,.3); }
 .keys h2 { margin: 0 0 6px; font-size: var(--fs-3, 14px); }
 .keys dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
@@ -265,8 +286,30 @@ a { color: var(--accent-t); }
 .keys dd { margin: 0; font-size: var(--fs-2, 12px); }
 
 /* narrow: the rail goes under the stage */
-@media (max-width: 900px) {
+@media (max-width: 900px) and (min-width: 701px) {
   #app { grid-template-columns: minmax(160px, 200px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas: "top top" "register main" "rail rail"; }
   #rail { border-left: 0; border-top: 1px solid var(--border); max-height: 34vh; }
+}
+/* phone: one column; the register becomes a strip of charts to swipe, the
+   chart gets the full width, and the threads follow below it. */
+@media (max-width: 700px) {
+  #app { height: auto; min-height: 100vh; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto auto;
+    grid-template-areas: "top" "register" "main" "rail"; }
+  #register { display: flex; gap: 6px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 8px 12px; }
+  #register-list { display: flex; gap: 6px; }
+  .group { display: none; }
+  .row { flex: 0 0 auto; width: 210px; border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; }
+  #chart { flex: none; }
+  #stage { flex: none; height: 70vh; }
+  #rail { border-left: 0; border-top: 1px solid var(--border); }
+  #bar { gap: 8px; }
+  #pick-slot { width: 100%; }
+  #pick-slot .act { flex: 1; justify-content: center; }
+  #flip-badge, #pin-hint { left: 12px; right: 12px; bottom: 14px; text-align: center; border-radius: 12px; }
+}
+/* touch: targets big enough for a thumb */
+@media (pointer: coarse) {
+  .act, .tab, .ver, .row, .link, .icon-btn { min-height: 40px; }
+  .ver { min-width: 40px; }
 }

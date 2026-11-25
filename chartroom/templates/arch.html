@@ -22,7 +22,7 @@
 <style>
   :root {
     --bg: #f6f7f5; --ink: #22292e; --muted: #5d6970; --line: #8f9a9f; --box: #ffffff;
-    --new: #2f7a4f; --changed: #a26a12; --ext: #eef1f3;
+    --new: #2f7a4f; --changed: #6b4fa0; --ext: #eef1f3;
     --font: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   * { box-sizing: border-box; }
@@ -32,6 +32,7 @@
   header p { margin: 0; color: var(--muted); max-width: 70ch; }
   .wrap { max-width: 1100px; margin: 0 auto; overflow-x: auto; }
   svg text { font-family: var(--font); }
+  .more { max-width: 1100px; margin: 6px auto 0; font-size: 12px; color: var(--muted); }
   .legend { max-width: 1100px; margin: 10px auto 0; display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
   .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -2px; border: 2px solid var(--line); background: var(--box); }
   .legend .new::before { border-color: var(--new); } .legend .changed::before { border-color: var(--changed); }
@@ -43,7 +44,8 @@
   <h1 id="title">Containers: what runs, and what talks to what</h1>
   <p id="purpose">One sentence on what this view answers, for whom, and what it leaves out.</p>
 </header>
-<div class="wrap"><svg id="diagram" role="img" aria-labelledby="title"></svg></div>
+<div class="wrap"><svg id="diagram" role="group" aria-labelledby="title"></svg></div>
+<p id="more" class="more" hidden>More of the diagram to the right: scroll sideways.</p>
 <div class="legend"><span>exists</span><span class="new">new in this change</span><span class="changed">changed</span><span class="ext">outside our system</span><span class="unv">not verified</span></div>
 
 <script type="application/json" id="DIAGRAM">
@@ -74,7 +76,13 @@
   var rows = Math.max.apply(null, D.nodes.map(function (n) { return n.row; })) + 1;
   var svg = document.getElementById("diagram"), NS = "http://www.w3.org/2000/svg";
   var w = PAD * 2 + cols * W + (cols - 1) * GX, h = PAD * 2 + rows * H + (rows - 1) * GY;
-  svg.setAttribute("viewBox", "0 0 " + w + " " + h); svg.setAttribute("width", w); svg.setAttribute("height", h);
+  // Scales to its pane, but never below 60% of its drawn size, so the words
+  // stay readable; a narrower pane scrolls sideways and says so.
+  svg.setAttribute("viewBox", "0 0 " + w + " " + h); svg.setAttribute("width", "100%");
+  svg.style.maxWidth = w + "px"; svg.style.minWidth = Math.round(w * 0.6) + "px"; svg.style.height = "auto"; svg.style.display = "block";
+  var wrap = svg.parentNode, more = document.getElementById("more");
+  var check = function () { more.hidden = wrap.scrollWidth <= wrap.clientWidth + 2 || wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 2; };
+  wrap.addEventListener("scroll", check); window.addEventListener("resize", check); setTimeout(check, 0);
   var el = function (tag, attrs, parent) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; };
   var defs = el("defs", {});
   var marker = el("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, defs);
@@ -102,11 +110,19 @@
   D.nodes.forEach(function (n) {
     var p = at[n.id];
     var stroke = n.status === "new" ? v("--new") : n.status === "changed" ? v("--changed") : v("--line");
-    var g = el("g", { id: "node-" + n.id });
+    var g = el("g", { id: "node-" + n.id, role: "img" });
+    var tt = el("title", {}, g); tt.textContent = n.label + ": " + (n.note || "") + (n.status ? " (" + n.status + ")" : "") + (n.unverified ? " (not verified)" : "");
     el("rect", { x: p.x, y: p.y, width: W, height: H, rx: "8", fill: n.external ? v("--ext") : v("--box"), stroke: stroke,
       "stroke-width": n.status ? "2.4" : "1.4", "stroke-dasharray": n.unverified ? "6 4" : "none" }, g);
     var t1 = el("text", { x: p.x + 12, y: p.y + 24, "font-size": "14", "font-weight": "600", fill: v("--ink") }, g); t1.textContent = n.label;
+    // A long name stops short of the status tag, with an ellipsis.
+    var room = W - 24 - (n.status ? 62 : 0);
+    while (t1.getComputedTextLength && t1.getComputedTextLength() > room && t1.textContent.length > 4) t1.textContent = t1.textContent.slice(0, -2).trimEnd() + "\u2026";
     var t2 = el("text", { x: p.x + 12, y: p.y + 44, "font-size": "11.5", fill: v("--muted") }, g); t2.textContent = n.note || "";
+    // New and changed say so in words, not by colour alone.
+    if (n.status) { var tag = el("text", { x: p.x + W - 10, y: p.y + 18, "text-anchor": "end", "font-size": "10", "font-weight": "700", fill: stroke }, g); tag.textContent = n.status.toUpperCase(); }
+    // A long note is cut with an ellipsis to the box, and the full text is in the node's title.
+    while (t2.getComputedTextLength && t2.getComputedTextLength() > W - 24 && t2.textContent.length > 4) t2.textContent = t2.textContent.slice(0, -2).trimEnd() + "\u2026";
   });
 })();
 </script>

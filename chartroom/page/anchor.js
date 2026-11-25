@@ -80,7 +80,9 @@
   };
 
   var layer = null, fade = null;
-  var outline = function (against) {
+  // hold: keep the outlines until told otherwise (while Space is held);
+  // otherwise they fade after a moment.
+  var outline = function (against, hold) {
     compute();
     var els = toOutline(against);
     if (layer) layer.remove();
@@ -99,7 +101,7 @@
       layer.appendChild(b);
     });
     document.documentElement.appendChild(layer);
-    fade = setTimeout(function () { if (layer) layer.style.opacity = "0"; }, 1100);
+    if (!hold) fade = setTimeout(function () { if (layer) layer.style.opacity = "0"; }, 1400);
   };
 
   // ---------------------------------------------------------- pins
@@ -149,27 +151,47 @@
     pinLayer = document.createElement("div");
     pinLayer.setAttribute("data-chartroom", "pins");
     pinLayer.style.cssText = "position:absolute;left:0;top:0;width:0;height:0;z-index:2147483646";
-    var found = [], gone = [], sx = window.scrollX, sy = window.scrollY;
+    var found = [], gone = [], sx = window.scrollX, sy = window.scrollY, stack = {};
     pins.forEach(function (p) {
       var el = null;
       try { el = document.querySelector(p.path); } catch (e) { el = null; }
       var t = el ? textOf(el) : "";
       // The text prefix must still match: a path that now names another
       // element is a gone pin, not a pin on the wrong thing.
-      if (!el || (p.text && t.slice(0, Math.min(20, p.text.length)) !== p.text.slice(0, Math.min(20, p.text.length)))) { gone.push(p.n); return; }
+      if (!el || (p.text && t.slice(0, Math.min(20, p.text.length)) !== p.text.slice(0, Math.min(20, p.text.length)))) { if (!p.draft) gone.push(p.n); return; }
       var r = el.getBoundingClientRect();
       var x = r.left + sx + Math.min(Math.max(p.dx, 0), Math.max(r.width, 1)), y = r.top + sy + Math.min(Math.max(p.dy, 0), Math.max(r.height, 1));
+      // The pin sits on the element's top-right corner, so the words it is
+      // about stay readable; a dot marks the exact spot. Kept on the page.
+      // Just outside the element's right edge, level with its top, so the pin
+      // covers none of it; more pins on one element fan out to the right.
+      var S = 22, vw = document.documentElement.clientWidth;
+      var k = (stack[p.path] = (stack[p.path] || 0) + 1) - 1;
+      var left = r.right + sx + 3 + k * (S + 3), top = r.top + sy - 4;
+      if (left > sx + vw - S - 2) left = Math.max(sx + 2, r.right + sx - S - 3 - k * (S + 3));
+      if (top < sy + 2) top = sy + 2;
       var b = document.createElement("button");
       b.setAttribute("data-chartroom", "pin");
       b.textContent = String(p.n);
-      b.title = "thread " + p.n;
-      var bg = p.waits ? "#dfa000" : p.resolved ? "#859289" : "#7fbbb3";
-      b.style.cssText = "position:absolute;left:" + (x - 11) + "px;top:" + (y - 11) + "px;width:22px;height:22px;border-radius:50%;" +
-        "border:2px solid #fff;background:" + bg + ";color:#1e2326;font:700 11px/18px system-ui,sans-serif;text-align:center;padding:0;" +
-        "cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.35)" + (p.resolved ? ";opacity:.6" : "") + (p.focus ? ";outline:3px solid #dfa000;outline-offset:2px" : "");
-      b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); post({ type: "focus", n: p.n }); });
+      b.title = p.draft ? "your new comment" : "thread " + p.n + (p.waits ? " (waits on you)" : p.resolved ? " (resolved)" : "");
+      b.setAttribute("aria-label", b.title);
+      // Amber means "waits on you" and nothing else; focus is the teal ring.
+      var fill = p.draft ? "#ffffff" : p.waits ? "#dfa000" : p.resolved ? "#ffffff" : "#7fbbb3";
+      var ink = p.draft ? "#2f6f6a" : p.resolved ? "#5c6a72" : "#1e2326";
+      var edge = p.draft ? "2px dashed #2f6f6a" : p.resolved ? "2px solid #859289" : "2px solid #ffffff";
+      b.style.cssText = "position:absolute;left:" + left + "px;top:" + top + "px;width:" + S + "px;height:" + S + "px;border-radius:50% 50% 50% 50%;" +
+        "box-sizing:border-box;border:" + edge + ";background:" + fill + ";color:" + ink + ";font:700 11px/18px system-ui,sans-serif;text-align:center;padding:0;" +
+        "cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.35)" + (p.focus ? ";outline:3px solid #2f6f6a;outline-offset:2px" : "");
+      // A small mark on the exact spot the pin points at.
+      // A small ring on the exact spot: hollow, so the letter under it shows.
+      var dot = document.createElement("span");
+      dot.setAttribute("data-chartroom", "pin-dot");
+      dot.style.cssText = "position:absolute;left:" + (x - 4) + "px;top:" + (y - 4) + "px;width:8px;height:8px;border-radius:50%;pointer-events:none;box-sizing:border-box;" +
+        "border:2px solid " + (p.waits ? "#dfa000" : p.resolved ? "#859289" : "#2f6f6a");
+      pinLayer.appendChild(dot);
+      b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); if (!p.draft) post({ type: "focus", n: p.n }); });
       pinLayer.appendChild(b);
-      found.push(p.n);
+      if (!p.draft) found.push(p.n);
     });
     document.documentElement.appendChild(pinLayer);
     post({ type: "placed", found: found, gone: gone });
@@ -181,7 +203,8 @@
     if (e.source !== parentWin) return;
     var m = e.data;
     if (!m || m.chartroom !== 1) return;
-    if (m.type === "outline") outline(Array.isArray(m.against) ? m.against : []);
+    if (m.type === "outline") outline(Array.isArray(m.against) ? m.against : [], !!m.hold);
+    if (m.type === "unoutline" && layer) { layer.remove(); layer = null; }
     if (m.type === "mode") setMode(m.pin);
     if (m.type === "place" && Array.isArray(m.pins)) place(m.pins.filter(function (p) { return p && typeof p.path === "string"; }).slice(0, 300));
   });
