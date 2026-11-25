@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TermSlot } from "./native";
 import { follow, openFile } from "./panelinks";
 import {
-  ago, askAgain, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, hits, kindLabel, landed, matchedWhere, mdBlocks, mood, newerAnswers, olderDays,
+  ago, askAgain, card as toCard, chipTitle, daysToLoad, dayLabel, dropAct, filterRail, freshIds, hits, kindLabel, landed, matchedWhere, mdBlocks, mdInline, mood, newerAnswers, olderDays,
   needsCount, pendingNote, rail, reportExtra, sourceRow, sourceTarget, statusLabel, tilde,
   type Card, type Chip, type Entry, type LogPage, type Mood, type ReportRun, type SectionStatus, type Span, type Status,
 } from "./bosun_model";
@@ -165,6 +165,8 @@ export class BosunView {
   private scrollTo = "";
   private railKey = "";
   private readerKey = "";
+  /** The report sections opened in the reading pane: "<run>\n<title>". */
+  private openSections = new Set<string>();
   private tabShown = false;
   private dropOpen = false;
   private timer = 0;
@@ -1038,14 +1040,56 @@ export class BosunView {
   private reportSections(r: ReportRun): HTMLElement {
     const box = el("section", "bosun-rep-full");
     const ul = el("ul", "bosun-rep-list");
+    const folds: HTMLDetailsElement[] = [];
     for (const s of r.sections) {
       const li = el("li", `bosun-rep-item s-${s.status}`);
       const head = el("p", "bosun-rep-item-h");
       head.append(statusDot(s.status), el("strong", "", s.title), el("span", "bosun-rep-st", statusLabel(s.status)));
-      li.append(head, el("p", "bosun-rep-item-t", s.line));
+      const line = this.spans(el("p", "bosun-rep-item-t"), mdInline(s.line));
       // Why it was not checked, when the line does not already say it.
-      if (s.why && !s.line.includes(s.why)) li.append(el("p", "bosun-rep-item-why", `Why: ${s.why}`));
+      const why = s.why && !s.line.includes(s.why) ? el("p", "bosun-rep-item-why", `Why: ${s.why}`) : null;
+      if (!s.detail) {
+        li.append(head, line);
+        if (why) li.append(why);
+        ul.append(li);
+        continue;
+      }
+      // A section with more to say opens in place; which ones are open is
+      // kept per run, so a poll's redraw leaves them as they were.
+      const key = `${r.run}\n${s.title}`;
+      const fold = document.createElement("details");
+      fold.className = "bosun-rep-fold";
+      fold.open = this.openSections.has(key);
+      const sum = document.createElement("summary");
+      // The why stays in sight with the line, open or closed.
+      sum.append(head, line);
+      if (why) sum.append(why);
+      fold.append(sum);
+      fold.append(this.mdInto(el("div", "bosun-md bosun-rep-detail"), s.detail));
+      fold.addEventListener("toggle", () => {
+        if (fold.open) this.openSections.add(key);
+        else this.openSections.delete(key);
+        sync();
+      });
+      folds.push(fold);
+      li.classList.add("has-detail");
+      li.append(fold);
       ul.append(li);
+    }
+    // Open or close every section with more to say at once.
+    const all = button("bosun-inline", "");
+    const sync = () => {
+      all.textContent = folds.every((f) => f.open) ? "Collapse all" : "Expand all";
+    };
+    all.addEventListener("click", () => {
+      const open = !folds.every((f) => f.open);
+      for (const f of folds) f.open = open;
+    });
+    if (folds.length) {
+      sync();
+      const bar = el("p", "bosun-rep-tools");
+      bar.append(all);
+      box.append(bar);
     }
     box.append(ul);
     if (r.doc) {
@@ -1068,30 +1112,55 @@ export class BosunView {
       box.append(el("p", "bosun-quiet", "The Bosun logged no answer text."));
       return box;
     }
-    const spans = (into: HTMLElement, ss: Span[]) => {
-      for (const s of ss) {
-        if (s.t === "text") into.append(s.s);
-        else if (s.t === "code") into.append(el("code", "", s.s));
-        else if (s.t === "b") into.append(el("strong", "", s.s));
-        else {
-          const a = el("a", "bosun-link", s.s);
-          a.href = s.s;
-          a.addEventListener("click", (ev) => {
-            ev.preventDefault();
-            void follow(s.s, null, ev);
-          });
-          into.append(a);
-        }
-      }
-      return into;
-    };
-    for (const b of mdBlocks(text)) {
-      if (b.t === "h") box.append(spans(el(b.level <= 2 ? "h3" : "h4", "bosun-md-h"), b.spans));
-      else if (b.t === "p") box.append(spans(el("p"), b.spans));
-      else if (b.t === "pre") box.append(el("pre", "", b.s));
+    return this.mdInto(box, text);
+  }
+
+  /** Inline spans as elements (never HTML): links open through `follow`. */
+  private spans<T extends HTMLElement>(into: T, ss: Span[]): T {
+    for (const s of ss) {
+      if (s.t === "text") into.append(s.s);
+      else if (s.t === "code") into.append(el("code", "", s.s));
+      else if (s.t === "b") into.append(el("strong", "", s.s));
+      else if (s.t === "i") into.append(el("em", "", s.s));
       else {
+        const href = s.t === "link" ? s.href : s.s;
+        const a = el("a", "bosun-link", s.s);
+        a.href = href;
+        a.title = href;
+        a.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          void follow(href, null, ev);
+        });
+        into.append(a);
+      }
+    }
+    return into;
+  }
+
+  /** Markdown drawn into `box` as plain elements: headings, paragraphs,
+   *  lists, fenced code, and tables (in a box that scrolls sideways). */
+  private mdInto<T extends HTMLElement>(box: T, text: string): T {
+    for (const b of mdBlocks(text)) {
+      if (b.t === "h") box.append(this.spans(el(b.level <= 2 ? "h3" : "h4", "bosun-md-h"), b.spans));
+      else if (b.t === "p") box.append(this.spans(el("p"), b.spans));
+      else if (b.t === "pre") box.append(el("pre", "", b.s));
+      else if (b.t === "table") {
+        const wrap = el("div", "bosun-md-table");
+        const table = el("table");
+        const tr = el("tr");
+        for (const c of b.head) tr.append(this.spans(el("th"), c));
+        table.append(el("thead"), el("tbody"));
+        table.tHead!.append(tr);
+        for (const row of b.rows) {
+          const r = el("tr");
+          for (const c of row) r.append(this.spans(el("td"), c));
+          table.tBodies[0].append(r);
+        }
+        wrap.append(table);
+        box.append(wrap);
+      } else {
         const list = el(b.t);
-        for (const it of b.items) list.append(spans(el("li"), it));
+        for (const it of b.items) list.append(this.spans(el("li"), it));
         box.append(list);
       }
     }

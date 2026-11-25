@@ -138,6 +138,22 @@
 .bosun-rep-item-t { margin: 0; color: var(--fg); line-height: 1.45; }
 .bosun-rep-item.s-unchecked .bosun-rep-item-t { color: var(--muted); font-style: italic; }
 .bosun-rep-item-why { margin: 2px 0 0; font-size: var(--fs-1); color: var(--muted); }
+/* A section with more to say: its head and line are the fold's summary, with a chevron. */
+.bosun-rep-tools { display: flex; justify-content: flex-end; margin: 0 0 6px; }
+.bosun-rep-fold > summary { list-style: none; cursor: pointer; border-radius: 6px; }
+.bosun-rep-fold > summary::-webkit-details-marker { display: none; }
+.bosun-rep-fold > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.bosun-rep-fold > summary .bosun-rep-st::after { content: "›"; display: inline-block; margin-left: 8px; transition: transform 0.12s; color: var(--muted); }
+.bosun-rep-fold[open] > summary .bosun-rep-st::after { transform: rotate(90deg); }
+.bosun-rep-item.has-detail:hover { border-color: var(--line2); }
+.bosun-rep-detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); font-size: var(--fs-2); }
+.bosun-rep-detail > :last-child { margin-bottom: 0; }
+/* A table scrolls sideways in its own box, never the pane. */
+.bosun-md-table { margin: 0 0 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
+.bosun-md-table table { border-collapse: collapse; width: 100%; font-size: var(--fs-2); }
+.bosun-md-table th, .bosun-md-table td { padding: 5px 9px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.bosun-md-table th { font-weight: 600; color: var(--section); background: var(--on); white-space: nowrap; }
+.bosun-md-table tr:last-child td { border-bottom: 0; }
 .bosun-rep-docline { margin: 0 0 14px; }
 
 /* Chips on the left, Re-check on the right: one line. */

@@ -100,9 +100,10 @@ seamux bosun report done <run> < <dir>/drafts/<run>.json
 ```json
 {"doc": "<the doc's https link, when you wrote it>",
  "docWhy": "<only when the doc was not updated: why>",
- "answer": "<the run for a person: a line per section, and anything else worth saying>",
+ "answer": "<two or three sentences: what needs the person first, and anything said once>",
  "sections": [
    {"title": "Pull requests", "status": "needs", "line": "#412 waits 2 days on your review",
+    "detail": "| PR | Age | Checks |\n| --- | --- | --- |\n| [shop#412](https://github.com/acme/shop/pull/412) \"retry cap\" | 2d | green |",
     "sources": [{"kind": "url", "ref": "https://github.com/acme/shop/pull/412", "label": "PR 412"}]},
    {"title": "Monitors", "status": "unchecked", "line": "Not checked: datadog needs authentication",
     "why": "datadog needs authentication"}
@@ -110,6 +111,18 @@ seamux bosun report done <run> < <dir>/drafts/<run>.json
 ```
 
 Every section in the prompt gets an entry, titled as the prompt titles it.
+
+The app shows each section as a card: its `line`, then its `detail` when
+the person opens it. So:
+
+- `line` is the one finding, under about 120 characters. Longer lines are
+  cut at 200.
+- `detail` is the section in full, in markdown: a table when there are
+  rows to compare (PRs, monitors, tickets, locks), a list otherwise, with
+  links as `[text](https://...)`. Leave it out when the line says it all.
+  It holds up to 6000 characters.
+- `answer` is a short summary, not a recap of each section, because the
+  cards already show them.
 `report done` refuses a file that misses any of these, and says which:
 
 - `answer`, at the top level, not one per section.
