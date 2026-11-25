@@ -3307,6 +3307,16 @@ if (want("bpmn")) {
   const fr = JSON.parse(fs.readFileSync(S.paths(fo.id).rows, "utf8"));
   ok("bpmn: an added .bpmn20.xml travels as a diagram", fr["proc.v1.bpmn20.xml"] && fr["proc.v1.bpmn20.xml"].bpmn &&
     fr["proc.v1.bpmn20.xml"].bpmn.old == null && /call vendor/.test(fr["proc.v1.bpmn20.xml"].bpmn.new));
+  // A patch-file review: an added diagram's hunks hold all of it, a changed
+  // one's do not, so only the added one draws.
+  const pf = path.join(TMP, "bpmn-flowable.patch");
+  fs.writeFileSync(pf, sh(fl, `${G} diff main feat`));
+  const po = JSON.parse(cli(fl, "open", "--patch", pf, "--no-open", "--no-jev", "--json", "--id", "bpmn-patch").stdout);
+  const pr = JSON.parse(fs.readFileSync(S.paths(po.id).rows, "utf8"));
+  ok("bpmn: a patch review draws an added diagram from its hunks, whole",
+    pr["proc.v1.bpmn20.xml"].bpmn && pr["proc.v1.bpmn20.xml"].bpmn.new === flowable("call vendor", false),
+    JSON.stringify(pr["proc.v1.bpmn20.xml"].bpmn || null).slice(0, 200));
+  ok("bpmn: a patch review shows a changed diagram as XML", !pr["placed.bpmn"].bpmn);
   ok("bpmn: only a diagram with a side that stores no positions is marked bare",
     fr["proc.v1.bpmn20.xml"].bpmn.bare === true && fr["placed.bpmn"].bpmn.bare === false);
   ok("bpmn: the page carries the layout once a side has no positions", fs.readFileSync(fo.page, "utf8").includes("var SeamuxBpmnLayout="));

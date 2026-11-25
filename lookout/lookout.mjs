@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import * as V from "./lib/vendor.mjs";
 import * as S from "./lib/store.mjs";
-import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenerated,
+import { resolveSource, buildPatch, parsePatch, sideText, hunkSide, buildRows, looksGenerated,
          generatedByAttr, LARGE_LINES, repoInfo, moved, git } from "./lib/patch.mjs";
 import * as TU from "./lib/turns.mjs";
 import * as SC from "./lib/score.mjs";
@@ -275,11 +275,14 @@ function cmdOpen() {
     // A BPMN diagram travels whole, both sides, so the page can draw it
     // before and after even when the XML diff starts collapsed.
     if (V.isBpmn(f.path) && !f.binary) {
-      const bp = { old: sideText(src, "old", f), new: newText ?? sideText(src, "new", f) };
+      // A patch file has no full sides, but an added or deleted file's
+      // hunks hold the whole of it.
+      const bp = { old: sideText(src, "old", f) ?? hunkSide(f, "old"), new: newText ?? sideText(src, "new", f) ?? hunkSide(f, "new") };
       const size = (bp.old || "").length + (bp.new || "").length;
       // Each side the change has must be here: a side past sideText's cap
       // would read as an added or deleted diagram. A patch-file review has
-      // neither side, and a page past its budget takes no more.
+      // a changed file's sides only in part, so draws it as XML, and a page
+      // past its budget takes no more.
       const whole = (f.status === "A" || bp.old != null) && (f.status === "D" || bp.new != null);
       // bare: a side stores no positions, so the page needs the layout for it.
       bp.bare = [bp.old, bp.new].some(x => x != null && !V.hasBpmnDiagram(x));

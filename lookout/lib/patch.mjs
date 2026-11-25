@@ -199,6 +199,17 @@ export function sideText(src, which, file) {
   return buf.toString("utf8");
 }
 
+// One side of `file` rebuilt from its own hunks, where the hunks hold all of
+// it: an added file's new side (its "+" lines) or a deleted file's old side
+// (its "-" lines). A patch-file review has no other copy. null otherwise.
+export function hunkSide(file, which) {
+  if (file.binary || file.status !== (which === "new" ? "A" : "D")) return null;
+  const mark = which === "new" ? "+" : "-";
+  const rows = file.hunks.flatMap(h => h.lines);
+  if (!rows.length || rows.some(r => r[0] !== mark)) return null;
+  return rows.map(r => r[3]).join("\n") + "\n";
+}
+
 // ---------------------------------------------------------------- parse
 
 // git's C-style quoting: octal escapes are BYTES of the UTF-8 name, so the

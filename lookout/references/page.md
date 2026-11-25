@@ -156,7 +156,9 @@ tree (single-child folders folded together), one file's diff on the right.
   diagram positions (Flowable's, often) is laid out by bpmn-auto-layout
   (`vendor/bpmn-js/bpmn-layout.min.js`, also pinned, inlined only then),
   its unnamed steps labelled by id; there a step counts as changed by its
-  XML alone, since the layout moves everything.
+  XML alone, since the layout moves everything. A review of a patch file
+  draws an added or deleted diagram (its hunks hold the whole file) and
+  shows a changed one as XML.
 
 If highlight.js is missing the page is drawn plain with a banner naming why;
 `lookout setup` fixes it.
