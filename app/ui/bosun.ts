@@ -1061,9 +1061,10 @@ export class BosunView {
       fold.className = "bosun-rep-fold";
       fold.open = this.openSections.has(key);
       const sum = document.createElement("summary");
+      // The why stays in sight with the line, open or closed.
       sum.append(head, line);
+      if (why) sum.append(why);
       fold.append(sum);
-      if (why) fold.append(why);
       fold.append(this.mdInto(el("div", "bosun-md bosun-rep-detail"), s.detail));
       fold.addEventListener("toggle", () => {
         if (fold.open) this.openSections.add(key);

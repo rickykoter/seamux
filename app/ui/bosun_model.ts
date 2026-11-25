@@ -146,13 +146,20 @@ export function reportOf(e: Entry): ReportRun | null {
 
 /** What a report run's answer says beyond its section lines: "" when
  *  nothing. A line that recaps a section ("Title: ...", "- Title (ok): ...",
- *  "**Title**: ...") is left out, whatever follows, since the section's card
- *  shows it; anything else (a note said once, a summary) stays. */
+ *  "**Title**: ...") is left out when what follows the colon starts the way
+ *  that section's line does (the card shows it, perhaps cut short); a line
+ *  under a title that says something else, and anything else, stays. */
 export function reportExtra(e: Entry, r: ReportRun): string {
-  const titles = r.sections.map((s) => s.title.trim().toLowerCase()).filter(Boolean);
+  const flat = (x: string) => x.replace(/\s+/g, " ").trim().toLowerCase();
+  const secs = r.sections.map((s) => ({ title: flat(s.title), line: flat(s.line).replace(/…$/, "").trim() })).filter((s) => s.title);
   const recap = (l: string) => {
-    const t = l.trim().replace(/^[-*+]\s+/, "").replace(/^\*\*(.+?)\*\*/, "$1").toLowerCase();
-    return titles.some((x) => t.startsWith(x) && /^\s*(\([a-z ]+\))?\s*:/.test(t.slice(x.length)));
+    const t = flat(l).replace(/^[-*+] /, "").replace(/^\*\*(.+?)\*\*/, "$1");
+    return secs.some((s) => {
+      if (!t.startsWith(s.title)) return false;
+      const after = /^\s*(\([a-z ]+\))?\s*:\s*(.*)$/.exec(t.slice(s.title.length));
+      // The first 40 characters of the card's line, or all of a shorter one.
+      return !!after && !!s.line && after[2].startsWith(s.line.slice(0, 40));
+    });
   };
   return e.answer
     .split("\n")
@@ -434,8 +441,12 @@ export function mdBlocks(text: string): Block[] {
       flush();
       const head = cells(l).map(mdInline);
       const rows: Span[][][] = [];
+      // A table whose head opens with a pipe takes only rows that do too, so a
+      // line of text with a pipe in it, right after the table, stays text.
+      const piped = l.trim().startsWith("|");
+      const isRow = (x: string) => x.trim() !== "" && x.includes("|") && (!piped || x.trim().startsWith("|"));
       i += 1;
-      while (i + 1 < lines.length && lines[i + 1].includes("|") && lines[i + 1].trim()) {
+      while (i + 1 < lines.length && isRow(lines[i + 1])) {
         i += 1;
         const r = cells(lines[i]).map(mdInline);
         // Every row as wide as the head: short ones padded, long ones cut.

@@ -160,6 +160,7 @@ const t0 = tb[1];
 ok("a table keeps its head and rows, short rows padded", t0.t === "table" && t0.head.length === 3 && t0.rows.length === 2 && t0.rows[1].length === 3 && t0.rows[1][2].length === 0, t0);
 ok("a table cell keeps its inline marks", t0.t === "table" && t0.rows[0][0][0].t === "link" && t0.rows[0][2][0].t === "code");
 ok("an escaped pipe stays in its cell", (() => { const b = mdBlocks("| a | b |\n| --- | --- |\n| x \\| y | z |")[0]; return b.t === "table" && b.rows[0][0].map((x) => x.s).join("") === "x | y"; })());
+ok("a line of text with a pipe right after a piped table stays text", mdBlocks("| a | b |\n| --- | --- |\n| 1 | 2 |\nsee a | b here").map((b) => b.t).join() === "table,p");
 ok("pipes without a separator row are a paragraph", mdBlocks("a | b\nc | d")[0].t === "p");
 const ln = mdInline("see [PR 8](https://github.com/o/r/pull/8) and *soon*, not [x](javascript:alert(1)) or 2*3*4");
 ok("a markdown link to https is a link with its text", ln.some((x) => x.t === "link" && x.s === "PR 8" && x.href === "https://github.com/o/r/pull/8"), ln);
@@ -210,8 +211,8 @@ ok("Run again queues the report, not its title", JSON.stringify(askAgain(run(goo
 ok("Re-check on an answer queues its question", JSON.stringify(askAgain(e("a", "2026-11-23T09:00:00Z", " is X? ", "a"))) === '{"cmd":"bosun_send","args":{"text":"is X?"}}');
 ok("a run whose answer is only its section lines adds nothing", reportExtra({ ...run(good), answer: good.sections.map((s) => `- ${s.title}: ${s.line}`).join("\n") }, rr!) === "");
 ok("a section's detail is kept, a blank one dropped", reportOf(run({ ...good, sections: [{ ...good.sections[0], detail: "| a |\n| --- |\n| b |" }, { ...good.sections[1], detail: "  " }] }))?.sections.map((x) => x.detail ?? "-").join() === "| a |\n| --- |\n| b |,-");
-const recap = "Say once: the Datadog key rotates Friday.\nPull requests (needs): #812 waits 2 days on your review, and two more besides\n- **Tickets**: nothing changed\nMonitors (unchecked): Not checked\nPull request owners were asked in Slack.";
-ok("an answer's recap of each section is left out, whatever it adds, and the rest stays", reportExtra({ ...run(good), answer: recap }, rr!) === "Say once: the Datadog key rotates Friday.\nPull request owners were asked in Slack.", reportExtra({ ...run(good), answer: recap }, rr!));
+const recap = "Say once: the Datadog key rotates Friday.\nPull requests (needs): #812 waits 2 days on your review, and two more besides\n- **Tickets**: nothing changed\nMonitors (unchecked): Not checked: datadog needs authentication\nTickets: PROJ-9 was reopened an hour ago\nPull request owners were asked in Slack.";
+ok("an answer's recap of each section is left out, whatever it adds, and the rest stays", reportExtra({ ...run(good), answer: recap }, rr!) === "Say once: the Datadog key rotates Friday.\nTickets: PROJ-9 was reopened an hour ago\nPull request owners were asked in Slack.", reportExtra({ ...run(good), answer: recap }, rr!));
 ok("a run's answer beyond its lines is kept", reportExtra({ ...run(good), answer: "- Pull requests: #812 waits 2 days on your review\nThe deploy at 08:40 rolled back." }, rr!) === "The deploy at 08:40 rolled back.");
 ok("a queued report run says its sources come first", pendingNote(true, "idle", true).includes("sources are checked first"));
 ok("a Claude Doc source has its own chip", kindLabel("doc").label === "doc" && kindLabel("doc").name === "Claude Doc");
