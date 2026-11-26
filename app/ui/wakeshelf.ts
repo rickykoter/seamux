@@ -66,11 +66,12 @@ export type PlanRow = {
   increments?: { n: number; title: string; status: string; authorizedAt?: number; doneAt?: number }[];
 };
 
-export type Input = {
+/** `R` is the caller's own row type: the rows come back as given. */
+export type Input<R extends ShelfRow = ShelfRow> = {
   /** The worktree shown. */
   ws: string;
   /** Newest first, as wake_data returns them. */
-  rows: ShelfRow[];
+  rows: R[];
   prs: ShelfPr[];
   reviews: ReviewSum[];
   asks: AskPage[];
@@ -119,14 +120,14 @@ export function shelfOf(kind: string): ShelfId {
   return "files";
 }
 
-export type Shelves = {
+export type Shelves<R extends ShelfRow = ShelfRow> = {
   needs: Need[];
   reviews: { live: ReviewSum[]; past: ReviewSum[] };
-  plans: ShelfRow[];
+  plans: R[];
   lanes: Lane[];
-  pictures: ShelfRow[];
-  files: ShelfRow[];
-  commits: ShelfRow[];
+  pictures: R[];
+  files: R[];
+  commits: R[];
   /** Every item's key in the order j and k walk it. */
   order: string[];
 };
@@ -150,7 +151,7 @@ function prWhy(p: ShelfPr): string {
   return "needs you";
 }
 
-export function needsOf(inp: Input): Need[] {
+export function needsOf<R extends ShelfRow>(inp: Input<R>): Need[] {
   const out: Need[] = [];
   for (const a of inp.asks) {
     if (a.waiting && under(a.root, inp.ws)) out.push({ key: `ask:${a.path}`, kind: "ask", title: a.label || "ask", path: a.path, since: a.since });
@@ -215,12 +216,12 @@ export function lanesOf(prs: ShelfPr[]): Lane[] {
 }
 
 /** Files at risk first, then newest first. */
-function filesOf(rows: ShelfRow[]): ShelfRow[] {
+function filesOf<R extends ShelfRow>(rows: R[]): R[] {
   const f = rows.filter((r) => shelfOf(r.kind) === "files");
   return [...f.filter((r) => r.state === "risk"), ...f.filter((r) => r.state !== "risk")];
 }
 
-export function shelves(inp: Input): Shelves {
+export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
   const needs = needsOf(inp);
   const live = inp.reviews.filter((r) => !r.past);
   const past = inp.reviews.filter((r) => r.past).sort((a, b) => (b.closedAt || "").localeCompare(a.closedAt || ""));
@@ -244,8 +245,8 @@ export function shelves(inp: Input): Shelves {
 
 // ------------------------------------------------------------ turns
 
-export type Section = { shelf: Exclude<ShelfId, "needs">; rows: ShelfRow[] };
-export type Turn = {
+export type Section<R extends ShelfRow = ShelfRow> = { shelf: Exclude<ShelfId, "needs">; rows: R[] };
+export type Turn<R extends ShelfRow = ShelfRow> = {
   key: string;
   prompt: string;
   /** "Increment 2 of <plan title>" when the turn falls in an increment's window. */
@@ -257,7 +258,7 @@ export type Turn = {
   /** Local day, YYYY-MM-DD. */
   day: string;
   /** Non-empty sections, in the shelves' order. */
-  sections: Section[];
+  sections: Section<R>[];
 };
 
 const t = (iso: string) => {
@@ -289,10 +290,10 @@ const SECTION_ORDER: Section["shelf"][] = ["reviews", "plans", "prs", "pictures"
 
 /** One card per turn: a run of rows with the same session and prompt on the
  *  same day (the same prompt later in the day is a new card). Newest first. */
-export function turns(inp: Input): Turn[] {
-  const out: Turn[] = [];
-  let cur: { t: Turn; rows: ShelfRow[] } | null = null;
-  const keyOf = (r: ShelfRow) => `${dayOf(t(r.created_at))}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
+export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
+  const out: Turn<R>[] = [];
+  let cur: { t: Turn<R>; rows: R[] } | null = null;
+  const keyOf = (r: R) => `${dayOf(t(r.created_at))}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
   let last = "";
   const close = () => {
     if (!cur) return;
@@ -322,7 +323,7 @@ export function turns(inp: Input): Turn[] {
 }
 
 /** Timeline's reading order: Needs you, then each card's sections in order. */
-export function timelineOrder(needs: Need[], cards: Turn[]): string[] {
+export function timelineOrder<R extends ShelfRow>(needs: Need[], cards: Turn<R>[]): string[] {
   return [...needs.map((n) => n.key), ...cards.flatMap((c) => c.sections.flatMap((s) => s.rows.map(rowKey)))];
 }
 

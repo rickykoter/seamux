@@ -222,3 +222,102 @@
 
 /* A BPMN diagram (bpmnview.ts) fills the stage; bpmn-js draws on the app's background. */
 .wv-bpmn { width: 100%; height: 100%; background: var(--ef-bg); }
+
+/* ---------------------------------------------------------------- shelves
+   The Shelves layout (the chart wake-landing v9). Colour stays state only:
+   yellow waits on the person, red is at risk or failing, green is done. */
+.w-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; flex: none; }
+.w-seg-b { font: inherit; font-size: var(--fs-2); padding: 4px 10px; border: 0; background: var(--card); color: var(--muted); cursor: pointer; }
+.w-seg-b[aria-pressed="true"] { background: color-mix(in srgb, var(--fg) 10%, var(--card)); color: var(--fg); font-weight: 600; }
+.w-shelf { margin: 12px 0 4px; }
+.w-shelf.asked { animation: w-prs-asked 1.6s ease-out 1; border-radius: 8px; }
+.w-shelf-h { font-size: var(--fs-2); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--section); margin: 0 0 6px; }
+.w-shelf-h .w-n { color: var(--muted); font-weight: 400; letter-spacing: 0; margin-left: 2px; }
+.w-box { border: 1px solid var(--line); border-radius: 9px; background: var(--card); overflow: visible; }
+.w-box + .w-box { margin-top: 8px; }
+.w-boxhd { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-2); color: var(--muted); }
+.w-boxhd b { color: var(--fg); }
+.w-rows.w-box { padding: 2px 0; }
+.w-rows.w-box > .w-row + .w-row { border-top: 1px solid var(--line); }
+.w-none { padding: 8px 10px; color: var(--muted); font-size: var(--fs-2); }
+.w-pastq { font: inherit; font-size: var(--fs-2); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); width: 160px; max-width: 45%; }
+
+/* Needs you: tiles two across, or one calm line. */
+.w-calm { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--card); color: var(--muted); font-size: var(--fs-2); }
+.w-calm-ok { color: var(--good-t); font-weight: 700; }
+.w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.w-need { min-width: 0; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--ask); background: var(--card); cursor: pointer; display: grid; gap: 2px; }
+.w-need.n-risk, .w-need.n-pr { border-color: color-mix(in srgb, var(--bad-t) 60%, var(--line)); }
+.w-need:hover { background: color-mix(in srgb, var(--fg) 5%, var(--card)); }
+.w-need-t { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
+.w-need-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-need-t .w-act { margin-left: auto; flex: none; }
+.w-need-s { font-size: var(--fs-2); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-need.n-ask .w-need-s, .w-need.n-landing .w-need-s, .w-need.n-review .w-need-s { color: var(--ask-t); }
+.w-need.n-risk .w-need-s, .w-need.n-pr .w-need-s { color: var(--bad-t); }
+
+/* Reviews: live ones by stage, past ones searchable. */
+.w-rv, .w-past { padding: 7px 10px; cursor: pointer; border-top: 1px solid var(--line); }
+.w-boxhd + .w-rv, .w-boxhd + .w-past { border-top: 0; }
+.w-rv:hover, .w-past:hover, .w-lane:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.w-rv-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.w-rv-t { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-rv-age { flex: none; font-size: var(--fs-2); color: var(--muted); }
+.w-rv-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 3px; font-size: var(--fs-2); color: var(--muted); }
+.w-stage { flex: none; font-size: var(--fs-1); padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.w-stage.needs, .w-stage.ask { color: var(--ask-t); border-color: var(--ask); }
+.w-stage.finding, .w-stage.round { color: var(--accent-t); }
+.w-sev { font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-1); }
+.w-sev.hi { color: var(--bad-t); }
+.w-gate.open { color: var(--good-t); }
+.w-past { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto auto; align-items: center; gap: 4px 10px; font-size: var(--fs-2); }
+.w-past-d { color: var(--muted); font-variant-numeric: tabular-nums; }
+.w-past-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-past-v { color: var(--muted); white-space: nowrap; }
+
+/* Pull requests and landings: one lane each, review · checks · merged · landed. */
+.w-shelf.prs { container-type: inline-size; }
+.w-shelf > .w-daymore { margin: 6px 2px 0; }
+.w-lane-hd, .w-lane { display: grid; grid-template-columns: minmax(0, 1fr) repeat(4, 56px); align-items: center; }
+.w-lane-hd span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A narrow column: the four cells shrink and their labels with them. */
+@container (max-width: 380px) {
+  .w-lane-hd, .w-lane { grid-template-columns: minmax(0, 1fr) repeat(4, 36px); }
+  .w-lane-hd { font-size: 9px; letter-spacing: 0; }
+  .w-lane-hd span:first-child { visibility: hidden; }
+}
+.w-lane-hd { padding: 5px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-1); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.w-lane-hd span:not(:first-child) { text-align: center; }
+.w-lane { padding: 6px 10px; cursor: pointer; border-top: 1px solid var(--line); }
+.w-lane-hd + .w-lane { border-top: 0; }
+.w-lane.bad { box-shadow: inset 3px 0 0 var(--bad-t); }
+.w-lane.attn { box-shadow: inset 3px 0 0 var(--ask); }
+.w-lane-who { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.w-lane-who .w-pr-n { flex: none; color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-2); }
+.w-lane-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-cell { display: grid; place-items: center; }
+.w-dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--line); }
+.w-dot.done { background: var(--good-t); border-color: var(--good-t); }
+.w-dot.now { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+.w-dot.needs { background: var(--ask); border-color: var(--ask); }
+.w-dot.failed { background: var(--bad-t); border-color: var(--bad-t); }
+.w-lane-note { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0; padding-top: 2px; font-size: var(--fs-2); color: var(--muted); }
+.w-lane-note .w-pr-land { margin-left: 0; }
+.w-lane-s { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-lane.bad .w-lane-s { color: var(--bad-t); }
+
+/* Pictures and recordings: a grid that wraps to the column's width. */
+.w-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.w-thumb { min-width: 0; cursor: pointer; border-radius: 8px; padding: 3px; }
+.w-thumb:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.w-thumb-pic { position: relative; aspect-ratio: 16 / 10; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); background: var(--term); display: grid; place-items: center; }
+.w-thumb-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.w-thumb-tile { color: var(--muted); font: var(--fs-2) ui-monospace, Menlo, monospace; text-transform: lowercase; }
+.w-thumb.risk .w-thumb-pic { border-color: var(--bad-t); }
+.w-thumb.risk .w-thumb-pic::after { content: "at risk"; position: absolute; left: 4px; top: 4px; font-size: var(--fs-1); font-weight: 700; padding: 0 5px; border-radius: 4px; background: var(--bad-t); color: var(--bg); }
+.w-thumb.gone { opacity: .55; }
+.w-thumb-cap { display: block; margin-top: 3px; font-size: var(--fs-1); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The pick, on whatever kind of item it is. */
+:is(.w-need, .w-rv, .w-past, .w-lane, .w-thumb).sel { background: color-mix(in srgb, var(--accent) 12%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); outline-offset: -1px; }
+.wake.viewing.side .w-list > .w-shelf { max-width: none; }

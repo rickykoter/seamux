@@ -36,7 +36,7 @@ export function fileUrl(r: Row): string {
 }
 
 /** The same, for the strip: the app refuses a big file, and the strip shows a tile. */
-function thumbUrl(r: Row): string {
+export function thumbUrl(r: Row): string {
   const u = fileUrl(r);
   return u.startsWith("data:") ? u : `${u}?thumb`;
 }

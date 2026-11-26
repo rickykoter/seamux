@@ -107,7 +107,8 @@ export const VIEWS = {
       await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("plugin:event|emit", { event: "sheet:key", payload: "wake" }));
     }
     await page.locator(".dockview .sheet .sheet-wake .w-list li").first().waitFor();
-    await page.locator(".dockview .sheet .sheet-wake .w-row", { hasText: "checkout-after.png" }).click();
+    // On the Shelves, a picture is a thumbnail on Pictures and recordings.
+    await page.locator(".dockview .sheet .sheet-wake :is(.w-thumb, .w-row)", { hasText: "checkout-after.png" }).first().click();
     await page.locator(".dockview .sheet .sheet-wake .wv-img").waitFor();
     await settle(page);
   },
