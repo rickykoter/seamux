@@ -8817,6 +8817,35 @@ if (want("ci check: the PR's checks behind the gate")) {
   ok("ci: a failed check is named with its job's log tail, and counts toward the retry cap",
     r.status !== 0 && chk("ci-a").status === "fail" && chk("ci-a").fails === 1 && /1 of 2 check\(s\) failed: CI \/ probes/.test(r.stdout) &&
     /FAIL lessons: keep writes rule L1/.test(r.stdout), r.stdout);
+  // A fine-grained token without Checks read is refused gh pr checks (note
+  // n9ae07128): the head's Actions runs stand in.
+  const REFUSED = "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)";
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: REFUSED },
+    [`run list --commit ${head}`]: { stdout: [[{ databaseId: 7, workflowName: "probes", status: "completed", conclusion: "success" },
+      { databaseId: 5, workflowName: "probes", status: "completed", conclusion: "failure" }]] },
+    "run view 7 --json jobs": { stdout: { jobs: [{ name: "app", status: "completed", conclusion: "success", url: "" },
+      { name: "docs", status: "completed", conclusion: "skipped", url: "" }] } } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  const runLog = (/\(log: ([^)]+)\)/.exec(r.stdout) || [])[1];
+  const said = runLog && fs.existsSync(runLog) ? fs.readFileSync(runLog, "utf8") : "";
+  ok("ci: gh pr checks refused for the token, the head's newest Actions run per workflow gives the verdict, and the wait says so",
+    r.status === 0 && chk("ci-a").status === "pass" && /gh pr checks was refused \(GraphQL: Resource not accessible by personal access token/.test(said) &&
+    /reading the head's Actions runs instead/.test(said) && /all 2 check\(s\) passed/.test(said), r.stdout + said);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: REFUSED },
+    [`run list --commit ${head}`]: { stdout: [[{ databaseId: 7, workflowName: "probes", status: "in_progress", conclusion: "" }]] },
+    "run view 7 --json jobs": { stdout: [{ jobs: [{ name: "app", status: "in_progress", conclusion: "", url: "" }] },
+      { jobs: [{ name: "app", status: "completed", conclusion: "timed_out", url: "https://github.com/o/r/actions/runs/7/job/9" }] }] },
+    "run view 7 --job 9 --log-failed": { stdout: "app\tRun\t2026-11-01T10:00:00.0Z     timed out\n" } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: through the Actions runs a pending job is waited out and a timed-out one fails, with its log tail",
+    r.status !== 0 && chk("ci-a").fails === 1 && /1 of 1 check\(s\) failed: probes \/ app/.test(r.stdout) && /timed out/.test(r.stdout), r.stdout);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: "GraphQL: something else broke" } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: a gh pr checks failure that is not the token's refusal stays an error, with no Actions read",
+    r.status !== 0 && /gh pr checks: GraphQL: something else broke/.test(r.stdout) && !chk("ci-a").fails, r.stdout);
   arm("ci-t", { kind: "ci", timeout: 1 });
   gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] } });
   r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "check", "run", "ci-t", "1", "--inline"], { encoding: "utf8", env: { ...CENV, DEEP_PLAN_CI_INTERVAL_S: "1" }, cwd: CR });
@@ -9776,7 +9805,7 @@ if (want("policy and ship: levels from the base branch")) {
     r.status === 3 && /the last full judge run passed on 00000000, not HEAD[^\n]*deep-plan scenarios judge pol-ship/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
   seedFull = true;
   ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }], [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
-    "repo view --json autoMergeAllowed": { stdout: { autoMergeAllowed: false } }, "pr merge 12": { stdout: "" } });
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "pr merge 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
   const shipRec = () => { try { return JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), "utf8")); } catch { return {}; } };
   let waited = false;
@@ -9784,11 +9813,61 @@ if (want("policy and ship: levels from the base branch")) {
   ok("ship: checks still running, with GitHub's auto-merge off, its own detached wait merges once they are green",
     /ship waits for PR #12's checks/.test(r.stdout) && waited && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`), r.stdout + JSON.stringify(shipRec()));
   ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] },
-    "repo view --json autoMergeAllowed": { stdout: { autoMergeAllowed: true } },
-    "api repos/{owner}/{repo}/branches/main/protection/required_status_checks": { stdout: { contexts: ["probes"] } }, "pr merge 12 --auto": { stdout: "" } });
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: true } } } },
+    "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[{ type: "deletion" }, { type: "required_status_checks",
+      parameters: { required_status_checks: [{ context: "probes", integration_id: 1 }] } }]] },
+    "api repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+    "pr merge 12 --auto": { stdout: "" } });
   r = pc("ship", "pol-ship");
-  ok("ship: where the repo allows it and the base requires checks, GitHub's auto-merge is asked instead",
-    r.status === 0 && ghCalls().includes(`pr merge 12 --auto --squash --match-head-commit ${head()}`), r.stdout);
+  ok("ship: where GraphQL says the repo allows auto-merge and the base's ruleset requires the checks, GitHub's auto-merge is asked instead",
+    r.status === 0 && ghCalls().includes(`pr merge 12 --auto --squash --match-head-commit ${head()}`) &&
+    ghCalls().some(c => /^api graphql -F owner=\{owner\} -F name=\{repo\} -f query=.*autoMergeAllowed/.test(c)) &&
+    !ghCalls().some(c => /protection/.test(c)), r.stdout + ghCalls().join("\n"));
+  ghMap({ "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[]] },
+    "api repos/{owner}/{repo}/branches/main/protection/required_status_checks": { stdout: { contexts: ["a"], checks: [{ context: "b" }, { context: "a" }] } } });
+  const reqd = spawnSync("node", ["--input-type=module", "-e",
+    `import { requiredChecks } from ${JSON.stringify(path.join(HERE, "lib", "ci.mjs"))}; console.log(JSON.stringify(requiredChecks(${JSON.stringify(PR_)}, "main")))`],
+    { encoding: "utf8", env: PENV }).stdout.trim();
+  ok("ship: with no ruleset requiring checks, classic branch protection's are read", reqd === '["a","b"]', reqd);
+  // A token without Checks read: the checks come from the Actions runs, and
+  // the token gate names the permission from GitHub's header.
+  const REFUSED = "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)";
+  const narrow = (jobs, extra = {}) => ({ [PRV]: pv(), [CHK]: { status: 1, stderr: REFUSED },
+    [`run list --commit ${head()}`]: { stdout: [[{ databaseId: 7, workflowName: "probes", status: "completed", conclusion: "success" }]] },
+    "run view 7 --json jobs": { stdout: { jobs } },
+    [`api -i repos/{owner}/{repo}/commits/${head()}/check-runs?per_page=1`]: { status: 1,
+      stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: checks=read\r\n\r\n{\"message\":\"Resource not accessible by personal access token\"}",
+      stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+    [`api -i repos/{owner}/{repo}/commits/${head()}/status`]: { stdout: "HTTP/2.0 200 OK\r\nX-Accepted-Github-Permissions: statuses=read\r\n\r\n{}" },
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "pr merge 12": { stdout: "" }, ...extra });
+  ghMap(narrow([{ name: "probes", status: "completed", conclusion: "success", url: "" }]));
+  r = pc("ship", "pol-ship", "--dry-run", "--json");
+  const tj = JSON.parse(r.stdout || "{}"), tg = (tj.gates || []).find(g => g.gate === "token");
+  ok("ship: on a token without Checks read, the token gate names checks=read from GitHub's header, warns, and the Actions runs still give a merge",
+    tj.action === "merge" && tg && tg.ok && tg.warn && tg.missing.join() === "checks=read" &&
+    /lacks checks=read \(GitHub's X-Accepted-GitHub-Permissions header\): ship reads the PR's checks from its Actions runs/.test(tg.why) &&
+    /ship needs pull_requests=write, contents=write, checks=read, statuses=read, statuses=write/.test(tg.why), r.stdout + r.stderr);
+  r = pc("ship", "pol-ship", "--dry-run");
+  ok("ship: the text verdict marks the token gate as a warning", /\n {2}! token: the token lacks checks=read/.test(r.stdout), r.stdout);
+  // The token never shows: the probes ask gh for the header only.
+  ok("ship: the token gate reads headers through gh api -i, never through gh auth",
+    ghCalls().some(c => /^api -i repos\/\{owner\}\/\{repo\}\/commits\/[0-9a-f]{40}\/check-runs/.test(c)) && !ghCalls().some(c => /^auth/.test(c)), ghCalls().join("\n"));
+  ghMap({ ...narrow([]), [`api -i repos/{owner}/{repo}/commits/${head()}/check-runs?per_page=1`]: { stdout: "HTTP/2.0 200 OK\r\n\r\n{}" },
+    [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] } });
+  r = pc("ship", "pol-ship", "--dry-run", "--json");
+  const tg2 = (JSON.parse(r.stdout || "{}").gates || []).find(g => g.gate === "token");
+  ok("ship: a token that reads both passes the token gate without a warning, still listing what ship needs",
+    tg2 && tg2.ok && !tg2.warn && /reads checks and commit statuses; ship needs/.test(tg2.why), r.stdout);
+  // A red check that is red on the base's tip too is labelled, and still holds the merge.
+  const tip = execSync("git rev-parse origin/main", { cwd: PR_, encoding: "utf8" }).trim();
+  ghMap({ [PRV]: pv(), [CHK]: { status: 1, stdout: [[{ name: "probes", workflow: "CI", bucket: "fail", link: "" }, { name: "lint", workflow: "CI", bucket: "fail", link: "" }]] },
+    [`run list --commit ${tip}`]: { stdout: [[{ databaseId: 3, workflowName: "CI", status: "completed", conclusion: "failure" }]] },
+    "run view 3 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "failure", url: "" }, { name: "lint", status: "completed", conclusion: "success", url: "" }] } },
+    "pr merge": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a failed check that also fails on the base's tip is labelled with the tip, the other is not, and ship still waits",
+    r.status === 3 && new RegExp(`CI / probes \\(also failing on main at ${tip.slice(0, 8)}\\), CI / lint(;|\\n|$)`).test(r.stdout) &&
+    !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
   // A branch that also changes the policy is never merged by ship, even
   // where the base puts the policy file itself at auto-merge.
   setPolicy({ ...POLICY, default: "auto-merge" });

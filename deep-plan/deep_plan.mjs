@@ -5376,16 +5376,39 @@ function shipVerdict({ st, root, fetch = true }) {
   if (blocked()) { v.action = "wait"; return v; }
   if (!pr) { v.action = "open"; return v; }
   if (pr.headRefOid !== head) { gate("pr head", false, `PR #${pr.number}'s head is ${String(pr.headRefOid).slice(0, 8)}, not HEAD`); v.action = "wait"; return v; }
+  tokenGate(root, head, v);
   if (pr.isDraft) { v.action = "ready"; return v; }
   if (level !== "auto-merge") { v.action = "none"; v.say = capped || `at auto-pr, PR #${pr.number} is open for a person to merge`; return v; }
   if (pr.mergeable === "CONFLICTING") { gate("mergeable", false, `PR #${pr.number} has conflicts with its base`); v.action = "wait"; return v; }
-  const c = CI.checksNow(root);
+  const c = CI.checksNow(root, head);
   if (c.error) { gate("ci", false, c.error); v.action = "wait"; return v; }
-  if (c.failed.length) { gate("ci", false, `${c.failed.length} PR check(s) failed: ${c.failed.map(f => f.name).join(", ")}`); v.action = "wait"; return v; }
+  if (c.failed.length) {
+    // A check that is red on the base's tip too is labelled, so a lane can
+    // tell main's failure from its own; it still holds the merge.
+    const tip = ref ? (git("rev-parse", ref).stdout || "").trim() : "";
+    const red = tip ? CI.failingAt(root, tip) : null;
+    const named = c.failed.map(f => red && red.has(f.check) ? `${f.name} (also failing on ${baseBranch} at ${tip.slice(0, 8)})` : f.name);
+    gate("ci", false, `${c.failed.length} PR check(s) failed: ${named.join(", ")}`); v.action = "wait"; return v;
+  }
   if (c.pending.length || !c.total) { v.gates.push({ gate: "ci", ok: false, why: c.total ? `${c.pending.length} PR check(s) still running` : "no PR checks reported yet" }); v.action = "merge-when-green"; return v; }
   v.gates.push({ gate: "ci", ok: true, why: `all ${c.passed.length} PR check(s) passed` });
   v.action = "merge";
   return v;
+}
+
+// The token gate: what ship's token could not read, named from GitHub's
+// X-Accepted-GitHub-Permissions header, and what ship needs of it. It warns
+// and never holds: without checks read, ship reads the PR's checks from its
+// Actions runs (lib/ci.mjs checksNow), and a check from another service is
+// not seen there. A probe that said nothing adds no gate.
+function tokenGate(root, head, v) {
+  const t = CI.tokenReads(root, head);
+  const needs = `ship needs ${CI.SHIP_NEEDS.join(", ")}`;
+  if (t.missing.length)
+    v.gates.push({ gate: "token", ok: true, warn: true, missing: t.missing,
+      why: `the token lacks ${t.missing.join(", ")} (GitHub's X-Accepted-GitHub-Permissions header)` +
+        (t.missing.includes("checks=read") ? ": ship reads the PR's checks from its Actions runs, where a check from another service is not seen" : "") + `; ${needs}` });
+  else if (!t.unread.length) v.gates.push({ gate: "token", ok: true, missing: [], why: `the token reads checks and commit statuses; ${needs}` });
 }
 
 // The stacked gate (lib/stack.mjs). A family child whose branch carries its
@@ -5430,7 +5453,7 @@ function stackedGate(st, root, ref, v, gate) {
 
 function shipLines(v) {
   const out = [`ship ${v.plan || v.root}: ${v.level} (${v.levelBy}; policy: ${v.policy.why})${v.capped ? ` — ${v.capped}` : ""}`];
-  for (const g of v.gates) out.push(`  ${g.ok ? "✓" : "·"} ${g.gate}: ${g.why}`);
+  for (const g of v.gates) out.push(`  ${!g.ok ? "·" : g.warn ? "!" : "✓"} ${g.gate}: ${g.why}`);
   if (v.pr) out.push(`  PR #${v.pr.number}${v.pr.draft ? " (draft)" : ""} ${v.pr.url}`);
   const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
     merge: `merges PR #${v.pr && v.pr.number} (${v.method})`, "merge-when-green": `merges PR #${v.pr && v.pr.number} (${v.method}) once its checks are green` }[v.action];
@@ -5493,7 +5516,7 @@ function shipAct(st, root, v) {
     return { ok: true, note: `merged PR #${n}; its landing runs from the app` };
   }
   // merge-when-green
-  if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""), (CI.checksNow(root).names || []))) {
+  if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""), (CI.checksNow(root, v.head).names || []))) {
     const r = CI.ghAct(["pr", "merge", n, "--auto", `--${v.method}`, "--match-head-commit", v.head], root);
     if (r.ok) {
       log(`asked GitHub to merge PR #${n} once its required checks pass`);
@@ -5552,7 +5575,7 @@ async function shipWait(st, root) {
       events: [...CI.PR_EVENTS, CI.MERGE_CONFLICT_EVENT],
       // When the stream attaches, a check that finished since this look ends
       // the pause, since gh does not replay it.
-      recheck: () => { const c = CI.checksNow(root); return !c.error && c.total > 0 && !c.pending.length; },
+      recheck: () => { const c = CI.checksNow(root, v.head); return !c.error && c.total > 0 && !c.pending.length; },
       say: m => console.log(`${new Date().toISOString()} ${m.replace(/^ci: /, "")}`) });
   }
 }

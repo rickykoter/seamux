@@ -66,21 +66,105 @@ export function prState(cwd) {
   return { pr };
 }
 
-// One look at the checks: {pending, failed, passed} lists of {name, link}.
-export function checksNow(cwd) {
+// One look at the checks: {pending, failed, passed} lists of {name, link,
+// check}, where check is the check's own name (a required check's context).
+// head is the commit whose Actions runs stand in when gh pr checks is
+// refused; it defaults to local HEAD.
+// gh pr checks reads GraphQL's statusCheckRollup, which a fine-grained token
+// without Checks read is refused (note n9ae07128). Then the checks come from
+// the head commit's Actions runs, which that token still reads, with via
+// "actions" and the refusal in refused: a check from another service than
+// Actions is not seen there.
+export function checksNow(cwd, head) {
   const c = gh(["pr", "checks", "--json", "name,bucket,link,workflow"], cwd);
   if (c.err) return { error: c.err };
   // gh exits 8 while checks are pending and 1 when one failed; the JSON is
   // the answer either way.
   // Right after a push gh may say no checks are reported yet: that is none
   // pending so far, and the wait goes on.
-  if (!c.out.trim() && /no checks reported/i.test(c.errText)) return { pending: [], failed: [], passed: [], total: 0 };
+  if (!c.out.trim() && /no checks reported/i.test(c.errText)) return { pending: [], failed: [], passed: [], total: 0, names: [] };
   const rows = parse(c.out);
-  if (!Array.isArray(rows)) return { error: `gh pr checks: ${c.errText.split("\n").pop() || "no JSON"}` };
-  const by = b => rows.filter(r => r.bucket === b).map(r => ({ name: r.workflow ? `${r.workflow} / ${r.name}` : r.name, link: r.link || "" }));
-  return { pending: by("pending"), failed: [...by("fail"), ...by("cancel")], passed: [...by("pass"), ...by("skipping")], total: rows.length,
-    names: rows.map(r => r.name) };
+  if (!Array.isArray(rows)) {
+    const why = c.errText.split("\n").pop() || "no JSON";
+    if (!TOKEN_REFUSED.test(c.errText)) return { error: `gh pr checks: ${why}` };
+    const a = actionsChecks(cwd, head || localHead(cwd));
+    if (a.error) return { error: `gh pr checks was refused (${why}), and the Actions runs could not be read either: ${a.error}` };
+    return { ...a, via: "actions", refused: why };
+  }
+  return bucketed(rows.map(r => ({ check: r.name, workflow: r.workflow, bucket: r.bucket, link: r.link })));
 }
+
+// A refusal a narrower token gets, rather than a missing PR or a gh fault.
+const TOKEN_REFUSED = /Resource not accessible by (personal access token|integration)|HTTP 403|not have permission|insufficient (scope|permission)/i;
+const localHead = cwd => {
+  const h = spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" });
+  return h.status === 0 ? h.stdout.trim() : "";
+};
+function bucketed(rows) {
+  const by = b => rows.filter(r => r.bucket === b).map(r => ({ name: r.workflow ? `${r.workflow} / ${r.check}` : r.check, link: r.link || "", check: r.check }));
+  return { pending: by("pending"), failed: [...by("fail"), ...by("cancel")], passed: [...by("pass"), ...by("skipping")], total: rows.length,
+    names: rows.map(r => r.check) };
+}
+
+// The jobs of a commit's Actions runs, bucketed as gh pr checks buckets them.
+// The newest run of each workflow counts (gh run list lists newest first), and
+// gh run view gives its latest attempt's jobs. {pending, failed, passed,
+// total, names} or {error}.
+const PASSED = new Set(["success", "skipped", "neutral"]);
+const CANCELLED = new Set(["cancelled", "stale"]);
+export function actionsChecks(cwd, sha) {
+  if (!sha) return { error: "no commit to read the runs of" };
+  const l = gh(["run", "list", "--commit", sha, "--json", "databaseId,workflowName,status,conclusion", "--limit", "50"], cwd);
+  if (l.err) return { error: l.err };
+  const runs = l.status === 0 ? parse(l.out) : null;
+  if (!Array.isArray(runs)) return { error: `gh run list: ${l.errText.split("\n").pop() || "no JSON"}` };
+  const seen = new Set(), rows = [];
+  for (const run of runs) {
+    if (seen.has(run.workflowName)) continue;
+    seen.add(run.workflowName);
+    const v = gh(["run", "view", String(run.databaseId), "--json", "jobs"], cwd);
+    const jobs = !v.err && v.status === 0 ? (parse(v.out) || {}).jobs : null;
+    if (!Array.isArray(jobs)) return { error: `gh run view ${run.databaseId}: ${v.err || v.errText.split("\n").pop() || "no JSON"}` };
+    for (const j of jobs)
+      rows.push({ check: j.name, workflow: run.workflowName, link: j.url || "",
+        bucket: j.status !== "completed" ? "pending" : PASSED.has(j.conclusion) ? (j.conclusion === "success" ? "pass" : "skipping")
+          : CANCELLED.has(j.conclusion) ? "cancel" : "fail" });
+  }
+  return bucketed(rows);
+}
+
+// The checks failing on a commit (the base's tip), read from its Actions
+// runs so any token that reads PRs can tell: a Set of check names, or null
+// when they could not be read.
+export function failingAt(cwd, sha) {
+  const a = actionsChecks(cwd, sha);
+  return a.error ? null : new Set(a.failed.map(f => f.check));
+}
+
+// What ship's token reads (ADR 0108, the token gate): one GET each for the
+// head commit's check runs and its combined status, with -i so a refusal's
+// X-Accepted-GitHub-Permissions header names the permission it needed. The
+// token itself never appears. {missing: ["checks=read", ...], unread:
+// ["why a probe said nothing"]}, kept per commit for this process.
+const tokenSeen = new Map();
+export function tokenReads(cwd, sha) {
+  const key = `${cwd}\0${sha}`;
+  if (tokenSeen.has(key)) return tokenSeen.get(key);
+  const out = { missing: [], unread: [] };
+  for (const [want, ep] of [["checks=read", `repos/{owner}/{repo}/commits/${sha}/check-runs?per_page=1`], ["statuses=read", `repos/{owner}/{repo}/commits/${sha}/status`]]) {
+    const r = gh(["api", "-i", ep], cwd);
+    if (r.err) { out.unread.push(`${want}: ${r.err}`); continue; }
+    const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out) || [])[1]) || 0;
+    if (code >= 200 && code < 300) continue;
+    const named = (/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out) || [])[1];
+    if (code === 403 || code === 404) out.missing.push(named ? named.trim() : want);
+    else out.unread.push(`${want}: ${code ? `HTTP ${code}` : (r.errText.split("\n").pop() || "no answer")}`);
+  }
+  tokenSeen.set(key, out);
+  return out;
+}
+// What ship needs of its token, in GitHub's fine-grained permission names.
+export const SHIP_NEEDS = ["pull_requests=write", "contents=write", "checks=read", "statuses=read", "statuses=write"];
 
 // For deep-plan ship (ADR 0108): the branch's PR with what a merge needs to
 // know, whether or not its head is local HEAD. {pr} or {error}; a branch with
@@ -108,15 +192,30 @@ function viewPr(cwd, which) {
 // Whether GitHub's own auto-merge can be used: the repo allows it, the base
 // branch requires status checks (with none required, GitHub merges at once,
 // which is not waiting for green), and every check on the PR is a required
-// one (GitHub would merge past a failing check that is not).
+// one (GitHub would merge past a failing check that is not). gh repo view has
+// no autoMergeAllowed field, so GraphQL says whether the repo allows it.
+const AUTO_MERGE_Q = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){autoMergeAllowed}}";
 export function githubAutoMerge(cwd, base, names = []) {
-  const r = gh(["repo", "view", "--json", "autoMergeAllowed"], cwd);
-  const allowed = !r.err && r.status === 0 && (parse(r.out) || {}).autoMergeAllowed === true;
-  if (!allowed) return false;
+  const r = gh(["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", `query=${AUTO_MERGE_Q}`], cwd);
+  const d = !r.err && r.status === 0 ? parse(r.out) : null;
+  if (!(d && d.data && d.data.repository && d.data.repository.autoMergeAllowed === true)) return false;
+  const need = requiredChecks(cwd, base);
+  return need.length > 0 && names.length > 0 && names.every(n => need.includes(n));
+}
+
+// The checks the base branch requires, by context: from its rulesets first
+// (repos/{owner}/{repo}/rules/branches/<base>, which any token that reads the
+// repo can read), then from classic branch protection, which needs
+// administration read and is often refused.
+export function requiredChecks(cwd, base) {
+  const r = gh(["api", `repos/{owner}/{repo}/rules/branches/${base}`], cwd);
+  const rules = !r.err && r.status === 0 ? parse(r.out) : null;
+  const fromRules = Array.isArray(rules) ? rules.filter(x => x && x.type === "required_status_checks")
+    .flatMap(x => ((x.parameters || {}).required_status_checks || []).map(c => c && c.context)).filter(Boolean) : [];
+  if (fromRules.length) return [...new Set(fromRules)];
   const p = gh(["api", `repos/{owner}/{repo}/branches/${base}/protection/required_status_checks`], cwd);
   const req = !p.err && p.status === 0 && parse(p.out);
-  const need = req ? [...(req.contexts || []), ...((req.checks || []).map(c => c && c.context).filter(Boolean))] : [];
-  return need.length > 0 && names.length > 0 && names.every(n => need.includes(n));
+  return req ? [...new Set([...(req.contexts || []), ...((req.checks || []).map(c => c && c.context).filter(Boolean))])] : [];
 }
 
 // One gh call for ship's acts (pr create, ready, merge): {ok, out}.
@@ -190,11 +289,12 @@ export async function wait({ cwd = process.cwd(), timeoutS = CI_TIMEOUT_S, inter
   if (p.error) { say(`ci: ${p.error}`); return NO_VERDICT; }
   say(`ci: PR #${p.pr.number} ${p.pr.url} at ${String(p.pr.headRefOid).slice(0, 8)}`);
   const end = Date.now() + timeoutS * 1000;
-  let first = true;
+  let first = true, toldVia = false;
   // One look: an exit code when the wait is over, null while checks pend.
   const look = () => {
-    const c = checksNow(cwd);
+    const c = checksNow(cwd, p.pr.headRefOid);
     if (c.error) { say(`ci: ${c.error}`); return NO_VERDICT; }
+    if (c.via === "actions" && !toldVia) { toldVia = true; say(`ci: gh pr checks was refused (${c.refused}); reading the head's Actions runs instead`); }
     if (!c.pending.length && c.total) {
       if (!c.failed.length) { say(`ci: all ${c.passed.length} check(s) passed`); return 0; }
       say(`ci: ${c.failed.length} of ${c.total} check(s) failed: ${c.failed.map(f => f.name).join(", ")}`);
