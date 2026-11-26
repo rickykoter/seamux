@@ -3023,6 +3023,68 @@ if (want("assumptions ingest")) {
     /function assumptionItem\(a\)/.test(page) && /n\.assumptions\.map\(assumptionItem\)/.test(page) && /no verdict yet/.test(page));
 }
 
+// ---------------------------------------------------------------- summary
+// lookout list --json: each review's stage, gate and round (lib/summary.mjs).
+if (want("review summary and list --root")) {
+  const SM = await import("./lib/summary.mjs");
+  const at = "2026-11-26T12:00:00.000Z";
+  const F = (id, severity, status, statusAt) => ({ id, severity, status, statusAt, file: "a.js", line: 1 });
+  const base = (extra) => ({ id: "x", title: "x", files: [], source: { root: "/w" }, reviewedAt: at, findings: [], notes: [], rounds: [], ...extra });
+  const st = r => SM.summarize(r).stage;
+  ok("summary: no reviewer yet is 'finding'", st(base({ reviewedAt: undefined })) === "finding");
+  ok("summary: an assumption with no verdict is 'claims', before open findings",
+    st(base({ notes: [{ assumptions: [{ id: "n1.a1" }] }], findings: [F("f1", "major", "open")] })) === "claims");
+  const r1 = SM.summarize(base({ findings: [F("f1", "major", "addressed"), F("f2", "minor", "addressed")] }));
+  ok("summary: addressed findings no sealed round holds are 'round' 1 of 2",
+    r1.stage === "round" && r1.round.n === 1 && r1.round.pending === 2 && r1.round.max === 2, JSON.stringify(r1.round));
+  ok("summary: a blocker or major only addressed still shuts the gate", r1.gate.code === 1);
+  ok("summary: open findings counted by severity, addressed included", r1.counts.major === 1 && r1.counts.minor === 1 && r1.counts.nit === 0 && r1.unaddressed === 0 && r1.addressed === 2);
+  const used = base({ rounds: [{ n: 1, findings: ["f1"] }, { n: 2, findings: ["f2"] }], findings: [F("f1", "minor", "addressed"), F("f2", "minor", "addressed"), F("f3", "minor", "addressed")] });
+  const r2 = SM.summarize(used);
+  ok("summary: pending fixes after two rounds is 'ask', and needs the person", r2.stage === "ask" && r2.needsPerson);
+  ok("summary: open, unaddressed findings are 'fix'", st(base({ findings: [F("f1", "nit", "open")] })) === "fix");
+  const sealedOne = base({ rounds: [{ n: 1, findings: ["f1"] }], findings: [F("f1", "minor", "addressed")] });
+  const r3 = SM.summarize(sealedOne);
+  ok("summary: addressed and re-reviewed is 'close', and the person must close it when the agent may not",
+    r3.stage === "close" && r3.needsPerson && r3.closeIds.join() === "f1", JSON.stringify(r3));
+  const r4 = SM.summarize({ ...sealedOne, policy: { agentMayClose: true } });
+  ok("summary: the same, when the agent may close, does not need the person", r4.stage === "close" && !r4.needsPerson && !r4.closeIds.length);
+  const r5 = SM.summarize(base({ findings: [F("f1", "major", "resolved", "2026-11-26T12:05:00.000Z"), F("f2", "nit", "dismissed", "2026-11-26T12:09:00.000Z")] }));
+  ok("summary: nothing open is 'past', closed at the newest status time", r5.stage === "past" && r5.past && r5.closedAt === "2026-11-26T12:09:00.000Z" && r5.gate.code === 0, JSON.stringify(r5));
+  const mixed = SM.summarize({ ...sealedOne, notes: [{ assumptions: [{ id: "a1" }] }] });
+  ok("summary: a re-reviewed finding needs the person only once nothing else is left (not while claims wait)", mixed.stage === "claims" && !mixed.needsPerson && !mixed.closeIds.length, JSON.stringify(mixed));
+  const fixing = SM.summarize({ ...sealedOne, findings: [...sealedOne.findings, F("f9", "nit", "open")] });
+  ok("summary: nor while other findings are still being fixed", fixing.stage === "fix" && !fixing.needsPerson);
+  ok("summary: a review of / keeps its root", SM.underRoot([{ source: { root: "/" } }], "/").length === 1);
+  ok("summary: a broken claim is counted", SM.summarize(base({ notes: [{ assumptions: [{ id: "a", verdict: { status: "broken" } }] }] })).claims.broken === 1);
+  ok("summary: the reviewer comes from the policy, agent by default",
+    SM.summarize(base({ policy: { reviewer: "panel" } })).reviewer === "panel" && SM.summarize(base({})).reviewer === "agent");
+
+  // lookout list --json --root: one worktree's reviews, with their state.
+  const dir = path.join(TMP, "summary-reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  const wt = path.join(TMP, "summary-wt"); fs.mkdirSync(wt, { recursive: true });
+  const write = r => fs.writeFileSync(path.join(dir, r.id + ".json"), JSON.stringify(r));
+  write(base({ id: "mine-inc1", title: "mine · increment 1", source: { root: wt + "/", plan: "mine", inc: 1 }, findings: [F("f1", "major", "open")], updatedAt: at, stats: { files: 2 } }));
+  write(base({ id: "other-wt", title: "other", source: { root: path.join(TMP, "elsewhere") } }));
+  write(base({ id: "no-root", title: "no root", source: {} }));
+  fs.writeFileSync(path.join(dir, "mine-inc1.rows.json"), "[]");
+  const env = { ...ENV, LOOKOUT_REVIEWS_DIR: dir };
+  const run = (...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), ...a], { encoding: "utf8", env });
+  let rows = null;
+  try { rows = JSON.parse(run("list", "--json", "--root", wt).stdout); } catch { /* checked below */ }
+  ok("list --root: keeps only that worktree's reviews (a trailing slash still matches)", rows && rows.length === 1 && rows[0].id === "mine-inc1", JSON.stringify(rows));
+  const r = rows && rows[0];
+  ok("list --json: carries stage, gate, counts, round and plan beside the old fields",
+    r && r.stage === "fix" && r.gate.code === 1 && r.counts.major === 1 && r.round.max === 2 && r.plan === "mine" && r.inc === 1 &&
+    r.title === "mine · increment 1" && r.files === 2 && r.updatedAt === at && r.root === wt + "/", JSON.stringify(r));
+  let all = null;
+  try { all = JSON.parse(run("list", "--json").stdout); } catch { /* checked below */ }
+  ok("list --json without --root: every review", all && all.length === 3);
+  ok("list --json: a review with no root still says root, as an empty string", all && all.find(x => x.id === "no-root")?.root === "");
+  ok("list --root with no directory is refused", run("list", "--root").status !== 0);
+}
+
 // ---------------------------------------------------------------- claims
 // The claims check: a fresh agent answers each assumption held, broken or
 // unchecked; the gate exits 4 until every one has a verdict.

@@ -233,7 +233,7 @@ lookout gate <id> | --plan SLUG --inc N
 lookout gh link|sync|status <id>     the review's pull request (see above)
 lookout gh post <id> <f#|t#>…        post to it, only when the person asks
 lookout show <id> [--json]   files of a review (or the whole store as JSON)
-lookout list [--json]        every review, newest first
+lookout list [--json] [--root DIR]  every review, newest first; --root keeps one worktree's, --json adds each one's stage, gate, round and open findings
 lookout render <id>          redraw the page from the store
 lookout setup                engine pointer, ~/.local/bin shim, pinned highlight.js
 lookout engine               which copy of the engine runs, and the host
