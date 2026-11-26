@@ -228,8 +228,10 @@ These survive a compaction; everything below them is how.
     fourth fix ([loops.md](references/loops.md#fix-until-green-then-stop)).
 11. **Ship after deliver.** On a repo with a policy, `deep-plan ship <slug>`
     opens the PR (auto-pr), or merges it once every gate passes
-    (auto-merge); `--dry-run` says what it waits on. Never run `gh pr
-    merge` yourself, and never approve a land write
+    (auto-merge); `--dry-run` says what it waits on. Below auto-merge the
+    merge is the person's: run `deep-plan ship <slug> --merge` only when
+    they say to merge, once per their word. Never run `gh pr merge`
+    yourself, and never approve a land write
     ([policy.md](references/policy.md#ship)).
 
 **In a cloud session** (claude.ai/code, `deep-plan doctor` says remote) the

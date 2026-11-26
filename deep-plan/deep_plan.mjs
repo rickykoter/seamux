@@ -5327,7 +5327,10 @@ function shipVerdict(o) {
   v.status = shipStatus(v);
   return v;
 }
-function verdictCore({ st, root, fetch = true }) {
+// merge: the person's `ship --merge`. It waives the policy level and the
+// .seamux/ cap, and nothing else: ship then acts as at auto-merge, so the kept
+// checkout gate waits and a red check holds the merge.
+function verdictCore({ st, root, fetch = true, merge = false }) {
   const git = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8", timeout: 20000 });
   const pol = POL.readPolicy(root, { fetch });
   const head = (git("rev-parse", "HEAD").stdout || "").trim();
@@ -5341,19 +5344,25 @@ function verdictCore({ st, root, fetch = true }) {
   // recipes, the scenarios harness: anything under .seamux/) is a person's
   // to merge, whatever the policy says of those paths.
   const gateFiles = (files || []).filter(f => f === POL.POLICY_REL || f.startsWith(".seamux/"));
-  if (gateFiles.length && POL.rank(level) > POL.rank("auto-pr")) {
+  if (!merge && gateFiles.length && POL.rank(level) > POL.rank("auto-pr")) {
     level = "auto-pr";
     capped = `the branch changes ${gateFiles.includes(POL.POLICY_REL) ? POL.POLICY_REL : gateFiles[0]}, which the gates read, so a person merges it`;
   }
   const v = { plan: st ? st.slug : null, root, branch, head, base: ref,
     policy: { source: pol.source, ref: pol.ref, why: pol.why }, level, levelBy: lv.file ? `${lv.file}: ${lv.by}` : lv.by,
-    capped, files: files ? files.length : null, gates: [], pr: null, action: "none", waits: [], method: POL.mergeMethod(pol) };
+    capped, files: files ? files.length : null, gates: [], pr: null, action: "none", waits: [], method: POL.mergeMethod(pol),
+    lever: merge ? "ship --merge" : null };
+  // The level ship acts at: the policy's, or auto-merge on the person's word.
+  const acting = merge ? "auto-merge" : level;
   const gate = (name, ok, why) => { v.gates.push({ gate: name, ok: !!ok, why }); if (!ok) v.waits.push(why); };
   if (st) gate("delivered", st.phase === "done", st.phase === "done" ? "the plan is delivered" : `the plan is ${st.phase}: every increment done and deep-plan deliver first`);
   else gate("plan", false, "no deep-plan plan is at this worktree");
   const scen = st ? (st.increments || []).flatMap(i => Object.values(checksOf(i)).filter(c => c.kind === "scenarios" && !c.retired)) : [];
   // Required by the level, and by scenarios.paths when the policy sets it
-  // (files that could not be read count as matching).
+  // (files that could not be read count as matching). The policy's level,
+  // under ship --merge too: scenarios prove a change before a merge nobody
+  // watches, and the person's own merge is watched. A plan's own scenarios
+  // check is a gate at every level either way.
   const req = POL.scenariosRequiredFor(pol, files);
   if (scen.length || (req && POL.atLeast(level, req))) {
     const full = scen.length ? SCN.fullPassAt(st.slug, head, scenariosThreshold(st)) : null;
@@ -5365,20 +5374,22 @@ function verdictCore({ st, root, fetch = true }) {
   }
   // Before the level's early return, so a stacked child hears it at every level.
   stackedGate(st, root, ref, v, gate);
-  keptGate(root, ref, level, v, gate);
+  keptGate(root, ref, acting, v, gate);
   // Where origin has the branch: the status is posted at every level, and
   // only on a commit origin has.
   const own = branch && branch !== "HEAD" && !(ref && branch === ref.replace(/^origin\//, ""));
   const remote = own ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
   v.remote = remote || null;
-  if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
-  if (!own) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
-  // The PR's state first: once it is merged GitHub deletes the branch, and
-  // the verdict is about the merge, not a missing push (#251, #254).
+  // The PR's state first, at every level: once it is merged GitHub deletes
+  // the branch, and the verdict is about the merge, not a missing push (#251,
+  // #254), wherever the merge came from (a person's, or GitHub's auto-merge
+  // on a ship --merge below auto-pr).
   const pv = CI.prView(root);
   const pr = pv.pr || null;
   if (pr) v.pr = { number: pr.number, url: pr.url, state: pr.state, draft: !!pr.isDraft, head: pr.headRefOid, mergeable: pr.mergeable || "" };
   if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
+  if (!POL.atLeast(acting, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
+  if (!own) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
   gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: ship pushes it, fast-forward only`) : `origin has no ${branch}: ship pushes it`);
   if (pv.error) gate("pr", false, pv.error);
   // The level was read from this base's policy and diffed against it: a PR
@@ -5393,7 +5404,7 @@ function verdictCore({ st, root, fetch = true }) {
   if (pr.headRefOid !== head) { gate("pr head", false, `PR #${pr.number}'s head is ${String(pr.headRefOid).slice(0, 8)}, not HEAD`); v.action = "wait"; return v; }
   tokenGate(root, head, v);
   if (pr.isDraft) { v.action = "ready"; return v; }
-  if (level !== "auto-merge") { v.action = "none"; v.say = capped || `at auto-pr, PR #${pr.number} is open for a person to merge`; return v; }
+  if (acting !== "auto-merge") { v.action = "none"; v.say = capped || `at auto-pr, PR #${pr.number} is open for a person to merge: ship --merge on their word`; return v; }
   if (pr.mergeable === "CONFLICTING") { gate("mergeable", false, `PR #${pr.number} has conflicts with its base`); v.action = "wait"; return v; }
   const c = CI.checksNow(root, head);
   if (c.error) { gate("ci", false, c.error); v.action = "wait"; return v; }
@@ -5496,7 +5507,8 @@ function stackedGate(st, root, ref, v, gate) {
 }
 
 function shipLines(v) {
-  const out = [`ship ${v.plan || v.root}: ${v.level} (${v.levelBy}; policy: ${v.policy.why})${v.capped ? ` — ${v.capped}` : ""}`];
+  const out = [`ship ${v.plan || v.root}: ${v.level} (${v.levelBy}; policy: ${v.policy.why})${v.capped ? ` — ${v.capped}` : ""}` +
+    (v.lever ? " — ship --merge: the person's merge, the level waived" : "")];
   for (const g of v.gates) out.push(`  ${!g.ok ? "·" : g.warn ? "!" : "✓"} ${g.gate}: ${g.why}`);
   if (v.pr) out.push(`  PR #${v.pr.number}${v.pr.draft ? " (draft)" : ""} ${v.pr.url}`);
   const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, push: `pushes ${v.branch} to origin (fast-forward only)`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
@@ -5520,7 +5532,8 @@ function shipStatus(v) {
   if (!v.plan) return { state: "success", description: "no deep-plan plan at this branch: a person's call" };
   const waits = v.gates.filter(g => !g.ok && !NOT_SHIP_GATES.has(g.gate)).map(g => g.why);
   if (waits.length) return { state: "pending", description: clip(`waits on: ${waits.join("; ")}`) };
-  return { state: "success", description: clip(`ship's gates passed at ${v.level}; ${v.level === "auto-merge" ? "ship merges once CI is green" : "a person merges"}`) };
+  return { state: "success", description: clip(`ship's gates passed at ${v.level}; ${v.lever ? "the person's ship --merge merges once CI is green"
+    : v.level === "auto-merge" ? "ship merges once CI is green" : "a person merges"}`) };
 }
 // Post it on HEAD when origin has HEAD; {posted, why}.
 function postShipStatus(root, v) {
@@ -5545,7 +5558,8 @@ function shipBody(st, v) {
   });
   return [`## ${spec.title || st.slug}`, "", para, "", "### Increments", "", ...incs, "",
     `Opened by deep-plan ship at the policy's ${v.level} level (${v.levelBy}). ` +
-      (v.level === "auto-merge" ? "Ship merges it once its checks are green." : "A person merges it."),
+      (v.lever ? "The person asked ship to merge it (ship --merge) once its checks are green."
+        : v.level === "auto-merge" ? "Ship merges it once its checks are green." : "A person merges it."),
     "", `The plan as approved: ~/.claude/plans/${st.slug}.approved.md on the machine that ran it.`].join("\n");
 }
 
@@ -5557,10 +5571,12 @@ function recordMerge(st, v) {
   const prior = readShip(st.slug) || {};
   const n = v.pr.number;
   if (prior.status === "merged" && prior.pr === n) return { note: `PR #${n} is merged (${prior.by === "ship" || !prior.by ? "by ship" : `by ${prior.by}`})` };
-  const by = prior.status === "auto-merge" && prior.pr === n ? "github-or-person" : "person";
-  const note = by === "person" ? `PR #${n} was merged by a person, not ship`
+  const asked = prior.status === "auto-merge" && prior.pr === n;
+  const by = asked && !prior.lever ? "github-or-person" : "person";
+  const note = asked && prior.lever ? `PR #${n} was merged by GitHub's auto-merge, which the person asked for with ship --merge`
+    : by === "person" ? `PR #${n} was merged by a person, not ship`
     : `PR #${n} was merged while ship's request for GitHub's auto-merge stood: by GitHub's auto-merge or by a person, which GitHub does not tell apart`;
-  writeShip(st.slug, { status: "merged", by, pr: n, head: v.pr.head, level: v.level, note });
+  writeShip(st.slug, { status: "merged", by, pr: n, head: v.pr.head, level: v.level, note, ...(asked && prior.lever ? { lever: prior.lever } : {}) });
   const s = readState(st.slug);
   if (s) { log1(s, `ship: ${note}`); writeState(s); }
   return { note };
@@ -5568,13 +5584,14 @@ function recordMerge(st, v) {
 
 function shipCmd(args, flags) {
   const waitMode = args.includes("--wait");
+  const merge = args.includes("--merge");
   const hi = args.indexOf("--head");
-  const pos = args.filter((a, i) => a !== "--wait" && a !== "--head" && !(hi >= 0 && i === hi + 1));
+  const pos = args.filter((a, i) => a !== "--wait" && a !== "--merge" && a !== "--head" && !(hi >= 0 && i === hi + 1));
   let st = pos[0] ? readState(pos[0]) : planFor(path.resolve(flags.at || process.cwd()));
   if (pos[0] && !st) die(`no plan ${pos[0]}`);
   const root = st ? st.root : (gitRoot(path.resolve(flags.at || process.cwd())) || die("ship: not in a git repo"));
-  if (waitMode) return shipWait(st, root);
-  let v = shipVerdict({ st, root, fetch: true });
+  if (waitMode) return shipWait(st, root, merge);
+  let v = shipVerdict({ st, root, fetch: true, merge });
   if (flags.dry) {
     if (flags.json) process.stdout.write(JSON.stringify({ ...v, dryRun: true, last: st ? readShip(st.slug) : null }) + "\n");
     else for (const l of shipLines(v)) say(l);
@@ -5595,13 +5612,17 @@ function shipCmd(args, flags) {
     else { for (const l of shipLines(v)) say(l); say(m.note); }
     return;
   }
-  // The push is ship's own act; then the verdict again, and its act.
+  // The push is ship's own act; then the verdict again, and its act. Under
+  // --merge, opening the PR and marking it ready lead on to the merge too:
+  // the person asked for the merge, not for one step toward it.
   const lines = [];
   let pushed = null;
-  if (v.action === "push") {
+  const leads = merge ? ["push", "open", "ready"] : ["push"];
+  for (let step = 0; step < leads.length && leads.includes(v.action); step++) {
     pushed = shipAct(st, root, v);
     if (!flags.json) { lines.push(...shipLines(v), pushed.note); }
-    if (pushed.ok) v = shipVerdict({ st: readState(st.slug) || st, root, fetch: false });
+    if (!pushed.ok) break;
+    v = shipVerdict({ st: readState(st.slug) || st, root, fetch: false, merge });
   }
   // The status goes up before the act: a ruleset that requires seamux/ship
   // refuses ship's own merge until it is there.
@@ -5657,19 +5678,21 @@ function shipAct(st, root, v) {
     writeShip(slug, { status: "ready", level: v.level, head: v.head, pr: Number(n) });
     return { ok: true, note: `PR #${n} is ready for review${v.level === "auto-merge" ? "; ship again to merge it" : ""}` };
   }
+  const lever = v.lever ? { lever: v.lever } : {};
   if (v.action === "merge") {
     const r = CI.ghAct(["pr", "merge", n, `--${v.method}`, "--match-head-commit", v.head], root);
-    if (!r.ok) { writeShip(slug, { status: "failed", pr: Number(n), head: v.head, note: r.out }); return { ok: false, note: `gh pr merge failed: ${r.out}` }; }
-    log(`merged PR #${n} (${v.method}) at auto-merge, every gate passed`);
-    writeShip(slug, { status: "merged", by: "ship", pr: Number(n), head: v.head, level: v.level });
-    return { ok: true, note: `merged PR #${n}; its landing runs from the app` };
+    if (!r.ok) { writeShip(slug, { status: "failed", pr: Number(n), head: v.head, note: r.out, ...lever }); return { ok: false, note: `gh pr merge failed: ${r.out}` }; }
+    log(v.lever ? `merged PR #${n} (${v.method}) on the person's ship --merge at ${v.level}, every gate passed`
+      : `merged PR #${n} (${v.method}) at auto-merge, every gate passed`);
+    writeShip(slug, { status: "merged", by: v.lever ? "person" : "ship", pr: Number(n), head: v.head, level: v.level, ...lever });
+    return { ok: true, note: `merged PR #${n}${v.lever ? " on your ship --merge" : ""}; its landing runs from the app` };
   }
   // merge-when-green
   if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""), (CI.checksNow(root, v.head).names || []))) {
     const r = CI.ghAct(["pr", "merge", n, "--auto", `--${v.method}`, "--match-head-commit", v.head], root);
     if (r.ok) {
-      log(`asked GitHub to merge PR #${n} once its required checks pass`);
-      writeShip(slug, { status: "auto-merge", pr: Number(n), head: v.head, level: v.level, by: "github" });
+      log(`asked GitHub to merge PR #${n} once its required checks pass${v.lever ? ", on the person's ship --merge" : ""}`);
+      writeShip(slug, { status: "auto-merge", pr: Number(n), head: v.head, level: v.level, by: "github", ...lever });
       return { ok: true, note: `GitHub merges PR #${n} once its required checks pass` };
     }
   }
@@ -5679,13 +5702,13 @@ function shipAct(st, root, v) {
   const runs = path.join(PLANS_DIR, `${slug}.runs`);
   fs.mkdirSync(runs, { recursive: true });
   const logFile = path.join(runs, "ship.log");
-  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: 0, by: "ship", log: logFile });
+  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: 0, by: "ship", log: logFile, ...lever });
   const fd = fs.openSync(logFile, "a");
-  const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "ship", slug, "--wait", "--head", v.head],
-    { detached: true, stdio: ["ignore", fd, fd], cwd: root, env: process.env });
+  const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "ship", slug, "--wait", "--head", v.head, ...(v.lever ? ["--merge"] : [])],
+    { detached: true, stdio: ["ignore", fd, fd], cwd: root, env: { ...process.env, DEEP_PLAN_SHIP_WAIT: "1" } });
   child.unref();
   fs.closeSync(fd);
-  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: child.pid, by: "ship", log: logFile });
+  writeShip(slug, { status: "waiting", pr: Number(n), head: v.head, level: v.level, pid: child.pid, by: "ship", log: logFile, ...lever });
   log(`waits for PR #${n}'s checks, then merges (pid ${child.pid})`);
   return { ok: true, note: `ship waits for PR #${n}'s checks and merges when they are green (pid ${child.pid}, log ${logFile})` };
 }
@@ -5699,7 +5722,7 @@ function alivePid(pid) {
 
 // ship's own wait: every gate again on each look, so a push, a red check, a
 // policy change on the base or a reopened plan stops it rather than merging.
-async function shipWait(st, root) {
+async function shipWait(st, root, merge = false) {
   if (!st) die("ship --wait needs a plan");
   const slug = st.slug, end = Date.now() + SHIP_WAIT_S() * 1000;
   const hi = process.argv.indexOf("--head");
@@ -5708,8 +5731,8 @@ async function shipWait(st, root) {
   // (and always before a merge): a long CI run is not a fetch a minute.
   let lastPosted = "";
   for (let look = 0; ; look++) {
-    let v = shipVerdict({ st: readState(slug) || st, root, fetch: look % 10 === 0 });
-    if (v.action === "merge" && look % 10 !== 0) v = shipVerdict({ st: readState(slug) || st, root, fetch: true });
+    let v = shipVerdict({ st: readState(slug) || st, root, fetch: look % 10 === 0, merge });
+    if (v.action === "merge" && look % 10 !== 0) v = shipVerdict({ st: readState(slug) || st, root, fetch: true, merge });
     console.log(`${new Date().toISOString()} ${v.action}: ${v.gates.map(g => `${g.gate} ${g.ok ? "ok" : "no"}`).join(", ")}`);
     if (started.head && v.head !== started.head) return shipStop(slug, `HEAD moved from ${started.head.slice(0, 8)} to ${v.head.slice(0, 8)}; ship again`);
     // Posted when it changes, and before a merge, which a required
@@ -7335,7 +7358,11 @@ const [, , cmd, ...rest] = process.argv;
 {
   const call = { verb: cmd || "", words: rest };
   const word = onHumansWord([call]);
-  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE) {
+  // Ship's own detached wait (`ship --wait`, spawned with DEEP_PLAN_SHIP_WAIT)
+  // is the merge the person already gave, not a new word; the variable alone
+  // does not keep a ship --merge out of the record.
+  const shipsOwnWait = !!process.env.DEEP_PLAN_SHIP_WAIT && cmd === "ship" && rest.includes("--wait");
+  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE && !shipsOwnWait) {
     const delegated = delegatedGo(call);
     process.on("exit", code => { if (!delegated && code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
   }
@@ -7398,6 +7425,8 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--base") flags.base = rest[++i] || die("--base needs a sha");
   // land: the kept checkout, the merge commit, one recipe's key, the PR.
   else if (rest[i] === "--repo") flags.repo = rest[++i] ? path.resolve(rest[i]) : die("--repo needs the repo's kept checkout");
+  // ship --merge is the person's merge (a switch); land's --merge names a commit.
+  else if (rest[i] === "--merge" && cmd === "ship") args.push(rest[i]);
   else if (rest[i] === "--merge") flags.merge = rest[++i] || die("--merge needs the merge commit's sha");
   else if (rest[i] === "--recipe") flags.recipe = rest[++i] || die("--recipe needs a land recipe's key");
   else if (rest[i] === "--pr") flags.prNumber = rest[++i] || die("--pr needs a PR number");

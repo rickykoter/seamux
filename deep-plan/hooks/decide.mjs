@@ -97,7 +97,7 @@ if (tool === "Bash") {
       `not from a Claude Code session. Ask the human to do it.\n`);
     process.exit(2);
   }
-  // A go (or a --force, --by human, close) in the same turn the gate refused
+  // A go (or a --force, --by human, close, ship --merge) in the same turn the gate refused
   // an edit is the agent answering the gate itself. The human's word in chat
   // starts a new turn, which clears it.
   const word = onHumansWord(calls);
@@ -116,7 +116,7 @@ if (tool === "Bash") {
   }
   // Several in one command would spend the turn's one several times.
   if (word && humansWordCount(calls) > 1) {
-    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: one go, --force, --by human or close per command, ` +
+    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: one go, --force, --by human, close or ship --merge per command, ` +
       `and per human turn: run one, then ask the human before the next.\n`);
     process.exit(2);
   }

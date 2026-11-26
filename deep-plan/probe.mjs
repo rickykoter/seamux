@@ -7792,7 +7792,7 @@ if (want("the go is the human's; what a pass covers; and friends")) {
   // Two levers in one command, and two parallel calls, cannot both pass.
   said(S2);
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate next && deep-plan close b1-gate" }, TMP);
-  ok("b1: two levers in one command are refused", r.status === 2 && /one go, --force, --by human or close per command/.test(r.stderr), r.stderr);
+  ok("b1: two levers in one command are refused", r.status === 2 && /one go, --force, --by human, close or ship --merge per command/.test(r.stderr), r.stderr);
   ok("b1: a lever is claimed before it runs", hook(S2, "Bash", { command: "deep-plan go b1-gate next" }, TMP).status === 0);
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate 2" }, TMP);
   ok("b1: …so a parallel second one is refused while it runs", r.status === 2 && /already running in this turn/.test(r.stderr), r.stderr);
@@ -7933,7 +7933,7 @@ if (want("the go is the human's; what a pass covers; and friends")) {
   const WORD = [["deep-plan close b1-gate", "close"], ["deep-plan go b1-gate 2 --force", "go --force"],
     ["deep-plan done b1-gate 1 --force", "done --force"], ["deep-plan check pass b1-gate 1 look x --force", "check --force"],
     ["deep-plan render s.json --force", "render --force"], ["deep-plan family take-back x --by human", "--by human"],
-    [`deep-plan "close" b1-gate`, "close"]];
+    [`deep-plan "close" b1-gate`, "close"], ["deep-plan ship b1-gate --merge", "ship --merge"]];
   hook(S2, "Edit", { file_path: path.join(AR, "src", "a.ts") });   // the gate refuses: S2's turn now has a denial
   for (const [c, word] of WORD) {
     r = hook(S2, "Bash", { command: c }, TMP);
@@ -7957,10 +7957,13 @@ if (want("the go is the human's; what a pass covers; and friends")) {
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate 3" }, TMP);
   ok("b1: …a second one in the same turn is refused", r.status === 2 && /already ran go in this turn: ask the human/.test(r.stderr), r.stderr);
   ok("b1: …and so is a close after it", hook(S2, "Bash", { command: "deep-plan close b1-gate" }, TMP).status === 2);
+  r = hook(S2, "Bash", { command: "deep-plan ship b1-gate --merge" }, TMP);
+  ok("b1: …and a ship --merge after it", r.status === 2 && /already ran go in this turn: ask the human, and run ship --merge only after they answer/.test(r.stderr), r.stderr);
   said(S2);
   ok("b1: …until the human's next prompt", hook(S2, "Bash", { command: "deep-plan go b1-gate 3" }, TMP).status === 0);
   said(S2);
   for (const c of [`git commit -m "deep-plan close: say why"`, `rg "deep-plan open-gate" docs`, "deep-plan status", "deep-plan check run b1-gate 1",
+    "deep-plan ship b1-gate --merge --dry-run", "deep-plan ship b1-gate",
     "echo deep-plan open-gate b1-gate >> notes.md", "cat <<'EOF' > notes.md\nrun deep-plan open-gate b1-gate\ndeep-plan open-gate b1-gate\nEOF",
     "printf '%s\\n' x | tee notes.md; ls deep-plan open-gate"])
     ok(`b1: a mention is not a lever (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0);
@@ -9948,6 +9951,68 @@ if (want("policy and ship: levels from the base branch")) {
   ok("ship: a kept checkout on another branch than the base is named too", kg && !kg.ok && /is on elsewhere, not main/.test(kg.why), JSON.stringify(kg));
   ok("ship: the gate is skipped when the plan's root is the main worktree itself",
     !((JSON.parse(pc("ship", "pol-ship", "--dry-run", "--json").stdout || "{}").gates || []).some(g => g.gate === "kept checkout")));
+  // ship --merge: the person's merge. A plan at auto-go on the src worktree.
+  execSync("git checkout -q main", { cwd: KM });
+  {
+    const s = mk("pol-lever", [["src/lever.js"], ["src/lever.js"]]); s.go = "human";
+    const rr = pc("render", tmpSpec(s), "--root", KS);
+    if (rr.status !== 0) throw new Error("pol-lever render: " + rr.stderr);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "pol-lever.key.json"), "utf8"));
+    pc("grade", "pol-lever", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    for (const n of [1, 2]) { pc("go", "pol-lever", String(n)); passAll("pol-lever", n, pc); pc("done", "pol-lever", String(n)); }
+  }
+  const ksHead = () => execSync("git rev-parse HEAD", { cwd: KS, encoding: "utf8" }).trim();
+  const levRec = () => { try { return JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), "utf8")); } catch { return {}; } };
+  const pvK = (o = {}) => ({ stdout: { number: 31, url: "https://github.com/o/r/pull/31", headRefOid: ksHead(), isDraft: false, state: "OPEN",
+    baseRefName: "main", headRefName: "dev/kept-src", mergeable: "MERGEABLE", ...o } });
+  const green = { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] };
+  ghMap({ [PRV]: pvK(), [CHK]: green, "pr merge": { stdout: "" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-lever", "--dry-run");
+  ok("ship --merge: without it, a delivered plan at auto-go is a person's to open and merge, and ship says how", stOf("pol-lever").phase === "done" &&
+    /ship pol-lever: auto-go/.test(r.stdout) && /a person opens the PR and merges it/.test(r.stdout), r.stdout + r.stderr);
+  r = pc("ship", "--merge", "pol-lever", "--dry-run", "--json");
+  const lj = JSON.parse(r.stdout || "{}");
+  ok("ship --merge --dry-run: the level is waived (the verdict says so) and ship would push, then merge; a dry run acts on nothing",
+    lj.lever === "ship --merge" && lj.level === "auto-go" && lj.action === "push" && !ghCalls().some(c => /^pr merge/.test(c)) && !remoteOf("dev/kept-src"), r.stdout + r.stderr);
+  fs.appendFileSync(path.join(KM, "README.md"), "dirty\n");
+  r = pc("ship", "pol-lever", "--merge", "--dry-run", "--json");
+  const kd = (JSON.parse(r.stdout || "{}").gates || []).find(g => g.gate === "kept checkout");
+  ok("ship --merge: a dirty kept checkout is a wait, as at auto-merge", kd && !kd.ok && JSON.parse(r.stdout).action === "wait", r.stdout);
+  execSync("git checkout -q README.md", { cwd: KM });
+  r = pc("ship", "pol-lever", "--merge");
+  ok("ship --merge: it pushes the branch, then merges the PR with green checks at once, pinned to HEAD",
+    r.status === 0 && remoteOf("dev/kept-src") === ksHead() && ghCalls().includes(`pr merge 31 --squash --match-head-commit ${ksHead()}`) &&
+    /merged PR #31 on your ship --merge/.test(r.stdout), r.stdout + r.stderr);
+  ok("ship --merge: ship.json and the plan log record the merge as the person's, through ship",
+    levRec().status === "merged" && levRec().by === "person" && levRec().lever === "ship --merge" &&
+    JSON.stringify(stOf("pol-lever").log || []).includes("on the person's ship --merge at auto-go"), JSON.stringify(levRec()));
+  fs.rmSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), { force: true });
+  ghMap({ [PRV]: pvK(), [CHK]: { status: 1, stdout: [[{ name: "probes", workflow: "CI", bucket: "fail", link: "" }]] }, "pr merge": { stdout: "" } });
+  r = pc("ship", "pol-lever", "--merge");
+  ok("ship --merge: a red check waits, named, and nothing merges", r.status === 3 && /1 PR check\(s\) failed: CI \/ probes/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  ghMap({ [PRV]: pvK(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }], [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "pr merge 31": { stdout: "" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-lever", "--merge");
+  let levMerged = false;
+  for (let i = 0; i < 100 && !levMerged; i++) { if (levRec().status === "merged") levMerged = true; else await new Promise(res => setTimeout(res, 100)); }
+  ok("ship --merge: with checks running and GitHub unable to wait, ship's own wait keeps the person's merge and merges once green",
+    /ship waits for PR #31's checks/.test(r.stdout) && levMerged && levRec().by === "person" && levRec().lever === "ship --merge" &&
+    ghCalls().includes(`pr merge 31 --squash --match-head-commit ${ksHead()}`), r.stdout + JSON.stringify(levRec()));
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), JSON.stringify({ status: "auto-merge", pr: 31, lever: "ship --merge" }));
+  ghMap({ [PRV]: pvK({ state: "MERGED" }) });
+  r = pc("ship", "pol-lever");
+  ok("ship --merge: a GitHub auto-merge the person asked for through ship is recorded as theirs",
+    /merged by GitHub's auto-merge, which the person asked for with ship --merge/.test(r.stdout) && levRec().by === "person", r.stdout);
+  {
+    const S_ = await import("./lib/state.mjs");
+    const call = (...w) => ({ verb: w[0], words: w.slice(1) });
+    ok("ship --merge is a lever of the person's word; its dry run and ship's own wait are not",
+      S_.onHumansWord([call("ship", "x", "--merge")]) === "ship --merge" && S_.onHumansWord([call("ship", "--merge", "--dry-run")]) === "" &&
+      S_.onHumansWord([call("ship", "x", "--wait", "--merge")]) === "ship --merge" && S_.onHumansWord([call("ship", "x")]) === "" &&
+      /DEEP_PLAN_SHIP_WAIT/.test(S_.trustOverride("DEEP_PLAN_SHIP_WAIT=1 deep-plan ship x --merge")) &&
+      S_.humansWordCount([call("ship", "x", "--merge"), call("go", "x", "next")]) === 2);
+  }
+  ok("land's --merge still takes the merge commit", /--merge needs the merge commit's sha/.test(pc("land", "plan", "--merge").stderr));
   // A worktree with no plan: success, a person's call.
   const LONE = path.join(TMP, "pol-lone");
   execSync(`git clone -q ${ORIGIN} ${LONE} && cd ${LONE} && git checkout -q -b dev/lone && echo x > lone.md && git add -A && ${G} commit -q -m lone && git push -q -u origin dev/lone`);

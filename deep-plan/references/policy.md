@@ -163,6 +163,27 @@ means ship waits on something, and the output says what. Its record is
 Never run `gh pr merge` yourself, and never approve a land write: at
 auto-merge the merge is ship's, and below it the merge is a person's.
 
+### Ship it
+
+`deep-plan ship <slug> --merge` is the person's merge through ship, at any
+level. It waives the policy level and the `.seamux/` cap, and no other
+gate: ship acts as at auto-merge, so the kept checkout gate waits, a red
+check holds the merge and is named, and green checks merge at once, pinned
+to HEAD. It pushes, opens the PR and marks a draft ready on the way. With
+checks still running, it asks for GitHub's auto-merge when GitHub can wait
+for them, or starts ship's own wait, which keeps the person's word. The
+ship record and the plan log record the merge as the person's, through
+ship.
+
+The scenarios a policy requires still follow its level, not auto-merge:
+they prove a change before a merge nobody watches, and this one is the
+person's. A plan's own scenarios check holds the merge at every level.
+
+It is a lever, like a `go`: an agent runs it only on the person's words,
+the gate lets one through per human turn, and not in a turn where the gate
+refused an edit. Its `--dry-run` is a read and takes no turn. The app's
+Merge stage has a Ship it button for the person's own click.
+
 ## The Merge stage
 
 The seamux app's Lookout tab shows, at a PR's Merge stage, the change's
