@@ -6734,6 +6734,12 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   ok("admin: between increments, .seamux files pass, nested projects too", e(".seamux/verify.json") === 0 && e("ops/.seamux/lessons.md") === 0);
   ok("admin: between increments, the plan's ADR folder passes", e(`${adr}/0001-x.md`) === 0, adr);
   ok("admin: between increments, product code stays gated", e("src/a.ts") === 2 && b("echo x > src/b.ts") === 2);
+  // A redirect's name is read where the redirect is, after a 2>&1 or a
+  // 2>/dev/null too: from outside the root, the write into it is still seen.
+  const out = c => gate("Bash", { command: c }, TMP).status;
+  ok("admin: from outside the root, a write after 2>&1 or 2>/dev/null into it stays gated",
+    out(`node x.mjs 2>&1 > ${AD}/src/b.ts`) === 2 && out(`node x.mjs 2>&1 >${AD}/src/b.ts`) === 2 &&
+    out(`grep x f 2>/dev/null > ${AD}/src/b.ts`) === 2);
   ok("admin: between increments, branch admin passes",
     b("git switch -c next") === 0 && b("git fetch origin && git rebase origin/main") === 0 && b("git push -u origin HEAD 2>&1 | tail -2") === 0 && b("git cherry-pick abc123") === 0);
   ok("admin: …but not a write chained beside it, nor a commit", b("git switch next && rm src/a.ts") === 2 && b("git commit -m x") === 2);
@@ -6757,6 +6763,31 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   r = gate("Bash", { command: "echo x > notes/todo.md" }, AD);
   ok("scope: a later one, by Bash too, is recorded without a word", r.status === 0 && !/outside increment/.test(ctx(r)) &&
     stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  // A sed script and a /dev/null redirect are not files (n30883b3d, nc49e03a2).
+  r = gate("Bash", { command: "sed -i '' -e 's/^function a(x) {/function b(x) {/' src/lib/x.ts" }, AD);
+  ok("scope: a sed -e script is not recorded as a file", r.status === 0 &&
+    stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  r = gate("Bash", { command: "grep -l x src/a.ts 2>/dev/null > src/lib/hits.txt" }, AD);
+  ok("scope: 2>/dev/null before a real redirect records nothing outside", r.status === 0 &&
+    stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  {
+    const T = c => JSON.stringify(lib.bashWriteTargets(c, "/w"));
+    ok("targets: sed's -e, -f, --expression and --file words are scripts, not files",
+      T("sed -i -e 's/a/b/' -e 's/c/d/' f1 f2") === '["/w/f1","/w/f2"]' && T("sed -i -n -e p f1") === '["/w/f1"]' &&
+      T("sed -i --expression=s/a/b/ f1") === '["/w/f1"]' && T("sed -i --file s.sed f1") === '["/w/f1"]' &&
+      T("sed -i -es/a/b/ f1") === '["/w/f1"]' && T("sed -i.bak -e s/a/b/ f1") === '["/w/f1"]' &&
+      T("sed -i -l 80 s/a/b/ f1") === '["/w/f1"]' && T("sed -i -nl 80 -e p f1 -") === '["/w/f1"]' &&
+      T("sed -i --line-length 80 s/a/b/ f1") === '["/w/f1"]' && T("sed -i --line-length=80 s/a/b/ f1") === '["/w/f1"]',
+      T("sed -i -e 's/a/b/' -e 's/c/d/' f1 f2"));
+    ok("targets: without -e the first word is still the script, and -i's '' suffix no path",
+      T("sed -i '' 's/a/b/' f1") === '["/w/f1"]' && T("sed -i s/a/b/ f1 f2") === '["/w/f1","/w/f2"]');
+    ok("targets: a redirect's name is read where it is, past 2>&1 and 2>/dev/null",
+      T("ls 2>/dev/null >out.txt") === '["/w/out.txt"]' && T("node x 2>&1 >/tmp/y") === '["/tmp/y"]' &&
+      T("cd /tmp; node x 2>&1 > /r/f") === '["/r/f"]' && T("grep x f 2>/dev/null > list.txt") === '["/w/list.txt"]',
+      T("cd /tmp; node x 2>&1 > /r/f"));
+    ok("targets: a redirect into /dev/null, quoted or not, is no target",
+      T('foo 2>"/dev/null"') === "[]" && T("foo 2>&1 >'/dev/null'") === "[]" && T("cat a > /dev/null") === "[]");
+  }
   ok("scope: the plan's log records it", stOf().log.some(l => /out of scope: increment 2 edited README\.md/.test(typeof l === "string" ? l : JSON.stringify(l))));
   cli("rehydrate", "admin-1");
   const wh = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "admin-1.working.html"), "utf8");

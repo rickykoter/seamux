@@ -825,6 +825,10 @@ const FIND_ACTS = /\s['"]?-(delete|exec|execdir|ok|okdir|fprint\w*|fls)\b/;
 // Un-scrubbed, `lsof 2>/dev/null` reads as "redirect into a file" and the
 // gate blocked four read-only commands in one session on exactly this.
 const scrub = cmd => cmd.replace(/\d*>>?\s*\/dev\/null/g, " ").replace(/\d+>&\d+/g, " ");
+// The same, blanked with as many spaces as it takes out, so an offset found in
+// it is the offset in the command: bashWriteTargets reads each redirect's name
+// from the command at the place it found the redirect here.
+const scrubKeep = cmd => cmd.replace(/\d*>>?\s*\/dev\/null|\d+>&\d+/g, m => " ".repeat(m.length));
 
 // The command with each quoted string's contents blanked, length kept, so
 // `rg "=>" src` and `jq ".a > 1" f.json` read as the arguments they are. A
@@ -1056,10 +1060,13 @@ export function bashWriteTargets(cmd, cwd) {
       continue;
     }
     // Redirects into files, read from the quote-blanked text for position
-    // and the raw text for the name.
-    for (const m of scrub(b).matchAll(/(^|[^>&\d])\d*>>?\s*(?!&)/g)) {
+    // and the raw text for the name. The scrub keeps the length, or the name
+    // is cut from the wrong place (`2>/dev/null > f` read as ev/null, and
+    // `2>&1 > f` as 1, missing f). /dev/null itself, quoted, is no target.
+    for (const m of scrubKeep(b).matchAll(/(^|[^>&\d])\d*>>?\s*(?!&)/g)) {
       const start = m.index + m[0].length;
       const name = words(raw.slice(start).match(/^("[^"]*"|'[^']*'|[^\s;&|<>()]+)/)?.[0] || "", vars)[0];
+      if (name === "/dev/null") continue;
       targets.push(name === null || name === undefined ? (lost ? null : here) : abs(name));
     }
     const doc = docs.find(d => raw.includes(d.line.trim()) || d.line.includes(raw.trim()));
@@ -1086,11 +1093,33 @@ export function bashWriteTargets(cmd, cwd) {
       const paths = /^ch(mod|own|grp)$/.test(prog) && name ? name.slice(1) : name;
       if (!paths || !paths.length) unknown(); else for (const p of paths) targets.push(abs(p));
     } else if (prog === "sed") {
-      // sed -i 's/a/b/' f…: the script is the first word unless -e gives it.
-      // BSD sed's `-i ''` passes an empty suffix word, which is no path.
-      const words2 = name && name.filter(a => a !== "");
-      const paths = words2 && (opts.some(o => /^-[a-zA-Z]*e$/.test(o)) ? words2 : words2.slice(1));
-      if (!paths || !paths.length) unknown(); else for (const p of paths) targets.push(abs(p));
+      // sed -i 's/a/b/' f…: the script is the first plain word, unless -e,
+      // -f, --expression or --file gives it; then the word after each (or
+      // the rest of its own word: -es/a/b/, --file=s.sed) is the script or
+      // its file, never a path. In a cluster, what follows an i is -i's
+      // suffix (-ie is suffix e). BSD sed's `-i ''` passes an empty suffix
+      // word, which is no path.
+      const plain = [];
+      let given = false;
+      for (let k = 0; k < args.length; k++) {
+        const a = args[k];
+        // A lone - is stdin, no file.
+        if (a === "-") continue;
+        if (a === null || !a.startsWith("-")) { plain.push(a); continue; }
+        if (a === "--") { plain.push(...args.slice(k + 1)); break; }
+        const long = a.match(/^--(expression|file)(=?)/);
+        if (long) { given = true; if (!long[2]) k++; continue; }
+        if (a === "--line-length") { k++; continue; }
+        if (a.startsWith("--")) continue;
+        for (let j = 1; j < a.length && a[j] !== "i"; j++) {
+          if (a[j] === "e" || a[j] === "f") { given = true; if (j === a.length - 1) k++; break; }
+          // -l N, the line length: its number is no script or file.
+          if (a[j] === "l") { if (j === a.length - 1) k++; break; }
+        }
+      }
+      const kept = plain.filter(a => a !== "");
+      const paths = given ? kept : kept.slice(1);
+      if (!paths.length || paths.includes(null)) unknown(); else for (const p of paths) targets.push(abs(p));
     } else if (!scrub(b).match(/(^|[^>])>>?\s*[^&|;\s]/) ||
       MUTATORS.some(re => re.test(scrub(raw.replace(/\d*>>?\s*\S+|<<-?\s*['"]?\w+['"]?/g, " "))))) {
       unknown();
