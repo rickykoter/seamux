@@ -6792,8 +6792,17 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   cli("rehydrate", "admin-1");
   const wh = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "admin-1.working.html"), "utf8");
   ok("scope: the working page shows the paths", /edited outside this increment's files: <code>README\.md<\/code>, <code>notes\/todo\.md<\/code>/.test(wh));
+  // An amend that adds a recorded path to the increment takes it off the list
+  // (nee7e4fdd); the log keeps the line that recorded it.
+  const s2 = JSON.parse(JSON.stringify(s));
+  s2.deliverables[1].files = [...s2.deliverables[1].files, "README.md"];
+  r = cli("amend", "admin-1", tmpSpec(s2), "README.md belongs to increment 2");
+  ok("scope: an amend that adds a recorded path drops it from the list, and the log keeps it",
+    r.status === 0 && stOf().increments[1].outOfScope.join() === "notes/todo.md" &&
+    stOf().log.some(l => /out of scope: increment 2 edited README\.md/.test(typeof l === "string" ? l : JSON.stringify(l))),
+    r.stderr.slice(0, 300) + JSON.stringify(stOf().increments[1].outOfScope));
   r = cli("done", "admin-1", "2");
-  ok("scope: done names them", /edited outside increment 2's files: README\.md, notes\/todo\.md/.test(r.stdout), r.stdout + r.stderr);
+  ok("scope: done names only what the amended files leave outside", /edited outside increment 2's files: notes\/todo\.md —/.test(r.stdout), r.stdout + r.stderr);
   cli("close", "admin-1");
 }
 
@@ -8301,6 +8310,23 @@ if (want("notes: side findings beside a plan's state")) {
     input: JSON.stringify({ tool_name: "Bash", tool_input: { command: `deep-plan note "the login test is flaky"` }, cwd: NA, session_id: "notes-s1" }) });
   ok("notes: the gate passes a note inside a root with nothing authorized", g.status === 0, g.stderr);
 
+  // A bare --help or -h is the verb's usage, never a note or lesson's text.
+  {
+    const before = fs.existsSync(nfile("notes-a")) ? fs.readFileSync(nfile("notes-a"), "utf8") : "";
+    const h1 = ncli(NA, "note", "--help"), h2 = ncli(NA, "lesson", "-h"), h3 = ncli(NA, "note", "close", "-h");
+    const after = fs.existsSync(nfile("notes-a")) ? fs.readFileSync(nfile("notes-a"), "utf8") : "";
+    ok("notes: note --help, lesson -h and note close -h print usage and file nothing",
+      h1.status === 0 && /^  note "<text>"/m.test(h1.stdout) && h2.status === 0 && /^  lesson /m.test(h2.stdout) &&
+      h3.status === 0 && /^  note close/m.test(h3.stdout) && before === after && !/noted n[0-9a-f]{8}|\bc[0-9a-f]{8}\b/.test(h1.stdout + h2.stdout + h3.stdout),
+      h1.stdout + h1.stderr + h2.stdout + h2.stderr);
+    // Every verb the switch dispatches is a built-in, so --help reaches each
+    // and the listing never offers its name to an extension.
+    const src = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
+    const set = src.match(/const BUILTIN_VERBS = new Set\(\[([\s\S]*?)\]\)/)[1].match(/"([^"]+)"/g).map(x => x.slice(1, -1));
+    const cases = [...src.slice(src.indexOf("switch (cmd) {")).matchAll(/^  case "([^"]+)":/gm)].map(m => m[1]);
+    ok("notes: BUILTIN_VERBS holds every verb the switch handles", cases.length > 30 && cases.every(c => set.includes(c)),
+      cases.filter(c => !set.includes(c)).join(", "));
+  }
   let r = ncli(NA, "note", "found before any go");
   ok("notes: a note before any go is on the plan at the cwd, with no increment",
     r.status === 0 && /^noted n[0-9a-f]{8} on notes-a$/m.test(r.stdout), r.stdout + r.stderr);

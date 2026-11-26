@@ -3002,6 +3002,16 @@ function renderFamily(spec, family) {
   for (const o of overlaps(readIndex(r.parent))) if (o.includes(spec.slug)) console.error("  ⚠ overlap: " + o);
 }
 
+// The recorded out-of-scope paths an increment's files do not cover, by the
+// rule the gate hook records them with (hooks/decide.mjs outOfScope): the
+// path itself, a glob, or a folder above it. Undefined when none are left.
+function stillOutside(recorded, files) {
+  if (!Array.isArray(recorded) || !recorded.length) return recorded;
+  const covered = r => files.some(f => r === f || matchesGlob(r, f) || r.startsWith(f.replace(/\/+$/, "") + "/"));
+  const left = recorded.filter(r => !covered(r));
+  return left.length ? left : undefined;
+}
+
 async function render(specPath, opts) {
   let spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   // The archive as it was before this render overwrites it.
@@ -3256,6 +3266,9 @@ async function render(specPath, opts) {
       checks: reconcileChecks(prev, checkLists[i]), obs: undefined,
       // The increment's own files, so the gate can flag an edit outside them.
       files: planPaths(d),
+      // What the gate recorded outside them, less what the files cover now:
+      // an amend that adds a file takes it off done's list (the log keeps it).
+      outOfScope: stillOutside(prev.outOfScope, planPaths(d)),
       // The policy's level for its files, as the base branch had it at render.
       level: levels[i].level, levelBy: levels[i].file ? `${levels[i].file}: ${levels[i].by}` : levels[i].by };
   });
@@ -7127,6 +7140,165 @@ function familyCmd(args, flags) {
 
 // ---------------------------------------------------------------- main
 
+// The usage listing: `deep-plan help`, an unknown verb, and (by verbHelp)
+// a built-in verb's own lines for its --help or -h.
+const HELP = `deep-plan — plan as artifact, gate per increment
+  setup [--force]                             fetch the pinned mermaid, write the engine
+                                              pointer, install the ~/.local/bin shim
+  engine                                      print the engine pointer (which copy runs)
+  doctor [--json]                             print the host (cmux, seamux, desktop, terminal, remote) and the engine copy
+  serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
+  install-repo [--root DIR] [--check]        copy the plugin into a repo's .claude/ for cloud sessions
+  export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews
+  import-state <file> [--force] [--root DIR]  bring a bundle back (refuses an existing plan unless --force)
+  state push <slug>                           push the plan's state to its seamux-state/<slug> branch
+  state pull <slug> [--force] [--root DIR]    bring that branch's state here (a family member's progress,
+                                              a go given on another machine)
+  state status [slug] [--json]                whether each plan's state matches its branch
+  state list [--json]                         the state branches on the remote, and which plans are here
+  page <slug> [--review]                      show the plan's working page (or its review) where this host can,
+                                              and print "served at <url> (host: …)"
+  render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
+  amend <slug> <spec.json> "<why>"            change a rendered plan: re-render at its own root, with
+                                              what changed and why logged and shown on the working page
+  rehydrate <slug>                            re-render from the archived spec
+  redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)
+  map <slug> | --all [--json]                 build a plan's End state map from its archived spec and root, and redraw
+  overviews <slug> [file.json] [--force]      list diagrams, or add plain-words overviews {"<n>": "<mermaid>"}
+  validate <slug|file>                        mermaid + formatting lint of rendered surfaces
+  adr apply <slug>                            write flagged ADRs into the repo (refused in review phase)
+  export-artifact <slug> [--json]             shareable annotate-able page (agent publishes it)
+  attach-artifact <slug> <url>                record the published artifact in state
+  grade <slug> [q1=a q2=c ...]                the alignment check; pass -> implementing
+                                              (no answers on a TTY: prompts, keeps them out of history)
+  status [--json]                             tracked plans (the board reads --json)
+  protects <dir> [--json]                     whether live plan or family work sits at a
+                                              directory (crew asks before closing one)
+  go <slug> <n|next> | go --at DIR next       authorize an increment; records who gave it
+     [--by human]                             (a delegated child cannot go itself)
+  start|done|block|reset <slug> <n> [why]     move an increment
+                                              (done is refused until every check
+                                              passed against the tree as it is;
+                                              done --force overrides, and logs it;
+                                              reset puts every verdict back to
+                                              pending — the work is being redone;
+                                              on a spec with go auto, a done whose
+                                              checks passed authorizes the next
+                                              increment, by auto)
+  check list <slug> <n>                       the increment's checks, verdicts and
+                                              what each one runs
+  check run <slug> <n> [id...] [--from wait]  run recipe-backed checks: cheap ones here,
+                                              expensive ones detached; stops at an
+                                              acquire step (a person runs it), and
+                                              --from wait resumes after it
+                                              (--inline runs an expensive one here)
+  check status <slug> <n> [id...] [--json]    where each stands; a running one's log tail
+  check wait <slug> <n> [id...] [--timeout s] block until none is running (default 540s;
+                                              exit 0 all passed, 1 not, 2 still running)
+  check pass|fail <slug> <n> <id> "<seen>"    record a verdict by hand (a check
+                                              backed by a recipe needs --force)
+  check reset <slug> <n> [id]                 verdict(s) back to pending, keeping
+                                              what they were in the note
+  obs check|pass|fail|reset <slug> <n> ...    the same, on the observability
+                                              checks only (the older verb)
+  open-gate|shut-gate <slug>                  the human lever, logged
+  diff <slug> [n] [--base <sha>]              open the increment's diff: lookout's page when
+                                              installed, else cmux diff on the patch done writes
+  review <slug> [n] [--base <sha>]            open the increment's lookout review (the plan's
+                                              review.agentMayClose applies); a review check gates on it
+  deliver <slug> [--base <sha>]               after the last increment of a plan with review.delivery:
+                                              open, then pass, the full delivery's lookout review
+                                              (--base: only where no start sha is recorded;
+                                              it is recorded as the start sha)
+                                              (refused while the plan has open notes;
+                                              --force is the human's)
+  close <slug> [--force]                      retire a finished plan (refused while it has
+                                              open notes; --force is the human's)
+  note "<text>" [--plan <slug>] [--inc <n>]   file a side finding under the plan at the cwd (or
+                                              --plan) and its open increment (or --inc)
+  note close <id> "<why>" [--into <slug>]     close a note, or move it into a live plan
+             [--plan <slug>]                  (--plan: the plan whose file holds it)
+  notes [--all] [--plan <slug>] [--json]      open notes of every plan in this repo
+                                              (--all adds closed ones)
+  ship <slug> [--dry-run] [--json]            after deliver: open the PR (auto-pr) or merge it
+                                              (auto-merge) as the base branch's policy allows,
+                                              or say what it waits on (--at DIR for a worktree)
+  policy show [--at DIR] [--json] [file...]   the base branch's .seamux/policy.json and each
+                                              file's level; policy check validates the worktree's
+  pack list | show <pack> [--json]            the packs deep-plan can add (deep-plan/packs,
+                                              ~/.claude/deep-plan/packs), and what one holds
+  pack add <pack|dir|git-url> [--root DIR]    merge a pack's recipes, scenarios harness, policy
+                                              draft, MCP servers and skills into the repo
+  pack check [pack] | update <pack> | remove <pack>  drift since it was merged; re-merge
+                                              or take out only what nobody edited
+  ci wait [--timeout s]                       wait on the branch's PR checks (the ci check's run)
+  scenarios write <slug> [--model M] [--force] a fresh headless writer drafts the plan's
+                                              scenarios from the approved plan, sealed
+                                              outside the repo (after the grade)
+  scenarios list|access <slug> [--json]       their titles and last scores, and the refused
+                                              attempts to read them
+  scenarios judge <slug> [--threshold T]      judge every scenario at HEAD (a check run may
+                                              judge only the failing ones)
+  scenarios revise <slug>                     after an amend, the writer proposes revisions
+                                              for the person to answer on the page
+  scenarios show|edit <slug>                  the person's: open the keyed page, or an editor
+  intake <link> [--json]                      gather an issue, PR, failed Actions run or Jira
+                                              key into a seed file to plan a bug from
+  lesson "<text>" [--plan <slug>] [--inc <n>] file a lesson candidate after a correction
+                                              (settled at the plan's retro)
+  retro <slug> [--json]                       list the plan's lesson candidates and the
+                                              repo's .seamux/lessons.md
+  retro <slug> keep <cid> "<rule>" --applies <globs>   a candidate becomes rule L<n>
+  retro <slug> merge <cid> L<n> ["<rule>"]    fold a candidate into an existing rule
+  retro <slug> drop <cid> "<why>"             a one-off; nothing is written
+  retro <slug> retire L<n> "<why>"            remove a rule that no longer earns its place
+  ask <ask.json>                             render a question with diagrams/examples
+                                              (served at /ask/<id>; a pick on the page
+                                              types the number into this terminal)
+  ask show <id>                               the recorded answer, if any
+  family init <parent> <child>... [--out F]   draft a parent spec from existing plans:
+                                              workstreams, suggested globs, their
+                                              contracts, and the overlap report
+  family open [parent]                        a workspace and Claude session for each
+                                              workstream that has none (seamux or cmux;
+                                              a parent's passing grade runs it too)
+  family check <parent> [--json]              what each member's worktree touched that
+                                              a sibling claims (exit 1 when any)
+  family status [slug] [--json]               every member's phase and progress, what
+                                              waits, and recorded overlaps
+  await-go <slug> [--timeout S]               block until an increment is authorized, print
+                                              its number (exit 0); 2 at the timeout (run it
+                                              again; 4 hours by default), 3 when nothing is
+                                              left to wait for
+  family take-back <child> [--by human]       a person takes a delegated child's go back
+                                              from the parent; give-back returns it
+  family hold <child> "<reason>"              the parent holds a child's go, saying why;
+                                              unhold lifts it
+  family news [slug]                          what the news hook would tell that member
+                                              (default: the one at the cwd) now; does
+                                              not move its cursor
+  seamux consolidate [--root DIR] [--write]   every worktree's untracked .seamux files
+                     [--json]                 against main's: only-here, differs, same;
+                                              --write copies the only-here ones into
+                                              main, never deleting or overwriting
+  seamux consolidate --export DIR             main's untracked .seamux files (no state/,
+                                              evidence/) to DIR/<project>/ for teammates
+  seamux consolidate --import DIR [--yes]     show what DIR/<project>/ changes in main;
+                                              writes only with --yes, the person's ok
+  handoff <slug>                              write ~/.claude/plans/<slug>.handoff.md:
+                                              PRs, each increment's commits and checks,
+                                              cutover steps, open notes
+  handoff <slug> --post KEY [--yes]           post it to Jira with acli; asks for a
+                                              yes first (--yes only on the person's word)
+  verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
+                 [--json]                     lands on and the recipes that apply
+  verify init [--root DIR] [--write]          draft .seamux/verify.json per project from
+              [--template name[@dir]]...      what the repo already runs (scripts, CI,
+              [--json]                        runner and host configs), a TODO on every
+                                              gap; dry run unless --write, which never
+                                              overwrites. Templates: verify/templates/;
+                                              then walk verify/setup-prompt.md`;
+
 // Every verb the switch below handles. Kept beside it so the usage listing can
 // say that an extension file is SHADOWED rather than advertise a verb that can
 // never dispatch — a user who writes ext/status.mjs and sees it listed as
@@ -7136,6 +7308,8 @@ const BUILTIN_VERBS = new Set([
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
   "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes", "scenarios", "ship", "policy", "pack", "ci",
+  "serve", "page", "export-state", "import-state", "install-repo", "state", "doctor", "amend", "proof", "lesson",
+  "intake", "handoff", "retro", "land", "seamux",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -7144,6 +7318,29 @@ for (const ev of ["uncaughtException", "unhandledRejection"])
   process.on(ev, e => { console.error(e instanceof LockBusy ? e.message : (e && e.stack) || String(e)); process.exit(1); });
 
 const [, , cmd, ...rest] = process.argv;
+
+// The lines of HELP for one verb: each that starts with it, and the lines
+// that continue them. Empty when the listing has none.
+function verbHelp(verb) {
+  const out = [];
+  let on = false;
+  for (const line of HELP.split("\n")) {
+    if (/^  \S/.test(line)) on = line.slice(2).split(/\s/)[0] === verb;
+    else if (!/^   /.test(line)) on = false;
+    if (on) out.push(line);
+  }
+  return out.join("\n");
+}
+// A bare --help or -h after a built-in verb prints that verb's usage and runs
+// nothing: unparsed, it was an argument (`note --help` filed a note reading
+// "--help"). Before the lever below, so `go x --help` spends no go; a lever
+// the gate hook claimed for the call is given back. Extension verbs get their
+// words as typed.
+if (BUILTIN_VERBS.has(cmd) && rest.some(a => a === "--help" || a === "-h")) {
+  try { if (process.env.CLAUDECODE && sessionId()) releaseLever(sessionId()); } catch { /* it lapses on its own */ }
+  say(verbHelp(cmd) || HELP);
+  process.exit(0);
+}
 
 // A Claude Code session's lever that succeeded (a go, a --force, --by human,
 // close) is recorded for the gate hook's one-per-human-turn rule
@@ -7689,162 +7886,7 @@ switch (cmd) {
         state: STATE_DIR, keys: KEYS_DIR, plans: PLANS_DIR, skill: HERE,
       }));
     }
-    say(`deep-plan — plan as artifact, gate per increment
-  setup [--force]                             fetch the pinned mermaid, write the engine
-                                              pointer, install the ~/.local/bin shim
-  engine                                      print the engine pointer (which copy runs)
-  doctor [--json]                             print the host (cmux, seamux, desktop, terminal, remote) and the engine copy
-  serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
-  install-repo [--root DIR] [--check]        copy the plugin into a repo's .claude/ for cloud sessions
-  export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews
-  import-state <file> [--force] [--root DIR]  bring a bundle back (refuses an existing plan unless --force)
-  state push <slug>                           push the plan's state to its seamux-state/<slug> branch
-  state pull <slug> [--force] [--root DIR]    bring that branch's state here (a family member's progress,
-                                              a go given on another machine)
-  state status [slug] [--json]                whether each plan's state matches its branch
-  state list [--json]                         the state branches on the remote, and which plans are here
-  page <slug> [--review]                      show the plan's working page (or its review) where this host can,
-                                              and print "served at <url> (host: …)"
-  render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
-  amend <slug> <spec.json> "<why>"            change a rendered plan: re-render at its own root, with
-                                              what changed and why logged and shown on the working page
-  rehydrate <slug>                            re-render from the archived spec
-  redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)
-  map <slug> | --all [--json]                 build a plan's End state map from its archived spec and root, and redraw
-  overviews <slug> [file.json] [--force]      list diagrams, or add plain-words overviews {"<n>": "<mermaid>"}
-  validate <slug|file>                        mermaid + formatting lint of rendered surfaces
-  adr apply <slug>                            write flagged ADRs into the repo (refused in review phase)
-  export-artifact <slug> [--json]             shareable annotate-able page (agent publishes it)
-  attach-artifact <slug> <url>                record the published artifact in state
-  grade <slug> [q1=a q2=c ...]                the alignment check; pass -> implementing
-                                              (no answers on a TTY: prompts, keeps them out of history)
-  status [--json]                             tracked plans (the board reads --json)
-  protects <dir> [--json]                     whether live plan or family work sits at a
-                                              directory (crew asks before closing one)
-  go <slug> <n|next> | go --at DIR next       authorize an increment; records who gave it
-     [--by human]                             (a delegated child cannot go itself)
-  start|done|block|reset <slug> <n> [why]     move an increment
-                                              (done is refused until every check
-                                              passed against the tree as it is;
-                                              done --force overrides, and logs it;
-                                              reset puts every verdict back to
-                                              pending — the work is being redone;
-                                              on a spec with go auto, a done whose
-                                              checks passed authorizes the next
-                                              increment, by auto)
-  check list <slug> <n>                       the increment's checks, verdicts and
-                                              what each one runs
-  check run <slug> <n> [id...] [--from wait]  run recipe-backed checks: cheap ones here,
-                                              expensive ones detached; stops at an
-                                              acquire step (a person runs it), and
-                                              --from wait resumes after it
-                                              (--inline runs an expensive one here)
-  check status <slug> <n> [id...] [--json]    where each stands; a running one's log tail
-  check wait <slug> <n> [id...] [--timeout s] block until none is running (default 540s;
-                                              exit 0 all passed, 1 not, 2 still running)
-  check pass|fail <slug> <n> <id> "<seen>"    record a verdict by hand (a check
-                                              backed by a recipe needs --force)
-  check reset <slug> <n> [id]                 verdict(s) back to pending, keeping
-                                              what they were in the note
-  obs check|pass|fail|reset <slug> <n> ...    the same, on the observability
-                                              checks only (the older verb)
-  open-gate|shut-gate <slug>                  the human lever, logged
-  diff <slug> [n] [--base <sha>]              open the increment's diff: lookout's page when
-                                              installed, else cmux diff on the patch done writes
-  review <slug> [n] [--base <sha>]            open the increment's lookout review (the plan's
-                                              review.agentMayClose applies); a review check gates on it
-  deliver <slug> [--base <sha>]               after the last increment of a plan with review.delivery:
-                                              open, then pass, the full delivery's lookout review
-                                              (--base: only where no start sha is recorded;
-                                              it is recorded as the start sha)
-                                              (refused while the plan has open notes;
-                                              --force is the human's)
-  close <slug> [--force]                      retire a finished plan (refused while it has
-                                              open notes; --force is the human's)
-  note "<text>" [--plan <slug>] [--inc <n>]   file a side finding under the plan at the cwd (or
-                                              --plan) and its open increment (or --inc)
-  note close <id> "<why>" [--into <slug>]     close a note, or move it into a live plan
-             [--plan <slug>]                  (--plan: the plan whose file holds it)
-  notes [--all] [--plan <slug>] [--json]      open notes of every plan in this repo
-                                              (--all adds closed ones)
-  ship <slug> [--dry-run] [--json]            after deliver: open the PR (auto-pr) or merge it
-                                              (auto-merge) as the base branch's policy allows,
-                                              or say what it waits on (--at DIR for a worktree)
-  policy show [--at DIR] [--json] [file...]   the base branch's .seamux/policy.json and each
-                                              file's level; policy check validates the worktree's
-  pack list | show <pack> [--json]            the packs deep-plan can add (deep-plan/packs,
-                                              ~/.claude/deep-plan/packs), and what one holds
-  pack add <pack|dir|git-url> [--root DIR]    merge a pack's recipes, scenarios harness, policy
-                                              draft, MCP servers and skills into the repo
-  pack check [pack] | update <pack> | remove <pack>  drift since it was merged; re-merge
-                                              or take out only what nobody edited
-  ci wait [--timeout s]                       wait on the branch's PR checks (the ci check's run)
-  scenarios write <slug> [--model M] [--force] a fresh headless writer drafts the plan's
-                                              scenarios from the approved plan, sealed
-                                              outside the repo (after the grade)
-  scenarios list|access <slug> [--json]       their titles and last scores, and the refused
-                                              attempts to read them
-  scenarios judge <slug> [--threshold T]      judge every scenario at HEAD (a check run may
-                                              judge only the failing ones)
-  scenarios revise <slug>                     after an amend, the writer proposes revisions
-                                              for the person to answer on the page
-  scenarios show|edit <slug>                  the person's: open the keyed page, or an editor
-  intake <link> [--json]                      gather an issue, PR, failed Actions run or Jira
-                                              key into a seed file to plan a bug from
-  lesson "<text>" [--plan <slug>] [--inc <n>] file a lesson candidate after a correction
-                                              (settled at the plan's retro)
-  retro <slug> [--json]                       list the plan's lesson candidates and the
-                                              repo's .seamux/lessons.md
-  retro <slug> keep <cid> "<rule>" --applies <globs>   a candidate becomes rule L<n>
-  retro <slug> merge <cid> L<n> ["<rule>"]    fold a candidate into an existing rule
-  retro <slug> drop <cid> "<why>"             a one-off; nothing is written
-  retro <slug> retire L<n> "<why>"            remove a rule that no longer earns its place
-  ask <ask.json>                             render a question with diagrams/examples
-                                              (served at /ask/<id>; a pick on the page
-                                              types the number into this terminal)
-  ask show <id>                               the recorded answer, if any
-  family init <parent> <child>... [--out F]   draft a parent spec from existing plans:
-                                              workstreams, suggested globs, their
-                                              contracts, and the overlap report
-  family open [parent]                        a workspace and Claude session for each
-                                              workstream that has none (seamux or cmux;
-                                              a parent's passing grade runs it too)
-  family check <parent> [--json]              what each member's worktree touched that
-                                              a sibling claims (exit 1 when any)
-  family status [slug] [--json]               every member's phase and progress, what
-                                              waits, and recorded overlaps
-  await-go <slug> [--timeout S]               block until an increment is authorized, print
-                                              its number (exit 0); 2 at the timeout (run it
-                                              again; 4 hours by default), 3 when nothing is
-                                              left to wait for
-  family take-back <child> [--by human]       a person takes a delegated child's go back
-                                              from the parent; give-back returns it
-  family hold <child> "<reason>"              the parent holds a child's go, saying why;
-                                              unhold lifts it
-  family news [slug]                          what the news hook would tell that member
-                                              (default: the one at the cwd) now; does
-                                              not move its cursor
-  seamux consolidate [--root DIR] [--write]   every worktree's untracked .seamux files
-                     [--json]                 against main's: only-here, differs, same;
-                                              --write copies the only-here ones into
-                                              main, never deleting or overwriting
-  seamux consolidate --export DIR             main's untracked .seamux files (no state/,
-                                              evidence/) to DIR/<project>/ for teammates
-  seamux consolidate --import DIR [--yes]     show what DIR/<project>/ changes in main;
-                                              writes only with --yes, the person's ok
-  handoff <slug>                              write ~/.claude/plans/<slug>.handoff.md:
-                                              PRs, each increment's commits and checks,
-                                              cutover steps, open notes
-  handoff <slug> --post KEY [--yes]           post it to Jira with acli; asks for a
-                                              yes first (--yes only on the person's word)
-  verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
-                 [--json]                     lands on and the recipes that apply
-  verify init [--root DIR] [--write]          draft .seamux/verify.json per project from
-              [--template name[@dir]]...      what the repo already runs (scripts, CI,
-              [--json]                        runner and host configs), a TODO on every
-                                              gap; dry run unless --write, which never
-                                              overwrites. Templates: verify/templates/;
-                                              then walk verify/setup-prompt.md`);
+    say(HELP);
     // State which extensions are in force even when nothing is wrong: "my
     // extension is being ignored" is the failure this listing exists to remove.
     const ext = listExt();
