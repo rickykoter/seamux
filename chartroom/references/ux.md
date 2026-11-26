@@ -33,6 +33,10 @@ Start from `chartroom template ux <file>`. Keep what it sets up:
 - No network: inline CSS and SVG only. Icons as inline SVG, never emoji.
 - One screen per pane. A flow of several screens is several views of an
   `arch`-style sequence, or one pane that stacks the steps vertically.
+- Say what width the screen is for with `<meta name="chartroom-width"
+  content="1100">` (390 for a phone screen). In a narrow pane or on a phone
+  the studio renders the pane at that width and scales it to fit, so a
+  desktop design keeps its layout; without the tag it assumes 1100.
 
 ## After a comment
 

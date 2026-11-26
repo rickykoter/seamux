@@ -145,6 +145,7 @@
     if (!c) { renderRail(); return; }
     $("title").textContent = c.title;
     $("title").title = c.title;
+    if ($("title").getAttribute("role") === "button") $("title").setAttribute("aria-label", "Charts: " + c.title);
     $("kind").textContent = KIND_CHIP[c.kind] || c.kind;
     var st = $("status");
     st.textContent = c.status + (c.chosen ? ": " + paneLabel(c, c.chosen.version, c.chosen.pane) : "");
@@ -192,6 +193,129 @@
     return f;
   }
 
+  // ---------------------------------------------------------- narrow
+
+  // Narrow is a width, not a device: a phone, or a narrow pane on a
+  // computer with a mouse. The layout is in studio.css; this is behaviour.
+  var narrowMq = window.matchMedia ? window.matchMedia("(max-width: 700px)") : { matches: false };
+  var isNarrow = function () { return !!narrowMq.matches; };
+  var DEFAULT_W = 1100;
+  S.fit = true;
+  try { S.fit = localStorage.getItem("chartroom.fit") !== "actual"; } catch (e) { /* a private window: fit */ }
+  var rootHas = function (c) { return document.documentElement.classList.contains(c); };
+
+  function setSheet(on) {
+    on = !!on && isNarrow();
+    document.documentElement.classList.toggle("sheet-open", on);
+    $("scrim").hidden = !(on || rootHas("reg-open"));
+    var b = document.querySelector("#narrow-bar .nb-threads");
+    if (b) { b.classList.toggle("on", on); b.setAttribute("aria-expanded", on ? "true" : "false"); }
+  }
+  function setReg(on) {
+    on = !!on && isNarrow();
+    document.documentElement.classList.toggle("reg-open", on);
+    $("scrim").hidden = !(on || rootHas("sheet-open"));
+    if (on) { var r = document.querySelector("#register-list .row.sel") || document.querySelector("#register-list .row"); if (r) r.focus(); }
+  }
+  $("scrim").addEventListener("click", function () { setSheet(false); setReg(false); });
+  $("sheet-close").addEventListener("click", function () { setSheet(false); });
+  $("reg-close").addEventListener("click", function () { setReg(false); $("title").focus(); });
+  $("title").addEventListener("click", function () { if (isNarrow()) setReg(!rootHas("reg-open")); });
+  $("title").addEventListener("keydown", function (e) { if (isNarrow() && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); e.stopPropagation(); setReg(true); } });
+  function onNarrow() {
+    var n = isNarrow();
+    if (n) { $("title").setAttribute("tabindex", "0"); $("title").setAttribute("role", "button"); $("title").setAttribute("aria-label", "Charts: " + $("title").textContent); }
+    else { $("title").removeAttribute("tabindex"); $("title").removeAttribute("role"); $("title").removeAttribute("aria-label"); setSheet(false); setReg(false); }
+    applyFit();
+  }
+  if (narrowMq.addEventListener) narrowMq.addEventListener("change", onNarrow);
+
+  // A chart drawn wider than the pane renders at its own width, scaled to
+  // fit (Fit), or at that width scrolled sideways (Actual). Pins and
+  // outlines live inside the frame, so they scale with it.
+  function applyFit() {
+    var box = $("frames"), n = isNarrow();
+    box.classList.toggle("actual", n && !S.fit);
+    $("fit-fit").setAttribute("aria-pressed", S.fit ? "true" : "false");
+    $("fit-actual").setAttribute("aria-pressed", S.fit ? "false" : "true");
+    var bw = box.clientWidth, bh = box.clientHeight;
+    S.frames.forEach(function (f) {
+      var st = f.el.style, W = f.designW || DEFAULT_W;
+      st.left = "";
+      if (!n || !bw || (!f.designW && W <= bw)) { st.width = ""; st.height = ""; st.transform = ""; return; }
+      // Designed narrower than the pane (a phone screen in a wider pane):
+      // shown at its own width, centred, in either mode.
+      if (W <= bw) { st.width = W + "px"; st.height = ""; st.transform = ""; st.left = Math.round((bw - W) / 2) + "px"; return; }
+      if (S.fit) { var k = bw / W; st.width = W + "px"; st.height = Math.round(bh / k) + "px"; st.transform = "scale(" + k + ")"; }
+      else { st.width = W + "px"; st.height = "100%"; st.transform = ""; }
+    });
+  }
+  var setFit = function (on) { S.fit = on; try { localStorage.setItem("chartroom.fit", on ? "fit" : "actual"); } catch (e) { /* not kept */ } applyFit(); };
+  $("fit-fit").addEventListener("click", function () { setFit(true); });
+  $("fit-actual").addEventListener("click", function () { setFit(false); });
+  if (window.ResizeObserver) new ResizeObserver(function () { applyFit(); }).observe($("frames"));
+
+  // The bottom bar: Compare held (mouse button, finger, Space or Enter), Pin, Pick, Threads.
+  function renderNarrowBar() {
+    var bar = $("narrow-bar");
+    // While Compare is held it keeps its element (it has the pointer
+    // captured; replacing it would end the hold); the rest is rebuilt.
+    var held = S.flipping && bar.querySelector('[data-fk="nb-compare"]');
+    if (held) { while (held.nextSibling) bar.removeChild(held.nextSibling); while (held.previousSibling) bar.removeChild(held.previousSibling); }
+    else bar.textContent = "";
+    var c = S.detail && S.detail.chart;
+    var v = c && version(c, S.n);
+    var p = v && paneIn(v, S.key, 0);
+    var prev = v && prevVersion(c, v.n);
+    var cmp = h("button", { type: "button", cls: "nb hold" + (S.flipping ? " on" : ""), "data-fk": "nb-compare", disabled: !prev,
+      title: prev ? "Hold to see v" + prev.n + " (or hold Space)" : "No earlier version to compare with",
+      text: S.flipping && prev ? "Holding: v" + prev.n : "Compare" });
+    var release = function () { S.holdBy = ""; if (S.flipping) { flip(false); renderNarrowBar(); } };
+    cmp.addEventListener("pointerdown", function (e) {
+      if (!prev) return;
+      e.preventDefault();
+      try { cmp.setPointerCapture(e.pointerId); } catch (x) { /* fine */ }
+      cmp.classList.add("on"); cmp.textContent = "Holding: v" + prev.n;
+      S.holdBy = "pointer"; S.holdPointer = e.pointerId;
+      flip(true);
+      if (!S.flipping) { S.holdBy = ""; S.holdPointer = undefined; cmp.classList.remove("on"); cmp.textContent = "Compare"; }
+    });
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach(function (t) { cmp.addEventListener(t, release); });
+    cmp.addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.repeat && prev) { e.preventDefault(); cmp.classList.add("on"); flip(true); if (!S.flipping) cmp.classList.remove("on"); } });
+    cmp.addEventListener("keyup", function (e) { if (e.key === "Enter") { e.preventDefault(); release(); } });
+    if (held) { held.classList.add("on"); if (prev) held.textContent = "Holding: v" + prev.n; }
+    else bar.appendChild(cmp);
+    if (!S.readOnly && p) bar.appendChild(h("button", { type: "button", cls: "nb" + (S.pinMode ? " on" : ""), "data-fk": "nb-pin", "aria-pressed": S.pinMode ? "true" : "false", disabled: !!S.flipping,
+      title: S.flipping ? "Release Space first" : "Pin a comment: the next click on the chart drops it (c)", text: "Pin",
+      on: { click: function () { setSheet(false); setPinMode(!S.pinMode); renderNarrowBar(); } } }));
+    if (p && p.role === "option") {
+      var chosen = c.chosen && c.chosen.version === v.n && c.chosen.pane === p.key;
+      if (chosen) bar.appendChild(h("button", { type: "button", cls: "nb", disabled: true, text: "Chosen" }));
+      else if (!S.readOnly) bar.appendChild(h("button", { type: "button", cls: "nb prim", "data-fk": "nb-pick", disabled: !!S.flipping, title: S.flipping ? "Release Space first" : "Choose " + p.label + " (v" + v.n + ")",
+        text: "Pick", on: { click: function () { send({ op: "pick", version: v.n, pane: p.key }).then(function () { toast("Picked " + p.label + "." + sentNote()); }, function () {}); } } }));
+    }
+    var all = threadsNow(), w = all.filter(waitsHere).length, open = all.filter(function (t) { return !t.resolved; }).length;
+    var sheet = rootHas("sheet-open");
+    bar.appendChild(h("button", { type: "button", cls: "nb nb-threads" + (sheet ? " on" : ""), "data-fk": "nb-threads", "aria-expanded": sheet ? "true" : "false",
+      title: w ? w + " thread(s) wait on you" : open + " open thread(s)", on: { click: function () { setSheet(!rootHas("sheet-open")); } } },
+      ["Threads", w ? h("span", { cls: "n", text: String(w) }) : open ? h("span", { cls: "n quiet", text: String(open) }) : null]));
+  }
+  setTimeout(onNarrow, 0);
+  // A pointer hold ends wherever the pointer is let go: on this page (the
+  // capture may be lost) or over the chart, which tells us (anchor.js).
+  // Only the pointer that started the hold ends it: a second finger lifting
+  // (a tap on Threads) does not. A release without an id (mouseup inside the
+  // chart) counts.
+  function endPointerHold(e) {
+    if (S.holdBy !== "pointer") return;
+    var id = e && typeof e.pointerId === "number" ? e.pointerId : undefined;
+    if (id !== undefined && S.holdPointer !== undefined && id !== S.holdPointer) return;
+    S.holdBy = ""; S.holdPointer = undefined;
+    if (S.flipping) flip(false);
+    renderNarrowBar();
+  }
+  ["pointerup", "pointercancel"].forEach(function (t) { window.addEventListener(t, endPointerHold, true); });
+
   function renderStage() {
     var c = S.detail.chart;
     var v = version(c, S.n);
@@ -218,18 +342,22 @@
     else if (v && lv && v.n < lv.n) note.appendChild(h("span", {}, ["You are on v" + v.n + "; the latest is v" + lv.n + ". ",
       h("button", { cls: "link", "data-fk": "to-latest", text: "Go to v" + lv.n, on: { click: function () { showVersion(lv.n); } } })]));
     note.hidden = !note.childNodes.length;
+    setTimeout(applyFit, 0);
     document.querySelectorAll("#versions .ver").forEach(function (b) {
       var n = Number(b.getAttribute("data-n"));
       b.classList.toggle("on", flipped ? n === prev.n : n === v.n);
       b.classList.toggle("was", flipped && n === v.n);
     });
     $("pick-slot").classList.toggle("waiting", flipped);
-    $("pick-slot").querySelectorAll("button").forEach(function (b) { b.disabled = flipped; });
+    document.querySelectorAll("#pick-slot button").forEach(function (b) { b.disabled = flipped; });
+    // The narrow bar builds its own buttons from S.flipping: one owner, so a
+    // redraw never disagrees with the flip.
+    if (isNarrow()) renderNarrowBar();
     var badge = $("flip-badge");
     badge.hidden = !flipped;
     if (flipped) badge.textContent = "Showing v" + prev.n + ", outlined where v" + v.n + " differs. Release Space for v" + v.n + ".";
     // The flip's tooltip stands in for the button's own, which comes back after.
-    $("pick-slot").querySelectorAll("button").forEach(function (b) {
+    document.querySelectorAll("#pick-slot button").forEach(function (b) {
       if (flipped) { if (!b.hasAttribute("data-title")) b.setAttribute("data-title", b.title); b.title = "Release Space first"; }
       else if (b.hasAttribute("data-title")) { b.title = b.getAttribute("data-title"); b.removeAttribute("data-title"); }
     });
@@ -267,6 +395,7 @@
   function select(id, n, key) {
     if (!id) { S.id = ""; S.detail = null; renderRegister(); renderChart(); writeHash(); return Promise.resolve(); }
     var same = id === S.id;
+    setReg(false);
     // A half-written comment waits for its chart rather than being dropped.
     if (!same) { if (S.id && S.draft) S.drafts[S.id] = S.draft; S.draft = S.drafts[id] || null; delete S.drafts[id]; S.focus = ""; S.forceThreads = true; setPinMode(false); }
     S.id = id;
@@ -324,6 +453,7 @@
     // version with nothing before it.
     if (down && (!v || !prevVersion(c, v.n))) { toast("v" + (v ? v.n : "?") + " has no previous version"); return; }
     S.flipping = down;
+    if (!down) { S.holdBy = ""; S.holdPointer = undefined; }
     if (down && S.pinMode) setPinMode(false);
     if (!down && (!v || !prevVersion(c, v.n))) { renderStage(); return; }
     renderStage();
@@ -348,6 +478,8 @@
 
   function key(k, down) {
     if (k === "Escape" && down && !$("keys").hidden) { toggleKeys(false); return true; }
+    if (k === "Escape" && down && rootHas("reg-open")) { setReg(false); return true; }
+    if (k === "Escape" && down && rootHas("sheet-open") && !S.draft && !S.pinMode) { setSheet(false); return true; }
     if (window.chartroomThreads && window.chartroomThreads.key(k, down)) return true;
     if (k === " ") { flip(down); return true; }
     if (!down) return false;
@@ -372,7 +504,7 @@
       // Space on a focused action (a button that does something, a link, a
       // thread card) presses it. On a chart row, version pill or option tab,
       // which are already chosen once focused, Space keeps its flip.
-      if (e.key === " " && e.target && e.target.closest && e.target.closest("button.act,.link,a,summary,#keys-btn,#keys,.thread")) return;
+      if (e.key === " " && e.target && e.target.closest && e.target.closest("button.act,.link,a,summary,#keys-btn,#keys,.thread,.nb:not(.hold)")) return;
       if (type === "keydown" && e.repeat) { if (e.key === " ") e.preventDefault(); return; }
       if (key(e.key, type === "keydown")) e.preventDefault();
     });
@@ -398,7 +530,9 @@
     S.frames.forEach(function (f) { if (f.el.contentWindow === e.source) from = f; });
     if (!from) return;   // only our own stage's frames are heard
     if (m.type === "ready" && Array.isArray(m.hashes)) from.hashes = m.hashes.filter(function (x) { return typeof x === "string"; }).slice(0, 6000);
+    if (m.type === "ready") { var w = Number(m.width); from.designW = w > 200 && w < 4000 ? w : 0; applyFit(); }
     if (m.type === "key" && typeof m.key === "string") key(m.key, !!m.down);
+    if (m.type === "release") endPointerHold({ pointerId: typeof m.pointerId === "number" ? m.pointerId : undefined });
     if (window.chartroomThreads && window.chartroomThreads.message) window.chartroomThreads.message(S, T, from, m);
   });
 
@@ -500,8 +634,7 @@
     }
     S.pinMode = !!on;
     S.frames.forEach(function (x) { if (x.el.contentWindow) x.el.contentWindow.postMessage({ chartroom: 1, type: "mode", pin: S.pinMode && x === f }, "*"); });
-    var b = $("pin-btn");
-    if (b) { b.classList.toggle("on", S.pinMode); b.setAttribute("aria-pressed", S.pinMode ? "true" : "false"); }
+    document.querySelectorAll("#pin-btn, [data-fk=nb-pin]").forEach(function (b) { b.classList.toggle("on", S.pinMode); b.setAttribute("aria-pressed", S.pinMode ? "true" : "false"); });
     $("stage").classList.toggle("pinning", S.pinMode);
     // The hint stays up exactly as long as pin mode does.
     $("pin-hint").hidden = !S.pinMode;
@@ -678,6 +811,7 @@
     // place again, or the two would answer each other forever.
     render: function (S_, T_, opts) {
       renderPickSlot();
+      renderNarrowBar();
       var box = $("threads");
       // Typed words live in S.draft and S.replies, so a redraw keeps them; it
       // is held back only while a box has focus, to keep the caret steady.
@@ -738,9 +872,9 @@
         var keep = S.draft && S.draft.text;
         S.draft = { version: from.n, pane: from.key, text: keep || "", pin: { path: String(m.pin.path).slice(0, 600), dx: Number(m.pin.dx) || 0, dy: Number(m.pin.dy) || 0, text: String(m.pin.text || "").slice(0, 120) } };
         setPinMode(false);
-        S.forceThreads = true; renderRail(); placePins(from);
+        S.forceThreads = true; renderRail(); placePins(from); setSheet(true); renderNarrowBar();
       }
-      if (m.type === "focus" && Number.isFinite(m.n)) { S.focus = "t" + m.n; S.scrollTo = S.focus; S.forceThreads = true; renderRail(); }
+      if (m.type === "focus" && Number.isFinite(m.n)) { S.focus = "t" + m.n; S.scrollTo = S.focus; S.forceThreads = true; renderRail(); setSheet(true); }
     },
     key: function (k, down) {
       if (!down) return false;

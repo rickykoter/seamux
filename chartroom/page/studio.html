@@ -25,6 +25,7 @@
   </header>
 
   <aside id="register" aria-label="Charts">
+    <div class="drawer-head narrow-only"><b>Charts</b><button type="button" class="act" id="reg-close">Close</button></div>
     <div id="register-list"></div>
   </aside>
 
@@ -55,6 +56,10 @@
           <p class="empty-title">No versions yet</p>
           <p class="quiet">Claude draws the first one with <code>chartroom add</code>. It shows here as soon as it lands.</p>
         </div>
+        <div id="fit-toggle" class="narrow-only" role="group" aria-label="Chart size">
+          <button type="button" class="act" id="fit-fit" aria-pressed="true" title="Scale the chart to fit the pane">Fit</button>
+          <button type="button" class="act" id="fit-actual" aria-pressed="false" title="Show the chart at the width it was drawn for, scrolling sideways">Actual</button>
+        </div>
         <div id="pin-hint" hidden role="status">Click or tap the chart where your comment belongs. Esc stops.</div>
         <div id="flip-badge" hidden></div>
         <div id="toast" hidden></div>
@@ -63,6 +68,7 @@
   </main>
 
   <aside id="rail" aria-label="Threads and notes">
+    <div class="sheet-head narrow-only"><span class="grab" aria-hidden="true"></span><button type="button" class="act" id="sheet-close">Close</button></div>
     <section id="threads-sec">
       <h2>Threads</h2>
       <div id="threads"><p class="quiet small">No comments on this chart yet.</p></div>
@@ -73,6 +79,9 @@
     </section>
   </aside>
 </div>
+
+<nav id="narrow-bar" class="narrow-only" aria-label="Chart actions"></nav>
+<div id="scrim" class="narrow-only" hidden></div>
 
 <div id="keys" class="keys" hidden role="dialog" aria-label="Keys">
   <div class="keys-head"><h2>Keys</h2><button type="button" class="act" id="keys-close">Close</button></div>

@@ -7,6 +7,7 @@
 //                    { chartroom: 1, type: "pin", pin }        a click in pin mode: {path, dx, dy, text}
 //                    { chartroom: 1, type: "placed", found, gone }  which pins this page could place
 //                    { chartroom: 1, type: "focus", n }        a pin was clicked
+//                    { chartroom: 1, type: "release" }         a pointer was let go over the chart
 //   from the studio: { chartroom: 1, type: "outline", against } outline what is not in `against`
 //                    { chartroom: 1, type: "mode", pin }       pin mode on or off
 //                    { chartroom: 1, type: "place", pins }     draw these pins
@@ -54,7 +55,11 @@
   var ready = function () {
     var hs = compute(), list = [];
     hs.forEach(function (h) { list.push(h); });
-    post({ type: "ready", hashes: list.slice(0, MAX) });
+    // The width the chart was drawn for, when it says (meta chartroom-width):
+    // a narrow studio renders it that wide and scales it to fit.
+    var wm = document.querySelector('meta[name="chartroom-width"]');
+    var width = wm ? Math.round(Number(wm.getAttribute("content"))) : 0;
+    post({ type: "ready", hashes: list.slice(0, MAX), width: width > 200 && width < 4000 ? width : 0 });
   };
 
   // What to outline against the other version's hashes: the topmost element
@@ -207,6 +212,12 @@
     if (m.type === "unoutline" && layer) { layer.remove(); layer = null; }
     if (m.type === "mode") setMode(m.pin);
     if (m.type === "place" && Array.isArray(m.pins)) place(m.pins.filter(function (p) { return p && typeof p.path === "string"; }).slice(0, 300));
+  });
+
+  // A pointer let go over the chart: the studio cannot see it (the chart
+  // is its own document), so it is told, and a held Compare ends.
+  ["pointerup", "mouseup", "touchend"].forEach(function (type) {
+    window.addEventListener(type, function (e) { post({ type: "release", pointerId: typeof e.pointerId === "number" ? e.pointerId : undefined }); }, true);
   });
 
   // The studio's keys still work while the chart has focus.

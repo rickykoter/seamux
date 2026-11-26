@@ -394,6 +394,14 @@ if (want("page: studio and anchor files")) {
   const anchor = fs.readFileSync(path.join(HERE, "page", "anchor.js"), "utf8");
   ok("anchor.js: only the parent's messages are heard", /e\.source !== parentWin/.test(anchor));
   ok("no emoji in the pages", ![html, css, js, anchor].some(t => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(t)));
+  for (const id of ["narrow-bar", "fit-toggle", "fit-fit", "fit-actual", "scrim", "sheet-close", "reg-close"])
+    ok("studio.html: narrow layout has #" + id, html.includes(`id="${id}"`));
+  ok("studio.css: narrow is chosen by width, not by device", /@media \(max-width: 700px\) \{\n  \.narrow-only/.test(css) && !/pointer: coarse\)[^}]*#narrow-bar/.test(css));
+  ok("studio.css: hidden narrow parts stay hidden", /\.narrow-only\[hidden\] \{ display: none !important; \}/.test(css));
+  ok("studio.js: Compare holds on pointer down and up, mouse or touch", /cmp\.addEventListener\("pointerdown"/.test(js) && /"pointerup", "pointercancel", "lostpointercapture"/.test(js));
+  ok("studio.js: a chart wider than the pane is scaled to fit, else shown at its width", /st\.transform = "scale\(" \+ k \+ "\)"/.test(js) && /DEFAULT_W = 1100/.test(js));
+  ok("anchor.js: the chart reports the width it was drawn for", /meta\[name="chartroom-width"\]/.test(anchor));
+  ok("templates/ux.html: says the width it is designed for", /<meta name="chartroom-width" content="\d+">/.test(fs.readFileSync(path.join(HERE, "templates", "ux.html"), "utf8")));
   // No DOM here: the outline rule itself is tried in a real browser (the
   // increment's manual check); the probe only proves the script parses.
   const vm = await import("node:vm");
