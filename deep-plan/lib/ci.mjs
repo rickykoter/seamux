@@ -218,6 +218,21 @@ export function requiredChecks(cwd, base) {
   return req ? [...new Set([...(req.contexts || []), ...((req.checks || []).map(c => c && c.context).filter(Boolean))])] : [];
 }
 
+// Post ship's commit status on sha (ADR 0108): context seamux/ship, with
+// -i so a refusal names the permission it needed (statuses=write) from
+// GitHub's X-Accepted-GitHub-Permissions header. {ok} or {ok: false, why}.
+export const STATUS_CONTEXT = "seamux/ship";
+export function postStatus(cwd, sha, { state, description }) {
+  const r = gh(["api", "-i", "-X", "POST", `repos/{owner}/{repo}/statuses/${sha}`, "-f", `state=${state}`,
+    "-f", `context=${STATUS_CONTEXT}`, "-f", `description=${description}`], cwd);
+  if (r.err) return { ok: false, why: r.err };
+  const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out) || [])[1]) || 0;
+  if (code >= 200 && code < 300) return { ok: true };
+  const named = (/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out) || [])[1];
+  if (code === 403 || code === 404) return { ok: false, why: `the token lacks ${named ? named.trim() : "statuses=write"} (GitHub's X-Accepted-GitHub-Permissions header)` };
+  return { ok: false, why: code ? `HTTP ${code}` : (r.errText.split("\n").pop() || `gh exited ${r.status}`) };
+}
+
 // One gh call for ship's acts (pr create, ready, merge): {ok, out}.
 export function ghAct(args, cwd) {
   const r = gh(args, cwd);

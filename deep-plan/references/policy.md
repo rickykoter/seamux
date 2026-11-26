@@ -96,8 +96,8 @@ changes against its base. A file moved out of a path counts its old path
 too. It then checks each gate and takes one step:
 
 - supervised or auto-go: nothing; it says a person opens and merges the PR.
-- auto-pr: once the plan is delivered and the branch is pushed, it opens
-  the PR against the policy's base, or marks the draft ready.
+- auto-pr: once the plan is delivered, it pushes the branch and opens the
+  PR against the policy's base, or marks the draft ready.
 - auto-merge: the same, and then it merges once every scenarios check
   passed and the newest full judge run passed at HEAD (a retry's carried
   passes do not count; see scenarios.md), the PR targets the policy's base, its head is HEAD, it has no
@@ -106,6 +106,41 @@ too. It then checks each gate and takes one step:
   it, the base requires checks, and every check on the PR is a required
   one; otherwise it starts a detached wait of its own, which looks again
   every minute and stops if HEAD moves or any gate breaks.
+
+Ship pushes the branch itself (`git push -u origin <branch>`) whenever
+HEAD is ahead of origin, and only as a fast-forward. When origin has
+commits HEAD lacks, git refuses the push and ship stops, saying how to
+bring them in; it never forces. The PR body it writes comes from the
+plan: the title, the context's first paragraph, each increment with its
+checks' verdicts, the level and who merges, and where the approved plan
+is.
+
+It reads GitHub the way a fine-grained token allows. Whether the repo
+allows auto-merge comes from GraphQL, and the base's required checks from
+its rulesets before classic branch protection (which needs administration
+read). When `gh pr checks` is refused, the checks come from the head
+commit's Actions runs, where a check from another service is not seen. A
+`token` gate names any permission a read was refused for, from GitHub's
+`X-Accepted-GitHub-Permissions` header, and lists what ship needs:
+pull requests write, contents write, checks read, and commit statuses
+read and write. It warns and does not hold. A failed check that is also
+red on the base's tip says "also failing on main at <sha>", and still
+holds the merge.
+
+Each run that is not `--dry-run`, and each look of ship's own wait, posts
+a `seamux/ship` commit status on HEAD once origin has it, at every level:
+pending while any of ship's own gates waits (delivered, scenarios,
+stacked, the PR's base), success once they all pass. CI's checks are
+GitHub's to gate, not this status's. A branch with no plan gets success,
+"a person's call". Requiring `seamux/ship` in the base's ruleset makes
+GitHub's merge button wait on ship's gates too, whoever presses it.
+Require it from any source: ship posts it with the person's token, so an
+entry pinned to an app's integration is never met. A merge refused while
+the status could not be posted says why.
+
+A PR merged by anyone but ship is recorded in the ship record and the
+plan log: as GitHub's when ship had asked for its auto-merge, otherwise as
+the person's. Ship's wait stops there and says so.
 
 On a family child whose branch still carries its parent's commits, a
 `stacked` gate comes first, at every level: the child waits while the

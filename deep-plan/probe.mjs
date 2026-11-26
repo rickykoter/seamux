@@ -9760,6 +9760,7 @@ if (want("policy and ship: levels from the base branch")) {
     return rr;
   };
   const head = () => execSync("git rev-parse HEAD", { cwd: PR_, encoding: "utf8" }).trim();
+  const shipRec0 = () => { try { return JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), "utf8")); } catch { return {}; } };
   shipPlan("pol-ship", [["docs/guide.md"], ["docs/guide.md"]]);
   fs.mkdirSync(path.join(PR_, "docs"), { recursive: true }); fs.writeFileSync(path.join(PR_, "docs", "guide.md"), "guide\n");
   execSync(`git add -A && ${G} commit -q -m docs`, { cwd: PR_ });
@@ -9767,11 +9768,28 @@ if (want("policy and ship: levels from the base branch")) {
   const PRV = "pr view --json number,url,headRefOid,isDraft,state,baseRefName,headRefName,mergeable";
   const pv = (o = {}) => ({ stdout: { number: 12, url: "https://github.com/o/r/pull/12", headRefOid: head(), isDraft: false, state: "OPEN", baseRefName: "main", headRefName: "dev/docs", mergeable: "MERGEABLE", ...o } });
   const CHK = "pr checks --json name,bucket,link,workflow";
+  const remoteOf = b => (execSync(`git ls-remote origin refs/heads/${b}`, { cwd: PR_, encoding: "utf8" }).split(/\s/)[0] || "");
+  const POSTED = "HTTP/2.0 201 Created\r\n\r\n{}";
+  const statusCalls = () => ghCalls().filter(c => /^api -i -X POST repos\/\{owner\}\/\{repo\}\/statuses\//.test(c));
   ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" } });
+  r = pc("ship", "pol-ship", "--dry-run");
+  ok("ship --dry-run: an unpushed branch says ship pushes it, and pushes nothing",
+    /auto-merge \(docs\/guide\.md: docs\/\*\*/.test(r.stdout) && /→ pushes dev\/docs to origin \(fast-forward only\)/.test(r.stdout) && !remoteOf("dev/docs") &&
+    !ghCalls().some(c => /^pr (create|merge|ready)/.test(c)) && !statusCalls().length, r.stdout + r.stderr);
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" }, "pr create": { stdout: "https://github.com/o/r/pull/12\n" },
+    "api -i -X POST": { stdout: POSTED } });
   r = pc("ship", "pol-ship");
-  ok("ship: an unpushed branch waits, saying to push, and acts on nothing",
-    r.status === 3 && /auto-merge \(docs\/guide\.md: docs\/\*\*/.test(r.stdout) && /push it/.test(r.stdout) && !ghCalls().some(c => /^pr (create|merge|ready)/.test(c)), r.stdout + r.stderr);
-  execSync("git push -q -u origin dev/docs", { cwd: PR_ });
+  const created = ghCalls().find(c => /^pr create/.test(c)) || "";
+  ok("ship: an unpushed branch is pushed by ship, fast-forward, and then the PR is opened",
+    r.status === 0 && remoteOf("dev/docs") === head() && /pushed dev\/docs to origin at [0-9a-f]{8} \(fast-forward\)/.test(r.stdout) &&
+    /^pr create --base main --head dev\/docs --title /.test(created), r.stdout + r.stderr);
+  ok("ship: the PR body comes from the plan: its context, each increment with its checks, the level and who merges, the approved plan",
+    /--body ## /.test(created) && /### Increments/.test(created) && /- \[x\] 1\. [^\n]*\(looked: pass\)/.test(created) &&
+    /- \[x\] 2\. [^\n]*scenarios: pass/.test(created) && /at the policy's auto-merge level \(docs\/guide\.md: docs\/\*\*\)\. Ship merges it once its checks are green/.test(created) &&
+    /~\/\.claude\/plans\/pol-ship\.approved\.md/.test(created) && !created.includes(os.homedir()), created);
+  ok("ship: once pushed it posts seamux/ship on HEAD: success when every gate of ship's own passed",
+    statusCalls().some(c => c.startsWith(`api -i -X POST repos/{owner}/{repo}/statuses/${head()} -f state=success -f context=seamux/ship -f description=ship's gates passed at auto-merge`)) &&
+    /seamux\/ship posted: success on [0-9a-f]{8}/.test(r.stdout), r.stdout + ghCalls().join("\n"));
   ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" }, "pr create": { stdout: "https://github.com/o/r/pull/12\n" } });
   r = pc("ship", "pol-ship", "--dry-run", "--json");
   const dj = JSON.parse(r.stdout || "{}");
@@ -9782,6 +9800,18 @@ if (want("policy and ship: levels from the base branch")) {
   ghMap({ [PRV]: pv({ isDraft: true }), "pr ready 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: a draft PR is marked ready", r.status === 0 && ghCalls().includes("pr ready 12"), r.stdout);
+  // Someone else pushed to the branch: ship's push is refused, never forced.
+  const OTHER = path.join(TMP, "pol-other");
+  execSync(`git clone -q -b dev/docs ${ORIGIN} ${OTHER} && cd ${OTHER} && echo theirs > docs/theirs.md && git add -A && ${G} commit -q -m theirs && git push -q origin dev/docs`);
+  const theirs = remoteOf("dev/docs");
+  fs.writeFileSync(path.join(PR_, "docs", "mine.md"), "mine\n");
+  execSync(`git add -A && ${G} commit -q -m mine`, { cwd: PR_ });
+  ghMap({ [PRV]: pv({ headRefOid: theirs }), "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a push that is not a fast-forward is refused, ship stops with how to bring origin's commits in, and origin keeps them",
+    r.status === 1 && /git push was refused: origin\/dev\/docs has commits HEAD does not\. Bring them in \(git pull --rebase origin dev\/docs\)/.test(r.stdout) &&
+    remoteOf("dev/docs") === theirs && shipRec0().status === "stopped", r.stdout + r.stderr);
+  execSync(`${G} pull -q --rebase origin dev/docs && git push -q origin dev/docs`, { cwd: PR_ });
   ghMap({ [PRV]: pv({ baseRefName: "release" }), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: a PR into another base than the policy's is never merged (f11)",
@@ -9794,15 +9824,21 @@ if (want("policy and ship: levels from the base branch")) {
   ok("ship: a red check waits and never merges", r.status === 3 && /1 PR check\(s\) failed: CI \/ probes/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
   ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
+  ok("ship: the status is posted before the merge, so a ruleset requiring seamux/ship lets ship's own merge through (inc2 f1)",
+    (() => { const c = ghCalls(); const st_ = c.findIndex(x => /^api -i -X POST .*statuses/.test(x)), mg = c.findIndex(x => /^pr merge 12/.test(x)); return st_ >= 0 && mg > st_; })(), ghCalls().join("\n"));
   ok("ship: green checks at auto-merge merge it, pinned to HEAD",
     r.status === 0 && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`) && /merged PR #12/.test(r.stdout), r.stdout + r.stderr);
   seedFull = false;
   fs.writeFileSync(path.join(PSEALED, "pol-ship", "verdicts.json"),
     JSON.stringify({ history: [{ head: "0".repeat(40), threshold: 0.8, pass: true, full: true, scores: [{ id: "s1", score: 1 }] }] }));
-  ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" } });
+  ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" },
+    "api -i -X POST": { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: statuses=write\r\n\r\n{}", stderr: "gh: Resource not accessible by personal access token (HTTP 403)" } });
   r = pc("ship", "pol-ship");
   ok("ship: a full judge run that passed on another head than HEAD holds the merge, naming the command",
     r.status === 3 && /the last full judge run passed on 00000000, not HEAD[^\n]*deep-plan scenarios judge pol-ship/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  ok("ship: while one of its gates waits, seamux/ship is posted pending, the wait in its description, and the token's refusal is named",
+    statusCalls().some(c => c.startsWith(`api -i -X POST repos/{owner}/{repo}/statuses/${head()} -f state=pending -f context=seamux/ship -f description=waits on: every scenarios check passed, but`)) &&
+    /seamux\/ship not posted: the token lacks statuses=write/.test(r.stdout), r.stdout + ghCalls().join("\n"));
   seedFull = true;
   ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }], [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
     "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "pr merge 12": { stdout: "" } });
@@ -9829,6 +9865,44 @@ if (want("policy and ship: levels from the base branch")) {
     `import { requiredChecks } from ${JSON.stringify(path.join(HERE, "lib", "ci.mjs"))}; console.log(JSON.stringify(requiredChecks(${JSON.stringify(PR_)}, "main")))`],
     { encoding: "utf8", env: PENV }).stdout.trim();
   ok("ship: with no ruleset requiring checks, classic branch protection's are read", reqd === '["a","b"]', reqd);
+  // A merge ship did not make. GitHub's auto-merge, which ship asked for
+  // above, is recorded as GitHub's. GitHub deletes a merged branch: here the
+  // bare origin drops the ref itself.
+  execSync("git update-ref -d refs/heads/dev/docs", { cwd: ORIGIN });
+  ghMap({ [PRV]: pv({ state: "MERGED" }) });
+  r = pc("ship", "pol-ship");
+  ok("ship: a PR merged while ship's auto-merge request stood is recorded as GitHub's or the person's, with no push asked of a deleted branch (inc2 f3)",
+    r.status === 0 && /PR #12 was merged while ship's request for GitHub's auto-merge stood: by GitHub's auto-merge or by a person/.test(r.stdout) && !/push/.test(r.stdout) &&
+    shipRec0().status === "merged" && shipRec0().by === "github-or-person" && !remoteOf("dev/docs"), r.stdout);
+  // The person's merge (#251, #254).
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), JSON.stringify({ status: "opened", pr: 12 }));
+  r = pc("ship", "pol-ship");
+  ok("ship: a PR the person merged is recorded as theirs in ship.json and the plan log, not 'push it' (#251, #254)",
+    r.status === 0 && /PR #12 was merged by a person, not ship/.test(r.stdout) && !/push it/.test(r.stdout) &&
+    shipRec0().status === "merged" && shipRec0().by === "person" && JSON.stringify(stOf("pol-ship").log || []).includes("ship: PR #12 was merged by a person"), r.stdout);
+  r = pc("ship", "pol-ship");
+  ok("ship: the merge is recorded once; ship again says so", /PR #12 is merged \(by person\)/.test(r.stdout) &&
+    JSON.stringify(stOf("pol-ship").log || []).split("merged by a person").length === 2, r.stdout);
+  execSync("git push -q -u origin dev/docs", { cwd: PR_ });
+  // ship's own wait, when the person merges first.
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), JSON.stringify({ status: "ready", pr: 12 }));
+  ghMap({ [PRV]: { stdout: [pv().stdout, pv().stdout, pv().stdout, pv().stdout, pv({ state: "MERGED" }).stdout] }, [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] },
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-ship");
+  let byPerson = false;
+  for (let i = 0; i < 100 && !byPerson; i++) { if (shipRec0().by === "person") byPerson = true; else await new Promise(res => setTimeout(res, 100)); }
+  ok("ship: its own wait stops on a merge it did not make, recording the person's, and never merges",
+    /ship waits for PR #12's checks/.test(r.stdout) && byPerson && shipRec0().status === "merged" && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout + JSON.stringify(shipRec0()));
+  ok("ship: its wait posts the status once while it does not change, not on every look (inc2 f2)",
+    statusCalls().length === 2, statusCalls().join("\n"));
+  // A worktree with no plan: success, a person's call.
+  const LONE = path.join(TMP, "pol-lone");
+  execSync(`git clone -q ${ORIGIN} ${LONE} && cd ${LONE} && git checkout -q -b dev/lone && echo x > lone.md && git add -A && ${G} commit -q -m lone && git push -q -u origin dev/lone`);
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "--at", LONE);
+  ok("ship: a branch with no plan gets seamux/ship success, a person's call, and ship acts on nothing else",
+    r.status !== 0 && statusCalls().some(c => /-f state=success -f context=seamux\/ship -f description=no deep-plan plan at this branch: a person's call/.test(c)) &&
+    !ghCalls().some(c => /^pr (create|merge|ready)/.test(c)), r.stdout + r.stderr + ghCalls().join("\n"));
   // A token without Checks read: the checks come from the Actions runs, and
   // the token gate names the permission from GitHub's header.
   const REFUSED = "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)";

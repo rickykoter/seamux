@@ -5319,8 +5319,14 @@ function writeShip(slug, rec) {
 }
 
 // The verdict, gate by gate, and the one act it allows: none (a person's),
-// wait, open, ready, merge, or merge-when-green.
-function shipVerdict({ st, root, fetch = true }) {
+// wait, push, open, ready, merge, or merge-when-green. Its status is what
+// ship posts as seamux/ship on HEAD (shipStatus).
+function shipVerdict(o) {
+  const v = verdictCore(o);
+  v.status = shipStatus(v);
+  return v;
+}
+function verdictCore({ st, root, fetch = true }) {
   const git = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8", timeout: 20000 });
   const pol = POL.readPolicy(root, { fetch });
   const head = (git("rev-parse", "HEAD").stdout || "").trim();
@@ -5358,22 +5364,29 @@ function shipVerdict({ st, root, fetch = true }) {
   }
   // Before the level's early return, so a stacked child hears it at every level.
   stackedGate(st, root, ref, v, gate);
+  // Where origin has the branch: the status is posted at every level, and
+  // only on a commit origin has.
+  const own = branch && branch !== "HEAD" && !(ref && branch === ref.replace(/^origin\//, ""));
+  const remote = own ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
+  v.remote = remote || null;
   if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
-  if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
-  const remote = branch ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
-  gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: push it`) : `origin has no ${branch}: push it`);
+  if (!own) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
+  // The PR's state first: once it is merged GitHub deletes the branch, and
+  // the verdict is about the merge, not a missing push (#251, #254).
   const pv = CI.prView(root);
-  if (pv.error) gate("pr", false, pv.error);
   const pr = pv.pr || null;
   if (pr) v.pr = { number: pr.number, url: pr.url, state: pr.state, draft: !!pr.isDraft, head: pr.headRefOid, mergeable: pr.mergeable || "" };
   if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
+  gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: ship pushes it, fast-forward only`) : `origin has no ${branch}: ship pushes it`);
+  if (pv.error) gate("pr", false, pv.error);
   // The level was read from this base's policy and diffed against it: a PR
   // into another branch was never judged.
   const baseBranch = ref.replace(/^origin\//, "");
   if (pr && pr.baseRefName && pr.baseRefName !== baseBranch)
     gate("pr base", false, `PR #${pr.number} targets ${pr.baseRefName}, not ${baseBranch}, whose policy set the level: a person merges it`);
   const blocked = () => v.gates.some(x => !x.ok);
-  if (blocked()) { v.action = "wait"; return v; }
+  // When the push is all that waits, it is ship's own act.
+  if (blocked()) { v.action = v.gates.every(x => x.ok || x.gate === "pushed") ? "push" : "wait"; return v; }
   if (!pr) { v.action = "open"; return v; }
   if (pr.headRefOid !== head) { gate("pr head", false, `PR #${pr.number}'s head is ${String(pr.headRefOid).slice(0, 8)}, not HEAD`); v.action = "wait"; return v; }
   tokenGate(root, head, v);
@@ -5455,10 +5468,71 @@ function shipLines(v) {
   const out = [`ship ${v.plan || v.root}: ${v.level} (${v.levelBy}; policy: ${v.policy.why})${v.capped ? ` — ${v.capped}` : ""}`];
   for (const g of v.gates) out.push(`  ${!g.ok ? "·" : g.warn ? "!" : "✓"} ${g.gate}: ${g.why}`);
   if (v.pr) out.push(`  PR #${v.pr.number}${v.pr.draft ? " (draft)" : ""} ${v.pr.url}`);
-  const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
+  const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, push: `pushes ${v.branch} to origin (fast-forward only)`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
     merge: `merges PR #${v.pr && v.pr.number} (${v.method})`, "merge-when-green": `merges PR #${v.pr && v.pr.number} (${v.method}) once its checks are green` }[v.action];
   out.push(`  → ${what}`);
+  if (v.status) out.push(`  seamux/ship: ${v.status.state} (${v.status.description})`);
   return out;
+}
+
+// The seamux/ship commit status (ADR 0108): pending while any of ship's own
+// gates waits, success once they all pass, at every level, so a ruleset that
+// requires it never lets an undelivered or unproven plan merge, whoever
+// presses the button. CI's own checks, conflicts and the PR's reads are
+// GitHub's to gate, not this status's. A worktree with no plan is a person's
+// call. null when there is nothing to post: the PR is merged or closed.
+const NOT_SHIP_GATES = new Set(["ci", "mergeable", "pr", "pr head", "pushed", "token"]);
+const STATUS_DESC_MAX = 140;
+function shipStatus(v) {
+  if (v.pr && v.pr.state && v.pr.state !== "OPEN") return null;
+  const clip = t => t.length > STATUS_DESC_MAX ? t.slice(0, STATUS_DESC_MAX - 1) + "…" : t;
+  if (!v.plan) return { state: "success", description: "no deep-plan plan at this branch: a person's call" };
+  const waits = v.gates.filter(g => !g.ok && !NOT_SHIP_GATES.has(g.gate)).map(g => g.why);
+  if (waits.length) return { state: "pending", description: clip(`waits on: ${waits.join("; ")}`) };
+  return { state: "success", description: clip(`ship's gates passed at ${v.level}; ${v.level === "auto-merge" ? "ship merges once CI is green" : "a person merges"}`) };
+}
+// Post it on HEAD when origin has HEAD; {posted, why}.
+function postShipStatus(root, v) {
+  if (!v.status) return { posted: false, why: "the PR is not open" };
+  if (!v.remote || v.remote !== v.head) return { posted: false, why: "origin does not have HEAD yet" };
+  const r = CI.postStatus(root, v.head, v.status);
+  return r.ok ? { posted: true, why: `${v.status.state} on ${v.head.slice(0, 8)}` } : { posted: false, why: r.why };
+}
+
+// The PR body ship writes (ADR 0108): the plan's title and the context's
+// first paragraph, each increment with its checks' verdicts, the level and
+// who merges, and where the approved plan is. The path is written with ~,
+// since the body is read on GitHub.
+const BODY_CHECK_MAX = 60;
+function shipBody(st, v) {
+  const spec = planSpec(st.slug);
+  const para = String(spec.context || "").split(/\n\s*\n/)[0].trim();
+  const clip = t => t.length > BODY_CHECK_MAX ? t.slice(0, BODY_CHECK_MAX - 1) + "…" : t;
+  const incs = (st.increments || []).map(i => {
+    const cs = Object.values(checksOf(i)).filter(c => !c.retired).map(c => `${clip(c.name || c.kind)}: ${c.status || "pending"}`);
+    return `- [${i.status === "done" ? "x" : " "}] ${i.n}. ${i.title}${cs.length ? ` (${cs.join("; ")})` : ""}`;
+  });
+  return [`## ${spec.title || st.slug}`, "", para, "", "### Increments", "", ...incs, "",
+    `Opened by deep-plan ship at the policy's ${v.level} level (${v.levelBy}). ` +
+      (v.level === "auto-merge" ? "Ship merges it once its checks are green." : "A person merges it."),
+    "", `The plan as approved: ~/.claude/plans/${st.slug}.approved.md on the machine that ran it.`].join("\n");
+}
+
+// A merged PR ship did not merge: the person's, or, once ship had asked for
+// GitHub's auto-merge, GitHub's or the person's: the merge's actor is the
+// token's owner either way, so GitHub does not tell them apart. Recorded once
+// in ship.json and the plan log; {note}.
+function recordMerge(st, v) {
+  const prior = readShip(st.slug) || {};
+  const n = v.pr.number;
+  if (prior.status === "merged" && prior.pr === n) return { note: `PR #${n} is merged (${prior.by === "ship" || !prior.by ? "by ship" : `by ${prior.by}`})` };
+  const by = prior.status === "auto-merge" && prior.pr === n ? "github-or-person" : "person";
+  const note = by === "person" ? `PR #${n} was merged by a person, not ship`
+    : `PR #${n} was merged while ship's request for GitHub's auto-merge stood: by GitHub's auto-merge or by a person, which GitHub does not tell apart`;
+  writeShip(st.slug, { status: "merged", by, pr: n, head: v.pr.head, level: v.level, note });
+  const s = readState(st.slug);
+  if (s) { log1(s, `ship: ${note}`); writeState(s); }
+  return { note };
 }
 
 function shipCmd(args, flags) {
@@ -5469,7 +5543,7 @@ function shipCmd(args, flags) {
   if (pos[0] && !st) die(`no plan ${pos[0]}`);
   const root = st ? st.root : (gitRoot(path.resolve(flags.at || process.cwd())) || die("ship: not in a git repo"));
   if (waitMode) return shipWait(st, root);
-  const v = shipVerdict({ st, root, fetch: true });
+  let v = shipVerdict({ st, root, fetch: true });
   if (flags.dry) {
     if (flags.json) process.stdout.write(JSON.stringify({ ...v, dryRun: true, last: st ? readShip(st.slug) : null }) + "\n");
     else for (const l of shipLines(v)) say(l);
@@ -5478,10 +5552,39 @@ function shipCmd(args, flags) {
     process.exitCode = v.action === "wait" && !flags.json ? 3 : 0;
     return;
   }
-  if (!st) { for (const l of shipLines(v)) say(l); die("ship acts on a deep-plan plan; this worktree has none"); }
-  const done = shipAct(st, root, v);
-  if (flags.json) process.stdout.write(JSON.stringify({ ...v, result: done }) + "\n");
-  else { for (const l of shipLines(v)) say(l); say(done.note); }
+  if (!st) {
+    const posted = postShipStatus(root, v);
+    for (const l of shipLines(v)) say(l);
+    say(`  seamux/ship ${posted.posted ? "posted" : "not posted"}: ${posted.why}`);
+    die("ship acts on a deep-plan plan; this worktree has none");
+  }
+  if (v.pr && v.pr.state === "MERGED") {
+    const m = recordMerge(st, v);
+    if (flags.json) process.stdout.write(JSON.stringify({ ...v, result: { ok: true, note: m.note } }) + "\n");
+    else { for (const l of shipLines(v)) say(l); say(m.note); }
+    return;
+  }
+  // The push is ship's own act; then the verdict again, and its act.
+  const lines = [];
+  let pushed = null;
+  if (v.action === "push") {
+    pushed = shipAct(st, root, v);
+    if (!flags.json) { lines.push(...shipLines(v), pushed.note); }
+    if (pushed.ok) v = shipVerdict({ st: readState(st.slug) || st, root, fetch: false });
+  }
+  // The status goes up before the act: a ruleset that requires seamux/ship
+  // refuses ship's own merge until it is there.
+  const posted = postShipStatus(root, v);
+  let done = pushed && !pushed.ok ? pushed : shipAct(st, root, v);
+  // A required seamux/ship that did not go up refuses the merge; say why.
+  if (!done.ok && v.action === "merge" && !posted.posted)
+    done = { ...done, note: `${done.note} (seamux/ship was not posted: ${posted.why}; a ruleset that requires it refuses the merge until it is)` };
+  if (flags.json) process.stdout.write(JSON.stringify({ ...v, result: done, pushed, statusPosted: posted }) + "\n");
+  else {
+    for (const l of lines) say(l);
+    if (!pushed || pushed.ok) { for (const l of shipLines(v)) say(l); if (done.note) say(done.note); }
+    say(`  seamux/ship ${posted.posted ? "posted" : "not posted"}: ${posted.why}`);
+  }
   process.exitCode = done.ok ? (v.action === "wait" ? 3 : 0) : 1;
 }
 
@@ -5491,10 +5594,25 @@ function shipAct(st, root, v) {
   const log = note => { const s = readState(slug); if (s) { log1(s, `ship: ${note}`); writeState(s); } };
   if (v.action === "none" || v.action === "wait") return { ok: true, note: v.action === "wait" ? "ship waits; run it again once those are met" : "" };
   const n = v.pr && String(v.pr.number);
+  if (v.action === "push") {
+    // Never forced: git refuses a push that is not a fast-forward, and ship
+    // stops with the way to bring origin's commits in.
+    const r = spawnSync("git", ["-C", root, "push", "-u", "origin", `${v.branch}:${v.branch}`], { encoding: "utf8", timeout: 120000 });
+    const why = ((r.stderr || "") + (r.stdout || "")).trim().split("\n").filter(Boolean);
+    if (r.status !== 0) {
+      const nonFf = /non-fast-forward|\[rejected\]|fetch first|stale info/i.test(why.join("\n"));
+      const note = nonFf ? `git push was refused: origin/${v.branch} has commits HEAD does not. Bring them in (git pull --rebase origin ${v.branch}), then ship again; ship never forces a push`
+        : `git push failed: ${why.pop() || `exit ${r.status}`}`;
+      writeShip(slug, { ...(readShip(slug) || {}), status: "stopped", head: v.head, level: v.level, note, pid: 0 });
+      log(note);
+      return { ok: false, note };
+    }
+    log(`pushed ${v.branch} to origin at ${v.head.slice(0, 8)}`);
+    return { ok: true, note: `pushed ${v.branch} to origin at ${v.head.slice(0, 8)} (fast-forward)` };
+  }
   if (v.action === "open") {
     const spec = planSpec(slug);
-    const body = `${spec.title || slug}\n\nOpened by deep-plan ship at the policy's ${v.level} level (${v.levelBy}).` +
-      (v.level === "auto-merge" ? " Ship merges it once its checks are green." : " A person merges it.");
+    const body = shipBody(st, v);
     const r = CI.ghAct(["pr", "create", "--base", v.base.replace(/^origin\//, ""), "--head", v.branch, "--title", spec.title || slug, "--body", body], root);
     if (!r.ok) return { ok: false, note: `gh pr create failed: ${r.out}` };
     log(`opened ${r.out.split("\n").pop()} at ${v.level}`);
@@ -5512,7 +5630,7 @@ function shipAct(st, root, v) {
     const r = CI.ghAct(["pr", "merge", n, `--${v.method}`, "--match-head-commit", v.head], root);
     if (!r.ok) { writeShip(slug, { status: "failed", pr: Number(n), head: v.head, note: r.out }); return { ok: false, note: `gh pr merge failed: ${r.out}` }; }
     log(`merged PR #${n} (${v.method}) at auto-merge, every gate passed`);
-    writeShip(slug, { status: "merged", pr: Number(n), head: v.head, level: v.level });
+    writeShip(slug, { status: "merged", by: "ship", pr: Number(n), head: v.head, level: v.level });
     return { ok: true, note: `merged PR #${n}; its landing runs from the app` };
   }
   // merge-when-green
@@ -5557,16 +5675,22 @@ async function shipWait(st, root) {
   const started = { head: hi > 0 ? process.argv[hi + 1] : (readShip(slug) || {}).head };
   // Every gate on every look, but the base is fetched only every tenth one
   // (and always before a merge): a long CI run is not a fetch a minute.
+  let lastPosted = "";
   for (let look = 0; ; look++) {
     let v = shipVerdict({ st: readState(slug) || st, root, fetch: look % 10 === 0 });
     if (v.action === "merge" && look % 10 !== 0) v = shipVerdict({ st: readState(slug) || st, root, fetch: true });
     console.log(`${new Date().toISOString()} ${v.action}: ${v.gates.map(g => `${g.gate} ${g.ok ? "ok" : "no"}`).join(", ")}`);
     if (started.head && v.head !== started.head) return shipStop(slug, `HEAD moved from ${started.head.slice(0, 8)} to ${v.head.slice(0, 8)}; ship again`);
+    // Posted when it changes, and before a merge, which a required
+    // seamux/ship would otherwise refuse.
+    const said = v.status ? `${v.status.state}\0${v.status.description}` : "";
+    if (said && said !== lastPosted && postShipStatus(root, v).posted) lastPosted = said;
     if (v.action === "merge") {
       const r = shipAct(readState(slug) || st, root, v);
       return shipStop(slug, r.note, r.ok ? "merged" : "failed", !r.ok);
     }
-    if (v.action !== "merge-when-green") return shipStop(slug, `stopped: ${v.waits.join("; ") || v.say || v.action}`);
+    if (v.pr && v.pr.state === "MERGED") { const m = recordMerge(readState(slug) || st, v); console.log(m.note); return; }
+    if (v.action !== "merge-when-green") return shipStop(slug, `stopped: ${v.say || v.waits.join("; ") || v.action}`);
     if (Date.now() > end) return shipStop(slug, `the checks did not finish within ${SHIP_WAIT_S()}s`);
     // Wake on the PR's next event (a check suite done, a push, a conflict,
     // a merge or close) instead of the full interval; the interval stays the
