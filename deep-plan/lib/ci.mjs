@@ -309,7 +309,12 @@ export async function wait({ cwd = process.cwd(), timeoutS = CI_TIMEOUT_S, inter
   const look = () => {
     const c = checksNow(cwd, p.pr.headRefOid);
     if (c.error) { say(`ci: ${c.error}`); return NO_VERDICT; }
-    if (c.via === "actions" && !toldVia) { toldVia = true; say(`ci: gh pr checks was refused (${c.refused}); reading the head's Actions runs instead`); }
+    if (c.via === "actions" && !toldVia) {
+      toldVia = true;
+      const t = tokenReads(cwd, p.pr.headRefOid);
+      const lacks = t.missing.length ? `; the token lacks ${t.missing.join(", ")} (GitHub's X-Accepted-GitHub-Permissions header)` : "";
+      say(`ci: gh pr checks was refused (${c.refused})${lacks}; reading the head's Actions runs instead`);
+    }
     if (!c.pending.length && c.total) {
       if (!c.failed.length) { say(`ci: all ${c.passed.length} check(s) passed`); return 0; }
       say(`ci: ${c.failed.length} of ${c.total} check(s) failed: ${c.failed.map(f => f.name).join(", ")}`);

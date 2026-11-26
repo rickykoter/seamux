@@ -647,6 +647,7 @@ repo_of() {
 merge_dest() {
   local seg="$1" w words target="" i=3 n repo
   held_pr=""
+  held_target=""
   shopt -u nocasematch
   case "$seg" in
     *[\"\'\$\`\\\<\>\(\)]*) shopt -s nocasematch; return 1 ;;
@@ -672,14 +673,21 @@ merge_dest() {
     esac
     i=$((i + 1))
   done
-  # The PR is named with its repository, owner/repo#n or owner/repo:branch,
-  # so an allow for one repo's PR 12 is not another's. A URL names its own;
-  # a number or a branch is the cwd's origin, read only when the merge is
-  # the whole command, since an earlier `cd` would move it.
+  # held_target is the PR as the command names it (a number, a URL, or the
+  # branch a bare merge resolves to): an allow may list it so, as the plan
+  # that made the list says. The app writes the PR with its repository
+  # (held_pr, owner/repo#n or owner/repo:branch), so its allow for one
+  # repo's PR 12 is not another's. A URL names its own repository; a number
+  # or a branch takes the cwd's origin, read only when the merge is the
+  # whole command, since an earlier `cd` would move it.
+  [ -n "$target" ] || { [ "${#segments[@]}" = 1 ] && target="$(git -C "${pcwd:-.}" symbolic-ref --short -q HEAD 2>/dev/null)"; }
+  if [[ "$target" =~ ^[0-9]+$ ]] || [[ "$target" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+$ ]] ||
+    { [[ "$target" =~ ^${branch_re}$ ]] && [[ "$target" != *..* ]]; }; then
+    held_target="$target"
+  fi
   if [[ "$target" =~ ^https://[A-Za-z0-9.-]+/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
     held_pr="${BASH_REMATCH[1]}#${BASH_REMATCH[2]}"
   elif [ "${#segments[@]}" = 1 ] && repo="$(repo_of)"; then
-    [ -n "$target" ] || target="$(git -C "${pcwd:-.}" symbolic-ref --short -q HEAD 2>/dev/null)"
     if [[ "$target" =~ ^[0-9]+$ ]]; then
       held_pr="$repo#$target"
     elif [[ "$target" =~ ^${branch_re}$ ]] && [[ "$target" != *..* ]]; then
@@ -687,22 +695,25 @@ merge_dest() {
     fi
   fi
   shopt -s nocasematch
-  [ -n "$held_pr" ]
+  [ -n "$held_pr$held_target" ]
 }
 
-# Whether this session's allow lists held_pr in its merge array, written by
-# the app as quoted strings, as forcePush is.
+# Whether this session's allow lists the merge's PR in its merge array,
+# quoted, as forcePush is: with its repository (held_pr), or as the command
+# named it (held_target).
+held_target=""
 merge_list_re='"merge"[[:space:]]*:[[:space:]]*\[([^]]*)\]'
 session_allowed_merge() {
   local f text ok=1
-  [ -n "$held_pr" ] && [ -n "$sid" ] || return 1
+  [ -n "$held_pr$held_target" ] && [ -n "$sid" ] || return 1
   f="$state_dir/allow/$sid.json"
   [ -f "$f" ] || return 1
   text="$(<"$f")" 2>/dev/null || return 1
   [[ "$text" =~ $merge_list_re ]] || return 1
   text="${BASH_REMATCH[1]}"
   shopt -u nocasematch
-  [[ "$text" == *"\"$held_pr\""* ]] && ok=0
+  { [ -n "$held_pr" ] && [[ "$text" == *"\"$held_pr\""* ]]; } && ok=0
+  { [ -n "$held_target" ] && [[ "$text" == *"\"$held_target\""* ]]; } && ok=0
   shopt -s nocasematch
   return $ok
 }
@@ -794,12 +805,26 @@ check_segment() {
     fi
   fi
 
+  # The same through another HTTP client at GitHub's API (curl, wget, httpie,
+  # xh): a PUT on a pull's merge endpoint, a merge or auto-merge mutation, or
+  # an approving review.
+  if [[ "$seg" =~ (^|[^[:alnum:]_.-])(curl|wget|http|https|xh)([[:space:]]|$) ]] && [[ "$1" =~ (api\.github\.com|/api/v3/|/api/graphql) ]]; then
+    if { [[ "$1" =~ pulls/[^/[:space:]]+/merge([^[:alnum:]_]|$) ]] && [[ "$1" =~ (-X|--request|--method)[[:space:]=]*[\"${q}]?(PUT|\$)|(^|[[:space:]])PUT([[:space:]]|$) ]]; } ||
+      [[ "$1" =~ (mergePullRequest|enablePullRequestAutoMerge) ]]; then
+      block "gh api merge"
+    fi
+    if { [[ "$1" =~ pulls/[^/[:space:]]+/reviews ]] || [[ "$1" =~ (addPullRequestReview|submitPullRequestReview) ]]; } && [[ "$1" =~ APPROVE ]]; then
+      block "gh pr review --approve"
+    fi
+  fi
+
   # gh pr merge and an approval: the person's (merge_dest, above).
   if after "$seg" "${gh_pr}merge([[:space:]]|\$)"; then
     if ! [[ "$seg" =~ $disable_auto_re ]]; then
       merge_dest "$1"
       if session_allowed_merge; then
         held_pr=""
+        held_target=""
       else
         merges_held=$((merges_held + 1))
         [ "$merges_held" = 1 ] || held_pr=""

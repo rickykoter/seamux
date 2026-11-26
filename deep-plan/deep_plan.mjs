@@ -5425,6 +5425,9 @@ function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
   const pr = pv.pr || null;
   if (pr) v.pr = { number: pr.number, url: pr.url, state: pr.state, draft: !!pr.isDraft, head: pr.headRefOid, mergeable: pr.mergeable || "" };
   if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
+  // What the token reads, at every level: a person's merge waits on the
+  // same checks, and below auto-pr is where a narrow token goes unnoticed.
+  if (pr && pr.headRefOid === head) tokenGate(root, head, v);
   if (!POL.atLeast(acting, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!own) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
   gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: ship pushes it, fast-forward only`) : `origin has no ${branch}: ship pushes it`);
@@ -5439,7 +5442,6 @@ function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
   if (blocked()) { v.action = v.gates.every(x => x.ok || x.gate === "pushed") ? "push" : "wait"; return v; }
   if (!pr) { v.action = "open"; return v; }
   if (pr.headRefOid !== head) { gate("pr head", false, `PR #${pr.number}'s head is ${String(pr.headRefOid).slice(0, 8)}, not HEAD`); v.action = "wait"; return v; }
-  tokenGate(root, head, v);
   if (pr.isDraft) { v.action = "ready"; return v; }
   if (acting !== "auto-merge") { v.action = "none"; v.say = capped || `at auto-pr, PR #${pr.number} is open for a person to merge: ship --merge on their word`; return v; }
   if (pr.mergeable === "CONFLICTING") { gate("mergeable", false, `PR #${pr.number} has conflicts with its base`); v.action = "wait"; return v; }

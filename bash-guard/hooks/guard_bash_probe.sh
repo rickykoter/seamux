@@ -383,6 +383,21 @@ assert d["pane"]=="P-1" and d["workspace"]=="W-1" and isinstance(d["at"], int), 
     [ "$rc" = 2 ] || fail "[$mode] merge not allowed ($cs): want block, exit $rc: $cc"
     runs=$((runs + 1))
   done
+  # An allow may list the PR as the command names it, as the plan says: a
+  # number, a URL, or a branch.
+  printf '{"session": "s1", "forcePush": [], "merge": ["12", "https://github.com/o/r/pull/7", "feat/y"], "at": 1}\n' >"$bh/.cache/cmux-crew/allow/s1.json"
+  for c in 'gh pr merge 12 --squash|s1|/tmp' 'gh pr merge https://github.com/o/r/pull/7|s1|/tmp' "gh pr merge --squash|s1|$ghrepo"; do
+    IFS='|' read -r cc cs cw <<<"$c"
+    tmux_hook "$mode" "$bh" "$cc" "$cs" "$cw"
+    [ "$rc" = 0 ] || fail "[$mode] merge allowed as named: want allow, exit $rc: $cc"
+    runs=$((runs + 1))
+  done
+  for c in 'gh pr merge 13|s1|/tmp' 'gh pr merge 12|s2|/tmp' 'gh pr merge https://github.com/o/r/pull/12|s1|/tmp' 'gh pr merge 12 --admin|s1|/tmp'; do
+    IFS='|' read -r cc cs cw <<<"$c"
+    tmux_hook "$mode" "$bh" "$cc" "$cs" "$cw"
+    [ "$rc" = 2 ] || fail "[$mode] merge not allowed as named: want block, exit $rc: $cc"
+    runs=$((runs + 1))
+  done
   # Only the merge list counts: a PR named in forcePush is not a merge allow.
   printf '{"session": "s1", "forcePush": ["12"], "at": 1}\n' >"$bh/.cache/cmux-crew/allow/s1.json"
   tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 "$ghrepo"

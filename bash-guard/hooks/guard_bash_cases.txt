@@ -499,3 +499,12 @@ block gh api $URL -X $M
 allow gh api -X PUT repos/o/r/contents/README.md -f message=x -f content=eA==
 allow gh api -H 'Accept: application/vnd.github+json' -X PUT repos/o/r/subscription -f subscribed=true
 allow gh api graphql -f query='mutation($id: ID!) { addStar(input: {starrableId: $id}) { clientMutationId } }' -f id=x
+# the same through curl or another client at GitHub's API
+block curl -X PUT -H \"Authorization: token $GH_TOKEN\" https://api.github.com/repos/o/r/pulls/12/merge
+block curl --request PUT https://api.github.com/repos/o/r/pulls/$PR/merge -d '{}'
+block curl -s https://api.github.com/graphql -d '{\"query\":\"mutation { mergePullRequest(input: {pullRequestId: \\\"x\\\"}) { clientMutationId } }\"}'
+block curl -X POST https://api.github.com/repos/o/r/pulls/12/reviews -d '{\"event\":\"APPROVE\"}'
+block http PUT https://api.github.com/repos/o/r/pulls/12/merge
+allow curl -s https://api.github.com/repos/o/r/pulls/12/merge
+allow curl -s https://api.github.com/repos/o/r/pulls/12
+allow echo \"curl -X PUT https://api.github.com/repos/o/r/pulls/12/merge\"

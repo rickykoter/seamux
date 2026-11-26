@@ -210,7 +210,10 @@ pane(W.search.surface, {
     ...tool("Bash", "deep-plan done 3", "increment 3 done · plan search-index done (3/3)"),
     ...tool("Bash", "gh pr create --fill", `https://github.com/${GH}/pull/41`),
     ...you("merge it"),
-    ...tool("Bash", "gh pr merge 41 --squash", `${C.ok("✓")} Squashed and merged pull request #41`),
+    ...tool("Bash", "gh pr merge 41 --squash", "Blocked by bash-guard: gh pr merge", "A PR merge is yours: the banner above can run it."),
+    C.user("! gh pr merge 41 --squash "),
+    `  ${C.ok("✓")} Squashed and merged pull request #41`,
+    "",
     ...say(
       "Merged. PR #41 reindexes search when a product is renamed:",
       "",
@@ -224,21 +227,21 @@ pane(W.search.surface, {
 });
 const zsh = (dir, cmd) => `${C.ok("sam")}${C.dim("@demo")} ${C.cyan(dir)} ${C.dim("%")} ${cmd}`;
 pane(W.docs.surface, {
-  shell: true,
   body: () => [
-    zsh("docs-copy", "git log --oneline -4"),
-    `${C.yellow("c81e0f4")} docs: shorter checkout help text`,
-    `${C.yellow("5a9d2b7")} docs: coupon codes in the FAQ`,
-    `${C.yellow("e03b6c1")} docs: link the returns page`,
-    `${C.yellow("91f4a8e")} shop: cart, totals, checkout`,
-    zsh("docs-copy", "npm run lint"),
-    "",
-    "> shop@0.3.0 lint",
-    "> node scripts/lint.mjs",
-    "",
-    `${C.ok("✓")} 23 files, 0 problems`,
+    ...welcome(W.docs),
+    ...you("go 1"),
+    ...tool("Update", "docs/help/coupons.md", "Updated docs/help/coupons.md with 22 additions"),
+    ...tool("Bash", "npm run lint", `${C.ok("✓")} 23 files, 0 problems`),
+    ...tool("Bash", "deep-plan deliver docs-copy", "plan docs-copy delivered (1/1)"),
+    ...tool("Bash", "deep-plan ship docs-copy", "pushed sam/docs-copy; opened " + `https://github.com/${GH}/pull/45`, "at auto-pr, PR #45 is open for a person to merge"),
+    ...you("merge it"),
+    ...tool("Bash", "gh pr merge 45 --squash", "Blocked by bash-guard: gh pr merge", "A PR merge is yours: the banner above can run it."),
+    ...say(
+      "bash-guard held the merge for you. Run it from the banner (or allow PR #45 for this session),",
+      "or press Ship it at the PR's Merge stage in Lookout, which merges it through deep-plan ship.",
+    ),
   ],
-  prompt: () => zsh("docs-copy", ""),
+  mode: "? for shortcuts",
 });
 pane(W.api.shell.surface, {
   shell: true,
@@ -601,6 +604,24 @@ const SHIP = {
     status: { state: "success", description: "ship's gates passed at auto-pr; a person merges; observe auto-merge: would merge" },
   },
 };
+// The one held command in the demo: Claude's gh pr merge in the docs pane,
+// held by bash-guard (held_app.rs). "Run and allow" adds its PR to the
+// session's merge allow; an approval would be copy only, with no allow.
+let heldDocs = {
+  pane: W.docs.surface, workspace: W.docs.id, session: "demo-docs", cwd: treeOf(W.docs), reason: "gh pr merge", kind: "run",
+  command: "gh pr merge 45 --squash", truncated: false, branch: null, pr: `${GH}#45`, at: ago(1),
+  run: true, chat: true, allow: `${GH}#45`, allowKind: "merge", lines: 1, idle: true,
+};
+const mergeAllow = [];
+function heldAct(surface, at, act) {
+  if (surface !== W.docs.surface || !heldDocs) throw "nothing is held in this pane now";
+  if (at !== heldDocs.at) throw "a newer command was held since: look again";
+  if (!["ran", "dismiss", "allow"].includes(act)) throw `unknown answer: ${act}`;
+  if (act === "allow") mergeAllow.push(heldDocs.pr);
+  heldDocs = null;
+  return true;
+}
+
 /** ship_merge: deep-plan ship --merge's answer. A verdict that waits on
  *  nothing merges at once (the PR turns merged, as GitHub would tell crew);
  *  one that waits says on what, and merges nothing. */
@@ -1318,10 +1339,8 @@ const handlers = {
   wake_prs: ({ dir }) => wakePrs(dir),
   bg_shells: ({ surface, tails }) => shellsOf(surface, tails),
   bg_stop: ({ surface, id }) => stopShell(surface, id),
-  pane_held: () => null,
-  held_act: () => {
-    throw "nothing is held in this pane";
-  },
+  pane_held: ({ surface }) => (surface === W.docs.surface ? heldDocs : null),
+  held_act: ({ surface, at, act }) => heldAct(surface, at, act),
   pane_stop: () => null,
   pane_stop_cancel: () => false,
   pty_shell_run: () => null,

@@ -10014,6 +10014,15 @@ if (want("policy and ship: levels from the base branch")) {
   }
   ok("land's --merge still takes the merge commit", /--merge needs the merge commit's sha/.test(pc("land", "plan", "--merge").stderr));
 
+  {
+    const tok = { [PRV]: pvK(), [CHK]: green,
+      [`api -i repos/{owner}/{repo}/commits/${ksHead()}/check-runs?per_page=1`]: { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: checks=read\r\n\r\n{}" },
+      [`api -i repos/{owner}/{repo}/commits/${ksHead()}/status`]: { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: statuses=read\r\n\r\n{}" } };
+    ghMap(tok);
+    const tg = ((JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}").gates) || []).find(g => g.gate === "token");
+    ok("ship: below auto-pr too, the token gate names what a narrow token lacks (djai is at auto-go)",
+      tg && tg.warn && tg.missing.join() === "checks=read,statuses=read", JSON.stringify(tg));
+  }
   // Observe: ship acts at the level and records what it would have done at observe.
   {
     const PL = await import("./lib/policy.mjs");
