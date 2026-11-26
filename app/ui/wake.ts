@@ -31,7 +31,7 @@ type Ws = { ws: string; n: number; last: string; name: string; here: boolean };
 type Data = { ws: string; rows: Row[]; limit: number; truncated: boolean; workspaces: Ws[] };
 
 
-export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit", "turn", "pr", "issue"];
+export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "video", "file", "commit", "turn", "pr", "issue"];
 
 /** A pull request's or issue's URL: owner/repo, and its number. */
 function ghLink(r: Row): { repo: string; n: string } | null {

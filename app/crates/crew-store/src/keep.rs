@@ -12,7 +12,7 @@ use std::os::unix::fs::MetadataExt;
 
 pub const KEEP_MAX: u64 = 50 * 1024 * 1024;
 pub const KEEP_ALL_MAX: u64 = 500 * 1024 * 1024;
-pub const KEEP_KINDS: [&str; 4] = ["temp", "image", "doc", "file"];
+pub const KEEP_KINDS: [&str; 5] = ["temp", "image", "video", "doc", "file"];
 
 /// One Keep's outcome: `{ok, id, path, was}` or `{ok: false, id, why}`.
 #[derive(Debug, Clone, PartialEq)]
@@ -192,11 +192,11 @@ pub fn keep_all(ws: &str) -> Result<Vec<KeepResult>> {
     let rows: Vec<Row> = {
         let mut st = db.prepare(
             "SELECT * FROM artifacts WHERE ws = ? AND kept_at IS NULL AND path <> '' \
-             AND kind IN (?,?,?,?) ORDER BY created_at",
+             AND kind IN (?,?,?,?,?) ORDER BY created_at",
         )?;
         let k = KEEP_KINDS;
         let v = st
-            .query_map((wskey(ws), k[0], k[1], k[2], k[3]), Row::from_sql)?
+            .query_map((wskey(ws), k[0], k[1], k[2], k[3], k[4]), Row::from_sql)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         v
     };

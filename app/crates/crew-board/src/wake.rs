@@ -691,7 +691,7 @@ mod tests {
         let video = dir.join("demo.mp4");
         std::fs::write(&video, b"\0\0\0\x18ftypmp42").unwrap();
         let v = video.to_string_lossy().into_owned();
-        assert_eq!(resolve_row(&row("temp", "v", &v, ""), ""), Ok(Target::File(v.clone())), "a video previews in the Wake");
+        assert_eq!(resolve_row(&row("video", "v", &v, ""), ""), Ok(Target::File(v.clone())), "a video previews in the Wake");
 
         assert_eq!(resolve_row(&row("plan", "seamux-views", "", ""), ""), Ok(Target::Page("/plan/seamux-views".into())));
         assert_eq!(resolve_row(&row("plan", "seamux-views", "", ""), "working"), Ok(Target::Page("/plan/seamux-views".into())));

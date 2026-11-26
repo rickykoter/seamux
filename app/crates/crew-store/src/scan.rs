@@ -6,8 +6,8 @@
 //! shape costs that one row, never the run.
 
 use crate::classify::{
-    classify, commit_re, changed_re, gh_create_title_re, gh_link_re, gh_pr_create_re, gh_pr_reader_re, git_commit_re, github_re, gs, oneline_re,
-    prompt_of, splitext_ext, tmp_redirect_re, truthy, IMAGE_EXT,
+    classify, commit_re, changed_re, gh_create_title_re, gh_link_re, gh_pr_create_re, gh_pr_reader_re, git_commit_re, github_re, gs, media_paths,
+    oneline_re, prompt_of, splitext_ext, tmp_redirect_re, truthy, IMAGE_EXT, MEDIA_SLACK, VIDEO_EXT,
 };
 use crate::paths::{basename, norm, wskey, Paths};
 use crate::{iso, py_isspace};
@@ -287,6 +287,12 @@ pub struct Scan {
     tl: Timeline,
     complete_tl: bool,
     tools: HashMap<String, (Value, Value)>,
+    /// Each Bash call by tool_use id: (command, its timestamp, its cwd).
+    bash: HashMap<String, (String, String, String)>,
+    /// The chunk starts at the transcript's first byte, so `bash` has every
+    /// call a result can name; else the rest are read once, when needed.
+    from_start: bool,
+    bash_loaded: bool,
     cwd: String,
     session: String,
     branch: String,
@@ -315,6 +321,9 @@ impl Scan {
             tl: Timeline::default(),
             complete_tl: offset == 0,
             tools: HashMap::new(),
+            bash: HashMap::new(),
+            from_start: offset == 0,
+            bash_loaded: false,
             cwd: String::new(),
             session: String::new(),
             branch: String::new(),
@@ -394,6 +403,78 @@ impl Scan {
         }
         self.tool_uses(ctx, d);
         self.tool_result(ctx, d);
+        self.media_written(ctx, d);
+    }
+
+    /// The Bash call `id` names: from this chunk, or else, once a scan, from
+    /// every Bash call in the whole transcript (the call may sit before the
+    /// offset when a pass ran while it was still going, as a long
+    /// recording often is).
+    fn bash_use(&mut self, id: &str) -> Option<(String, String, String)> {
+        if let Some(b) = self.bash.get(id) {
+            return Some(b.clone());
+        }
+        if self.from_start || self.bash_loaded {
+            return None;
+        }
+        self.bash_loaded = true;
+        let mut found: HashMap<String, (String, String, String)> = HashMap::new();
+        each_line(&self.path, |_, raw| {
+            if contains(raw, b"\"tool_use\"") && contains(raw, b"\"Bash\"") {
+                if let Some(d) = parse_line(raw) {
+                    for (k, b) in bash_calls(&d) {
+                        found.insert(k, b);
+                    }
+                }
+            }
+            true
+        });
+        for (k, b) in found {
+            self.bash.entry(k).or_insert(b);
+        }
+        self.bash.get(id).cloned()
+    }
+
+    /// Images and videos a Bash command wrote itself (ffmpeg, a playwright
+    /// recording, `screencapture -v`, a node script), which no Write or
+    /// redirect names. A path the command names counts only if the file is
+    /// there and its mtime falls between the call and its result, so a
+    /// command that only reads a video (ffprobe in.mp4) adds no row, and
+    /// neither does one a later run rewrote. It errs toward missing a file:
+    /// the scratchpad walk still finds what lands there.
+    fn media_written(&mut self, ctx: &mut Ctx, d: &Value) {
+        if d.get("type").and_then(Value::as_str) != Some("user") {
+            return;
+        }
+        // A Bash result is an object with stdout, or an error string.
+        let bash_shaped = match d.get("toolUseResult") {
+            Some(Value::Object(r)) => r.contains_key("stdout"),
+            Some(Value::String(_)) => true,
+            _ => false,
+        };
+        let Some(items) = d.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { return };
+        let Some(end) = gs(d, "timestamp").and_then(crate::epoch19) else { return };
+        let ids: Vec<String> = items
+            .iter()
+            .filter(|c| c.is_object() && c.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .map(|c| key(c.get("tool_use_id")))
+            .collect();
+        for id in ids {
+            let known = self.bash.contains_key(&id);
+            if !known && !bash_shaped {
+                continue;
+            }
+            let Some((cmd, ts, cwd)) = self.bash_use(&id) else { continue };
+            let Some(start) = crate::epoch19(&ts) else { continue };
+            // epoch19 drops the fraction: the result's second runs to end + 1.
+            let (lo, hi) = (start as f64 - MEDIA_SLACK, (end + 1) as f64 + MEDIA_SLACK);
+            for p in media_paths(&cmd, &cwd, &ctx.paths.home) {
+                let written = std::fs::metadata(&p).ok().filter(|m| m.is_file()).map(|m| crew_core::py::mtime(&m));
+                if written.is_some_and(|t| lo <= t && t <= hi) {
+                    self.file(ctx, d, &p);
+                }
+            }
+        }
     }
 
     fn tool_uses(&mut self, ctx: &mut Ctx, d: &Value) {
@@ -420,6 +501,9 @@ impl Scan {
                 _ => Value::Object(Map::new()),
             };
             self.tools.insert(key(c.get("id")), (name.clone(), inp.clone()));
+            if let Some((k, b)) = bash_call(d, c, &self.cwd) {
+                self.bash.insert(k, b);
+            }
             let n = name.as_str().unwrap_or("");
             if n != "Write" && n != "Bash" {
                 continue;
@@ -588,7 +672,13 @@ impl Scan {
                 continue;
             }
             let ext = splitext_ext(basename(&p)).to_lowercase();
-            let kind = if IMAGE_EXT.contains(&ext.as_str()) { "image" } else { "temp" };
+            let kind = if IMAGE_EXT.contains(&ext.as_str()) {
+                "image"
+            } else if VIDEO_EXT.contains(&ext.as_str()) {
+                "video"
+            } else {
+                "temp"
+            };
             let d = serde_json::json!({
                 "cwd": self.cwd, "timestamp": iso(born), "sessionId": session, "gitBranch": self.branch,
             });
@@ -611,6 +701,27 @@ impl Scan {
         }
         self.rows = drafts;
     }
+}
+
+/// One tool_use item `c` of assistant line `d` as a Bash call, keyed by its
+/// id: (command, the line's timestamp, its cwd or `cwd`).
+fn bash_call(d: &Value, c: &Value, cwd: &str) -> Option<(String, (String, String, String))> {
+    if c.get("type").and_then(Value::as_str) != Some("tool_use") || c.get("name").and_then(Value::as_str) != Some("Bash") {
+        return None;
+    }
+    let cmd = c.get("input").and_then(|i| i.get("command")).and_then(Value::as_str)?;
+    let ts = gs(d, "timestamp")?;
+    let cwd = gs(d, "cwd").unwrap_or(cwd);
+    Some((key(c.get("id")), (cmd.to_string(), ts.to_string(), cwd.to_string())))
+}
+
+/// Every Bash call an assistant line makes.
+fn bash_calls(d: &Value) -> Vec<(String, (String, String, String))> {
+    if d.get("type").and_then(Value::as_str) != Some("assistant") {
+        return vec![];
+    }
+    let Some(items) = d.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { return vec![] };
+    items.iter().filter_map(|c| bash_call(d, c, "")).collect()
 }
 
 /// `os.walk(root)` top-down, sorted, SKIP_DIRS pruned, symlinked
@@ -688,6 +799,104 @@ pub fn scan_transcript(ctx: &mut Ctx, path: &str, offset: u64) -> std::io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A workspace under a fresh root, and Paths that keep the store's
+    /// files there too (no real store is read).
+    fn media_fixture(name: &str) -> (String, String, Paths) {
+        let base = std::env::temp_dir().canonicalize().unwrap();
+        let root = base.join(format!("crew-store-media-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let root = root.to_string_lossy().into_owned();
+        let ws = format!("{root}/hm/code/shop");
+        std::fs::create_dir_all(format!("{ws}/out")).unwrap();
+        let home = format!("{root}/hm");
+        let p = Paths {
+            crew_home: format!("{home}/.claude/crew"),
+            db: format!("{home}/.claude/crew/artifacts.db"),
+            lock: format!("{home}/.claude/crew/index.lock"),
+            again: format!("{home}/.claude/crew/index.lock.again"),
+            kept: format!("{home}/.claude/crew/kept"),
+            projects: format!("{home}/.claude/projects"),
+            plans: format!("{home}/.claude/plans"),
+            dp_state: format!("{home}/.claude/deep-plan/state"),
+            scratch_base: format!("{root}/tmp/claude-501"),
+            temp_roots: vec![format!("{root}/tmp/")],
+            home,
+        };
+        (root, ws, p)
+    }
+
+    fn now() -> f64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+    }
+
+    /// A file at `path`, last modified `age` seconds ago.
+    fn file_aged(path: &str, age: f64) {
+        std::fs::write(path, b"\0\0\0\x18ftypmp42").unwrap();
+        let t = UNIX_EPOCH + Duration::from_secs_f64(now() - age);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+    }
+
+    fn bash_pair(ws: &str, id: &str, cmd: &str, at: f64, took: f64) -> (Value, Value) {
+        let base = json!({"cwd": ws, "sessionId": "s1", "gitBranch": "main"});
+        let mut u = base.clone();
+        u["type"] = json!("assistant");
+        u["timestamp"] = json!(crate::iso(at));
+        u["message"] = json!({"content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": cmd}}]});
+        let mut r = base;
+        r["type"] = json!("user");
+        r["timestamp"] = json!(crate::iso(at + took));
+        r["toolUseResult"] = json!({"stdout": "", "stderr": "", "interrupted": false});
+        r["message"] = json!({"content": [{"type": "tool_result", "tool_use_id": id, "content": ""}]});
+        (u, r)
+    }
+
+    fn kinds_of(sc: &Scan) -> Vec<(String, String)> {
+        sc.rows.iter().map(|d| (d.row["kind"].as_str().unwrap().to_string(), d.row["path"].as_str().unwrap().to_string())).collect()
+    }
+
+    #[test]
+    fn a_bash_command_that_writes_a_video_leaves_a_row() {
+        let (root, ws, p) = media_fixture("written");
+        // A recording made by the command (relative to its cwd), the clip it
+        // only read, and a picture it named that was written an hour ago.
+        file_aged(&format!("{ws}/in.mp4"), 3600.0);
+        file_aged(&format!("{ws}/out/walk.webm"), 8.0);
+        file_aged(&format!("{ws}/old.png"), 3600.0);
+        let tr = format!("{root}/t.jsonl");
+        let (u, r) = bash_pair(&ws, "b1", "ffmpeg -y -i in.mp4 out/walk.webm && ffprobe in.mp4 && open old.png", now() - 20.0, 18.0);
+        // ffprobe alone: it reads a video and writes none.
+        let (u2, r2) = bash_pair(&ws, "b2", "ffprobe -v error out/walk.webm", now() - 0.5, 0.2);
+        std::fs::write(&tr, format!("{u}\n{r}\n{u2}\n{r2}\n")).unwrap();
+        let mut ctx = Ctx::new(p);
+        let (sc, _) = scan_transcript(&mut ctx, &tr, 0).unwrap();
+        assert_eq!(kinds_of(&sc), vec![("video".to_string(), norm(&format!("{ws}/out/walk.webm")))]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_recording_still_running_at_one_pass_lands_at_the_next() {
+        let (root, ws, p) = media_fixture("split");
+        file_aged(&format!("{ws}/out/demo.mp4"), 2.0);
+        let tr = format!("{root}/t.jsonl");
+        let (u, r) = bash_pair(&ws, "b1", "node record.mjs --out out/demo.mp4", now() - 60.0, 58.0);
+        // The pass before read the call: this one starts at its result.
+        let first = format!("{u}\n");
+        std::fs::write(&tr, format!("{first}{r}\n")).unwrap();
+        let mut ctx = Ctx::new(p.clone());
+        let (sc, _) = scan_transcript(&mut ctx, &tr, first.len() as u64).unwrap();
+        assert_eq!(kinds_of(&sc), vec![("video".to_string(), norm(&format!("{ws}/out/demo.mp4")))]);
+        // A failed command's result is a string, and still names its call.
+        let (u, mut r) = bash_pair(&ws, "b2", "node record.mjs --out out/demo.mp4 && false", now() - 10.0, 9.0);
+        r["toolUseResult"] = json!("Error: Exit code 1");
+        std::fs::write(&tr, format!("{u}\n{r}\n")).unwrap();
+        let mut ctx = Ctx::new(p);
+        let (sc, _) = scan_transcript(&mut ctx, &tr, 0).unwrap();
+        assert_eq!(kinds_of(&sc).len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn lone_surrogates_are_mended_like_python_reads_them() {
