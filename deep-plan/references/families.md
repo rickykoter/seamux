@@ -40,6 +40,10 @@ the shared contract first, check the whole once everything is in).
   done (checks and review), its waits are clear, and its patch and verdicts
   read sensibly. If they do not, `deep-plan family hold <child> "<reason>"`
   says why, and `unhold` lifts it; the parent's go is refused while it holds.
+  A delegated go is the parent agent's word, not the person's: the gate's
+  per-turn rules skip it, and the parent's own go for the turn stays unused.
+  It runs from the parent's root, one per command, without `--force` or
+  `--by human`. The child paces it: `go next` waits on the open increment.
 - **A person can always step in.** A person's go on a delegated child is
   allowed (`--by human`). `deep-plan family take-back <child>` makes the
   child's go a person's again, and only `family give-back` returns it, so a
@@ -52,7 +56,7 @@ the shared contract first, check the whole once everything is in).
 - **A delegated child waits with `await-go`.** After each `done`, run
   `deep-plan await-go <slug>` in the background (a background Bash command)
   and end the turn; nothing is typed into the session. Exit 0 prints the
-  authorized increment: start it. Exit 2 is its timeout (30 minutes by
+  authorized increment: start it. Exit 2 is its timeout (4 hours by
   default, wall-clock, so it may fire right after the machine wakes): run it
   again. Exit 3 means there is nothing to wait for: the plan is done, or a
   person took the go back, so ask them. If the wait died (a crash, a
@@ -73,6 +77,14 @@ the shared contract first, check the whole once everything is in).
   is ever typed into a session. News is as fresh as the last local fetch, so
   restack is how a child actually catches up. `deep-plan family news [slug]`
   shows the same without moving the cursor.
+- **A stacked child restacks itself.** After a squash merge, the parent's
+  commits sit on the base under a new sha. A child cut from the parent's
+  branch gets a `stacked` gate in its `ship` verdict at every level: it waits
+  while the parent's PR is open, then gives `git fetch origin && git rebase
+  --onto origin/main <fork point>`. The news repeats it once the parent's
+  ship record says merged or the base holds its squash. Restack between
+  increments, each conflicting hunk by hand (never `--ours` or `--theirs`).
+  Ship never touches another worktree's branch.
 - **The family review runs side by side.** `deep-plan deliver <parent>`
   on a parent with `review.family` names every member review still waiting
   on a reviewer at once: on a panel plan (`review.reviewer: "panel"`) as one

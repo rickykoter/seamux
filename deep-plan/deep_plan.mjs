@@ -44,6 +44,7 @@ import * as PACK from "./lib/pack.mjs";
 import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
 import * as CI from "./lib/ci.mjs";
+import * as STACK from "./lib/stack.mjs";
 import * as SCN from "./lib/scenarios.mjs";
 import { JUDGE_TIMEOUT_S, staleLines } from "./lib/judge.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
@@ -56,7 +57,7 @@ import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
   memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
-  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath, baseRef,
+  goOwner, goBy, goHow, goRefusal, delegatedGo, updateControl, pruneControl, controlPath, baseRef,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
@@ -377,10 +378,20 @@ function validate(spec, force) {
     }
     const lens = opts.map(o => o.length);
     const correct = opts[q.answer] || "";
-    if (correct.length === Math.max(...lens) && lens.filter(l => l === correct.length).length === 1 && opts.length > 2)
-      errs.push(`quiz ${q.id}: the correct option is the single longest — the classic length tell`);
-    if (Math.max(...lens) / Math.max(1, Math.min(...lens)) > 2.2)
-      errs.push(`quiz ${q.id}: option lengths spread wider than 2.2×`);
+    // Both length rules say the numbers and the fix: without them each retry
+    // was a guess, and a fix for one often broke the other. The bounds named
+    // are the ones that keep the other rule passing.
+    const shortest = Math.min(...lens), longest = Math.max(...lens);
+    const distractors = lens.filter((_, i) => i !== q.answer);
+    if (correct.length === longest && lens.filter(l => l === correct.length).length === 1 && opts.length > 2) {
+      const next = Math.max(...distractors);
+      errs.push(`quiz ${q.id}: the correct option is the single longest (${correct.length} characters; the longest distractor is ${next}) — ` +
+        `the classic length tell. Lengthen a distractor to at least ${correct.length} characters, or shorten the correct one to ${next} or fewer, ` +
+        `keeping every option between ${Math.ceil(longest / 2.2)} and ${Math.floor(shortest * 2.2)} characters (the 2.2× spread)`);
+    }
+    if (longest / Math.max(1, shortest) > 2.2)
+      errs.push(`quiz ${q.id}: option lengths spread wider than 2.2× (shortest ${shortest} characters, longest ${longest}): ` +
+        `bring every option to between ${shortest} and ${Math.floor(shortest * 2.2)} characters, or lengthen the shortest to at least ${Math.ceil(longest / 2.2)}`);
     for (const tok of correct.split(/\W+/)) {
       if (tok.length > 6 && (q.prompt || "").includes(tok) &&
           !opts.some((o, i) => i !== q.answer && o.includes(tok)))
@@ -1333,9 +1344,21 @@ function engineVersion() {
 // changes, so the hundreds of runs a session makes cost one read each.
 // The old ~/.claude/skills copy never writes it: that copy is the fallback the
 // pointer exists to supersede, and naming it would only hide the plugin.
-function writeEnginePointer() {
-  if (!process.env.DEEP_PLAN_ENGINE_FILE &&
-      HERE === path.join(os.homedir(), ".claude", "skills", "deep-plan")) return null;
+//
+// Who writes it (ADR, plan gate-family-friction): a run with
+// DEEP_PLAN_ENGINE_FILE set (the probe's own file), `setup` and `engine`
+// (the explicit ways to point it here: `explicit`), and the plugin's own root,
+// which the SessionStart hook runs with CLAUDE_PLUGIN_ROOT set. Any other run
+// reads it and leaves it: one direct run of a worktree's engine used to take
+// the pointer, and every session after it then ran that unmerged copy.
+function pointerWriter({ here = HERE, env = process.env, explicit = false } = {}) {
+  if (env.DEEP_PLAN_ENGINE_FILE) return true;
+  if (here === path.join(os.homedir(), ".claude", "skills", "deep-plan")) return false;
+  if (explicit) return true;
+  return !!env.CLAUDE_PLUGIN_ROOT && canon(env.CLAUDE_PLUGIN_ROOT) === canon(here);
+}
+function writeEnginePointer({ explicit = false } = {}) {
+  if (!pointerWriter({ explicit })) return null;
   const m = mermaidPath();
   const body = JSON.stringify({ root: HERE, version: engineVersion(), ...(m ? { mermaid: m } : {}) }, null, 2) + "\n";
   let cur = null;
@@ -1363,7 +1386,7 @@ function setup(force) {
     if (f.ok) say(`  ok    ${f.how} -> ${MERMAID_HOME} (sha256 verified)`);
     else { console.error(`  FAIL  mermaid: ${f.why}`); bad++; }
   }
-  const body = writeEnginePointer();
+  const body = writeEnginePointer({ explicit: true });
   say(body ? `  ok    engine pointer -> ${ENGINE_FILE} (root ${HERE})`
            : `  skip  engine pointer: this is the old ~/.claude/skills copy`);
   const shimSrc = path.join(HERE, "lib", "deep-plan.shim");
@@ -3147,6 +3170,23 @@ async function render(specPath, opts) {
   let adrDrafts;
   try { adrDrafts = adrs.map(a => adrDraftText(spec, planRoot, a)); }
   catch (e) { die("spec refused — adr: " + e.message); }
+  // Progress follows the increment number; a loop whose batches changed under
+  // started work would hand it to another increment (lib/loop.mjs). Refused
+  // here, before the first write: a refusal after the archive and the pages
+  // left an amend half done, and a retry then found nothing to amend.
+  {
+    const moved = movedProgress(prior0 && prior0.increments, priorSpec, spec);
+    if (moved.length && !opts.force) {
+      console.error("deep-plan: spec refused — a loop's batches changed under started work:");
+      for (const m of moved) console.error("  ✗ " + m);
+      console.error("Change a loop's targets only before its first batch starts. After that, leave the loop as it is and add " +
+        "a deliverable at the end for what you found; --force re-renders anyway (the human's call).");
+      process.exit(1);
+    } else if (moved.length) { console.error(`deep-plan: --force past ${moved.length} moved increment(s) — logged`); violations.push(...moved); }
+  }
+  // The diagram engine too: with no bundle and no fetch, mermaidB64 refuses,
+  // and that must happen before anything is written.
+  const b64 = mermaidB64();
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   fs.mkdirSync(KEYS_DIR, { recursive: true });
 
@@ -3175,7 +3215,6 @@ async function render(specPath, opts) {
   const firstSha = ((prior0 && prior0.increments) || []).map(i => i.startSha).find(Boolean) || "";
   const map = buildMap(spec, planRoot, (prior0 && prior0.map) || null, firstSha);
 
-  const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs, map));
   const extras = writeSpecArtifacts(spec, b64);
@@ -3206,18 +3245,7 @@ async function render(specPath, opts) {
   // keys are listed after the spread so the spec still wins on `title` and the
   // defaults still apply.
   const old = new Map((st.increments || []).map(i => [i.n, i]));
-  // Progress follows the increment number; a loop whose batches changed under
-  // started work would hand it to another increment (lib/loop.mjs).
-  {
-    const moved = movedProgress(st.increments, priorSpec, spec);
-    if (moved.length && !opts.force) {
-      console.error("deep-plan: spec refused — a loop's batches changed under started work:");
-      for (const m of moved) console.error("  ✗ " + m);
-      console.error("Change a loop's targets only before its first batch starts. After that, leave the loop as it is and add " +
-        "a deliverable at the end for what you found; --force re-renders anyway (the human's call).");
-      process.exit(1);
-    } else if (moved.length) { console.error(`deep-plan: --force past ${moved.length} moved increment(s) — logged`); violations.push(...moved); }
-  }
+  // (A loop's moved progress was refused above, before the first write.)
   st.increments = (spec.deliverables || []).map((d, i) => {
     const prev = old.get(i + 1) || {};
     return { ...prev,
@@ -5328,6 +5356,8 @@ function shipVerdict({ st, root, fetch = true }) {
         : full.ok ? `every scenarios check passed, and ${full.why}`
         : `every scenarios check passed, but ${full.why}: deep-plan scenarios judge ${st.slug}`);
   }
+  // Before the level's early return, so a stacked child hears it at every level.
+  stackedGate(st, root, ref, v, gate);
   if (!POL.atLeast(level, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!branch || branch === "HEAD" || (ref && branch === ref.replace(/^origin\//, ""))) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
   const remote = branch ? (git("ls-remote", "origin", `refs/heads/${branch}`).stdout || "").split(/\s/)[0] : "";
@@ -5356,6 +5386,46 @@ function shipVerdict({ st, root, fetch = true }) {
   v.gates.push({ gate: "ci", ok: true, why: `all ${c.passed.length} PR check(s) passed` });
   v.action = "merge";
   return v;
+}
+
+// The stacked gate (lib/stack.mjs). A family child whose branch carries its
+// parent's commits not yet in the base waits: for the parent's PR to land
+// while it is open, then for its own restack once it is merged, with the exact
+// command. The parent's own verdict lists the children stacked on it, as a
+// gate that passes: information, never a wait. The parent's head is its
+// branch's ref, the branch the family index recorded at render, whatever its
+// worktree has checked out since (STACK.parentTip).
+function stackedGate(st, root, ref, v, gate) {
+  const idx = st && ref ? familyOf(st.slug) : null;
+  const me = idx && idx.members.find(m => m.slug === st.slug);
+  const parent = idx && idx.members.find(m => m.role === "parent");
+  if (!me || !parent) return;
+  const onBase = h => !h || !h.branch || h.branch === ref.replace(/^origin\//, "");
+  if (me.role === "parent") {
+    const here = STACK.headAt(root);
+    if (onBase(here)) return;
+    const kids = idx.members.filter(m => m.role === "child")
+      .filter(m => { const f = STACK.forkOf(m.root, here.head, ref); return f && f.stacked; }).map(m => m.slug);
+    if (kids.length)
+      v.gates.push({ gate: "stacked", ok: true, why: `${kids.join(", ")} ${kids.length > 1 ? "are" : "is"} stacked on this branch: ` +
+        `once this PR is merged, each restacks itself with git rebase --onto (its ship verdict and family news give the command)` });
+    return;
+  }
+  const p = STACK.parentTip(parent, root, ref);
+  if (!p) return;
+  const f = STACK.forkOf(root, p.head, ref);
+  if (!f || !f.stacked) return;
+  const line = STACK.restackLine(ref, f.fork), at = f.fork.slice(0, 8);
+  const pv = CI.prViewBranch(root, p.branch);
+  const pr = pv.pr;
+  if (pv.error) gate("stacked", false, `this branch carries ${parent.slug}'s commits up to ${at}, and the parent's PR could not be read (${pv.error})`);
+  else if (pr && pr.state === "MERGED")
+    gate("stacked", false, `${parent.slug}'s PR #${pr.number} is merged, and this branch still carries its commits up to ${at}: restack with ${line}`);
+  else if (pr && pr.state === "OPEN")
+    gate("stacked", false, `this branch is stacked on ${parent.slug} (PR #${pr.number}, open), which lands first; once it is merged, restack with ${line}`);
+  else if (pr)
+    gate("stacked", false, `${parent.slug}'s PR #${pr.number} was closed without merging, and this branch carries its commits up to ${at}: a person decides what happens to them`);
+  else gate("stacked", false, `this branch is stacked on ${parent.slug}, which has no PR yet and lands first; once it is merged, restack with ${line}`);
 }
 
 function shipLines(v) {
@@ -6670,6 +6740,11 @@ function awaitPull(slug, w, leftMs) {
   if (!r.same) w.writer = r.writer || "another session";
 }
 
+// Four hours: the 30-minute default exited while parents were still working
+// on their own increment, and each exit cost the child a restart. Exit 2 at
+// the timeout still means run it again (ADR 0030).
+const AWAIT_GO_TIMEOUT_S = 14400;
+
 function awaitGo(slug, timeoutSec) {
   const until = Date.now() + timeoutSec * 1000;
   // A child that starts waiting in a family and then is in none (its parent
@@ -7074,11 +7149,18 @@ const [, , cmd, ...rest] = process.argv;
 // close) is recorded for the gate hook's one-per-human-turn rule
 // (turns/<session>.acted); the hook only reads it. Recorded on success, so a
 // refused go or a typo does not use up the turn. Not for the board's calls
-// through deep-plan's server, which may have inherited a session's env.
+// through deep-plan's server, which may have inherited a session's env. Not
+// for a parent's go on a child it is delegated (delegatedGo): that is the
+// parent agent's own word. Its lever is still given back: the hook judges a
+// go from the call's cwd and the CLI from its own, so after a `cd` into the
+// parent's root the hook may have claimed one the CLI does not count.
 {
-  const word = onHumansWord([{ verb: cmd || "", words: rest }]);
-  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE)
-    process.on("exit", code => { if (code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
+  const call = { verb: cmd || "", words: rest };
+  const word = onHumansWord([call]);
+  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE) {
+    const delegated = delegatedGo(call);
+    process.on("exit", code => { if (!delegated && code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
+  }
 }
 const flags = {};
 const args = [];
@@ -7150,10 +7232,11 @@ for (let i = 0; i < rest.length; i++) {
   else args.push(rest[i]);
 }
 
-// Every run refreshes the pointer, so whichever copy ran last is the one the
-// out-of-session callers find. Never at the cost of the command itself.
+// The runs that may write the pointer refresh it (pointerWriter): the plugin's
+// own root at every session start, setup and engine. Never at the cost of the
+// command itself.
 let pointerBody = null;
-try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk: the verb still runs */ }
+try { pointerBody = writeEnginePointer({ explicit: cmd === "setup" || cmd === "engine" }); } catch { /* read-only home, full disk: the verb still runs */ }
 
 // ---------------------------------------------------------------- sync on transitions
 // A command that changed a plan's state pushes that plan to its branch when
@@ -7408,7 +7491,7 @@ switch (cmd) {
   case "await-go": {
     const slug = args[0] || die("await-go <slug> [--timeout S]");
     if (flags.timeout !== undefined && !(flags.timeout > 0)) die("--timeout takes a number of seconds above 0");
-    process.exit(awaitGo(slug, flags.timeout || 1800));
+    process.exit(awaitGo(slug, flags.timeout || AWAIT_GO_TIMEOUT_S));
   }
   case "protects": {
     // Whether live plan or family work sits at a directory: what crew's close
@@ -7732,7 +7815,8 @@ switch (cmd) {
                                               waits, and recorded overlaps
   await-go <slug> [--timeout S]               block until an increment is authorized, print
                                               its number (exit 0); 2 at the timeout (run it
-                                              again), 3 when nothing is left to wait for
+                                              again; 4 hours by default), 3 when nothing is
+                                              left to wait for
   family take-back <child> [--by human]       a person takes a delegated child's go back
                                               from the parent; give-back returns it
   family hold <child> "<reason>"              the parent holds a child's go, saying why;

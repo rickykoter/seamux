@@ -623,7 +623,11 @@ export function progress(st) {
 export function gateView(st) {
   const p = progress(st);
   if (st.gate === "open") return { allow: true, why: "gate opened by hand" };
-  if (st.phase === "review") return { allow: false, why: "Alignment check not taken." };
+  // Before the quiz nothing is recorded against the branch yet (no increment
+  // has a start sha), so moving it is safe: branch admin passes, as between
+  // increments. The .seamux and ADR-folder carve-out does not.
+  if (st.phase === "review")
+    return { allow: false, reviewAdmin: true, why: "Alignment check not taken. Branch admin (git switch, rebase, cherry-pick, push or fetch) still passes." };
   // Counted, never taken from the phase: a reset, a block or an amend that
   // adds an increment leaves work pending under a "done" or "delivery" phase.
   const allDone = p.total > 0 && p.done === p.total;
@@ -730,6 +734,7 @@ export function mayEdit(target, { admin = false } = {}) {
   if (!st) return { allow: true, why: "no plan tracks this path", plan: null };
   const g = gateView(st);
   if (!g.allow && g.between && admin) return { allow: true, why: "branch admin between increments", plan: st };
+  if (!g.allow && g.reviewAdmin && admin) return { allow: true, why: "branch admin before the alignment check", plan: st };
   if (!g.allow && g.between && adminPath(st, target))
     return { allow: true, why: "repo admin between increments (.seamux or the plan's ADR folder)", plan: st };
   return { allow: g.allow, why: g.why, plan: st };

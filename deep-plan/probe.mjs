@@ -171,6 +171,26 @@ ok("quiz linter: leading word rejected", cli("render", tmpSpec(bad)).status !== 
 bad = JSON.parse(JSON.stringify(spec));
 bad.quiz = bad.quiz.slice(0, 2);
 ok("quiz linter: fewer than 3 questions rejected", cli("render", tmpSpec(bad)).status !== 0);
+// The two length rules give the numbers and the fix, so one retry is enough.
+bad = JSON.parse(JSON.stringify(spec));
+bad.quiz[0].options = ["a".repeat(40), "b".repeat(30), "c".repeat(31)];
+bad.quiz[0].answer = 0;
+{
+  const rr = cli("render", tmpSpec(bad));
+  ok("quiz linter: the length tell names both lengths and the fix",
+    rr.status !== 0 && /single longest \(40 characters; the longest distractor is 31\)/.test(rr.stderr) &&
+    /Lengthen a distractor to at least 40 characters, or shorten the correct one to 31 or fewer/.test(rr.stderr) &&
+    /between 19 and 66 characters/.test(rr.stderr), rr.stderr);
+}
+bad = JSON.parse(JSON.stringify(spec));
+bad.quiz[0].options = ["a".repeat(30), "b".repeat(10), "c".repeat(30)];
+bad.quiz[0].answer = 0;
+{
+  const rr = cli("render", tmpSpec(bad));
+  ok("quiz linter: the spread rule names the shortest and longest, and the bounds",
+    rr.status !== 0 && /spread wider than 2\.2× \(shortest 10 characters, longest 30\)/.test(rr.stderr) &&
+    /between 10 and 22 characters, or lengthen the shortest to at least 14/.test(rr.stderr), rr.stderr);
+}
 bad = JSON.parse(JSON.stringify(spec));
 bad.diagrams[0].mermaid = 'flowchart LR\n  A --> B[\\"broken label]';
 {
@@ -290,6 +310,36 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
   r = shimRun({ DEEP_PLAN_ENGINE: HERE });
   ok("DEEP_PLAN_ENGINE wins with no pointer at all",
     r.status === 0 && JSON.parse(r.stdout).root === HERE);
+
+  // Who writes the pointer: with no DEEP_PLAN_ENGINE_FILE it is the plugin's
+  // own root (CLAUDE_PLUGIN_ROOT, the SessionStart hook's run), setup and
+  // engine. An ordinary run of any other copy (a worktree's, run directly)
+  // reads it and leaves it, so one such run cannot move every session onto it.
+  const PH = path.join(TMP, "pointer-home");
+  const PF = path.join(PH, ".claude", "deep-plan", "engine.json");
+  fs.mkdirSync(path.dirname(PF), { recursive: true });
+  const bare = { ...ENV, HOME: PH };
+  delete bare.DEEP_PLAN_ENGINE_FILE;
+  delete bare.CLAUDE_PLUGIN_ROOT;
+  const ptrRun = (verb, extra = {}) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), verb],
+    { encoding: "utf8", env: { ...bare, ...extra }, cwd: TMP });
+  const kept = `{\n  "root": "/elsewhere/kept/deep-plan",\n  "version": "0.0.1"\n}\n`;
+  fs.writeFileSync(PF, kept);
+  r = ptrRun("status");
+  ok("pointer: an ordinary run of another copy leaves the pointer as it was",
+    r.status === 0 && fs.readFileSync(PF, "utf8") === kept, r.stderr);
+  fs.rmSync(PF);
+  r = ptrRun("status");
+  ok("pointer: …and writes none where there was none", r.status === 0 && !fs.existsSync(PF), r.stderr);
+  r = ptrRun("status", { CLAUDE_PLUGIN_ROOT: path.join(TMP, "some-other-plugin") });
+  ok("pointer: a CLAUDE_PLUGIN_ROOT that names another copy writes nothing", r.status === 0 && !fs.existsSync(PF), r.stderr);
+  r = ptrRun("status", { CLAUDE_PLUGIN_ROOT: HERE });
+  ok("pointer: the plugin's own root (the SessionStart run) writes it",
+    r.status === 0 && fs.existsSync(PF) && JSON.parse(fs.readFileSync(PF, "utf8")).root === HERE, r.stderr);
+  fs.writeFileSync(PF, kept);
+  r = ptrRun("engine");
+  ok("pointer: the engine verb points it here, and prints what it wrote",
+    r.status === 0 && JSON.parse(fs.readFileSync(PF, "utf8")).root === HERE && JSON.parse(r.stdout).root === HERE, r.stderr);
 
   // The plugin's own bin/: on the Bash tool's PATH, without CLAUDE_PLUGIN_ROOT,
   // possibly reached through a symlink.
@@ -5358,6 +5408,63 @@ if (want("delegated go")) {
   ok("delegation: status rows carry who gave each go", incRow.by === "parent");
   cli("done", "example-dlg-kid", "1", "--force");
 
+  // The Bosun's refusals, replayed: a parent's delegated go is its own word,
+  // so neither per-turn rule counts it, and it uses up no lever. One per
+  // command, holds, --force and --by human still go by the old rules.
+  {
+    const CC = { ...NOCC, CLAUDECODE: "1" };
+    const TD = path.join(ENV.DEEP_PLAN_STATE_DIR, "turns");
+    const hk = (sid, tool, input, cwd = DR) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")],
+      { encoding: "utf8", env: CC, input: JSON.stringify({ session_id: sid, tool_name: tool, tool_input: input, cwd }) });
+    const hb = (sid, command, cwd = DR) => hk(sid, "Bash", { command }, cwd);
+    const SP = "dd1e0000-0000-4000-8000-000000000001", SQ = "dd1e0000-0000-4000-8000-000000000002", SR = "dd1e0000-0000-4000-8000-000000000003";
+    let h = hk(SP, "Edit", { file_path: path.join(DR, "x.ts") });
+    ok("delegated go: the parent's edit between its own increments is refused (the turn now has a refusal)",
+      h.status === 2 && fs.existsSync(path.join(TD, SP + ".denied")), h.stderr);
+    h = hb(SP, "deep-plan go example-dlg-kid next");
+    ok("delegated go: …and its go on the delegated child still goes through in that turn", h.status === 0, h.stderr);
+    h = hb(SP, "deep-plan go example-dlg next");
+    ok("delegated go: …while its go on its own plan is refused as answering the gate",
+      h.status === 2 && /the gate refused an edit in this turn/.test(h.stderr), h.stderr);
+    h = hb(SP, "deep-plan go example-dlg-kid next", KID);
+    ok("delegated go: the same go from the child's root is not the parent's, and is refused", h.status === 2, h.stderr);
+
+    // One per turn: the CLI records no lever for a delegated go, and a lever
+    // already used this turn does not hold one back.
+    const r1 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "go", "example-dlg-kid", "next"],
+      { encoding: "utf8", cwd: DR, env: { ...CC, CLAUDE_CODE_SESSION_ID: SQ } });
+    ok("delegated go: the CLI gives it and records no lever for the turn",
+      r1.status === 0 && st("example-dlg-kid").increments[1].by === "parent" && !fs.existsSync(path.join(TD, SQ + ".acted")), r1.stderr);
+    cli("reset", "example-dlg-kid", "2");
+    fs.mkdirSync(TD, { recursive: true });
+    fs.writeFileSync(path.join(TD, SQ + ".acted"), JSON.stringify({ at: Date.now(), what: "go" }) + "\n");
+    h = hb(SQ, "deep-plan go example-dlg-kid next");
+    ok("delegated go: a turn that already ran a go still lets the parent's delegated go through", h.status === 0, h.stderr);
+    ok("delegated go: …and the hook claims no lever for it", !fs.existsSync(path.join(TD, SQ + ".claimed")));
+    // From the child's root, `cd <parent root> && deep-plan go kid next`: the
+    // hook (the call's cwd) claims a lever, the CLI (the parent's cwd) counts
+    // none, and gives the claim back (delivery f3).
+    const ST = "dd1e0000-0000-4000-8000-000000000004";
+    fs.mkdirSync(path.join(TD, ST + ".claimed"), { recursive: true });
+    const r2 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "go", "example-dlg-kid", "next"],
+      { encoding: "utf8", cwd: DR, env: { ...CC, CLAUDE_CODE_SESSION_ID: ST } });
+    ok("delegated go: a claim the hook made for it is given back, and no lever recorded",
+      r2.status === 0 && !fs.existsSync(path.join(TD, ST + ".claimed")) && !fs.existsSync(path.join(TD, ST + ".acted")), r2.stderr);
+    cli("reset", "example-dlg-kid", "2");
+    for (const c of ["deep-plan go example-dlg-kid next --force", "deep-plan go example-dlg-kid next --by human", "deep-plan go example-dlg next", "deep-plan go example-dlg-two next"]) {
+      h = hb(SQ, c);
+      ok(`delegated go: after a go this turn, ${c.slice(10)} is still refused`, h.status === 2 && /already ran go in this turn/.test(h.stderr), h.stderr);
+    }
+    h = hb(SR, "deep-plan go example-dlg-kid next && deep-plan go example-dlg-kid 3");
+    ok("delegated go: two in one command are still refused", h.status === 2 && /per command/.test(h.stderr), h.stderr);
+    as(DR, true, "family", "hold", "example-dlg-kid", "probe hold");
+    fs.writeFileSync(path.join(TD, SR + ".acted"), JSON.stringify({ at: Date.now(), what: "go" }) + "\n");
+    h = hb(SR, "deep-plan go example-dlg-kid next");
+    ok("delegated go: a held child's go is no delegated go, so the per-turn rule refuses it", h.status === 2 && /already ran go/.test(h.stderr), h.stderr);
+    as(DR, true, "family", "unhold", "example-dlg-kid");
+    ok("delegated go: await-go waits four hours by default", /4 hours by default/.test(cli("help").stdout + cli("help").stderr));
+  }
+
   // A hold: the parent's written reason, and its own go refused while it holds.
   ok("delegation: the child cannot hold itself", as(KID, true, "family", "hold", "example-dlg-kid", "x").status !== 0);
   r = as(DR, true, "family", "hold", "example-dlg-kid", "the session type is still moving");
@@ -6632,7 +6739,13 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   ok("admin: …but not a write chained beside it, nor a commit", b("git switch next && rm src/a.ts") === 2 && b("git commit -m x") === 2);
   ok("admin: a Bash write into .seamux passes too", b("echo '{}' > .seamux/restack.json") === 0);
   put(st => { st.phase = "review"; });
-  ok("admin: in review the carve-outs do not apply", e(".seamux/verify.json") === 2 && b("git switch -c next") === 2);
+  ok("admin: in review, branch admin passes before the quiz",
+    b("git switch -c next") === 0 && b("git fetch origin && git rebase origin/main") === 0 && b("git push -u origin HEAD 2>&1 | tail -2") === 0);
+  const rv = edit(path.join(AD, ".seamux", "verify.json"));
+  ok("admin: in review the .seamux carve-out does not apply, and the refusal names branch admin",
+    rv.status === 2 && /Alignment check not taken\. Branch admin \(git switch, rebase/.test(rv.stderr), rv.stderr.slice(0, 300));
+  ok("admin: in review, a write chained beside a rebase, a commit and product code stay refused",
+    b("git rebase origin/main && rm src/a.ts") === 2 && b("git commit -m x") === 2 && e("src/a.ts") === 2 && b("echo '{}' > .seamux/restack.json") === 2);
 
   // An open increment: an edit outside its files goes through and is flagged.
   put(st => { st.phase = "implementing"; st.increments[1].status = "working"; });
@@ -8874,6 +8987,23 @@ if (want("refactor loops expand at render")) {
     ok("loops: changing the targets under a started batch is refused, naming the move",
       rr.status !== 0 && /a loop's batches changed under started work/.test(rr.stderr) && /increment 1 \(".*1\/3: t\/a\.rb, t\/b\.rb\)"\) is authorized/.test(rr.stderr) &&
       stOf("lp-m").increments[0].status === "authorized", rr.stderr);
+    // The refusal comes before render writes anything: the archived spec, the
+    // key, the plan and its pages, and the state are as they were, so an amend
+    // that hits it can be fixed and run again (note n105a0580).
+    const files = ["keys/lp-m.spec.json", "keys/lp-m.key.json", "plans/lp-m.md", "plans/lp-m.review.html",
+      "plans/lp-m.working.html", "state/lp-m.json"].map(f => path.join(TMP, f));
+    const snap = () => files.map(f => { try { return fs.readFileSync(f, "utf8"); } catch { return null; } });
+    const before = snap();
+    const moved = tmpSpec(mk("lp-m", { targets: ["t/a.rb", "t/c.rb", "t/d.rb", "t/e.rb"], batch: 2 }));
+    rr = lc("render", moved, "--root", LP);
+    ok("loops: a refused render writes nothing: spec, key, pages and state are byte-identical",
+      rr.status !== 0 && before.every(b => b !== null) && JSON.stringify(snap()) === JSON.stringify(before), rr.stderr);
+    rr = lc("amend", "lp-m", moved, "move the loop's targets");
+    ok("loops: an amend refused the same way writes nothing either",
+      rr.status !== 0 && /a loop's batches changed under started work/.test(rr.stderr) && JSON.stringify(snap()) === JSON.stringify(before), rr.stderr);
+    rr = lc("amend", "lp-m", moved, "move the loop's targets");
+    ok("loops: …so a retry meets the same refusal, not 'nothing to amend'",
+      rr.status !== 0 && /a loop's batches changed under started work/.test(rr.stderr) && !/nothing to amend/.test(rr.stderr), rr.stderr);
     rr = lc("render", tmpSpec(mk("lp-m")), "--root", LP);
     ok("loops: an unchanged loop re-renders with its progress where it was", rr.status === 0 && stOf("lp-m").increments[0].status === "authorized", rr.stderr);
   }
@@ -9367,6 +9497,116 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
 // The repo policy (ADR 0108): read from the base branch, levels per path,
 // render's ceiling, and ship. origin is a bare repo under TMP and gh is the
 // fake, so nothing reaches GitHub.
+// A child cut from its parent's branch, the parent squash-merged: the
+// child's ship verdict and its family news say the restack, and ship acts on
+// no other worktree (the #261 Bosun family, replayed).
+if (want("stacked child: ship and news say how to restack")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const ORIGIN = path.join(TMP, "stk-origin.git"), SEED = path.join(TMP, "stk-seed");
+  const PAR = path.join(TMP, "stk-par"), KID = path.join(TMP, "stk-kid"), TWO = path.join(TMP, "stk-two");
+  execSync(`git init -q --bare -b main ${ORIGIN}`);
+  fs.mkdirSync(SEED, { recursive: true }); fs.writeFileSync(path.join(SEED, "README.md"), "seed\n");
+  execSync(`git init -q -b main && git add -A && ${G} commit -q -m seed && git remote add origin ${ORIGIN} && git push -q origin main`, { cwd: SEED });
+  execSync(`git clone -q ${ORIGIN} ${PAR} && git -C ${PAR} checkout -q -b par`);
+  fs.writeFileSync(path.join(PAR, "p.txt"), "the parent's change\n");
+  execSync(`git add p.txt && ${G} commit -q -m parent && git push -q origin par`, { cwd: PAR });
+  execSync(`git worktree add -q -b kid ${KID} par && git worktree add -q -b two ${TWO} origin/main`, { cwd: PAR });
+  fs.writeFileSync(path.join(KID, "k.txt"), "the child's own change\n");
+  execSync(`git add k.txt && ${G} commit -q -m child`, { cwd: KID });
+  const MAP = path.join(TMP, "stk-gh.json"), GLOG = path.join(TMP, "stk-gh-log.jsonl");
+  const SENV = { ...ENV, DEEP_PLAN_GH: path.join(HERE, "tools", "fake-gh"), FAKE_GH_MAP: MAP, FAKE_GH_LOG: GLOG };
+  const sc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: SENV, cwd: TMP });
+  const ghMap = m => { fs.writeFileSync(MAP, JSON.stringify(m)); fs.rmSync(GLOG, { force: true }); };
+  const ghCalls = () => fs.existsSync(GLOG) ? fs.readFileSync(GLOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l).argv.join(" ")) : [];
+  const gradeRight = slug => {
+    const k = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return sc("grade", slug, ...Object.entries(k.answers).map(([q, a]) => `${q}=${a.letter}`));
+  };
+  for (const [slug, root] of [["example-stk-kid", KID], ["example-stk-two", TWO]]) {
+    const c = JSON.parse(JSON.stringify(spec)); c.slug = slug; c.deliverables = c.deliverables.map(d => ({ ...d, files: [] }));
+    sc("render", tmpSpec(c), "--root", root); gradeRight(slug);
+  }
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  const famSpec = { ...fam, slug: "example-stk",
+    workstreams: [{ slug: "example-stk-kid", owns: ["k.txt"] }, { slug: "example-stk-two", owns: ["t.txt"] }] };
+  let r = sc("render", tmpSpec(famSpec), "--root", PAR);
+  gradeRight("example-stk");
+  ok("stacked: the family renders", r.status === 0, r.stderr.slice(0, 400));
+  const fork = execSync(`git merge-base HEAD par`, { cwd: KID, encoding: "utf8" }).trim();
+  const verdict = slug => { const x = sc("ship", slug, "--dry-run", "--json"); try { return JSON.parse(x.stdout); } catch { return { gates: [], raw: x.stdout + x.stderr }; } };
+  const gateOf = (v, g = "stacked") => (v.gates || []).find(x => x.gate === g);
+  const PRV = "pr view par";
+
+  // The parent's PR is open: the child waits for it, already told the command.
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN", headRefName: "par", baseRefName: "main" } } });
+  let v = verdict("example-stk-kid"), g = gateOf(v);
+  ok("stacked: while the parent's PR is open, the child's verdict waits for it to land",
+    g && !g.ok && /stacked on example-stk \(PR #7, open\), which lands first/.test(g.why) && (v.waits || []).some(w => /lands first/.test(w)), JSON.stringify(v).slice(0, 600));
+  ok("stacked: …said below auto-pr too, and the line names the --onto command at the fork point",
+    v.level !== "auto-pr" && v.level !== "auto-merge" && g && g.why.includes(`git fetch origin && git rebase --onto origin/main ${fork.slice(0, 12)}`) &&
+    /each conflicting hunk by hand/.test(g.why), JSON.stringify(v).slice(0, 600));
+  const pv = verdict("example-stk");
+  ok("stacked: the parent's verdict lists the stacked child, as a gate that passes",
+    gateOf(pv) && gateOf(pv).ok && /example-stk-kid is stacked on this branch/.test(gateOf(pv).why) && !/example-stk-two/.test(gateOf(pv).why) &&
+    !(pv.waits || []).some(w => /stacked/.test(w)), JSON.stringify(pv).slice(0, 600));
+  ok("stacked: a child cut from the base has no stacked gate", !gateOf(verdict("example-stk-two")));
+  ok("stacked: news says nothing while the parent has not landed", !/landed/.test(sc("family", "news", "example-stk-kid").stdout));
+
+  // The parent's ship record says merged: the news says so from local state.
+  const SHIPF = path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-stk.ship.json");
+  fs.writeFileSync(SHIPF, JSON.stringify({ status: "merged", pr: 7, head: "x" }));
+  r = sc("family", "news", "example-stk-kid");
+  ok("stacked: with the parent's ship record merged, news gives the restack line",
+    new RegExp(`example-stk \\(parent\\) landed \\(ship merged PR #7\\), and example-stk-kid still carries its commits up to ${fork.slice(0, 8)}: between increments, restack with git fetch origin && git rebase --onto origin/main ${fork.slice(0, 12)}`).test(r.stdout), r.stdout);
+  fs.rmSync(SHIPF);
+
+  // A person squash-merges the parent on GitHub (main moved first).
+  fs.writeFileSync(path.join(SEED, "m.txt"), "main moved\n");
+  execSync(`git add m.txt && ${G} commit -q -m main && git fetch -q origin par && ${G} merge -q --squash origin/par && ${G} commit -q -m 'parent (#7)' && git push -q origin main`, { cwd: SEED });
+  const squash = execSync("git rev-parse HEAD", { cwd: SEED, encoding: "utf8" }).trim();
+  execSync("git fetch -q origin", { cwd: KID });
+  r = sc("family", "news", "example-stk-kid");
+  ok("stacked: with no ship record, news finds the squash on the base by its patch",
+    new RegExp(`example-stk \\(parent\\) landed \\(origin/main holds it as ${squash.slice(0, 8)}\\)`).test(r.stdout), r.stdout);
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "MERGED", headRefName: "par", baseRefName: "main" } } });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: once the parent's PR is merged, the child waits on its own restack, with the command",
+    g && !g.ok && /example-stk's PR #7 is merged, and this branch still carries its commits up to/.test(g.why) &&
+    g.why.includes(`git rebase --onto origin/main ${fork.slice(0, 12)}`), g && g.why);
+  // The parent's agent switches its worktree to main after the merge: the
+  // branch the family index recorded still names the parent's tip (inc5 f2).
+  execSync("git switch -q main", { cwd: PAR });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: with the parent's worktree back on main, the gate still reads the parent's branch",
+    g && !g.ok && /PR #7 is merged/.test(g.why) && g.why.includes(fork.slice(0, 12)), g && g.why);
+  ok("stacked: …and so does the news", /example-stk \(parent\) landed/.test(sc("family", "news", "example-stk-kid").stdout));
+  execSync("git switch -q -c hotfix", { cwd: PAR });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: with the parent's worktree on an unrelated branch, the recorded branch still wins (inc5 f3)",
+    g && !g.ok && /PR #7 is merged/.test(g.why) && g.why.includes(fork.slice(0, 12)), g && g.why);
+  // A re-render once the parent's worktree is back on main keeps the branch
+  // the index recorded (delivery f1).
+  execSync("git switch -q main", { cwd: PAR });
+  r = sc("render", tmpSpec(famSpec), "--root", PAR);
+  const pIdx = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-stk", "index.json"), "utf8"));
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: a re-render with the parent on main keeps the recorded branch, and the gate",
+    r.status === 0 && pIdx.members.find(m => m.role === "parent").branch === "par" && g && /PR #7 is merged/.test(g.why), r.stderr.slice(0, 300) + (g && g.why));
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "CLOSED", headRefName: "par", baseRefName: "main" } } });
+  g = gateOf(verdict("example-stk-kid"));
+  ok("stacked: a parent PR closed unmerged leaves it to a person", g && !g.ok && /closed without merging[^\n]*a person decides/.test(g.why), g && g.why);
+  ghMap({ [PRV]: { stdout: { number: 7, url: "https://github.com/o/r/pull/7", state: "MERGED", headRefName: "par", baseRefName: "main" } } });
+  ok("stacked: ship reads the parent's PR and acts on nothing", ghCalls().every(c => /^pr view par /.test(c)) &&
+    execSync("git rev-parse HEAD", { cwd: KID, encoding: "utf8" }).trim() !== squash, ghCalls().join("\n"));
+
+  // The child runs the command it was given: its branch is its own commits on main.
+  execSync(`git fetch -q origin && ${G} rebase -q --onto origin/main ${fork.slice(0, 12)}`, { cwd: KID });
+  const own = execSync("git log --format=%s origin/main..HEAD", { cwd: KID, encoding: "utf8" }).trim();
+  ok("stacked: the restack leaves only the child's own commit on the new main", own === "child", own);
+  ok("stacked: after the restack the gate and the news line are gone",
+    !gateOf(verdict("example-stk-kid")) && !/landed/.test(sc("family", "news", "example-stk-kid").stdout));
+}
+
 if (want("policy and ship: levels from the base branch")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const ORIGIN = path.join(TMP, "pol-origin.git"), SEED = path.join(TMP, "pol-seed"), PR_ = path.join(TMP, "pol-root");
