@@ -10,6 +10,7 @@ It is a set of Claude Code plugins. Take the one you came for, or all of them.
 | **restack** | Rebases a stack of branches onto a moved base and regenerates conflicting generated files instead of making you merge them. | anywhere Claude Code runs |
 | **lookout** | Opens a diff beside the terminal, riskiest files first, with a reviewer's findings on their lines for you and the agent to talk through. A plan can make an increment wait on its review. | anywhere Claude Code runs |
 | **humanize** | Rewrites prose so it reads like a careful human wrote it: strips AI writing tells and untangles sentences that are hard to parse. Other seamux skills use it on the text they write. | anywhere Claude Code runs |
+| **chartroom** | Draws the UX mocks, architecture views and domain maps you'd otherwise ask an Artifact for, keeps them with the repo, and shows them in a studio beside the terminal, where you pin comments, flip versions and pick an option. Publishes only on your yes. | anywhere Claude Code runs |
 | **bosun** | A skill for the Bosun, a read-only Claude session the seamux app keeps over your code root. It gives sitreps, answers with a source on every fact, and hands real work to a new workspace. Any other session can ask it a question. | macOS, with the seamux app on tmux |
 | **seamux-mods** *(optional)* | Draws deep-plan inside the terminal: a plan pane, a `go next` prompt when the gate blocks an edit, and the plan in the status line. | Claude Code 2.1.287+ |
 
@@ -173,7 +174,7 @@ Details: [scenarios](deep-plan/references/scenarios.md),
 
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),
-[humanize](humanize/README.md), [crew](crew/README.md),
+[humanize](humanize/README.md), [chartroom](chartroom/README.md), [crew](crew/README.md),
 [bosun](bosun/README.md) and [seamux-mods](seamux-mods/README.md).
 
 
@@ -480,6 +481,15 @@ hard to parse. The other skills run it over the text they write for people.
 
 https://github.com/user-attachments/assets/4207e5f2-8a98-486f-9f18-3542f4edf82f
 
+### chartroom: charts you review beside the terminal
+
+Ask for a mock-up, an architecture or a domain map, and Claude draws it as a
+chart: HTML files kept in a hidden folder of the repo, shown in a studio page
+beside the terminal. You flip between options and versions, pin comments on
+any element, and pick an option; the session hears each comment and pick as
+you make them. It runs on its own on any laptop, and publishes a chart to
+claude.ai only when you say yes. [chartroom's README](chartroom/README.md).
+
 ### bosun: questions across your repos, answered with sources
 
 The Bosun is one Claude session the seamux app keeps running over your code
@@ -555,8 +565,8 @@ Stop and ask the person wherever a step says to.
 1. Clone to the checkout the person will keep, such as `~/code/seamux`.
    Never install from a git worktree: the plugins run from the folder you
    install from, and break when that folder is removed.
-2. Ask the person which parts they want (all five plugins, or just
-   deep-plan, restack, lookout or crew), and whether they use Jira, GitHub Issues, or
+2. Ask the person which parts they want (every plugin, or just
+   deep-plan, restack, lookout, chartroom or crew), and whether they use Jira, GitHub Issues, or
    Datadog, Splunk or Grafana. For crew, also ask which repo their worktrees
    come from. Don't guess any of these; leaving them off is fine.
 3. Preview with `./install.sh --dry-run` plus the flags from step 2
@@ -606,7 +616,7 @@ environment), or push anything.
 | [TypeSafe](https://typesafe.ai) key *(optional)* | judgment calls: turn-end questions, board ranking, plan citation checks | those judgments don't happen |
 | Rust (`cargo`) + Xcode command line tools *(optional)* | building the seamux app with `./install.sh --app` | no app; everything else works |
 
-deep-plan, lookout, restack and humanize need only Claude Code and `node`;
+deep-plan, lookout, restack, humanize and chartroom need only Claude Code and `node`;
 the macOS, cmux and tmux rows are for crew and the app.
 
 ### Install
@@ -678,7 +688,7 @@ is in, so they stay on the checkout you keep.
 For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 `--with-github-issues` and `--with-observability=STACK` set the crew plugin's
 options, and `--no-crew`, `--no-restack`, `--no-guard`, `--no-lookout`,
-`--no-humanize` and `--no-bosun` skip plugins. bosun installs only with crew.
+`--no-humanize`, `--no-chartroom` and `--no-bosun` skip plugins. bosun installs only with crew.
 
 ### Without cmux: the seamux app, Claude desktop, a terminal, the cloud
 
@@ -868,6 +878,7 @@ Read these before you rely on seamux.
 | `restack/` | plugin: the skill and `bin/restack` (see its `README.md` and `SKILL.md`) |
 | `lookout/` | plugin: the review skill, `bin/lookout`, the page and the comments hook (see its `README.md` and `SKILL.md`) |
 | `humanize/` | plugin: the prose skill other skills run over their text (see its `README.md`) |
+| `chartroom/` | plugin: charts kept with the repo and reviewed in a local studio; the skill, `bin/chartroom`, the studio page, the comments hook and the starter templates (see its `README.md` and `SKILL.md`) |
 | `bosun/` | plugin: the Bosun's skill, for sitreps, cited answers, dispatch and asking (see its `README.md`) |
 | `bash-guard/` | plugin: blocks destructive commands on every Bash call |
 | `crew/` | plugin: Claude hooks and options; `crew apply` copies it to `~/.config/cmux/crew` (see `crew/README.md`) |

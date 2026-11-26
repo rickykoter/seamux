@@ -6,6 +6,19 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **chartroom: charts you review beside the terminal.** A new plugin for the
+  UX mocks, architecture views and domain maps you would otherwise ask an
+  Artifact for. Claude draws each as HTML files kept in a hidden folder of
+  the repo (`chartroom share on` lets git see it), and `chartroom open`
+  shows them in a local studio: options on tabs, hold Space to compare with
+  the previous version, pin a comment on any element, reply in threads, pick
+  an option. The session hears each comment and pick at its next prompt, or
+  at once through `chartroom wait`. On your yes, `chartroom export` makes a
+  page to publish as an Artifact, and `chartroom pull` brings its comments
+  back. It needs only node and git, and installs alone with
+  `/plugin install chartroom@seamux`; `./install.sh --no-chartroom` leaves
+  it out.
+
 - **BPMN diagrams render.** A `.bpmn` file now shows as its diagram instead
   of raw XML in three places: the Wake's preview and its tab, and the Dock
   when you click a pane's link to the file. A `.bpmn` that Claude writes in
