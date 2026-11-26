@@ -10030,6 +10030,19 @@ if (want("policy and ship: levels from the base branch")) {
     ok("ship: below auto-merge it still reads the PR's checks on a narrow token, from the Actions runs, as a line that holds nothing",
       ci && ci.ok && ci.info && ci.warn && /1 passed, 0 running, 1 failed; failed: CI \/ lint, read from the head's Actions runs \(gh pr checks was refused/.test(ci.why) &&
       nj.action === "none" && !nj.waits.length, JSON.stringify(ci));
+    ghMap({ [PRV]: pvK({ headRefOid: "f".repeat(40) }), [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${"f".repeat(40)}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "completed", conclusion: "success" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "success", url: "" }] } },
+      [`api -i repos/{owner}/{repo}/commits/${"f".repeat(40)}/check-runs?per_page=1`]: { status: 1, stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+      [`api -i repos/{owner}/{repo}/commits/${"f".repeat(40)}/status`]: { stdout: "HTTP/2.0 200 OK\r\n\r\n{}" } });
+    const hj = JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}");
+    const htok = (hj.gates || []).find(g => g.gate === "token"), hci = (hj.gates || []).find(g => g.gate === "ci");
+    ok("ship: a refusal with no headers still names checks=read, and the checks are read on the PR's own head, not local HEAD",
+      htok && htok.missing.join() === "checks=read" && /\(GitHub's refusals\)/.test(htok.why) &&
+      hci && /1 passed, 0 running, 0 failed, read from the head's Actions runs/.test(hci.why), JSON.stringify(hj.gates));
+    ghMap({ ...tok, [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${ksHead()}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "completed", conclusion: "failure" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "success", url: "" }, { name: "lint", status: "completed", conclusion: "failure", url: "" }] } } });
     const nt = pc("ship", "pol-lever", "--dry-run").stdout;
     ok("ship: the text verdict shows both lines as warnings", /! token: the token lacks checks=read, statuses=read/.test(nt) && /! ci: 1 passed, 0 running, 1 failed/.test(nt), nt);
   }

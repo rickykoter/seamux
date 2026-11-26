@@ -5427,11 +5427,14 @@ function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
   if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
   // What the token reads, at every level: a person's merge waits on the
   // same checks, and below auto-pr is where a narrow token goes unnoticed.
-  if (pr && pr.headRefOid === head) {
-    tokenGate(root, head, v);
+  // Read on the PR's own head, whatever is checked out here: the PR is what
+  // the person merges.
+  if (pr && pr.headRefOid) {
     // Below auto-merge ship does not wait on the checks, but the person who
     // merges there does: read them, to show and hold nothing.
-    if (acting !== "auto-merge") checksInfo(root, head, v);
+    const c = acting !== "auto-merge" ? CI.checksNow(root, pr.headRefOid) : null;
+    tokenGate(root, pr.headRefOid, v, c);
+    if (c) checksInfo(c, v);
   }
   if (!POL.atLeast(acting, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!own) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
@@ -5498,8 +5501,7 @@ function keptGate(root, ref, level, v, gate) {
 // The PR's checks as a line that holds nothing (below auto-merge): what
 // passed, runs and failed, and where they were read from. A failed check
 // warns. At auto-merge the ci gate itself reads them and holds the merge.
-function checksInfo(root, head, v) {
-  const c = CI.checksNow(root, head);
+function checksInfo(c, v) {
   if (c.error) { v.gates.push({ gate: "ci", ok: true, warn: true, info: true, why: `the PR's checks could not be read: ${c.error}` }); return; }
   const via = c.via === "actions" ? `, read from the head's Actions runs (gh pr checks was refused: ${c.refused})` : "";
   const failed = c.failed.length ? `; failed: ${c.failed.map(f => f.name).join(", ")}` : "";
@@ -5513,13 +5515,19 @@ function checksInfo(root, head, v) {
 // and never holds: without checks read, ship reads the PR's checks from its
 // Actions runs (lib/ci.mjs checksNow), and a check from another service is
 // not seen there. A probe that said nothing adds no gate.
-function tokenGate(root, head, v) {
+// c, when the PR's checks were read here: a gh pr checks refused for the
+// token names checks=read too.
+function tokenGate(root, head, v, c = null) {
   const t = CI.tokenReads(root, head);
+  const missing = [...t.missing];
+  const refused = c && c.via === "actions" && !missing.includes("checks=read");
+  if (refused) missing.unshift("checks=read");
   const needs = `ship needs ${CI.SHIP_NEEDS.join(", ")}`;
-  if (t.missing.length)
-    v.gates.push({ gate: "token", ok: true, warn: true, missing: t.missing,
-      why: `the token lacks ${t.missing.join(", ")} (GitHub's X-Accepted-GitHub-Permissions header)` +
-        (t.missing.includes("checks=read") ? ": ship reads the PR's checks from its Actions runs, where a check from another service is not seen" : "") + `; ${needs}` });
+  const from = [t.fromHeader && "GitHub's X-Accepted-GitHub-Permissions header", (refused || (missing.length && !t.fromHeader)) && "GitHub's refusals"].filter(Boolean).join(" and ");
+  if (missing.length)
+    v.gates.push({ gate: "token", ok: true, warn: true, missing,
+      why: `the token lacks ${missing.join(", ")} (${from})` +
+        (missing.includes("checks=read") ? ": ship reads the PR's checks from its Actions runs, where a check from another service is not seen" : "") + `; ${needs}` });
   else if (!t.unread.length) v.gates.push({ gate: "token", ok: true, missing: [], why: `the token reads checks and commit statuses; ${needs}` });
 }
 

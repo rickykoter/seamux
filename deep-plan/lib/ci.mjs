@@ -143,21 +143,24 @@ export function failingAt(cwd, sha) {
 
 // What ship's token reads (ADR 0108, the token gate): one GET each for the
 // head commit's check runs and its combined status, with -i so a refusal's
-// X-Accepted-GitHub-Permissions header names the permission it needed. The
-// token itself never appears. {missing: ["checks=read", ...], unread:
-// ["why a probe said nothing"]}, kept per commit for this process.
+// X-Accepted-GitHub-Permissions header names the permission it needed. A
+// refusal that comes with no headers (a 403 or 404 only in gh's message)
+// names the permission that read was for. The token itself never appears.
+// {missing: ["checks=read", ...], fromHeader, unread: ["why a probe said
+// nothing"]}, kept per commit for this process.
 const tokenSeen = new Map();
 export function tokenReads(cwd, sha) {
   const key = `${cwd}\0${sha}`;
   if (tokenSeen.has(key)) return tokenSeen.get(key);
-  const out = { missing: [], unread: [] };
+  const out = { missing: [], unread: [], fromHeader: false };
   for (const [want, ep] of [["checks=read", `repos/{owner}/{repo}/commits/${sha}/check-runs?per_page=1`], ["statuses=read", `repos/{owner}/{repo}/commits/${sha}/status`]]) {
     const r = gh(["api", "-i", ep], cwd);
     if (r.err) { out.unread.push(`${want}: ${r.err}`); continue; }
     const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out) || [])[1]) || 0;
     if (code >= 200 && code < 300) continue;
     const named = (/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out) || [])[1];
-    if (code === 403 || code === 404) out.missing.push(named ? named.trim() : want);
+    if (code === 403 || code === 404) { out.missing.push(named ? named.trim() : want); out.fromHeader = out.fromHeader || !!named; }
+    else if (!code && r.status !== 0 && TOKEN_REFUSED.test(`${r.errText}\n${r.out}`)) out.missing.push(want);
     else out.unread.push(`${want}: ${code ? `HTTP ${code}` : (r.errText.split("\n").pop() || "no answer")}`);
   }
   tokenSeen.set(key, out);

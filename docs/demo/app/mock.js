@@ -585,7 +585,15 @@ const SHIP = {
   [treeOf(W.checkout)]: {
     plan: "checkout-errors", level: "auto-pr", levelBy: "default (auto-pr)",
     policy: { source: "origin/main", ref: "origin/main", why: "" },
-    gates: [{ gate: "delivered", ok: false, why: "increment 2 of 4 is waiting on you" }],
+    // Its token is a narrow one, without Checks or Commit statuses read: ship
+    // names what it lacks and still reads the checks, from the Actions runs.
+    gates: [
+      { gate: "delivered", ok: false, why: "increment 2 of 4 is waiting on you" },
+      { gate: "token", ok: true, warn: true, missing: ["checks=read", "statuses=read"],
+        why: "the token lacks checks=read, statuses=read (GitHub's X-Accepted-GitHub-Permissions header): ship reads the PR's checks from its Actions runs, where a check from another service is not seen; ship needs pull_requests=write, contents=write, checks=read, statuses=read, statuses=write" },
+      { gate: "ci", ok: true, warn: true, info: true,
+        why: "5 passed, 0 running, 1 failed; failed: test / checkout, read from the head's Actions runs (gh pr checks was refused: GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)); at auto-pr they hold nothing here: the person who merges reads them" },
+    ],
     action: "wait", waits: ["the plan is delivered"],
     pr: { number: 43, url: prUrl(43), state: "OPEN", draft: true },
   },
