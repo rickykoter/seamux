@@ -21,16 +21,15 @@ use crate::state::state_dir;
 pub const WAKE_VIEW: &str = "wake-view"; // the tab files and pages open in, beside the Wake
 pub const WAKE_TAB: &str = "wake"; // the tab the Wake itself lives in
 pub const WAKE_LIMIT: usize = 2000; // rows per answer; the page says when it is cut
-const VIEW_IN_WAKE: [&str; 14] = [
-    ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".m4v", ".mov", ".webm", ".bpmn",
+const VIEW_IN_WAKE: [&str; 13] = [
+    ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".m4v", ".mov", ".webm",
 ];
-/// Files only the app draws (BPMN, with its bundled bpmn-js): cmux and tmux
-/// have no viewer for them, so there they open in the editor.
-const APP_DRAWS: [&str; 1] = [".bpmn"];
 
-/// Whether `path` is a file only the app draws, which cmux opens in the editor.
+/// Whether `path` is a file only the app draws (a BPMN diagram, with its
+/// bundled bpmn-js): cmux and tmux have no viewer for it, so there it opens
+/// in the editor.
 pub fn app_draws(path: &str) -> bool {
-    APP_DRAWS.contains(&ext(path).as_str())
+    crew_store::classify::is_bpmn(path)
 }
 const BROWSER_HOSTS: [&str; 2] = ["claude.ai", "github.com"];
 const ARTIFACTS_SLOT: &str = r#"<script id="boot" type="application/json">__BOOT__</script>"#;
@@ -442,7 +441,7 @@ pub fn resolve_row(r: &crew_store::Row, sub: &str) -> Result<Target, String> {
         "artifact" => Ok(Target::Browser(r.url.clone())),
         _ => {
             if !r.path.is_empty() && Path::new(&r.path).is_file() {
-                if VIEW_IN_WAKE.contains(&ext(&r.path).as_str()) {
+                if VIEW_IN_WAKE.contains(&ext(&r.path).as_str()) || app_draws(&r.path) {
                     return Ok(Target::File(r.path.clone()));
                 }
                 return Ok(Target::Editor(r.path.clone()));

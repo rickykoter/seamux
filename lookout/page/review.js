@@ -1370,7 +1370,9 @@
   // id → what the element says, for each element that has an id: its own
   // attributes and its id-less children (a condition, documentation), plus
   // where the diagram draws it, so a moved or reworded element reads changed.
-  function bpmnSigs(xml) {
+  // `placed` false leaves the place out: a diagram lookout laid out moves
+  // whenever a step is added, so there a place says nothing.
+  function bpmnSigs(xml, placed = true) {
     const out = new Map();
     let doc;
     try { doc = new DOMParser().parseFromString(xml, "application/xml"); } catch { return out; }
@@ -1390,7 +1392,10 @@
       if (!where.has(e.getAttribute("id"))) continue;
       const own = e.cloneNode(true);
       for (const c of [...own.querySelectorAll("[id]")]) c.remove();
-      out.set(e.getAttribute("id"), ser.serializeToString(own).replace(/>\s+</g, "><").replace(/\s+/g, " ") + (where.get(e.getAttribute("id")) || ""));
+      // A step's incoming and outgoing lists repeat its flows, which carry
+      // their own marks: a new arrow does not change the steps it joins.
+      for (const c of [...own.children]) if (c.localName === "incoming" || c.localName === "outgoing") c.remove();
+      out.set(e.getAttribute("id"), ser.serializeToString(own).replace(/>\s+</g, "><").replace(/\s+/g, " ") + (placed ? where.get(e.getAttribute("id")) : ""));
     }
     return out;
   }
@@ -1418,25 +1423,50 @@
     if (!window.BpmnJS) return el("div", { class: "notice" },
       el("div", null, "The diagram can't be drawn: " + (D.bpmnWhy || "bpmn-js is not in this page") + "."),
       el("button", { type: "button", onclick: () => showXml(f.path) }, "Show the XML diff"));
-    const before = bpmnSigs(bp.old || ""), after = bpmnSigs(bp.new || "");
-    const marks = { old: new Map(), new: new Map() };
-    for (const [id, s] of after) marks.new.set(id, !before.has(id) ? "add" : before.get(id) !== s ? "chg" : "");
-    for (const [id, s] of before) marks.old.set(id, !after.has(id) ? "del" : after.get(id) !== s ? "chg" : "");
-    const n = k => [...marks.new.values(), ...marks.old.values()].filter(v => v === k).length / (k === "chg" ? 2 : 1);
     const sides = [["old", "Before", bp.old], ["new", "After", bp.new]].filter(s => s[2] != null);
     const wrap = el("div", { class: "bpmn-sides" + (sides.length > 1 ? " two" : "") });
-    const summary = el("div", { class: "bpmn-sum" },
-      sides.length < 2 ? (bp.new == null ? "Deleted: the diagram as it was." : "Added: the diagram as it is now.")
-        : `${plural(n("add"), "element")} added, ${n("chg")} changed, ${n("del")} removed`);
+    const summary = el("div", { class: "bpmn-sum" });
     const node = el("div", { class: "bpmn" }, summary, wrap);
     const viewers = [];
-    bpmnKept = { path: f.path, bp, node, viewers };
-    for (const [side, label, xml] of sides) {
+    const kept = bpmnKept = { path: f.path, bp, node, viewers };
+    const canvases = sides.map(([, label]) => {
       const canvas = el("div", { class: "bpmn-canvas" });
       wrap.append(el("section", { class: "bpmn-side" }, el("div", { class: "bpmn-label" }, label), canvas));
+      return canvas;
+    });
+    // A side with no positions (Flowable's .bpmn20.xml, often) is laid out
+    // first, by the layout lookout.mjs inlines beside bpmn-js for it (bp.bare
+    // says a side needs it). The two sides are then compared in one form:
+    // both through the layout, since bpmn-moddle writes attributes, CDATA and
+    // the id labels its own way, and the places count for nothing.
+    const L = window.SeamuxBpmnLayout;
+    const asIs = xml => ({ xml, laidOut: false, processes: 0 });
+    const lay = (xml, force) => L ? L.withDiagram(xml, force).catch(() => ({ ...asIs(xml), failed: true })) : Promise.resolve(asIs(xml));
+    Promise.all(sides.map(([, , xml]) => lay(xml))).then(async laid => {
+      if (bpmnKept !== kept) return;
+      const placed = !laid.some(d => d.laidOut);
+      const forms = placed ? laid : await Promise.all(sides.map(([, , xml], i) => laid[i].laidOut ? laid[i] : lay(xml, true)));
+      if (bpmnKept !== kept) return;
+      const xmlOf = side => (forms[sides.findIndex(s => s[0] === side)] || {}).xml || "";
+      const before = bpmnSigs(xmlOf("old"), placed), after = bpmnSigs(xmlOf("new"), placed);
+      const marks = { old: new Map(), new: new Map() };
+      for (const [id, s] of after) marks.new.set(id, !before.has(id) ? "add" : before.get(id) !== s ? "chg" : "");
+      for (const [id, s] of before) marks.old.set(id, !after.has(id) ? "del" : after.get(id) !== s ? "chg" : "");
+      const n = k => [...marks.new.values(), ...marks.old.values()].filter(v => v === k).length / (k === "chg" ? 2 : 1);
+      // A side needs the layout and the page has none: no counts, which would
+      // read every element of the drawable side as added or removed.
+      // The same when the layout is here but could not read a side, bare or
+      // (for the comparison) placed: the two forms would not compare.
+      const lost = bp.bare && (!L || [...laid, ...forms].some(d => d.failed));
+      summary.textContent = lost ? "A side stores no diagram positions, and " + (L ? "the layout could not read the XML, so nothing is counted." :
+        "the layout that draws it is not in this page: " + (D.bpmnLayoutWhy || "not loaded") + ".")
+        : (sides.length < 2 ? (bp.new == null ? "Deleted: the diagram as it was." : "Added: the diagram as it is now.")
+          : `${plural(n("add"), "element")} added, ${n("chg")} changed, ${n("del")} removed`) +
+          (placed ? "" : " · " + L.layoutNote("lookout", Math.max(0, ...laid.map(d => d.processes || 0))));
       // Drawn once the canvas is on the page: the viewer fits to its size.
-      requestAnimationFrame(() => drawBpmn(canvas, xml, marks[side], sides.length > 1, viewers));
-    }
+      sides.forEach(([side], i) => requestAnimationFrame(() =>
+        drawBpmn(canvases[i], laid[i].xml, marks[side], sides.length > 1 && !lost, viewers)));
+    });
     return node;
   }
 

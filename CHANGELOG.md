@@ -6,6 +6,18 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Diagrams in patch-file reviews.** `lookout open --patch` now draws an
+  added or deleted `.bpmn` or `.bpmn20.xml` file, rebuilt from the patch's
+  own lines. A changed diagram in a patch still shows as XML, since a patch
+  holds only part of each side.
+- **Flowable's BPMN files render too.** A `.bpmn20.xml` file, the name
+  Flowable and Activiti use, is treated as a diagram wherever a `.bpmn` is:
+  the Wake, the Dock and lookout. Flowable files written in code usually
+  store no diagram positions, so seamux lays them out with bpmn.io's
+  bpmn-auto-layout 1.3.0 and labels each unnamed step with its id; a note in
+  the corner says the layout is seamux's. Flowable's own attributes and
+  extension elements do not get in the way. In lookout, an arrow that is
+  added or removed no longer marks the steps at its ends as changed.
 - **chartroom: charts you review beside the terminal.** A new plugin for the
   UX mocks, architecture views and domain maps you would otherwise ask an
   Artifact for. Claude draws each as HTML files kept in a hidden folder of
@@ -18,7 +30,6 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   back. It needs only node and git, and installs alone with
   `/plugin install chartroom@seamux`; `./install.sh --no-chartroom` leaves
   it out.
-
 - **BPMN diagrams render.** A `.bpmn` file now shows as its diagram instead
   of raw XML in three places: the Wake's preview and its tab, and the Dock
   when you click a pane's link to the file. A `.bpmn` that Claude writes in

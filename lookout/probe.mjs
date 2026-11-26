@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
+import vm from "node:vm";
 import { execSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sections } from "../tools/probe_sections.mjs";
@@ -3272,8 +3273,81 @@ if (want("bpmn")) {
   const rs = JSON.parse(fs.readFileSync(S.paths(JSON.parse(small.stdout).id).rows, "utf8"));
   ok("bpmn: a diagram past the page's budget carries no XML, and the page no viewer",
     !rs["flow.bpmn"].bpmn && !fs.readFileSync(JSON.parse(small.stdout).page, "utf8").includes("BpmnJS="));
-  for (const [name, sha256] of Object.entries(VD.BPMN_FILES))
+  for (const [name, sha256] of [...Object.entries(VD.BPMN_FILES), VD.BPMN_LAYOUT])
     ok("bpmn: the shipped " + name + " matches its pin", sha(path.join(VD.BPMN_DIR, name)) === sha256);
+
+  // Flowable's .bpmn20.xml is a diagram too. With no positions in it, the
+  // page carries the layout; a file that places its shapes goes without.
+  ok("bpmn: Flowable's .bpmn20.xml name is a diagram, plain .xml is not",
+    VD.isBpmn("p/task-need.v1.bpmn20.xml") && VD.isBpmn("x.BPMN") && !VD.isBpmn("pom.xml"));
+  ok("bpmn: the page carries the layout for a diagram with no positions", html.includes("var SeamuxBpmnLayout="));
+  const fl = repo("bpmn-flowable");
+  const NS = 'xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:flowable="http://flowable.org/bpmn" ' +
+    'xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"';
+  const flowable = (task, di) => `<?xml version="1.0"?>\n<definitions ${NS} targetNamespace="t">\n` +
+    `  <process id="P" isExecutable="true">\n    <startEvent id="S"/>\n` +
+    `    <serviceTask id="T" name="${task}" flowable:delegateExpression="\${call}" flowable:async="true">\n` +
+    `      <extensionElements><flowable:failedJobRetryTimeCycle>R3/PT30S</flowable:failedJobRetryTimeCycle></extensionElements>\n` +
+    `    </serviceTask>\n    <endEvent id="E"/>\n` +
+    `    <sequenceFlow id="f1" sourceRef="S" targetRef="T"/>\n    <sequenceFlow id="f2" sourceRef="T" targetRef="E"/>\n  </process>\n` +
+    (di ? `  <bpmndi:BPMNDiagram id="Dg"><bpmndi:BPMNPlane id="Pl" bpmnElement="P">` +
+      `<bpmndi:BPMNShape id="S_di" bpmnElement="S"><dc:Bounds x="0" y="0" width="36" height="36"/></bpmndi:BPMNShape>` +
+      `</bpmndi:BPMNPlane></bpmndi:BPMNDiagram>\n` : "") + `</definitions>\n`;
+  write(fl, "placed.bpmn", flowable("x", true)); write(fl, "a.txt", "1\n");
+  sh(fl, `${G} add -A && ${G} commit -q -m one && git checkout -q -b feat`);
+  write(fl, "placed.bpmn", flowable("y", true));
+  sh(fl, `${G} commit -qam two`);
+  const placed = JSON.parse(cli(fl, "open", "--base", "main", "--no-open", "--no-jev", "--json", "--id", "bpmn-placed").stdout);
+  const hp = fs.readFileSync(placed.page, "utf8");
+  ok("bpmn: a diagram that places its shapes gets the viewer but not the layout",
+    hp.includes("BpmnJS=") && !hp.includes("var SeamuxBpmnLayout="));
+  write(fl, "proc.v1.bpmn20.xml", flowable("call vendor", false));
+  sh(fl, `${G} add -A && ${G} commit -qm three`);
+  const fo = JSON.parse(cli(fl, "open", "--base", "main", "--no-open", "--no-jev", "--json", "--id", "bpmn-flowable").stdout);
+  const fr = JSON.parse(fs.readFileSync(S.paths(fo.id).rows, "utf8"));
+  ok("bpmn: an added .bpmn20.xml travels as a diagram", fr["proc.v1.bpmn20.xml"] && fr["proc.v1.bpmn20.xml"].bpmn &&
+    fr["proc.v1.bpmn20.xml"].bpmn.old == null && /call vendor/.test(fr["proc.v1.bpmn20.xml"].bpmn.new));
+  // A patch-file review: an added diagram's hunks hold all of it, a changed
+  // one's do not, so only the added one draws.
+  const pf = path.join(TMP, "bpmn-flowable.patch");
+  fs.writeFileSync(pf, sh(fl, `${G} diff main feat`));
+  const po = JSON.parse(cli(fl, "open", "--patch", pf, "--no-open", "--no-jev", "--json", "--id", "bpmn-patch").stdout);
+  const pr = JSON.parse(fs.readFileSync(S.paths(po.id).rows, "utf8"));
+  ok("bpmn: a patch review draws an added diagram from its hunks, whole",
+    pr["proc.v1.bpmn20.xml"].bpmn && pr["proc.v1.bpmn20.xml"].bpmn.new === flowable("call vendor", false),
+    JSON.stringify(pr["proc.v1.bpmn20.xml"].bpmn || null).slice(0, 200));
+  ok("bpmn: a patch review shows a changed diagram as XML", !pr["placed.bpmn"].bpmn);
+  ok("bpmn: only a diagram with a side that stores no positions is marked bare",
+    fr["proc.v1.bpmn20.xml"].bpmn.bare === true && fr["placed.bpmn"].bpmn.bare === false);
+  ok("bpmn: the page carries the layout once a side has no positions", fs.readFileSync(fo.page, "utf8").includes("var SeamuxBpmnLayout="));
+  // The shipped layout, run as the page runs it: every step placed, and an
+  // arrow for every sequence flow, Flowable's attributes kept.
+  const ctx = vm.createContext({ console });
+  vm.runInContext(fs.readFileSync(path.join(VD.BPMN_DIR, VD.BPMN_LAYOUT[0]), "utf8"), ctx);
+  const laid = await ctx.SeamuxBpmnLayout.withDiagram(flowable("call vendor", false));
+  const count = re => (laid.xml.match(re) || []).length;
+  ok("bpmn: the layout places each step, draws each flow and labels unnamed steps by id",
+    laid.laidOut && count(/<bpmndi:BPMNShape /g) === 3 && count(/<bpmndi:BPMNEdge /g) === 2 && /flowable:delegateExpression/.test(laid.xml) &&
+    /<(bpmn:)?startEvent id="S" name="S"/.test(laid.xml),
+    laid.xml.slice(0, 400));
+  const kept = await ctx.SeamuxBpmnLayout.withDiagram(flowable("x", true));
+  ok("bpmn: a diagram that places its shapes is drawn as it is", !kept.laidOut && kept.xml === flowable("x", true));
+  // The layout draws the first process only, and the note says so.
+  const two = flowable("a", false).replace("</definitions>", '  <process id="Q"><startEvent id="QS"/></process>\n</definitions>');
+  const both = await ctx.SeamuxBpmnLayout.withDiagram(two);
+  ok("bpmn: a file with two processes says only the first is drawn", both.processes === 2 &&
+    /Only the first of its 2 processes/.test(ctx.SeamuxBpmnLayout.layoutNote("lookout", both.processes)) &&
+    !/Only the first/.test(ctx.SeamuxBpmnLayout.layoutNote("lookout", 1)));
+  // A layout bundle off its pin costs the layout only: the viewer stays.
+  const badLayout = path.join(TMP, "bpmn-bad-layout");
+  fs.cpSync(VD.BPMN_DIR, badLayout, { recursive: true });
+  fs.appendFileSync(path.join(badLayout, VD.BPMN_LAYOUT[0]), "\n;");
+  const bl = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--base", "main", "--no-open", "--no-jev", "--json", "--id", "bpmn-bad-layout"],
+    { encoding: "utf8", env: { ...ENV, LOOKOUT_BPMN_DIR: badLayout }, cwd: fl });
+  const hb = fs.readFileSync(JSON.parse(bl.stdout).page, "utf8");
+  const db = JSON.parse(hb.match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
+  ok("bpmn: a layout off its pin keeps the viewer and says why the layout is gone",
+    hb.includes("BpmnJS=") && !hb.includes("var SeamuxBpmnLayout=") && db.bpmnWhy === "" && /sha256/.test(db.bpmnLayoutWhy), db.bpmnLayoutWhy);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });
