@@ -51,6 +51,12 @@
       "category": "productivity"
     },
     {
+      "name": "chartroom",
+      "source": "./chartroom",
+      "description": "Charts kept with the repo: UX mocks with options to pick, architecture views and domain explorers, reviewed in a local studio with pins and versions, and published as an Artifact only on your yes. Needs only node and git.",
+      "category": "productivity"
+    },
+    {
       "name": "bosun",
       "source": "./bosun",
       "description": "The Bosun's skill: sitreps across your repos, answers that cite every fact, dispatch of real work to a new workspace, and asking the Bosun from any other session. Needs the seamux app on its tmux backend.",

@@ -1,0 +1,11 @@
+{
+  "description": "chartroom: what the person said or picked in the studio, told to the session at its next prompt (and at session start), once",
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 } ] }
+    ]
+  }
+}

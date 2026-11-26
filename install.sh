@@ -2,7 +2,8 @@
 # install.sh — seamux, as Claude Code plugins.
 #
 #   ./install.sh [--dry-run] [--github] [--mods] [--no-crew] [--no-restack]
-#                [--no-guard] [--no-lookout] [--no-humanize] [--no-bosun] [--no-apply] [--no-migrate]
+#                [--no-guard] [--no-lookout] [--no-humanize] [--no-chartroom] [--no-bosun]
+#                [--no-apply] [--no-migrate]
 #                [--main-repo PATH]
 #                [--with-jira[=SITE]] [--with-github-issues]
 #                [--with-observability=STACK]
@@ -19,8 +20,8 @@
 # A thin bootstrap over `claude plugin`. It adds this checkout as the `seamux`
 # marketplace (a folder marketplace: the plugins run from the checkout itself,
 # so an edit plus /reload-plugins is live with no version bump; --github adds
-# the published repo instead), installs deep-plan, restack, bash-guard, lookout
-# and crew (and bosun with it; seamux-mods with --mods), runs each engine's `setup` and `crew apply`, then
+# the published repo instead), installs deep-plan, restack, bash-guard, lookout,
+# humanize, chartroom and crew (and bosun with it; seamux-mods with --mods), runs each engine's `setup` and `crew apply`, then
 # migrates what the old installer left behind: the ~/.claude/skills copies,
 # their shims, and the settings.json hook entries the plugins now carry. Every
 # file it migrates is moved into ~/.claude/seamux-migrated/<time>/, never
@@ -38,7 +39,7 @@ MARKET="seamux"
 
 APPDIR="$HOME/Applications/seamux.app"
 APP_BUNDLE_ID="dev.seamux.app"
-DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 HUMANIZE=1 BOSUN=1 APPLY=1 MIGRATE=1 MAIN="" FROM=""
+DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 HUMANIZE=1 CHARTROOM=1 BOSUN=1 APPLY=1 MIGRATE=1 MAIN="" FROM=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" OBS_STACK=""
 
 while [ $# -gt 0 ]; do
@@ -57,6 +58,7 @@ while [ $# -gt 0 ]; do
     --no-guard) GUARD=0; shift ;;
     --no-lookout) LOOKOUT=0; shift ;;
     --no-humanize) HUMANIZE=0; shift ;;
+    --no-chartroom) CHARTROOM=0; shift ;;
     --no-bosun) BOSUN=0; shift ;;
     --no-apply) APPLY=0; shift ;;
     --no-migrate) MIGRATE=0; shift ;;
@@ -67,7 +69,7 @@ while [ $# -gt 0 ]; do
     --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
     --with-github-issues) WITH_GHI=1; shift ;;
     --with-observability=*) OBS_STACK="${1#--with-observability=}"; shift ;;
-    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1 (--help lists them)" >&2; exit 2 ;;
   esac
 done
@@ -93,11 +95,12 @@ PLUGINS="deep-plan"
 [ "$GUARD" = 1 ]   && PLUGINS="$PLUGINS bash-guard"
 [ "$LOOKOUT" = 1 ] && PLUGINS="$PLUGINS lookout"
 [ "$HUMANIZE" = 1 ] && PLUGINS="$PLUGINS humanize"
+[ "$CHARTROOM" = 1 ] && PLUGINS="$PLUGINS chartroom"
 [ "$CREW" = 1 ]    && PLUGINS="$PLUGINS crew"
 # bosun shells out to seamux, which comes with the app crew needs: it goes where crew goes.
 [ "$CREW" = 1 ] && [ "$BOSUN" = 1 ] && PLUGINS="$PLUGINS bosun"
 [ "$MODS" = 1 ]    && PLUGINS="$PLUGINS seamux-mods"
-ALL_PLUGINS="deep-plan restack bash-guard lookout humanize crew bosun seamux-mods"
+ALL_PLUGINS="deep-plan restack bash-guard lookout humanize chartroom crew bosun seamux-mods"
 
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
 # Through `seamux crew-plugin-root` once seamux is installed. Before it is (a
@@ -473,7 +476,7 @@ except ValueError:
 bad = 0
 def found(name):
     return next((x for x in ps if x.get("id", "").split("@")[0] == name and x.get("id", "").endswith("@seamux")), None)
-for name in ("deep-plan", "restack", "bash-guard", "lookout", "humanize", "crew", "bosun", "seamux-mods"):
+for name in ("deep-plan", "restack", "bash-guard", "lookout", "humanize", "chartroom", "crew", "bosun", "seamux-mods"):
     p = found(name)
     if not p and name == "bosun" and found("crew"):
         # crew runs the Bosun, which needs this plugin's skill to run its reports.

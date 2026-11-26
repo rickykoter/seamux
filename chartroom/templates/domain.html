@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Domain: name it</title>
+<!--
+  chartroom domain starter: a domain explored as data. A glossary you can
+  search, each term with its definition, where it came from, and what it
+  relates to; the related terms draw as a small map. Copy it
+  (chartroom template domain glossary.html), fill the DOMAIN block, add it.
+
+  - Every term cites a source: a file:line, a doc, a ticket, a person. A term
+    you inferred and could not check is "unverified": true, and shows so.
+  - Use the team's own words for terms; put other names under "aka".
+  - Say where the code and the people disagree on a word: that is the finding.
+  Delete this comment when the domain is real.
+-->
+<style>
+  :root {
+    --bg: #f7f6f2; --ink: #24292c; --muted: #5f686d; --line: #dcd8cc; --card: #ffffff;
+    --accent: #2f6f6a; --warn: #6b4fa0; --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14.5px/1.55 var(--font); padding: 20px 24px; }
+  .page { max-width: 1040px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; }
+  header { grid-column: 1 / -1; }
+  h1 { font-size: 21px; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); max-width: 70ch; }
+  input[type=search] { width: 100%; font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); margin-bottom: 12px; }
+  .term { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .term.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .term h2 { font-size: 15px; margin: 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .aka { font-weight: 400; color: var(--muted); font-size: 13px; }
+  .term p { margin: 6px 0; }
+  .src { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+  .unv { font-size: 11px; color: var(--warn); border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; }
+  .rel { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .rel button { font: 12px var(--font); border: 1px solid var(--line); background: none; border-radius: 999px; padding: 1px 9px; cursor: pointer; }
+  aside { position: sticky; top: 12px; align-self: start; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .node:focus-visible { outline: none; } .node:focus-visible circle { stroke-width: 4; }
+  aside p { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 6px; }
+  @media (max-width: 760px) { .page { grid-template-columns: 1fr; } aside { position: static; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1 id="title">Orders: the words this team uses</h1>
+    <p id="purpose">What this domain covers, who uses these words, and the question it should help answer.</p>
+  </header>
+  <section>
+    <input type="search" id="q" placeholder="Find a term" aria-label="Find a term">
+    <div id="terms"></div>
+  </section>
+  <aside><h2>How the terms relate</h2><p>Click a term to find it in the list.</p><svg id="map" width="316" height="316" viewBox="0 0 316 316" role="group" aria-label="Related terms"></svg></aside>
+</div>
+
+<script type="application/json" id="DOMAIN">
+{
+  "terms": [
+    { "id": "order", "term": "Order", "aka": ["purchase"], "definition": "What a shopper commits to at checkout: lines, totals and a payment.", "source": "api/orders/model.js:12", "related": ["line", "payment"] },
+    { "id": "line", "term": "Line", "aka": ["order item"], "definition": "One product and quantity inside an order, priced when the order is placed.", "source": "api/orders/model.js:40", "related": ["order"] },
+    { "id": "payment", "term": "Payment", "definition": "A charge against the shopper's card. An order can have a failed payment and a later good one.", "source": "docs/payments.md", "related": ["order", "refund"] },
+    { "id": "refund", "term": "Refund", "definition": "Money sent back against a payment. Support calls a partial one a credit; the code does not.", "source": "asked the support lead", "unverified": true, "related": ["payment"] }
+  ]
+}
+</script>
+<script>
+(function () {
+  var D = JSON.parse(document.getElementById("DOMAIN").textContent);
+  var byId = {}; D.terms.forEach(function (t) { byId[t.id] = t; });
+  var list = document.getElementById("terms"), q = document.getElementById("q"), on = "";
+  var h = function (tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  function render() {
+    var needle = q.value.trim().toLowerCase();
+    list.textContent = "";
+    D.terms.filter(function (t) {
+      return !needle || [t.term, t.definition].concat(t.aka || []).join(" ").toLowerCase().indexOf(needle) >= 0;
+    }).forEach(function (t) {
+      var card = h("article", "term" + (t.id === on ? " on" : "")); card.id = "term-" + t.id;
+      var h2 = h("h2"); h2.appendChild(document.createTextNode(t.term));
+      if (t.aka && t.aka.length) h2.appendChild(h("span", "aka", "also " + t.aka.join(", ")));
+      if (t.unverified) h2.appendChild(h("span", "unv", "not verified"));
+      card.appendChild(h2);
+      card.appendChild(h("p", "", t.definition));
+      card.appendChild(h("div", "src", "source: " + (t.source || "none given")));
+      var rel = h("div", "rel");
+      (t.related || []).forEach(function (r) {
+        if (!byId[r]) return;
+        var b = h("button", "", byId[r].term);
+        b.addEventListener("click", function () { focus(r); });
+        rel.appendChild(b);
+      });
+      card.appendChild(rel);
+      list.appendChild(card);
+    });
+    if (!list.children.length) list.appendChild(h("p", "src", !D.terms.length ? "No terms yet." : "No term matches \u201c" + q.value.trim() + "\u201d."));
+    drawMap();
+  }
+  // fromMap: keep the keyboard on the map node the person pressed, which the redraw replaced.
+  function focus(id, fromMap) {
+    on = id; q.value = ""; render();
+    var el = document.getElementById("term-" + id); if (el) el.scrollIntoView({ block: "nearest" });
+    if (fromMap) { var n = document.querySelector('#map [data-term="' + id + '"]'); if (n) n.focus(); }
+  }
+  function drawMap() {
+    var svg = document.getElementById("map"), NS = "http://www.w3.org/2000/svg";
+    svg.textContent = "";
+    var css = getComputedStyle(document.documentElement), v = function (n) { return css.getPropertyValue(n).trim(); };
+    var n = D.terms.length, cx = 158, cy = 158, R = 112, at = {};
+    D.terms.forEach(function (t, i) { var a = -Math.PI / 2 + i * 2 * Math.PI / n; at[t.id] = [cx + R * Math.cos(a), cy + R * Math.sin(a)]; });
+    var el = function (tag, attrs) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); svg.appendChild(e); return e; };
+    // One line per pair, whichever side lists the other.
+    var drawn = {};
+    D.terms.forEach(function (t) { (t.related || []).forEach(function (r) {
+      var pair = [t.id, r].sort().join("|");
+      if (!at[r] || drawn[pair]) return;
+      drawn[pair] = true;
+      el("line", { x1: at[t.id][0], y1: at[t.id][1], x2: at[r][0], y2: at[r][1], stroke: v("--line"), "stroke-width": "1.5" });
+    }); });
+    D.terms.forEach(function (t) {
+      // Each term is one target, circle and name together, reachable by
+      // keyboard (Tab, then Enter) as well as by click.
+      var g = el("g", { tabindex: "0", role: "button", "aria-label": "Find " + t.term, style: "cursor:pointer", "class": "node", "data-term": t.id });
+      var c = document.createElementNS(NS, "circle");
+      [["cx", at[t.id][0]], ["cy", at[t.id][1]], ["r", "9"], ["fill", t.id === on ? v("--accent") : v("--card")], ["stroke", v("--accent")], ["stroke-width", "2"],
+       ["stroke-dasharray", t.unverified ? "3 2" : "none"]].forEach(function (a) { c.setAttribute(a[0], a[1]); });
+      g.appendChild(c);
+      var tx = document.createElementNS(NS, "text");
+      [["x", at[t.id][0]], ["y", at[t.id][1] - 14], ["text-anchor", "middle"], ["font-size", "12"], ["fill", v("--ink")]].forEach(function (a) { tx.setAttribute(a[0], a[1]); });
+      tx.textContent = t.term;
+      g.appendChild(tx);
+      g.addEventListener("click", function () { focus(t.id); });
+      g.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focus(t.id, true); } });
+    });
+  }
+  q.addEventListener("input", render);
+  render();
+})();
+</script>
+</body>
+</html>

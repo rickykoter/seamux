@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L17 -->
+<!-- next: L19 -->
 
 ## L1
 applies: **
@@ -95,3 +95,15 @@ applies: **
 from: links-open-in-place (correction cfd5ec4ef), 2026-11-23
 
 The scenarios judge scores every scenario of the plan at each check: put the scenarios check on the last increment only, and prove earlier increments by recipes and a try on the harness.
+
+## L17
+applies: **/page/**, **/serve.mjs, app/ui/**
+from: chartroom (correction cf3e45ed2), 2026-11-25; chartroom (correction c62fdcbf1), 2026-11-25
+
+Before handing the person a page for a manual check, fetch its link to confirm it answers, and drive it in a real browser (headless Brave over its debugging port works here), using every new control the ways a person can: mouse, touch and keys. A server that prints links for people keeps them working across an idle exit.
+
+## L18
+applies: .seamux/verify.json, deep-plan/packs/**
+from: chartroom inc 7 (retry ca94ce4f9), 2026-11-25
+
+A recipe in .seamux/verify.json with a pack mark is the pack's: change the pack's copy too (bump its version and re-stamp with pack update, dropping a stale stamp so it is re-adopted), or the deep-plan probe's pack check fails.
