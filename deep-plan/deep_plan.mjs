@@ -51,7 +51,7 @@ import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } 
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
   CANDIDATES_SUFFIX, LESSON_CAP, foldCandidates, unsettled, fileCandidate, settleCandidate,
-  repoTop, lessonsFile, readLessons, writeLessons, keepLesson, mergeLesson, retireLesson, lessonFrom, lessonReport,
+  repoTop, lessonsFile, lessonsWriteRefusal, readLessons, writeLessons, keepLesson, mergeLesson, retireLesson, lessonFrom, lessonReport,
 } from "./lib/lessons.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
@@ -4875,6 +4875,7 @@ function retroCmd(args, flags) {
     return c;
   };
   const applies = () => String(flags.applies || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (["keep", "merge", "retire"].includes(sub)) { const no = lessonsWriteRefusal(top); if (no) die(`retro ${sub}: ${no}`); }
   const wrote = what => {
     const f = writeLessons(top, doc);
     // In a repo that ignores .seamux the file is main's untracked copy (ADR 0068).
@@ -5364,6 +5365,7 @@ function verdictCore({ st, root, fetch = true }) {
   }
   // Before the level's early return, so a stacked child hears it at every level.
   stackedGate(st, root, ref, v, gate);
+  keptGate(root, ref, level, v, gate);
   // Where origin has the branch: the status is posted at every level, and
   // only on a commit origin has.
   const own = branch && branch !== "HEAD" && !(ref && branch === ref.replace(/^origin\//, ""));
@@ -5407,6 +5409,35 @@ function verdictCore({ st, root, fetch = true }) {
   v.gates.push({ gate: "ci", ok: true, why: `all ${c.passed.length} PR check(s) passed` });
   v.action = "merge";
   return v;
+}
+
+// The kept checkout gate: the repo's main worktree, which a landing pulls
+// into (tools/land/kept-checkout.sh), is on the base branch with no
+// uncommitted tracked changes. #255's landing failed on a dirty
+// .seamux/lessons.md there, 40 minutes after the merge; ship sees it first.
+// At auto-merge it is a wait naming the files; below it the merge is a
+// person's, so it passes with a warning. Skipped when the plan's root is the
+// main worktree itself, and when there is no base to compare with.
+const KEPT_FILES_SHOWN = 5;
+function keptGate(root, ref, level, v, gate) {
+  if (!ref) return;
+  const wl = spawnSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 20000 });
+  const main = wl.status === 0 ? ((/^worktree (.+)$/m.exec(wl.stdout) || [])[1] || "") : "";
+  const real = p => { try { return fs.realpathSync(p); } catch { return p; } };
+  const top = spawnSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  if (!main || (top.status === 0 && real(top.stdout.trim()) === real(main))) return;
+  const base = ref.replace(/^origin\//, "");
+  const on = (spawnSync("git", ["-C", main, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).stdout || "").trim();
+  const st = spawnSync("git", ["-C", main, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", timeout: 20000 });
+  const dirty = st.status === 0 ? st.stdout.split("\n").filter(Boolean).map(l => l.slice(3)) : null;
+  const bad = [];
+  if (on !== base) bad.push(`is on ${on || "a detached HEAD"}, not ${base}`);
+  if (dirty === null) bad.push("could not be read (git status failed)");
+  else if (dirty.length) bad.push(`has uncommitted changes to ${dirty.slice(0, KEPT_FILES_SHOWN).join(", ")}${dirty.length > KEPT_FILES_SHOWN ? ` and ${dirty.length - KEPT_FILES_SHOWN} more` : ""}`);
+  if (!bad.length) { v.gates.push({ gate: "kept checkout", ok: true, why: `${main} is on ${base}, clean for the landing` }); return; }
+  const why = `the kept checkout ${main} ${bad.join(" and ")}: the landing's pull there would fail; commit, stash or switch it first`;
+  if (level === "auto-merge") gate("kept checkout", false, why);
+  else v.gates.push({ gate: "kept checkout", ok: true, warn: true, why });
 }
 
 // The token gate: what ship's token could not read, named from GitHub's

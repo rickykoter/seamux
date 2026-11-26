@@ -138,6 +138,12 @@ Require it from any source: ship posts it with the person's token, so an
 entry pinned to an app's integration is never met. A merge refused while
 the status could not be posted says why.
 
+A `kept checkout` gate looks at the repo's main worktree, the one a
+landing pulls into: it must be on the base branch with no uncommitted
+tracked changes. At auto-merge a dirty or switched one is a wait that names
+the files; below it, a warning. It is skipped when the plan's root is the
+main worktree.
+
 A PR merged by anyone but ship is recorded in the ship record and the
 plan log: as GitHub's when ship had asked for its auto-merge, otherwise as
 the person's. Ship's wait stops there and says so.

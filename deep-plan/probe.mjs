@@ -8457,6 +8457,38 @@ if (want("lessons: candidates, retro and .seamux/lessons.md")) {
   const lmd = path.join(LA, ".seamux", "lessons.md");
   cli("render", tmpSpec({ ...spec, slug: "lessons-a" }), "--root", LA);
 
+  // #255: a branch cut before main tracked lessons.md. Its retro would
+  // write into the main checkout's tracked copy, dirtying the kept checkout.
+  {
+    const TM = path.join(TMP, "lessons-tracked"), TW = path.join(TMP, "lessons-tracked-wt");
+    fs.mkdirSync(TM, { recursive: true });
+    execSync(`git init -q -b main && ${G} commit -q --allow-empty -m init && git branch old`, { cwd: TM });
+    fs.mkdirSync(path.join(TM, ".seamux"), { recursive: true });
+    const mainText = "# Lessons\n\n## L1\napplies: **\nfrom: p\n\nmain's rule\n";
+    fs.writeFileSync(path.join(TM, ".seamux", "lessons.md"), mainText);
+    execSync(`git add -A && ${G} commit -q -m lessons && git worktree add -q ${JSON.stringify(TW)} old`, { cwd: TM });
+    cli("render", tmpSpec({ ...spec, slug: "lessons-old" }), "--root", TW);
+    const kk = key("lessons-old");
+    cli("grade", "lessons-old", ...Object.entries(kk).map(([q, a], i) => `${q}=${i === 0 ? (a.letter === "a" ? "b" : "a") : a.letter}`));
+    const cand = (JSON.parse(lcli(TW, "retro", "lessons-old", "--json").stdout || "{}").candidates || [])[0];
+    const rr = lcli(TW, "retro", "lessons-old", "keep", cand && cand.id, "A rule from an old branch.", "--applies", "**");
+    ok("lessons: on a branch that does not track lessons.md while main does, retro refuses and says to merge the base first (#255)",
+      rr.status !== 0 && /does not track \.seamux\/lessons\.md, and the main checkout's main does/.test(rr.stderr) && /git merge origin\/main/.test(rr.stderr) &&
+      fs.readFileSync(path.join(TM, ".seamux", "lessons.md"), "utf8") === mainText && !fs.existsSync(path.join(TW, ".seamux", "lessons.md")) &&
+      execSync("git status --porcelain", { cwd: TM, encoding: "utf8" }) === "", rr.stdout + rr.stderr);
+    ok("lessons: the refused keep leaves its candidate unsettled",
+      (JSON.parse(lcli(TW, "retro", "lessons-old", "--json").stdout || "{}").candidates || []).some(c => c.id === (cand && cand.id) && !c.settled));
+    const LL = await import("./lib/lessons.mjs");
+    let threw = "";
+    try { LL.writeLessons(TW, { head: "", lessons: [] }); } catch (e) { threw = e.message; }
+    ok("lessons: writeLessons itself refuses there too", /does not track/.test(threw), threw);
+    execSync(`${G} merge -q main`, { cwd: TW });
+    const after = lcli(TW, "retro", "lessons-old", "keep", cand && cand.id, "A rule from an old branch.", "--applies", "**");
+    ok("lessons: once the base is merged in, the retro writes the branch's own copy and main's stays as it was",
+      after.status === 0 && /A rule from an old branch/.test(fs.readFileSync(path.join(TW, ".seamux", "lessons.md"), "utf8")) &&
+      fs.readFileSync(path.join(TM, ".seamux", "lessons.md"), "utf8") === mainText, after.stdout + after.stderr);
+  }
+
   // A wrong grade is a miss the engine files; the same wrong grade again is
   // the same miss, not a second candidate.
   const k = key("lessons-a");
@@ -9895,6 +9927,27 @@ if (want("policy and ship: levels from the base branch")) {
     /ship waits for PR #12's checks/.test(r.stdout) && byPerson && shipRec0().status === "merged" && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout + JSON.stringify(shipRec0()));
   ok("ship: its wait posts the status once while it does not change, not on every look (inc2 f2)",
     statusCalls().length === 2, statusCalls().join("\n"));
+  // The kept checkout (#255): the repo's main worktree, which the landing pulls into.
+  const KM = path.join(TMP, "pol-kept"), KW = path.join(TMP, "pol-kept-docs"), KS = path.join(TMP, "pol-kept-src");
+  execSync(`git clone -q ${ORIGIN} ${KM} && cd ${KM} && git worktree add -q -b dev/kept-docs ${KW} && git worktree add -q -b dev/kept-src ${KS}`);
+  execSync(`mkdir -p docs && echo k > docs/k.md && git add -A && ${G} commit -q -m k`, { cwd: KW });
+  execSync(`mkdir -p src && echo k > src/k.js && git add -A && ${G} commit -q -m k`, { cwd: KS });
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found" } });
+  const keptOf = at => ((JSON.parse(pc("ship", "--at", at, "--dry-run", "--json").stdout || "{}").gates) || []).find(g => g.gate === "kept checkout");
+  let kg = keptOf(KW);
+  ok("ship: a clean kept checkout on the base passes the kept checkout gate", kg && kg.ok && !kg.warn && /is on main, clean for the landing/.test(kg.why), JSON.stringify(kg));
+  fs.appendFileSync(path.join(KM, "README.md"), "dirty\n");
+  kg = keptOf(KW);
+  ok("ship: at auto-merge, uncommitted tracked changes in the kept checkout are a wait that names the files",
+    kg && !kg.ok && /the kept checkout .*pol-kept has uncommitted changes to README\.md: the landing's pull there would fail/.test(kg.why), JSON.stringify(kg));
+  kg = keptOf(KS);
+  ok("ship: below auto-merge the same dirty kept checkout is a warning, not a wait",
+    kg && kg.ok && kg.warn && /uncommitted changes to README\.md/.test(kg.why), JSON.stringify(kg));
+  execSync("git checkout -q README.md && git checkout -q -b elsewhere", { cwd: KM });
+  kg = keptOf(KW);
+  ok("ship: a kept checkout on another branch than the base is named too", kg && !kg.ok && /is on elsewhere, not main/.test(kg.why), JSON.stringify(kg));
+  ok("ship: the gate is skipped when the plan's root is the main worktree itself",
+    !((JSON.parse(pc("ship", "pol-ship", "--dry-run", "--json").stdout || "{}").gates || []).some(g => g.gate === "kept checkout")));
   // A worktree with no plan: success, a person's call.
   const LONE = path.join(TMP, "pol-lone");
   execSync(`git clone -q ${ORIGIN} ${LONE} && cd ${LONE} && git checkout -q -b dev/lone && echo x > lone.md && git add -A && ${G} commit -q -m lone && git push -q -u origin dev/lone`);
@@ -9994,12 +10047,12 @@ if (want("packs: add, check, update, remove")) {
   const A = mkRepo("pk-a", { "package.json": "{}\n" });
   let r = pk(A, "list");
   ok("pack list: the three deep-plan ships, and the one this repo looks like",
-    /^node-web@1\.0\.0 {2}\(looks like this repo\)/m.test(r.stdout) && /^github-actions@/m.test(r.stdout) && /^seamux@/m.test(r.stdout), r.stdout);
+    /^node-web@1\.1\.0 {2}\(looks like this repo\)/m.test(r.stdout) && /^github-actions@/m.test(r.stdout) && /^seamux@/m.test(r.stdout), r.stdout);
   r = pk(A, "add", "node-web");
-  ok("pack add node-web: merged, and says what to review", r.status === 0 && /added node-web@1\.0\.0 from deep-plan:node-web/.test(r.stdout) && /review and commit/.test(r.stdout), r.stdout + r.stderr);
+  ok("pack add node-web: merged, and says what to review", r.status === 0 && /added node-web@1\.1\.0 from deep-plan:node-web/.test(r.stdout) && /review and commit/.test(r.stdout), r.stdout + r.stderr);
   const v = J(A, ".seamux/verify.json");
   ok("pack add: its recipes and land recipe are in verify.json, each marked with the pack",
-    ["unit", "build", "e2e", "deploy"].every(id => v.recipes.some(x => x.id === id && x.pack === "node-web@1.0.0")));
+    ["unit", "build", "e2e", "deploy"].every(id => v.recipes.some(x => x.id === id && x.pack === "node-web@1.1.0")));
   ok("pack add: the scenarios harness, the policy draft whole, the MCP server and the stamp",
     J(A, ".seamux/scenarios.json").harness.export.BASE_URL === "http://127.0.0.1:$PORT" && J(A, ".seamux/policy.json").default === "auto-go" &&
     J(A, ".mcp.json").mcpServers.playwright.command === "npx" && Object.keys(J(A, ".seamux/packs.json").packs["node-web"].items).length >= 8);
