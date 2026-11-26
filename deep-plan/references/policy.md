@@ -7,6 +7,7 @@
 - [Where it is read from](#where-it-is-read-from)
 - [What render does with it](#what-render-does-with-it)
 - [Ship](#ship)
+- [Observe](#observe)
 - [The Merge stage](#the-merge-stage)
 
 ## The levels
@@ -50,6 +51,8 @@ default. A change's level is the lowest of its files'.
   require level does. Use it where the judge can run one part of the repo
   (pages against a mock) and not another (a backend).
 - `merge.method`: `merge`, `squash` (the default) or `rebase`.
+- `observe`, on the policy or on an entry: a level above its `default` or
+  `level`, to watch before raising it (see [Observe](#observe)).
 
 `deep-plan policy check` validates the worktree's copy.
 
@@ -183,6 +186,31 @@ It is a lever, like a `go`: an agent runs it only on the person's words,
 the gate lets one through per human turn, and not in a turn where the gate
 refused an edit. Its `--dry-run` is a read and takes no turn. The app's
 Merge stage has a Ship it button for the person's own click.
+
+## Observe
+
+`"observe": "<level>"` on the policy, or on a paths entry, names a level
+above the one ship acts at. Ship goes on acting at `level`. It also works
+out what it would have done at the observed level, with that level's own
+gates (its scenarios requirement, the kept checkout as a wait at
+auto-merge), and acts on none of it. Taking `observe` out is the whole undo.
+
+A file's observed level is the lowest of its entries' observe-or-level, and
+a change's is the lowest of its files'. Where that is above the change's
+level, the verdict carries `observe` (its level, the entry, the action and
+its waits). Each ship run that is not `--dry-run` adds one entry per head
+and action to the ship record's `observed` list. The `seamux/ship`
+description opens with it (`observe auto-merge: would merge`), and the
+app's Merge stage shows it. `--merge` computes no observe: that merge is
+the person's either way.
+
+```
+deep-plan policy observed [--json]
+```
+
+sums every plan's records by the entry that observed, so the person can
+see what raising a level would have done before raising it. `policy show`
+lists each entry's observe, and each file's observed level.
 
 ## The Merge stage
 

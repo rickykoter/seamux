@@ -28,6 +28,12 @@
 // file (the ADR in docs/adr titled "Per-path require lives in
 // scenarios.paths", from plan scenarios-true). `fix` (off,
 // diagnose, draft-pr) is the next plan's: validated and shown, never acted on.
+//
+// `observe` (ship-and-land), on the policy or on a paths entry, names a level
+// above its `level` (or `default`) to watch: ship acts at the level and
+// records what it would have done at observe, as evidence before raising it.
+// A file's observed level is the lowest of its entries' observe-or-level; a
+// change's is the lowest of its files'. Taking observe out is the whole undo.
 import { spawnSync } from "node:child_process";
 import { matchesGlob } from "./verify.mjs";
 
@@ -47,8 +53,14 @@ export const atLeast = (l, floor) => rank(l) >= rank(floor);
 export function validatePolicy(p) {
   const errs = [];
   if (!p || typeof p !== "object" || Array.isArray(p)) return ["the policy is a JSON object"];
-  for (const k of Object.keys(p)) if (!["default", "paths", "scenarios", "merge", "$schema", "note"].includes(k)) errs.push(`${k}: not a policy field (default, paths, scenarios, merge)`);
+  for (const k of Object.keys(p)) if (!["default", "observe", "paths", "scenarios", "merge", "$schema", "note"].includes(k)) errs.push(`${k}: not a policy field (default, observe, paths, scenarios, merge)`);
   if (!LEVELS.includes(p.default)) errs.push(`default: one of ${LEVELS.join(", ")}`);
+  const above = (at, o, l) => {
+    if (o === undefined) return;
+    if (!LEVELS.includes(o)) errs.push(`${at}: one of ${LEVELS.join(", ")}`);
+    else if (LEVELS.includes(l) && rank(o) <= rank(l)) errs.push(`${at}: a level above ${l}, the one ship acts at`);
+  };
+  above("observe", p.observe, p.default);
   if (p.paths !== undefined) {
     if (!Array.isArray(p.paths)) errs.push("paths: a list of { match, level, fix? }");
     else p.paths.forEach((e, i) => {
@@ -58,7 +70,8 @@ export function validatePolicy(p) {
       if (!m.length || m.some(x => typeof x !== "string" || !x.trim())) errs.push(`${at}.match: a glob, or a list of globs`);
       if (!LEVELS.includes(e.level)) errs.push(`${at}.level: one of ${LEVELS.join(", ")}`);
       if (e.fix !== undefined && !FIX_LEVELS.includes(e.fix)) errs.push(`${at}.fix: one of ${FIX_LEVELS.join(", ")}`);
-      for (const k of Object.keys(e)) if (!["match", "level", "fix", "note"].includes(k)) errs.push(`${at}.${k}: not a path field (match, level, fix)`);
+      above(`${at}.observe`, e.observe, e.level);
+      for (const k of Object.keys(e)) if (!["match", "level", "observe", "fix", "note"].includes(k)) errs.push(`${at}.${k}: not a path field (match, level, observe, fix)`);
     });
   }
   const s = p.scenarios;
@@ -118,15 +131,20 @@ export function readPolicy(root, { fetch = true, base } = {}) {
   return { source: "base", ref, policy: p, why: `${ref}:${POLICY_REL}` };
 }
 
-// One path's level and the entry that set it: { level, by, fix }.
+// One path's level and the entry that set it, and its observed level and the
+// entry that set that: { level, by, fix, observe, observeBy }. observe is the
+// level itself where nothing observes higher.
 export function levelOf(pol, file) {
-  if (!pol || pol.source === "none") return { level: NO_POLICY_LEVEL, by: "no policy", fix: "off" };
-  if (pol.source !== "base") return { level: FALLBACK_LEVEL, by: pol.why, fix: "off" };
+  if (!pol || pol.source === "none") return { level: NO_POLICY_LEVEL, by: "no policy", fix: "off", observe: NO_POLICY_LEVEL, observeBy: "no policy" };
+  if (pol.source !== "base") return { level: FALLBACK_LEVEL, by: pol.why, fix: "off", observe: FALLBACK_LEVEL, observeBy: pol.why };
   const p = pol.policy;
   const hits = (p.paths || []).filter(e => (Array.isArray(e.match) ? e.match : [e.match]).some(g => matchesGlob(file, g)));
-  if (!hits.length) return { level: p.default, by: "default", fix: "off" };
+  if (!hits.length) return { level: p.default, by: "default", fix: "off", observe: p.observe || p.default, observeBy: "default" };
   const low = hits.reduce((a, b) => (rank(b.level) < rank(a.level) ? b : a));
-  return { level: low.level, by: [].concat(low.match).join(", "), fix: low.fix || "off" };
+  const seen = e => e.observe || e.level;
+  const lowSeen = hits.reduce((a, b) => (rank(seen(b)) < rank(seen(a)) ? b : a));
+  return { level: low.level, by: [].concat(low.match).join(", "), fix: low.fix || "off",
+    observe: seen(lowSeen), observeBy: [].concat(lowSeen.match).join(", ") };
 }
 
 // A set of files' level: the lowest, and the file that set it. No files is
@@ -135,15 +153,18 @@ export function changeLevel(pol, files) {
   const list = [...new Set((files || []).filter(Boolean))];
   if (!list.length) {
     const l = levelOf(pol, "");
-    const lv = pol && pol.source === "base" ? pol.policy.default : l.level;
-    return { level: lv, file: "", by: pol && pol.source === "base" ? "default" : l.by };
+    const base = pol && pol.source === "base";
+    const lv = base ? pol.policy.default : l.level;
+    return { level: lv, file: "", by: base ? "default" : l.by,
+      observe: base ? (pol.policy.observe || lv) : l.observe, observeFile: "", observeBy: base ? "default" : l.observeBy };
   }
-  let best = null;
+  let best = null, seen = null;
   for (const f of list) {
     const l = levelOf(pol, f);
     if (!best || rank(l.level) < rank(best.level)) best = { ...l, file: f };
+    if (!seen || rank(l.observe) < rank(seen.observe)) seen = { observe: l.observe, observeFile: f, observeBy: l.observeBy };
   }
-  return best;
+  return { ...best, ...seen };
 }
 
 // The lowest level at which the policy wants a scenarios check, or null.
@@ -204,8 +225,9 @@ export function describe(pol, files = []) {
   else if (pol.source === "unreadable") out.push(`policy unreadable: ${pol.why}; every path falls to ${FALLBACK_LEVEL}`);
   else {
     const p = pol.policy;
-    out.push(`policy from ${pol.ref}: default ${p.default}`);
-    for (const e of p.paths || []) out.push(`  ${[].concat(e.match).join(", ")}  ${e.level}${e.fix && e.fix !== "off" ? `  (fix: ${e.fix}, not acted on yet)` : ""}`);
+    out.push(`policy from ${pol.ref}: default ${p.default}${p.observe ? ` (observe ${p.observe})` : ""}`);
+    for (const e of p.paths || []) out.push(`  ${[].concat(e.match).join(", ")}  ${e.level}${e.observe ? ` (observe ${e.observe})` : ""}` +
+      `${e.fix && e.fix !== "off" ? `  (fix: ${e.fix}, not acted on yet)` : ""}`);
     const req = scenariosRequiredAt(pol);
     const globs = scenariosPaths(pol);
     if (req) out.push(`  scenarios required at ${req} and above${globs ? ` for a change touching ${globs.join(", ")}` : ""}` +
@@ -215,7 +237,8 @@ export function describe(pol, files = []) {
   for (const f of files) {
     const l = levelOf(pol, f);
     const req = scenariosRequiredFor(pol, [f]);
-    out.push(`${f}: ${l.level} (${l.by})${req && atLeast(l.level, req) ? `; needs a scenarios check (at ${req} and above)` : ""}`);
+    out.push(`${f}: ${l.level} (${l.by})${l.observe !== l.level ? `; observed at ${l.observe} (${l.observeBy})` : ""}` +
+      `${req && atLeast(l.level, req) ? `; needs a scenarios check (at ${req} and above)` : ""}`);
   }
   return out;
 }

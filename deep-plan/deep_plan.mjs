@@ -5314,23 +5314,58 @@ const SHIP_WAIT_S = () => Number(process.env.DEEP_PLAN_SHIP_WAIT_S) || 7200;
 const SHIP_INTERVAL_S = () => process.env.DEEP_PLAN_SHIP_INTERVAL_S !== undefined ? Number(process.env.DEEP_PLAN_SHIP_INTERVAL_S) : 60;
 const shipFile = slug => path.join(PLANS_DIR, `${slug}.ship.json`);
 function readShip(slug) { try { return JSON.parse(fs.readFileSync(shipFile(slug), "utf8")); } catch { return null; } }
+// A record replaces the last one, but keeps its observed list (observe mode).
 function writeShip(slug, rec) {
   fs.mkdirSync(PLANS_DIR, { recursive: true });
-  fs.writeFileSync(shipFile(slug), JSON.stringify({ ...rec, at: new Date().toISOString() }, null, 2) + "\n");
+  const prior = readShip(slug);
+  const observed = rec.observed || (prior && prior.observed);
+  fs.writeFileSync(shipFile(slug), JSON.stringify({ ...rec, ...(observed ? { observed } : {}), at: new Date().toISOString() }, null, 2) + "\n");
+}
+// One entry per head and observed action: what ship would have done at the
+// observed level on this commit.
+const OBSERVED_MAX = 200;
+// The rest of the record is left as it is, its time included: read just
+// before the write, so a wait's own write in between is not undone.
+function recordObserved(slug, v) {
+  if (!v.observe) return;
+  const entry = { at: new Date().toISOString(), head: v.head, pr: v.pr ? v.pr.number : null, acted: v.level, level: v.observe.level,
+    by: v.observe.by, action: v.observe.action, would: v.observe.would, waits: v.observe.waits };
+  const cur = readShip(slug) || {};
+  const list = Array.isArray(cur.observed) ? cur.observed : [];
+  if (list.some(o => o.head === v.head && o.action === v.observe.action && o.level === v.observe.level)) return;
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(shipFile(slug), JSON.stringify({ ...cur, observed: [...list, entry].slice(-OBSERVED_MAX) }, null, 2) + "\n");
 }
 
 // The verdict, gate by gate, and the one act it allows: none (a person's),
 // wait, push, open, ready, merge, or merge-when-green. Its status is what
 // ship posts as seamux/ship on HEAD (shipStatus).
+// With observe set above the change's level, a second verdict at the
+// observed level, which acts on nothing, rides along as v.observe. It reads
+// the base as the first verdict just fetched it. The .seamux/ cap applies to
+// it too, and it names the level it ended at: one capped back to the level
+// ship acts at observes nothing. Ship's own wait runs at auto-merge or on a
+// --merge, so it never has one.
 function shipVerdict(o) {
   const v = verdictCore(o);
+  if (!o.merge && !o.as && v.observeAt && POL.rank(v.observeAt.level) > POL.rank(v.level)) {
+    const w = verdictCore({ ...o, fetch: false, as: v.observeAt.level });
+    if (POL.rank(w.level) > POL.rank(v.level))
+      v.observe = { level: w.level, by: v.observeAt.by, action: w.action, waits: w.waits, say: w.say || "",
+        would: wouldSay(w), ...(w.capped ? { capped: `asked ${v.observeAt.level}; ${w.capped}` } : {}) };
+  }
   v.status = shipStatus(v);
   return v;
+}
+// What an observed verdict would have done, in a few words.
+function wouldSay(w) {
+  return { none: w.say || "would do nothing", wait: "would wait", push: "would push", open: "would open the PR",
+    ready: "would mark it ready", merge: "would merge", "merge-when-green": "would merge once CI is green" }[w.action] || w.action;
 }
 // merge: the person's `ship --merge`. It waives the policy level and the
 // .seamux/ cap, and nothing else: ship then acts as at auto-merge, so the kept
 // checkout gate waits and a red check holds the merge.
-function verdictCore({ st, root, fetch = true, merge = false }) {
+function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
   const git = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8", timeout: 20000 });
   const pol = POL.readPolicy(root, { fetch });
   const head = (git("rev-parse", "HEAD").stdout || "").trim();
@@ -5339,7 +5374,8 @@ function verdictCore({ st, root, fetch = true, merge = false }) {
   const files = ref ? POL.branchFiles(root, ref) : null;
   const lv = files ? POL.changeLevel(pol, files)
     : { level: POL.FALLBACK_LEVEL, file: "", by: `the branch's files against ${ref || "its base"} could not be read` };
-  let level = lv.level, capped = "";
+  // as: the observed verdict's level, in place of the policy's.
+  let level = as || lv.level, capped = "";
   // A branch that changes what the gates mean (the policy, the check
   // recipes, the scenarios harness: anything under .seamux/) is a person's
   // to merge, whatever the policy says of those paths.
@@ -5351,7 +5387,8 @@ function verdictCore({ st, root, fetch = true, merge = false }) {
   const v = { plan: st ? st.slug : null, root, branch, head, base: ref,
     policy: { source: pol.source, ref: pol.ref, why: pol.why }, level, levelBy: lv.file ? `${lv.file}: ${lv.by}` : lv.by,
     capped, files: files ? files.length : null, gates: [], pr: null, action: "none", waits: [], method: POL.mergeMethod(pol),
-    lever: merge ? "ship --merge" : null };
+    lever: merge ? "ship --merge" : null,
+    observeAt: !as && lv.observe && lv.observe !== lv.level ? { level: lv.observe, by: lv.observeFile ? `${lv.observeFile}: ${lv.observeBy}` : lv.observeBy } : null };
   // The level ship acts at: the policy's, or auto-merge on the person's word.
   const acting = merge ? "auto-merge" : level;
   const gate = (name, ok, why) => { v.gates.push({ gate: name, ok: !!ok, why }); if (!ok) v.waits.push(why); };
@@ -5514,6 +5551,7 @@ function shipLines(v) {
   const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, push: `pushes ${v.branch} to origin (fast-forward only)`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
     merge: `merges PR #${v.pr && v.pr.number} (${v.method})`, "merge-when-green": `merges PR #${v.pr && v.pr.number} (${v.method}) once its checks are green` }[v.action];
   out.push(`  → ${what}`);
+  if (v.observe) out.push(`  observe ${v.observe.level} (${v.observe.by}): ${v.observe.would}${v.observe.waits.length ? ` (waits on: ${v.observe.waits.join("; ")})` : ""}`);
   if (v.status) out.push(`  seamux/ship: ${v.status.state} (${v.status.description})`);
   return out;
 }
@@ -5531,9 +5569,11 @@ function shipStatus(v) {
   const clip = t => t.length > STATUS_DESC_MAX ? t.slice(0, STATUS_DESC_MAX - 1) + "…" : t;
   if (!v.plan) return { state: "success", description: "no deep-plan plan at this branch: a person's call" };
   const waits = v.gates.filter(g => !g.ok && !NOT_SHIP_GATES.has(g.gate)).map(g => g.why);
-  if (waits.length) return { state: "pending", description: clip(`waits on: ${waits.join("; ")}`) };
+  // What observe would do goes last: a clip cuts it, not the real waits.
+  const seen = v.observe ? `; observe ${v.observe.level}: ${v.observe.would}` : "";
+  if (waits.length) return { state: "pending", description: clip(`waits on: ${waits.join("; ")}${seen}`) };
   return { state: "success", description: clip(`ship's gates passed at ${v.level}; ${v.lever ? "the person's ship --merge merges once CI is green"
-    : v.level === "auto-merge" ? "ship merges once CI is green" : "a person merges"}`) };
+    : v.level === "auto-merge" ? "ship merges once CI is green" : "a person merges"}${seen}`) };
 }
 // Post it on HEAD when origin has HEAD; {posted, why}.
 function postShipStatus(root, v) {
@@ -5626,6 +5666,7 @@ function shipCmd(args, flags) {
   }
   // The status goes up before the act: a ruleset that requires seamux/ship
   // refuses ship's own merge until it is there.
+  recordObserved(st.slug, v);
   const posted = postShipStatus(root, v);
   let done = pushed && !pushed.ok ? pushed : shipAct(st, root, v);
   // A required seamux/ship that did not go up refuses the merge; say why.
@@ -5847,7 +5888,31 @@ function policyCmd(args, flags) {
     say(`${POL.POLICY_REL} is valid; it takes effect once it is on the base branch`);
     return;
   }
-  die("policy show [--at DIR] [--json] [file...] | policy check [--at DIR]");
+  if (sub === "observed") {
+    // Every plan's observed records, summed by the policy entry that observed.
+    const rows = [];
+    for (const f of fs.existsSync(PLANS_DIR) ? fs.readdirSync(PLANS_DIR) : []) {
+      if (!f.endsWith(".ship.json")) continue;
+      let r; try { r = JSON.parse(fs.readFileSync(path.join(PLANS_DIR, f), "utf8")); } catch { continue; }
+      for (const o of Array.isArray(r.observed) ? r.observed : []) rows.push({ plan: f.slice(0, -".ship.json".length), ...o });
+    }
+    const by = new Map();
+    for (const o of rows) {
+      const entry = String(o.by || "").replace(/^[^:]*: /, "");
+      const k = `${entry}\0${o.level}`;
+      const e = by.get(k) || { entry, level: o.level, acted: new Set(), records: 0, actions: {}, plans: new Set() };
+      e.records++; e.actions[o.action] = (e.actions[o.action] || 0) + 1; e.plans.add(o.plan); e.acted.add(o.acted);
+      by.set(k, e);
+    }
+    const sum = [...by.values()].map(e => ({ entry: e.entry, observe: e.level, acted: [...e.acted], records: e.records, actions: e.actions, plans: [...e.plans] }));
+    if (flags.json) { process.stdout.write(JSON.stringify({ entries: sum, records: rows }) + "\n"); return; }
+    if (!sum.length) { say("no observed records yet: an observe level on a policy entry, and a ship run on a change under it, make one"); return; }
+    for (const e of sum)
+      say(`${e.entry}: observe ${e.observe} (acts at ${e.acted.join(", ")}): ${e.records} record(s) over ${e.plans.length} plan(s) — ` +
+        Object.entries(e.actions).map(([a, n]) => `${wouldSay({ action: a, say: "would do nothing" }).replace(/^would /, "")} ${n}`).join(", "));
+    return;
+  }
+  die("policy show [--at DIR] [--json] [file...] | policy check [--at DIR] | policy observed [--json]");
 }
 
 // `deep-plan scenarios` (lib/scenarios.mjs, ADR 0106): the plan's sealed

@@ -10013,6 +10013,68 @@ if (want("policy and ship: levels from the base branch")) {
       S_.humansWordCount([call("ship", "x", "--merge"), call("go", "x", "next")]) === 2);
   }
   ok("land's --merge still takes the merge commit", /--merge needs the merge commit's sha/.test(pc("land", "plan", "--merge").stderr));
+
+  // Observe: ship acts at the level and records what it would have done at observe.
+  {
+    const PL = await import("./lib/policy.mjs");
+    const errsOf = p => PL.validatePolicy(p).join("; ");
+    ok("observe: validated above its level only, on the policy and on a paths entry",
+      errsOf({ default: "auto-go", observe: "auto-merge", paths: [{ match: "a/**", level: "auto-pr", observe: "auto-merge" }] }) === "" &&
+      /observe: a level above auto-go/.test(errsOf({ default: "auto-go", observe: "auto-go" })) &&
+      /paths\[0\]\.observe: a level above auto-pr/.test(errsOf({ default: "auto-go", paths: [{ match: "a/**", level: "auto-pr", observe: "supervised" }] })) &&
+      /observe: one of supervised/.test(errsOf({ default: "auto-go", observe: "auto-yolo" })));
+    const cl = PL.changeLevel({ source: "base", policy: { default: "auto-go", observe: "auto-merge", paths: [{ match: "a/**", level: "auto-go", observe: "auto-pr" }] } }, ["b/y", "a/x"]);
+    ok("observe: a change's observed level is the lowest of its files' observe-or-level, with the file that set it",
+      cl.level === "auto-go" && cl.observe === "auto-pr" && cl.observeFile === "a/x" && cl.observeBy === "a/**", JSON.stringify(cl));
+  }
+  setPolicy({ ...POLICY, observe: "auto-merge", paths: [...POLICY.paths.filter(e => e.match !== "vault/**"), { match: "vault/**", level: "supervised", observe: "auto-pr" }] }, "observe");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), { force: true });
+  ghMap({ [PRV]: pvK(), [CHK]: green, "pr merge": { stdout: "" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-lever", "--dry-run", "--json");
+  const ow = (JSON.parse(r.stdout || "{}").observe) || {};
+  ok("observe: the observed verdict applies that level's own gates: a scenarios check the policy needs there is a wait",
+    ow.action === "wait" && ow.would === "would wait" && /needs a scenarios check at auto-pr and above/.test((ow.waits || []).join()), r.stdout);
+  setPolicy({ ...POLICY, scenarios: { require: false }, observe: "auto-merge", paths: [...POLICY.paths.filter(e => e.match !== "vault/**"), { match: "vault/**", level: "supervised", observe: "auto-pr" }] }, "observe, no scenarios");
+  r = pc("ship", "pol-lever", "--dry-run", "--json");
+  const oj = JSON.parse(r.stdout || "{}");
+  ok("observe: the verdict acts at the policy's level and carries what the observed level would do",
+    oj.level === "auto-go" && oj.action === "none" && oj.observe && oj.observe.level === "auto-merge" && oj.observe.action === "merge" &&
+    oj.observe.would === "would merge" && /default/.test(oj.observe.by) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout + r.stderr);
+  r = pc("ship", "pol-lever");
+  ok("observe: a ship run records it in ship.json, acts on nothing more, and the status says what observe would do",
+    r.status === 0 && (levRec().observed || []).length === 1 && levRec().observed[0].action === "merge" && levRec().observed[0].acted === "auto-go" &&
+    levRec().observed[0].head === ksHead() && !ghCalls().some(c => /^pr (merge|create|ready)/.test(c)) &&
+    statusCalls().some(c => /-f description=ship's gates passed at auto-go; a person merges; observe auto-merge: would merge/.test(c)) &&
+    /observe auto-merge \(src\/k\.js: default\): would merge/.test(r.stdout), r.stdout + JSON.stringify(levRec()));
+  pc("ship", "pol-lever");
+  ok("observe: one record per head and action", (levRec().observed || []).length === 1, JSON.stringify(levRec().observed));
+  r = pc("ship", "pol-lever", "--merge");
+  ok("observe: the person's merge through ship keeps the observed list in ship.json, and computes no observe of its own",
+    levRec().status === "merged" && (levRec().observed || []).length === 1 && ghCalls().some(c => /^pr merge 31/.test(c)), r.stdout + JSON.stringify(levRec()));
+  r = pc("policy", "observed", "--json");
+  const ob = JSON.parse(r.stdout || "{}");
+  const de = (ob.entries || []).find(e => e.entry === "default");
+  ok("policy observed --json sums the records by the entry that observed",
+    de && de.observe === "auto-merge" && de.records === 1 && de.actions.merge === 1 && de.plans.join() === "pol-lever" && de.acted.join() === "auto-go", r.stdout);
+  r = pc("policy", "observed");
+  ok("policy observed says it in a line per entry", /^default: observe auto-merge \(acts at auto-go\): 1 record\(s\) over 1 plan\(s\) — merge 1$/m.test(r.stdout), r.stdout);
+  r = pc("policy", "show", "src/z.js", "vault/k.txt");
+  ok("policy show lists each observe, and a file's observed level",
+    /default auto-go \(observe auto-merge\)/.test(r.stdout) && /vault\/\*\* {2}supervised \(observe auto-pr\)/.test(r.stdout) &&
+    /src\/z\.js: auto-go \(default\); observed at auto-merge \(default\)/.test(r.stdout) && /vault\/k\.txt: supervised \(vault\/\*\*\); observed at auto-pr \(vault\/\*\*\)/.test(r.stdout), r.stdout);
+  // A branch that changes .seamux/ is capped at auto-pr, at the observed level too.
+  {
+    fs.mkdirSync(path.join(KS, ".seamux"), { recursive: true }); fs.writeFileSync(path.join(KS, ".seamux", "note.txt"), "x\n");
+    execSync(`git add -A && ${G} commit -q -m seamux-note`, { cwd: KS });
+    ghMap({ [PRV]: pvK(), [CHK]: green });
+    const cj = JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}");
+    ok("observe: the .seamux/ cap applies to the observed verdict, which names the level it ended at (inc6 f2)",
+      cj.observe && cj.observe.level === "auto-pr" && /asked auto-merge; the branch changes \.seamux\/note\.txt/.test(cj.observe.capped || ""), JSON.stringify(cj.observe));
+    execSync(`git rm -q .seamux/note.txt && ${G} commit -q -m seamux-note-out`, { cwd: KS });
+  }
+  setPolicy(POLICY, "observe off");
+  r = pc("ship", "pol-lever", "--dry-run", "--json");
+  ok("observe: taking it out is the whole undo", !JSON.parse(r.stdout || "{}").observe, r.stdout);
   // A worktree with no plan: success, a person's call.
   const LONE = path.join(TMP, "pol-lone");
   execSync(`git clone -q ${ORIGIN} ${LONE} && cd ${LONE} && git checkout -q -b dev/lone && echo x > lone.md && git add -A && ${G} commit -q -m lone && git push -q -u origin dev/lone`);
