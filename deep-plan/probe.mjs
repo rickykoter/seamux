@@ -9562,7 +9562,7 @@ if (want("stacked child: ship and news say how to restack")) {
 
   // A person squash-merges the parent on GitHub (main moved first).
   fs.writeFileSync(path.join(SEED, "m.txt"), "main moved\n");
-  execSync(`git add m.txt && ${G} commit -q -m main && git fetch -q origin par && git merge -q --squash origin/par && ${G} commit -q -m 'parent (#7)' && git push -q origin main`, { cwd: SEED });
+  execSync(`git add m.txt && ${G} commit -q -m main && git fetch -q origin par && ${G} merge -q --squash origin/par && ${G} commit -q -m 'parent (#7)' && git push -q origin main`, { cwd: SEED });
   const squash = execSync("git rev-parse HEAD", { cwd: SEED, encoding: "utf8" }).trim();
   execSync("git fetch -q origin", { cwd: KID });
   r = sc("family", "news", "example-stk-kid");
