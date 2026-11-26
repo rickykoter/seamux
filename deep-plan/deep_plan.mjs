@@ -5427,7 +5427,12 @@ function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
   if (pr && pr.state && pr.state !== "OPEN") { v.action = "none"; v.say = `PR #${pr.number} is ${String(pr.state).toLowerCase()}`; return v; }
   // What the token reads, at every level: a person's merge waits on the
   // same checks, and below auto-pr is where a narrow token goes unnoticed.
-  if (pr && pr.headRefOid === head) tokenGate(root, head, v);
+  if (pr && pr.headRefOid === head) {
+    tokenGate(root, head, v);
+    // Below auto-merge ship does not wait on the checks, but the person who
+    // merges there does: read them, to show and hold nothing.
+    if (acting !== "auto-merge") checksInfo(root, head, v);
+  }
   if (!POL.atLeast(acting, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
   if (!own) gate("branch", false, `HEAD is ${branch || "detached"}, not a branch of its own`);
   gate("pushed", remote && remote === head, remote ? (remote === head ? "the branch is pushed" : `origin/${branch} is at ${remote.slice(0, 8)}, not HEAD ${head.slice(0, 8)}: ship pushes it, fast-forward only`) : `origin has no ${branch}: ship pushes it`);
@@ -5488,6 +5493,19 @@ function keptGate(root, ref, level, v, gate) {
   const why = `the kept checkout ${main} ${bad.join(" and ")}: the landing's pull there would fail; commit, stash or switch it first`;
   if (level === "auto-merge") gate("kept checkout", false, why);
   else v.gates.push({ gate: "kept checkout", ok: true, warn: true, why });
+}
+
+// The PR's checks as a line that holds nothing (below auto-merge): what
+// passed, runs and failed, and where they were read from. A failed check
+// warns. At auto-merge the ci gate itself reads them and holds the merge.
+function checksInfo(root, head, v) {
+  const c = CI.checksNow(root, head);
+  if (c.error) { v.gates.push({ gate: "ci", ok: true, warn: true, info: true, why: `the PR's checks could not be read: ${c.error}` }); return; }
+  const via = c.via === "actions" ? `, read from the head's Actions runs (gh pr checks was refused: ${c.refused})` : "";
+  const failed = c.failed.length ? `; failed: ${c.failed.map(f => f.name).join(", ")}` : "";
+  v.gates.push({ gate: "ci", ok: true, warn: c.failed.length > 0, info: true,
+    why: `${c.total ? `${c.passed.length} passed, ${c.pending.length} running, ${c.failed.length} failed` : "no PR checks reported yet"}${failed}${via}; ` +
+      `at ${v.level} they hold nothing here: the person who merges reads them` });
 }
 
 // The token gate: what ship's token could not read, named from GitHub's

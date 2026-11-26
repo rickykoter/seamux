@@ -10022,6 +10022,16 @@ if (want("policy and ship: levels from the base branch")) {
     const tg = ((JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}").gates) || []).find(g => g.gate === "token");
     ok("ship: below auto-pr too, the token gate names what a narrow token lacks (djai is at auto-go)",
       tg && tg.warn && tg.missing.join() === "checks=read,statuses=read", JSON.stringify(tg));
+    ghMap({ ...tok, [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${ksHead()}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "completed", conclusion: "failure" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "success", url: "" }, { name: "lint", status: "completed", conclusion: "failure", url: "" }] } } });
+    const nj = JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}");
+    const ci = (nj.gates || []).find(g => g.gate === "ci");
+    ok("ship: below auto-merge it still reads the PR's checks on a narrow token, from the Actions runs, as a line that holds nothing",
+      ci && ci.ok && ci.info && ci.warn && /1 passed, 0 running, 1 failed; failed: CI \/ lint, read from the head's Actions runs \(gh pr checks was refused/.test(ci.why) &&
+      nj.action === "none" && !nj.waits.length, JSON.stringify(ci));
+    const nt = pc("ship", "pol-lever", "--dry-run").stdout;
+    ok("ship: the text verdict shows both lines as warnings", /! token: the token lacks checks=read, statuses=read/.test(nt) && /! ci: 1 passed, 0 running, 1 failed/.test(nt), nt);
   }
   // Observe: ship acts at the level and records what it would have done at observe.
   {

@@ -597,6 +597,7 @@ const SHIP = {
       { gate: "kept checkout", ok: true, why: "the kept checkout is on main, clean for the landing" },
       { gate: "pushed", ok: true, why: "the branch is pushed" },
       { gate: "token", ok: true, why: "the token reads checks and commit statuses" },
+      { gate: "ci", ok: true, info: true, why: "3 passed, 0 running, 0 failed; at auto-pr they hold nothing here: the person who merges reads them" },
     ],
     action: "none", waits: [], say: "at auto-pr, PR #45 is open for a person to merge: ship --merge on their word",
     pr: { number: 45, url: prUrl(45), state: "OPEN", draft: false },

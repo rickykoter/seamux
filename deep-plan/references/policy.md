@@ -124,11 +124,15 @@ its rulesets before classic branch protection (which needs administration
 read). When `gh pr checks` is refused, the checks come from the head
 commit's Actions runs, where a check from another service is not seen. A
 `token` gate names any permission a read was refused for, from GitHub's
-`X-Accepted-GitHub-Permissions` header, and lists what ship needs:
+`X-Accepted-GitHub-Permissions` header, at every level once the PR's head
+is HEAD, and lists what ship needs:
 pull requests write, contents write, checks read, and commit statuses
 read and write. It warns and does not hold. A failed check that is also
 red on the base's tip says "also failing on main at <sha>", and still
-holds the merge.
+holds the merge. Below auto-merge, where ship does not wait on them, the
+PR's checks are still read (from the Actions runs when `gh pr checks` is
+refused) and shown as a `ci` line that holds nothing, for the person who
+merges.
 
 Each run that is not `--dry-run`, and each look of ship's own wait, posts
 a `seamux/ship` commit status on HEAD once origin has it, at every level:

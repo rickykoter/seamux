@@ -155,7 +155,7 @@ export type ShipView = {
   levelBy: string;
   capped?: string;
   policy: { source: string; ref: string; why: string };
-  gates: { gate: string; ok: boolean; why: string; warn?: boolean }[];
+  gates: { gate: string; ok: boolean; why: string; warn?: boolean; info?: boolean; missing?: string[] }[];
   action: "none" | "wait" | "push" | "open" | "ready" | "merge" | "merge-when-green" | string;
   waits: string[];
   say?: string;
@@ -173,10 +173,14 @@ export type ShipMerged = ShipView & { result?: { ok: boolean; note: string } };
 
 /** The Merge stage's two lines from ship's verdict: the level and where it
  *  came from, and who merges and what ship waits on. Pure, for the probe. */
-export function shipSummary(v: ShipView): { level: string; next: string; observe?: string } {
+export function shipSummary(v: ShipView): { level: string; next: string; observe?: string; reads?: string[] } {
   const from = v.policy.source === "none" ? "no repo policy, so as before" : v.policy.source === "unreadable" ? `the policy could not be read: ${v.policy.why}` : v.levelBy;
   const level = `Policy level: ${v.level} (${from}).`;
   if (!v.plan) return { level, next: "No deep-plan plan is at this worktree, so ship does not act on it: a person opens and merges the PR." };
+  // What ship read of the PR's checks below auto-merge, and a token that
+  // could not read them: lines that hold nothing.
+  const reads = v.gates.filter((g) => (g.gate === "ci" && g.info) || (g.gate === "token" && g.warn))
+    .map((g) => `${g.gate === "ci" ? "Checks" : "Token"}: ${g.why}.`);
   const o = v.observe;
   const observe = o ? `Observed at ${o.level} (${o.by}): ship ${o.would}${o.waits.length ? `, once these are met: ${o.waits.join("; ")}` : ""}.` : undefined;
   if (v.level !== "auto-merge" || v.capped) {
@@ -184,7 +188,8 @@ export function shipSummary(v: ShipView): { level: string; next: string; observe
     // Ship's own gates hold a person's merge too (seamux/ship), so they show
     // at every level (note ne6be8da8).
     const waits = v.waits.length ? ` Ship's gates wait on: ${v.waits.join("; ")}.` : "";
-    return { level, next: (v.capped ? `${v.capped[0].toUpperCase()}${v.capped.slice(1)}.` : `At this level ${who}.`) + waits, ...(observe ? { observe } : {}) };
+    return { level, next: (v.capped ? `${v.capped[0].toUpperCase()}${v.capped.slice(1)}.` : `At this level ${who}.`) + waits,
+      ...(observe ? { observe } : {}), ...(reads.length ? { reads } : {}) };
   }
   if (v.action === "merge") return { level, next: "Every gate has passed: deep-plan ship merges it." };
   if (v.action === "merge-when-green") return { level, next: "deep-plan ship merges it once its checks are green." };
@@ -237,6 +242,7 @@ export function mergePanel(pr: PrRow, open: (url: string) => void, ship: ShipVie
     if (ship) {
       const s = shipSummary(ship);
       box.append(el("p", "r-detail", s.level), el("p", "r-detail", s.next));
+      for (const r of s.reads ?? []) box.append(el("p", "r-detail", r));
       if (s.observe) box.append(el("p", "r-detail r-observe", s.observe));
     }
     const offer = shipItOffer(ship);

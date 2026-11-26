@@ -66,6 +66,11 @@ ok("open: a merged PR with no landing opens at Merge", stageFor(true, merged(), 
   ok("ship: an observed level says what ship would have done",
     shipSummary(v({ level: "auto-pr", action: "none", observe: { level: "auto-merge", by: "docs/a.md: docs/**", action: "merge", would: "would merge", waits: [] } })).observe ===
     "Observed at auto-merge (docs/a.md: docs/**): ship would merge." && shipSummary(v()).observe === undefined);
+  ok("ship: below auto-merge the checks ship read and a token's gap show as lines",
+    JSON.stringify(shipSummary(v({ level: "auto-go", action: "none", gates: [
+      { gate: "token", ok: true, warn: true, why: "the token lacks checks=read" },
+      { gate: "ci", ok: true, info: true, why: "3 passed, 0 running, 0 failed, read from the head's Actions runs" }] })).reads) ===
+    JSON.stringify(["Token: the token lacks checks=read.", "Checks: 3 passed, 0 running, 0 failed, read from the head's Actions runs."]));
   const open = { number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN" };
   ok("ship it: offered below auto-merge with an open PR, ready when ship's gates pass",
     shipItOffer(v({ level: "auto-pr", action: "none", pr: open })).show && shipItOffer(v({ level: "auto-pr", action: "none", pr: open })).ready);
