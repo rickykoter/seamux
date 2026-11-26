@@ -394,7 +394,7 @@ allow git push origin feature-x:feature-x
 allow git push origin HEAD:refs/heads/feature-x
 allow git branch -m old new
 allow git branch -d merged
-allow gh pr merge 12 --squash --delete-branch
+block gh pr merge 12 --squash --delete-branch
 allow gh api repos/o/r/branches/feature-x
 allow gh api repos/o/r/git/refs/heads/feature-x
 allow gh api -X PATCH repos/o/r/git/refs/heads/feature-x -f sha=abc
@@ -421,3 +421,81 @@ block echo allow cmux-crew
 # ---- without a session allow, a leased push with no sha is still a force push
 block git push --force-with-lease origin dev/x
 block git push --force-with-lease
+
+# ---- a PR merge or approval is the person's (ship-and-land; held, ADR 0096's allow)
+block gh pr merge
+block gh pr merge 12
+block gh pr merge 12 --squash
+block gh pr merge --auto --squash
+block gh pr merge 12 --auto --squash --match-head-commit 0123456789abcdef0123456789abcdef01234567
+block gh pr merge https://github.com/o/r/pull/12 --merge
+block gh pr merge dev/x --rebase
+block gh pr merge 12 --admin --squash
+block gh -R o/r pr merge 12
+block gh pr merge 12 -R o/r --squash
+block GH PR MERGE 12
+block /usr/local/bin/gh pr merge 12
+block cd /r && gh pr merge 12 --squash
+block gh pr view 12 && gh pr merge 12
+block gh pr merge 12 --squash --body \"done\"
+block gh api -X PUT repos/o/r/pulls/12/merge
+block gh api --method PUT \"repos/{owner}/{repo}/pulls/12/merge\" -f merge_method=squash
+block gh api --method=PUT repos/o/r/pulls/12/merge
+block gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'
+block gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"x\"}) { clientMutationId } }'
+block gh pr review 12 --approve
+block gh pr review --approve
+block gh pr review 12 -a
+block gh pr review 12 -a -b lgtm
+block gh pr review 12 --approve --body \"looks good\"
+block gh api repos/o/r/pulls/12/reviews -f event=APPROVE
+block gh api graphql -f query='mutation { addPullRequestReview(input: {pullRequestId: \"x\", event: APPROVE}) { clientMutationId } }'
+allow gh pr merge 12 --disable-auto
+allow gh pr view 12 --json mergeable,mergeStateStatus
+allow gh pr checks 12
+allow gh pr review 12 --comment -b \"one question\"
+allow gh pr review 12 --request-changes -b \"see the thread\"
+allow gh api repos/o/r/pulls/12/merge
+allow gh api repos/o/r/pulls/12/reviews
+allow gh pr create --title x --body \"ship merges it with gh pr merge once green\"
+allow echo \"gh pr merge 12\"
+allow git commit -m \"why gh pr merge is held\"
+allow node deep-plan/deep_plan.mjs ship ship-and-land --merge
+allow deep-plan ship --dry-run
+# review round 1: quoted mentions pass; variables and files are held
+allow git commit -m \"ship: gh api graphql enablePullRequestAutoMerge\"
+allow echo \"gh api -X PUT repos/o/r/pulls/1/merge\"
+allow git commit -m \"gh api repos/o/r/pulls/1/reviews -f event=APPROVE\"
+block gh api -X PUT repos/o/r/pulls/$PR/merge
+block gh api -X PUT \"repos/o/r/pulls/${PR}/merge\"
+block gh api -X $METHOD repos/o/r/pulls/12/merge
+block gh api graphql -f query=@merge.graphql
+block gh api graphql --input q.json
+block gh api -X POST repos/o/r/pulls/12/reviews --input review.json
+block gh api repos/o/r/pulls/12/reviews -f event=$EVENT
+block gh api graphql -f query='mutation($id: ID!, $e: PullRequestReviewEvent!) { addPullRequestReview(input: {pullRequestId: $id, event: $e}) { clientMutationId } }'
+allow gh api graphql -f query='{ viewer { login } }'
+allow gh api repos/o/r/pulls/12/reviews -f event=COMMENT -f body=x
+allow gh api repos/o/r/pulls/12/merge
+block gh pr merge 12 --subject --disable-auto
+block gh pr merge 12 --squash --disable-auto
+allow gh pr merge --disable-auto
+allow gh pr merge https://github.com/o/r/pull/12 --disable-auto
+# review round 2: a query or an endpoint in a variable
+block gh api graphql -f query=\"$Q\"
+block gh api graphql -f query=$Q
+block gh api graphql -F query=\"$(cat q.graphql)\"
+block gh api $URL -X PUT
+block gh api -X PUT \"$ENDPOINT\"
+block gh api -X PUT repos/o/r/$WHAT
+allow gh api -X PUT repos/o/r/contents/README.md -f message=x -f content=eA==
+allow gh api graphql -f query='query($n: Int!) { viewer { repositories(first: $n) { totalCount } } }' -F n=1
+# review round 3: expansion inside a query, a field naming repos/, a method in a variable
+block gh api graphql -f query=\"mutation { merge${X}(input:{}) {a} }\"
+block gh api graphql -f query=\"mutation { m(id: $ID) {a} }\"
+block gh api $URL -X PUT -f 'n=a repos/b'
+block gh api \"$URL\" --method \"$M\"
+block gh api $URL -X $M
+allow gh api -X PUT repos/o/r/contents/README.md -f message=x -f content=eA==
+allow gh api -H 'Accept: application/vnd.github+json' -X PUT repos/o/r/subscription -f subscribed=true
+allow gh api graphql -f query='mutation($id: ID!) { addStar(input: {starrableId: $id}) { clientMutationId } }' -f id=x

@@ -450,7 +450,10 @@ checks CI would, and stops before the push.
 A PreToolUse hook on every Bash call. It refuses commands that destroy work,
 leak secrets or rewrite shared history, and tells Claude to ask you instead:
 `rm -rf` on a home or root folder, a force push, `git reset --hard`, `curl |
-sh`, `--no-verify`, destructive SQL and more.
+sh`, `--no-verify`, destructive SQL and more. A PR merge (`gh pr merge`,
+`--auto` included, or one through `gh api`) and an approval (`gh pr review
+--approve`) are held for you too: at auto-merge the merge is `deep-plan
+ship`'s, whose own `gh` calls no hook sees, and below it the merge is yours.
 
 In a pane of the seamux app's own tmux, a refused command doesn't stop
 there. A banner over Claude's prompt shows the whole command and why it was

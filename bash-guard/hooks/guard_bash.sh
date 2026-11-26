@@ -150,7 +150,8 @@ state_dir="${XDG_CACHE_HOME:-${HOME}/.cache}/cmux-crew"
 held_kind() {
   case "$1" in
     "git push --force" | "git reset --hard" | "git checkout/restore -- "* | \
-      "git switch --discard-changes"* | "git clean -f" | "git branch -D"*) printf run ;;
+      "git switch --discard-changes"* | "git clean -f" | "git branch -D"* | \
+      "gh pr merge" | "gh api merge") printf run ;;
     "--no-verify"* | "the session allow"*) printf none ;;
     *) printf copy ;;
   esac
@@ -195,10 +196,12 @@ write_state() {
 # and held-<pane>.json, the whole command with the session and the folder,
 # which the pane's banner and the Dock card offer to run, copy or dismiss
 # until the person acts (ADR 0097). bash-guard never calls the app (ADR 0004).
-# held_branch is a force push's destination, when check_segment found one.
+# held_branch is a force push's destination, when check_segment found one;
+# held_pr is a held merge's PR, as the command named it.
 held_branch=""
+held_pr=""
 tell_block() {
-  local reason="$1" kind="$2" body key cut=false branch=null
+  local reason="$1" kind="$2" body key cut=false branch=null pr=null
   body="$(printf '%s' "$cmd" | head -c 200)"
   if [ "${SEAMUX_BACKEND:-}" = tmux ]; then
     key="${SEAMUX_PANE_ID:-${SEAMUX_WORKSPACE_ID:-}}"
@@ -218,9 +221,10 @@ tell_block() {
       kind=copy
     fi
     [ -z "$held_branch" ] || branch="$(json_str "$held_branch")"
-    write_state "held-$key.json" "$(printf '{"pane": %s, "workspace": %s, "session": %s, "cwd": %s, "reason": %s, "kind": "%s", "command": %s, "truncated": %s, "branch": %s, "at": %s}' \
+    [ -z "$held_pr" ] || pr="$(json_str "$held_pr")"
+    write_state "held-$key.json" "$(printf '{"pane": %s, "workspace": %s, "session": %s, "cwd": %s, "reason": %s, "kind": "%s", "command": %s, "truncated": %s, "branch": %s, "pr": %s, "at": %s}' \
       "$(json_str "${SEAMUX_PANE_ID:-}")" "$(json_str "${SEAMUX_WORKSPACE_ID:-}")" "$(json_str "$sid")" \
-      "$(json_str "$pcwd")" "$(json_str "$reason")" "$kind" "$(held_cmd_json)" "$cut" "$branch" "$(held_at)")"
+      "$(json_str "$pcwd")" "$(json_str "$reason")" "$kind" "$(held_cmd_json)" "$cut" "$branch" "$pr" "$(held_at)")"
     return 0
   fi
   if command -v cmux >/dev/null 2>&1 && [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
@@ -234,6 +238,7 @@ tell_block() {
 # --no-verify` must not be offered to run because its first check is a push.
 reasons=()
 pushes_held=0
+merges_held=0
 block() {
   local r
   for r in "${reasons[@]-}"; do [ "$r" != "$1" ] || return 0; done
@@ -253,6 +258,8 @@ finish_block() {
   # A force push's branch is offered for an allow only when the push is all
   # that was blocked.
   [ "$reason" = "git push --force" ] || held_branch=""
+  # A merge's PR likewise, when the merge is all that was blocked.
+  [ "$reason" = "gh pr merge" ] || held_pr=""
   tell_block "$reason" "$kind"
   printf 'Blocked by bash-guard: %s\nCommand: %s\nIf this is intentional, ask the user to run it manually.\n' \
     "$reason" "$cmd" >&2
@@ -605,6 +612,101 @@ session_allowed_push() {
   return $ok
 }
 
+# A PR merge or approval is the person's (ship-and-land, beside ADR 0096):
+# below auto-merge the merge is theirs, and at auto-merge it is deep-plan
+# ship's, whose gh calls are its own process and no Bash command. gh pr
+# merge with any flags, --auto included, is held as runnable; `gh pr merge
+# --disable-auto` only turns an auto-merge off and goes through. A merge
+# through gh api (a PUT on a pull's merge endpoint, or GraphQL's
+# mergePullRequest or enablePullRequestAutoMerge) is held too, and an
+# approval (gh pr review --approve, or through gh api) is only ever copied.
+# The person's "Run and allow PR <n> this session" writes the PR, with its
+# repository, into the allow file's merge list, and a gh pr merge of that PR
+# then passes.
+# merge_dest SEGMENT sets held_pr to the PR a merge names, but only for one
+# the allow could cover: a plain `gh pr merge` with no repo flag, at most one
+# PR (a number, a URL or a branch), no option but the merge method, --auto,
+# --delete-branch and --match-head-commit <sha>, and no quoting, expansion
+# or redirection. With no PR named it is the branch checked out in the
+# payload's cwd, when the merge is the whole command. gh resolves a bare
+# merge from the shell's cwd, which is the payload's.
+gh_pr="(^|[^[:alnum:]_.-])gh[[:space:]]+(${word}[[:space:]]+)*pr[[:space:]]+"
+# gh api whose endpoint word, after any -X/--method/-H options, is a literal
+# repos/ path with no expansion in it.
+gh_api_literal_re="gh[[:space:]]+api([[:space:]]+(-X|--method|-H|--header)([[:space:]]+|=)(${sqs}|${dqs}|[^[:space:]]+))*[[:space:]]+[\"${q}]?/?repos/[^[:space:]\"${q}\$\`]+[\"${q}]?([[:space:]]|\$)"
+# `gh pr merge [<pr>] --disable-auto` and nothing else.
+disable_auto_re="^[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]+[^-[:space:]][^[:space:]]*)?[[:space:]]+--disable-auto([[:space:]]+[^-[:space:]][^[:space:]]*)?[[:space:]]*\$"
+# The owner/repo of origin in the payload's cwd, from a GitHub remote URL.
+repo_of() {
+  local u
+  u="$(git -C "${pcwd:-.}" remote get-url origin 2>/dev/null)" || return 1
+  u="${u%.git}"
+  [[ "$u" =~ ^(https://|ssh://git@|git@)[A-Za-z0-9.-]+[:/]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/?$ ]] || return 1
+  printf '%s' "${BASH_REMATCH[2]}"
+}
+merge_dest() {
+  local seg="$1" w words target="" i=3 n repo
+  held_pr=""
+  shopt -u nocasematch
+  case "$seg" in
+    *[\"\'\$\`\\\<\>\(\)]*) shopt -s nocasematch; return 1 ;;
+  esac
+  read -r -a words <<<"$seg"
+  if [ "${words[0]-}" != gh ] || [ "${words[1]-}" != pr ] || [ "${words[2]-}" != merge ]; then
+    shopt -s nocasematch
+    return 1
+  fi
+  n="${#words[@]}"
+  while [ "$i" -lt "$n" ]; do
+    w="${words[$i]}"
+    case "$w" in
+      -s | --squash | -m | --merge | -r | --rebase | --auto | -d | --delete-branch) ;;
+      --match-head-commit=*) [[ "${w#*=}" =~ ^[0-9a-f]{7,40}$ ]] || { shopt -s nocasematch; return 1; } ;;
+      --match-head-commit)
+        i=$((i + 1))
+        [[ "${words[$i]-}" =~ ^[0-9a-f]{7,40}$ ]] || { shopt -s nocasematch; return 1; } ;;
+      -*) shopt -s nocasematch; return 1 ;;
+      *)
+        [ -z "$target" ] || { shopt -s nocasematch; return 1; }
+        target="$w" ;;
+    esac
+    i=$((i + 1))
+  done
+  # The PR is named with its repository, owner/repo#n or owner/repo:branch,
+  # so an allow for one repo's PR 12 is not another's. A URL names its own;
+  # a number or a branch is the cwd's origin, read only when the merge is
+  # the whole command, since an earlier `cd` would move it.
+  if [[ "$target" =~ ^https://[A-Za-z0-9.-]+/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([0-9]+)$ ]]; then
+    held_pr="${BASH_REMATCH[1]}#${BASH_REMATCH[2]}"
+  elif [ "${#segments[@]}" = 1 ] && repo="$(repo_of)"; then
+    [ -n "$target" ] || target="$(git -C "${pcwd:-.}" symbolic-ref --short -q HEAD 2>/dev/null)"
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+      held_pr="$repo#$target"
+    elif [[ "$target" =~ ^${branch_re}$ ]] && [[ "$target" != *..* ]]; then
+      held_pr="$repo:$target"
+    fi
+  fi
+  shopt -s nocasematch
+  [ -n "$held_pr" ]
+}
+
+# Whether this session's allow lists held_pr in its merge array, written by
+# the app as quoted strings, as forcePush is.
+merge_list_re='"merge"[[:space:]]*:[[:space:]]*\[([^]]*)\]'
+session_allowed_merge() {
+  local f text ok=1
+  [ -n "$held_pr" ] && [ -n "$sid" ] || return 1
+  f="$state_dir/allow/$sid.json"
+  [ -f "$f" ] || return 1
+  text="$(<"$f")" 2>/dev/null || return 1
+  [[ "$text" =~ $merge_list_re ]] || return 1
+  text="${BASH_REMATCH[1]}"
+  shopt -u nocasematch
+  [[ "$text" == *"\"$held_pr\""* ]] && ok=0
+  shopt -s nocasematch
+  return $ok
+}
+
 check_segment() {
   local seg="$1"
   # Quoted text goes out of the way unless the command runs it as code. A very
@@ -661,6 +763,57 @@ check_segment() {
     elif [[ "$1" =~ git/refs/heads/ ]] && [[ "$1" =~ (-X[[:space:]]*|--method[[:space:]=]+)[\"${q}]?DELETE ]]; then
       ask "gh api DELETE .../git/refs/heads/..."
     fi
+  fi
+  # A merge or approval through gh api (merge_dest, below): only when gh api
+  # itself is outside quotes, so a commit message or an echo naming one goes
+  # through; the URL and fields are read as given. A PR number or method in
+  # a variable counts, and so does a PUT, or a method in a variable, whose
+  # endpoint word is not a literal repos/ path. A GraphQL query or a review
+  # read from a file or built by the shell (`query=@f`, `--input f`, or a
+  # query with a `$` outside single quotes: in double quotes GraphQL's own
+  # $variables would be the shell's too) is held, since what it does is not
+  # on the command line. Like the allow folder's check, this stops the
+  # routine merge and the accident, not a command built to slip past it.
+  if [[ "$seg" =~ (^|[^[:alnum:]_.-])gh[[:space:]]+api([[:space:]]|$) ]]; then
+    if { [[ "$1" =~ pulls/[^/[:space:]]+/merge([^[:alnum:]_]|$) ]] && [[ "$1" =~ (-X|--method)[[:space:]=]*[\"${q}]?(PUT|\$) ]]; } ||
+      [[ "$1" =~ (mergePullRequest|enablePullRequestAutoMerge) ]] ||
+      { [[ "$1" =~ (-X|--method)[[:space:]=]*[\"${q}]?(PUT|\$) ]] && ! [[ "$1" =~ $gh_api_literal_re ]]; }; then
+      block "gh api merge"
+    fi
+    if [[ "$1" =~ pulls/[^/[:space:]]+/reviews ]] &&
+      { [[ "$1" =~ APPROVE ]] || [[ "$1" =~ --input ]] || [[ "$1" =~ event=[\"${q}]?[\$@] ]]; }; then
+      block "gh pr review --approve"
+    fi
+    if [[ "$1" =~ (addPullRequestReview|submitPullRequestReview) ]] &&
+      { [[ "$1" =~ APPROVE ]] || ! [[ "$1" =~ (COMMENT|REQUEST_CHANGES) ]]; }; then
+      block "gh pr review --approve"
+    fi
+    if [[ "$1" =~ [[:space:]][\"${q}]?graphql([\"${q}[:space:]]|$) ]] &&
+      [[ "$1" =~ (query=\"[^\"]*[\$\`]|query=[^\"${q}[:space:]]*[\$\`]|=@|--input) ]]; then
+      block "gh api graphql read from a file (it may merge or approve)"
+    fi
+  fi
+
+  # gh pr merge and an approval: the person's (merge_dest, above).
+  if after "$seg" "${gh_pr}merge([[:space:]]|\$)"; then
+    if ! [[ "$seg" =~ $disable_auto_re ]]; then
+      merge_dest "$1"
+      if session_allowed_merge; then
+        held_pr=""
+      else
+        merges_held=$((merges_held + 1))
+        [ "$merges_held" = 1 ] || held_pr=""
+        block "gh pr merge"
+      fi
+    fi
+  fi
+  if after "$seg" "${gh_pr}review([[:space:]]|\$)"; then
+    shopt -u nocasematch
+    if has "$args" '--approve|-[[:alpha:]]*a[[:alpha:]]*'; then
+      shopt -s nocasematch
+      block "gh pr review --approve"
+    fi
+    shopt -s nocasematch
   fi
 
   # hard reset / destructive checkout that wipes uncommitted work. A checkout
