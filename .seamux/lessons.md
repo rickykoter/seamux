@@ -26,7 +26,7 @@ A bug or idea found mid-plan becomes a deep-plan note first. It joins a plan onl
 
 ## L4
 applies: **
-from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22; window-keeps-focus (grade c768b8e3e), 2026-11-22; scenarios-true (grade cb8a68459), 2026-11-23
+from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22; window-keeps-focus (grade c768b8e3e), 2026-11-22; scenarios-true (grade cb8a68459), 2026-11-23; gate-leftovers (grade c6bcbfc5a), 2026-11-26
 
 A quiz question names the change it asks about, never an increment number, and states every input its answer depends on. After adding an increment or changing a decision, re-read each question whose answer it can move before the quiz is taken. When a grade fails and the person confirms the plan, the question is the broken one: reword it to state the input it left out.
 

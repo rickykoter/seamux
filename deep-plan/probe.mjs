@@ -1547,6 +1547,13 @@ ok("a search for a quoted > allowed", bash('rg "=>" src').status === 0);
 ok("git status allowed", bash("git status").status === 0);
 ok("test run allowed", bash("npm test").status === 0);
 ok("sed -i denied", bash("sed -i '' s/a/b/ file.rb").status === 2);
+// Every in-place form is a write (n294ce59d): -ie used to read as a read.
+for (const c of ["sed -ie s/a/b/ file.rb", "sed -i.bak s/a/b/ file.rb", "sed -ni p file.rb", "sed -Ei s/a/b/ file.rb",
+  "sed -n -i p file.rb", "sed --in-place s/a/b/ file.rb", "sed --in-place=.bak s/a/b/ file.rb", "sed -e 's/a b/c/' -i file.rb"])
+  ok(`${c} denied`, bash(c).status === 2, bash(c).stderr);
+ok("sed without -i, or with -i only in its script, allowed",
+  bash("sed -n p file.rb").status === 0 && bash("sed -e 's/-i/x/' file.rb").status === 0 &&
+  bash("sed -E 's/a/b/' file.rb").status === 0 && bash("sed -es/-i/x/ file.rb").status === 0 && bash("sed --silent p file.rb").status === 0);
 ok("git commit denied", bash("git commit -m x").status === 2);
 ok("a heredoc write denied", bash("cat <<EOF > f.txt\nhi\nEOF").status === 2);
 ok("the plan's own tooling allowed", bash("deep-plan status").status === 0);
@@ -6781,6 +6788,15 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
       T("sed -i -e 's/a/b/' -e 's/c/d/' f1 f2"));
     ok("targets: without -e the first word is still the script, and -i's '' suffix no path",
       T("sed -i '' 's/a/b/' f1") === '["/w/f1"]' && T("sed -i s/a/b/ f1 f2") === '["/w/f1","/w/f2"]');
+    ok("targets: sed -ie, -ni and --in-place write their files",
+      T("sed -ie s/a/b/ f1") === '["/w/f1"]' && T("sed -ni p f1") === '["/w/f1"]' &&
+      T("sed --in-place s/a/b/ f1") === '["/w/f1"]' && T("sed --in-place=.bak -e s/a/b/ f1") === '["/w/f1"]',
+      T("sed -ie s/a/b/ f1") + T("sed --in-place s/a/b/ f1"));
+    // Each option word matches one way: 60 -e words took minutes when two could.
+    const t0 = Date.now();
+    ok("targets: a long run of sed -e words is read in linear time",
+      !lib.bashMutates("sed " + "-e ".repeat(60) + "x f") && !lib.bashMutates("sed " + "-e 'a' ".repeat(60) + "x f") && Date.now() - t0 < 500,
+      `${Date.now() - t0} ms`);
     ok("targets: a redirect's name is read where it is, past 2>&1 and 2>/dev/null",
       T("ls 2>/dev/null >out.txt") === '["/w/out.txt"]' && T("node x 2>&1 >/tmp/y") === '["/tmp/y"]' &&
       T("cd /tmp; node x 2>&1 > /r/f") === '["/r/f"]' && T("grep x f 2>/dev/null > list.txt") === '["/w/list.txt"]',

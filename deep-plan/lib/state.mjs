@@ -779,7 +779,13 @@ function curlWrites(cmd) {
 }
 
 const MUTATORS = [
-  /\bsed\s+(-[a-zA-Z]*\s+)*-i\b/,          // sed -i, sed -E -i
+  // sed -i in any form, read from the option words before the script: a
+  // cluster of argument-free switches ending in i, with or without a suffix
+  // (-i, -ie, -i.bak, -ni, -Ei), or --in-place. -e, -f and -l take the next
+  // word, so a script that mentions -i (sed -e 's/-i/x/' f) is not one. Each
+  // word matches one branch only, or a run of -e words backtracks
+  // exponentially.
+  /\bsed\s+(?:(?:-[nErsuzb]*[efl]|--(?:expression|file|line-length))\s+(?:'[^']*'|"[^"]*"|[^\s'"]\S*)\s+|-(?![nErsuzb]*[efl]\s|-(?:expression|file|line-length)\s)\S+\s+)*(?:-[nErsuzb]*i|--in-place\b)/,
   /<<-?\s*['"]?\w+/,                        // heredoc
   /\btee\s+(?!-a\s*$)/,
   /\brm(\s|$|[;&|)`])/, /\bmv\s+/, /\bcp\s+/, // rm last too: `xargs rm`
