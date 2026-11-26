@@ -4,9 +4,9 @@ import type { Sheet, Shown } from "./sheet";
 import { openElsewhere } from "./panelinks";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, thumbUrl, Viewer } from "./wakeview";
-import { age, badgeOf, bar, byUrl, countsSaid, doneSaid, GROUP_SAID, grouped, groupOf, type Group, type Pr } from "./prs";
+import { age, badgeOf, byUrl, groupOf, type Group, type Pr } from "./prs";
 import { chipFor, readLandings, type Landing, type PrRow } from "./release";
-import { SHELF_SAID, shelves, stageSaid, stepKey, type AskPage, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId } from "./wakeshelf";
+import { dayOf, lanesOf, needsOf, SHELF_SAID, shelves, stageSaid, stepKey, turns, type AskPage, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -134,7 +134,6 @@ function tooSoon(b: HTMLElement): boolean {
 
 export class Wake {
   private stats = el("span", "w-stats");
-  private keepAllBtn = button("", "w-act keepall");
   private picker = el("select", "w-ws");
   private q = el("input", "w-q");
   private list = el("div", "w-list");
@@ -155,8 +154,6 @@ export class Wake {
   /** Days the person folded or opened by hand, over the default (older days
    *  fold when the list is long). */
   private dayFold = new Map<string, boolean>();
-  /** Long days the person asked to see in full ("show N more"). */
-  private dayAll = new Set<string>();
   /** The rows shown, in reading order: the preview strip flips through them. */
   private vis: Row[] = [];
   /** The picked item: a row, a pull request's lane, a review or a Needs you
@@ -204,10 +201,6 @@ export class Wake {
   private prsByUrl = new Map<string, Pr>();
   private prsAt = 0;
   private prsWs = "";
-  /** The done group is folded until opened; the rest are open. */
-  private prsOpen = new Set<Group>(["you", "people", "draft", "open"]);
-  /** PRs whose failing checks are listed; a red one that needs you starts open. */
-  private prsShown = new Map<number, boolean>();
   /** A group the Dock's pill asked for, and for which worktree ("" for the
    *  next one shown): scrolled to and marked once that worktree's block is drawn. */
   private prsFocus: Group | null = null;
@@ -241,8 +234,6 @@ export class Wake {
         void this.load();
       }, 140);
     });
-    this.keepAllBtn.hidden = true;
-    this.keepAllBtn.addEventListener("click", () => void this.keepAll());
     const keys = button("keys", "w-act w-keys");
     keys.title = "the keyboard keys (?)";
     keys.addEventListener("click", () => (this.help.hidden = !this.help.hidden));
@@ -277,7 +268,7 @@ export class Wake {
     const head = el("header", "w-head");
     const ttl = el("div", "w-ttl");
     const sub = el("div", "w-sub");
-    sub.append(this.stats, this.keepAllBtn);
+    sub.append(this.stats);
     // The sheet already names the workspace.
     ttl.append(sub);
     const seg = el("div", "w-seg");
@@ -393,10 +384,10 @@ export class Wake {
    *  its group opened and scrolled to. "open" is every open group. */
   showPrs(group: string, dir = ""): void {
     const g: Group = group === "people" ? "people" : group === "draft" ? "draft" : group === "done" ? "done" : "open";
-    this.prsOpen.add(g);
-    // The open pill scrolls to the first open group: needs you, if any.
     this.prsFocus = g === "open" ? "you" : g;
-    this.prsOpen.add(this.prsFocus);
+    // The lanes are on Shelves: shown there this once, the person's own
+    // choice of layout left as it was.
+    this.mode = "shelves";
     this.prsFocusDir = dir;
     if (!dir || this.focusHere(dir)) void this.loadPrs();
   }
@@ -527,169 +518,11 @@ export class Wake {
     if (gone) bits.push(` · ${gone} gone`);
     if (this.data.truncated) bits.push(` · newest ${this.data.limit} shown; search to reach older`);
     this.stats.replaceChildren(...bits);
-    // One at-risk file has its own keep button: keep all is for two or more.
-    this.keepAllBtn.hidden = risk < 2 || !!this.query || this.mode === "shelves";
-    if (!this.keepAllBtn.classList.contains("sure")) this.keepAllBtn.textContent = `keep all ${risk}`;
-    this.keepAllBtn.dataset.n = String(risk);
     for (const m of ["shelves", "timeline"] as const) this.modeBtns[m].setAttribute("aria-pressed", String(this.mode === m));
     this.acts.clear();
     if (this.mode === "shelves") return this.drawShelves();
 
-    // Rows by day, then by the prompt that made them.
-    this.vis = rows;
-    const out: HTMLElement[] = [];
-    let day = "";
-    let group = "";
-    let section: HTMLElement | null = null;
-    let ul: HTMLElement | null = null;
-    let tail: HTMLElement | undefined;
-    // The branch and session of the group above: a header that repeats them
-    // shows them only on hover, so each card leads with its prompt.
-    let lastBr = "";
-    let shownToday = 0;
-    let lastSess = "";
-    const keyOf = (r: Row) => {
-      const dk = dayKey(local(r.created_at));
-      return `${dk}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
-    };
-    // How many rows each card holds (a run of rows with one key; the same
-    // prompt later in the day is a new card): a card of one drops its band.
-    const perDay = new Map<string, number>();
-    const riskPerDay = new Map<string, number>();
-    for (const r of this.vis) {
-      const k = dayKey(local(r.created_at));
-      perDay.set(k, (perDay.get(k) ?? 0) + 1);
-      if (r.state === "risk") riskPerDay.set(k, (riskPerDay.get(k) ?? 0) + 1);
-    }
-    const newest = this.vis.length ? dayKey(local(this.vis[0].created_at)) : "";
-    const runs: number[] = [];
-    // Whether each card holds a row at risk: such a card never folds away.
-    const runRisk: boolean[] = [];
-    this.vis.forEach((r, i) => {
-      if (i > 0 && keyOf(r) === keyOf(this.vis[i - 1])) runs[runs.length - 1]++;
-      else {
-        runs.push(1);
-        runRisk.push(false);
-      }
-      if (r.state === "risk") runRisk[runRisk.length - 1] = true;
-    });
-    let run = -1;
-    this.vis.forEach((r, i) => {
-      const d = local(r.created_at);
-      const dk = dayKey(d);
-      const gk = keyOf(r);
-      if (dk !== day) {
-        // A long list folds older days to a count; a search never folds (its
-        // matches are the point). A click toggles.
-        // A long list (over 20 things) folds every day but the newest.
-        const folded = !this.query && (this.dayFold.get(dk) ?? (dk !== newest && this.vis.length > 20));
-        section = el("section", `w-day${folded ? " folded" : ""}`);
-        section.dataset.day = dk;
-        const h = el("h2", "");
-        const n = perDay.get(dk) ?? 0;
-        const tog = button(`${folded ? "▸" : "▾"} ${dayLabel(d)}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
-        // A folded day still says when something in it is at risk.
-        const atRisk = riskPerDay.get(dk) ?? 0;
-        if (folded && atRisk) tog.append(el("span", "w-dayrisk", ` · ${atRisk} at risk`));
-        tog.setAttribute("aria-expanded", String(!folded));
-        tog.addEventListener("click", () => {
-          this.dayFold.set(dk, !folded);
-          this.draw();
-        });
-        h.append(tog);
-        section.append(h);
-        out.push(section);
-        day = dk;
-        shownToday = 0;
-        group = "";
-        lastBr = "";
-        lastSess = "";
-      }
-      if (gk !== group) {
-        run++;
-        const solo = runs[run] === 1;
-        // A long day (over 15 things) shows its newest groups up to about 10
-        // rows; the rest are "later", behind a "show N more" at the day's end.
-        // A card with a row at risk is never later, wherever it sits: only
-        // safe cards fold.
-        const later = !this.query && !runRisk[run] && (perDay.get(dk) ?? 0) > 15 && shownToday >= 10 && !this.dayAll.has(dk);
-        const g = el("div", `w-grp${later ? " later" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
-        const ph = el("div", "w-ph");
-        // A card of one row whose prompt is its title says it once.
-        const same = solo && !!r.prompt && r.prompt.trim() === (r.title ?? "").trim();
-        const prompt = el("span", `w-prompt${r.prompt ? "" : " none"}${same ? " same" : ""}`);
-        prompt.title = r.prompt;
-        prompt.append(r.prompt ? marked(r.prompt, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
-        prompt.addEventListener("click", () => {
-          if (this.openGroups.has(gk)) this.openGroups.delete(gk);
-          else this.openGroups.add(gk);
-          g.classList.toggle("open");
-        });
-        // Every group is a caption over its rows, so titles line up down the
-        // column: the caption's time in the kind column, its prompt at the
-        // titles' edge. Branch and session wait for hover, focus or the pick
-        // (wake.css). A caption that would be only a time is dropped: its
-        // time, branch and session sit at the end of the row instead.
-        const cap = same ? el("span", "w-tm") : ph;
-        if (!same) ph.append(el("time", "", hm(d)), prompt);
-        if (r.branch) cap.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
-        if (r.session_id) {
-          // Said as what it does: a bare id read as a commit's sha.
-          const s = button("copy resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
-          s.title = `copy the command that resumes session ${r.session_id.slice(0, 8)}`;
-          s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
-          cap.append(s);
-        }
-        if (same) cap.append(el("time", "", hm(d)));
-        tail = same ? cap : undefined;
-        lastBr = r.branch ?? "";
-        lastSess = r.session_id ?? "";
-        ul = el("ul", "w-rows");
-        if (same) g.append(ul);
-        else g.append(ph, ul);
-        section!.append(g);
-        group = gk;
-      }
-      ul!.append(this.row(r, tail));
-      tail = undefined;
-      if (!ul!.parentElement?.classList.contains("later")) shownToday++;
-    });
-    if (!this.vis.length) {
-      const e = el("div", "w-empty");
-      e.textContent = this.query
-        ? `nothing in the wake matches “${this.query}”`
-        : this.ws
-          ? "nothing in this workspace's wake yet. Each file, plan or commit a session makes shows up here when its turn ends."
-          : "no workspace yet.";
-      out.push(e);
-    }
-    // A long day's later groups wait behind one "show N more" at its end.
-    for (const sec of out) {
-      const hid = sec.querySelectorAll(".w-grp.later .w-row").length;
-      if (!hid) continue;
-      // Not "w-more": that is the kind chips' own "more N".
-      // Never at risk: a card holding a row at risk is never later.
-      const more = button(`show ${hid} more`, "w-daymore");
-      const dk = sec.dataset.day ?? "";
-      more.addEventListener("click", () => {
-        this.dayAll.add(dk);
-        this.draw();
-      });
-      sec.append(more);
-    }
-    // The worktree's pull requests, pinned above the days: not while a
-    // search or a kind other than pr is picked, which ask about rows.
-    const prsBlock = this.ws === this.prsWs && !this.query ? this.prsBlock() : null;
-    if (prsBlock) out.unshift(prsBlock);
-    this.list.classList.toggle("searching", !!this.query);
-    this.list.replaceChildren(...out);
-    if (prsBlock && this.prsFocus && this.focusHere(this.prsFocusDir)) {
-      const at = prsBlock.querySelector<HTMLElement>(`[data-g="${this.prsFocus}"]`) ?? prsBlock;
-      at.scrollIntoView({ block: "start" });
-      at.classList.add("asked");
-      this.prsFocus = null;
-    }
-    this.restoreSel();
+    return this.drawTimeline();
   }
 
   // ------------------------------------------------------------ shelves
@@ -702,26 +535,9 @@ export class Wake {
     const typing = document.activeElement === this.pastQEl ? this.pastQEl.selectionStart : null;
     const q = this.query.toLowerCase();
     const hit = (t: string) => !q || t.toLowerCase().includes(q);
-    const prs = this.ws === this.prsWs ? this.prs : [];
-    const s = shelves({
-      ws: this.ws,
-      rows: this.data.rows,
-      prs: prs.map((p) => ({ ...p, group: groupOf(p), landing: p.merge ? this.lands.get(p.merge.sha) ?? null : null })),
-      // Read for another worktree, they wait for this one's (loadSide).
-      reviews: this.sideWs === this.ws ? this.reviews : [],
-      asks: this.asks,
-      plans: this.sideWs === this.ws ? this.plans : [],
-    });
+    const s = shelves(this.shelfInput());
     const out: HTMLElement[] = [];
-    const shelf = (id: ShelfId, count: string, ...body: HTMLElement[]) => {
-      const sec = el("section", `w-shelf ${id}`);
-      sec.dataset.shelf = id;
-      sec.setAttribute("aria-label", SHELF_SAID[id]);
-      const h = el("h2", "w-shelf-h");
-      h.append(document.createTextNode(`${SHELF_SAID[id]} `), el("span", "w-n", count));
-      sec.append(h, ...body);
-      out.push(sec);
-    };
+    const shelf = (id: ShelfId, count: string, ...body: HTMLElement[]) => out.push(this.shelfEl(id, count, ...body));
     // A long shelf shows its first page; the rest wait behind "show N more"
     // (a search shows every match).
     const page = (id: ShelfId, rows: Row[], n: number) => (q || this.shelfAll.has(id) ? rows : rows.slice(0, n));
@@ -734,14 +550,7 @@ export class Wake {
       return [ul, ...more(id, rows.length, shown.length)];
     };
     // A search asks about things by name: Needs you steps aside.
-    if (!q) {
-      if (s.needs.length) shelf("needs", String(s.needs.length), this.needsGrid(s.needs));
-      else {
-        const c = el("div", "w-calm");
-        c.append(el("span", "w-calm-ok", "✓"), document.createTextNode("Nothing needs you."));
-        out.push(c);
-      }
-    }
+    if (!q) out.push(this.needsBlock(s.needs));
     const live = s.reviews.live.filter((r) => hit(r.title));
     const pq = this.pastQ.toLowerCase();
     const past = s.reviews.past.filter((r) => hit(r.title) && (!pq || `${r.title} ${r.plan}`.toLowerCase().includes(pq)));
@@ -810,6 +619,174 @@ export class Wake {
       }
     }
     this.restoreSel();
+  }
+
+  /** What the model reads: this worktree's rows, pull requests with their
+   *  landings, and its reviews and plans once read for it (another
+   *  worktree's wait for loadSide), with the asks waiting. */
+  private shelfInput() {
+    return {
+      ws: this.ws,
+      rows: this.data.rows,
+      prs: this.shelfPrs(),
+      reviews: this.sideWs === this.ws ? this.reviews : [],
+      asks: this.asks,
+      plans: this.sideWs === this.ws ? this.plans : [],
+    };
+  }
+
+  private shelfPrs(): ShelfPr[] {
+    const prs = this.ws === this.prsWs ? this.prs : [];
+    return prs.map((p) => ({ ...p, group: groupOf(p), landing: p.merge ? this.lands.get(p.merge.sha) ?? null : null }));
+  }
+
+  private shelfEl(id: ShelfId, count: string, ...body: HTMLElement[]): HTMLElement {
+    const sec = el("section", `w-shelf ${id}`);
+    sec.dataset.shelf = id;
+    sec.setAttribute("aria-label", SHELF_SAID[id]);
+    const h = el("h2", "w-shelf-h");
+    h.append(document.createTextNode(`${SHELF_SAID[id]} `), el("span", "w-n", count));
+    sec.append(h, ...body);
+    return sec;
+  }
+
+  /** Needs you's tiles, or one calm line when nothing waits. */
+  private needsBlock(needs: Need[]): HTMLElement {
+    if (needs.length) return this.shelfEl("needs", String(needs.length), this.needsGrid(needs));
+    const c = el("div", "w-calm");
+    c.append(el("span", "w-calm-ok", "✓"), document.createTextNode("Nothing needs you."));
+    return c;
+  }
+
+  // ------------------------------------------------------------ timeline
+
+  /** The Timeline layout (the chart's timeline mode): Needs you, then one
+   *  card per turn, newest first, each split into the shelves' sections.
+   *  Days past the newest fold to a count when the list is long; a search
+   *  unfolds every match. */
+  private drawTimeline(): void {
+    const q = this.query;
+    const input = this.shelfInput();
+    const cards = turns(input);
+    const reviews = new Map(input.reviews.map((r) => [r.id, r]));
+    const lanes = new Map(lanesOf(input.prs).map((l) => [l.pr.n, l]));
+    const out: HTMLElement[] = [];
+    if (!q) out.push(this.needsBlock(needsOf(input)));
+    const newest = cards[0]?.day ?? "";
+    const per = new Map<string, number>();
+    const risky = new Map<string, number>();
+    for (const c of cards)
+      for (const sec of c.sections) {
+        per.set(c.day, (per.get(c.day) ?? 0) + sec.rows.length);
+        risky.set(c.day, (risky.get(c.day) ?? 0) + sec.rows.filter((r) => r.state === "risk").length);
+      }
+    let day = "";
+    let dayEl: HTMLElement | null = null;
+    for (const c of cards) {
+      if (c.day !== day) {
+        day = c.day;
+        const dk = day;
+        const folded = !q && (this.dayFold.get(dk) ?? (dk !== newest && this.data.rows.length > 20));
+        dayEl = el("section", `w-day${folded ? " folded" : ""}`);
+        dayEl.dataset.day = dk;
+        const n = per.get(dk) ?? 0;
+        const tog = button(`${folded ? "▸" : "▾"} ${dayLabel(new Date(c.start))}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
+        // A folded day still says when something in it is at risk.
+        const atRisk = risky.get(dk) ?? 0;
+        if (folded && atRisk) tog.append(el("span", "w-dayrisk", ` · ${atRisk} at risk`));
+        tog.setAttribute("aria-expanded", String(!folded));
+        tog.addEventListener("click", () => {
+          this.dayFold.set(dk, !folded);
+          this.draw();
+        });
+        const h = el("h2", "");
+        h.append(tog);
+        dayEl.append(h);
+        out.push(dayEl);
+      }
+      dayEl!.append(this.card(c, reviews, lanes));
+    }
+    if (!cards.length) {
+      const e = el("div", "w-empty");
+      e.textContent = this.query
+        ? `nothing in the wake matches “${this.query}”`
+        : this.ws
+          ? "nothing in this workspace's wake yet. Each file, plan or commit a session makes shows up here when its turn ends."
+          : "no workspace yet.";
+      out.push(e);
+    }
+    this.vis = cards.flatMap((c) => c.sections.flatMap((sec) => sec.rows));
+    this.list.classList.toggle("searching", !!this.query);
+    this.list.replaceChildren(...out);
+    this.restoreSel();
+  }
+
+  /** One turn's card: its prompt (Space or a click opens it whole), the
+   *  increment it belongs to, its time span and resume, then its sections.
+   *  A pull request the worktree knows draws as its lane, a review lookout
+   *  knows as its stage, as on the shelves. */
+  private card(c: Turn<Row>, reviews: Map<string, ReviewSum>, lanes: Map<number, Lane>): HTMLElement {
+    const a = el("article", `w-card${this.openGroups.has(c.key) ? " open" : ""}`);
+    const first = c.sections[0]?.rows[0];
+    const hd = el("div", "w-card-hd");
+    const prompt = el("span", `w-prompt${c.prompt ? "" : " none"}`);
+    prompt.title = c.prompt;
+    prompt.append(c.prompt ? marked(c.prompt, this.query) : document.createTextNode((first && SOURCE[first.source]) ?? "no prompt recorded"));
+    prompt.addEventListener("click", () => {
+      if (this.openGroups.has(c.key)) this.openGroups.delete(c.key);
+      else this.openGroups.add(c.key);
+      a.classList.toggle("open");
+    });
+    const meta = el("span", "w-card-m");
+    if (c.name) meta.append(el("span", "w-card-n", c.name));
+    const span = c.start === c.end ? hm(new Date(c.start)) : `${hm(new Date(c.start))}–${hm(new Date(c.end))}`;
+    meta.append(el("time", "", span));
+    hd.append(prompt, meta);
+    if (first?.session_id) {
+      const sb = button("copy resume", "w-sess");
+      sb.title = `copy the command that resumes session ${first.session_id.slice(0, 8)}`;
+      sb.addEventListener("click", () => void this.copy(resumeCmd(first), "the resume command"));
+      hd.append(sb);
+    }
+    a.append(hd);
+    for (const sec of c.sections) {
+      const box = el("div", `w-sect ${sec.shelf}`);
+      const h = el("h3", "w-sect-h");
+      h.append(document.createTextNode(`${SHELF_SAID[sec.shelf]} `), el("span", "w-n", String(sec.rows.length)));
+      box.append(h);
+      if (sec.shelf === "pictures") {
+        const g = el("div", "w-thumbs");
+        for (const r of sec.rows) g.append(this.thumb(r));
+        box.append(g);
+      } else {
+        const ul = el("ul", "w-rows");
+        for (const r of sec.rows) {
+          const gh = ghLink(r);
+          const pr = sec.shelf === "prs" && gh ? this.prsByUrl.get(`https://github.com/${gh.repo}/pull/${gh.n}`) : undefined;
+          const rv = sec.shelf === "reviews" ? reviews.get(r.locator) : undefined;
+          const lane = pr ? lanes.get(pr.n) : undefined;
+          if (lane) {
+            ul.append(this.li(this.laneRow({ ...lane, fold: false }, c.key)));
+            continue;
+          }
+          if (rv) {
+            ul.append(this.li(this.reviewRow(rv, c.key)));
+            continue;
+          }
+          ul.append(this.row(r));
+        }
+        box.append(ul);
+      }
+      a.append(box);
+    }
+    return a;
+  }
+
+  /** A list item holding a lane or a review row inside a card's list. */
+  private li(child: HTMLElement): HTMLElement {
+    const li = el("li", "w-li");
+    li.append(child);
+    return li;
   }
 
   /** The past reviews' search box, made once so typing keeps its focus. */
@@ -922,8 +899,10 @@ export class Wake {
   }
 
   /** A live review: its stage, findings so far and gate. */
-  private reviewRow(r: ReviewSum): HTMLElement {
-    const key = `review:${r.id}`;
+  /** `at` makes the key unique where the same review shows more than once
+   *  (Timeline draws it in every turn that touched it). */
+  private reviewRow(r: ReviewSum, at = ""): HTMLElement {
+    const key = `review:${r.id}${at ? `@${at}` : ""}`;
     const d = el("div", `w-rv${key === this.selKey ? " sel" : ""}`);
     d.dataset.key = key;
     const top = el("div", "w-rv-top");
@@ -974,9 +953,11 @@ export class Wake {
   /** A pull request's lane: review, checks, merged, landed, and a line on
    *  where it is. A click opens it on GitHub; its landing chip follows the
    *  landing in the Lookout tab. */
-  private laneRow(l: Lane): HTMLElement {
+  /** `at` makes the key unique where the same pull request shows more than
+   *  once (Timeline draws its lane in every turn that touched it). */
+  private laneRow(l: Lane, at = ""): HTMLElement {
     const p = l.pr;
-    const key = l.key;
+    const key = at ? `${l.key}@${at}` : l.key;
     const red = l.states.includes("failed");
     const d = el("div", `w-lane${red ? " bad" : l.states[3] === "needs" ? " attn" : ""}${key === this.selKey ? " sel" : ""}`);
     d.dataset.key = key;
@@ -1066,7 +1047,7 @@ ${p.url}`;
   /** The keys the page shows now, in the order it shows them. */
   private keysShown(): string[] {
     return [...this.list.querySelectorAll<HTMLElement>("[data-key]")]
-      .filter((e) => !e.closest(".w-day.folded, .w-grp.later"))
+      .filter((e) => !e.closest(".w-day.folded"))
       .map((e) => e.dataset.key ?? "");
   }
 
@@ -1098,115 +1079,14 @@ ${p.url}`;
     if (this.viewer.open) this.viewer.setRows(this.vis.filter(previewable));
   }
 
-  /** The Pull requests block: groups needs you, needs people, draft, open,
-   *  then done folded to its counts. Null with no PRs. */
-  private prsBlock(): HTMLElement | null {
-    if (!this.prs.length) return null;
-    const sec = el("section", "w-prs");
-    sec.setAttribute("aria-label", "pull requests");
-    const h = el("h2", "w-prs-h");
-    h.append(document.createTextNode("Pull requests "), el("span", "", String(this.prs.length)));
-    sec.append(h);
-    for (const [g, list] of grouped(this.prs)) {
-      if (!list.length) continue;
-      const box = el("div", `w-prs-g ${g}`);
-      box.dataset.g = g;
-      const open = this.prsOpen.has(g);
-      const head = button("", "w-prs-gh");
-      head.setAttribute("aria-expanded", String(open));
-      head.append(el("span", "w-prs-tw", open ? "▾" : "▸"), document.createTextNode(` ${GROUP_SAID[g]} `),
-        el("span", "w-prs-gn", g === "done" ? doneSaid(list) : String(list.length)));
-      head.addEventListener("click", () => {
-        if (this.prsOpen.has(g)) this.prsOpen.delete(g);
-        else this.prsOpen.add(g);
-        this.draw();
-      });
-      box.append(head);
-      if (open) {
-        const ul = el("ul", "w-prs-l");
-        for (const p of list) ul.append(this.prLine(p, g));
-        box.append(ul);
-      }
-      sec.append(box);
-    }
-    return sec;
-  }
-
-  private prLine(p: Pr, g: Group): HTMLElement {
-    const li = el("li", `w-pr ${p.state}`);
-    const link = (text: string, url: string, cls: string): HTMLElement => {
-      const a = el("a", cls, text);
-      a.href = url;
-      a.title = url;
-      a.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        void invoke("open_url", { url }).catch((err) => this.toast(String(err), true));
-      });
-      return a;
-    };
-    li.append(link(`#${p.n}`, p.url, "w-pr-n"));
-    const b = el("span", "w-pr-bar");
-    const segs = bar(p.checks);
-    b.title = countsSaid(p.checks);
-    for (const s of segs) {
-      const seg = el("span", `seg ${s.kind}`);
-      seg.style.flexGrow = String(s.cells);
-      b.append(seg);
-    }
-    if (!segs.length) b.classList.add("none");
-    li.append(b);
-    const t = el("span", "w-pr-t", p.title || p.url);
-    if (p.state === "draft" && g !== "draft") t.prepend(el("span", "w-pr-tag", "draft "));
-    li.append(t, el("time", "w-pr-age", age(p.updatedAt)));
-    // A merged PR's landing: where it is, and a click to follow it in the
-    // Lookout tab at its Land stage.
-    const land = p.merge ? this.lands.get(p.merge.sha) ?? null : null;
-    const chip = p.merge ? chipFor({ ...p, cwd: this.ws, ws: "", ws_title: "" } as PrRow, land) : null;
-    if (p.merge && land && chip) {
-      const c = el("button", `w-pr-land ${chip.cls}`, chip.text);
-      c.type = "button";
-      c.title = "Follow this merge's landing in the Lookout tab";
-      const merge = p.merge.sha, cwd = this.ws;
-      c.addEventListener("click", (e) => {
-        e.stopPropagation();
-        window.dispatchEvent(new CustomEvent("seamux:land-open", { detail: { cwd, merge } }));
-      });
-      li.append(c);
-    }
-    const failing = p.failing ?? [];
-    if (failing.length) {
-      const shown = this.prsShown.get(p.n) ?? g === "you";
-      li.classList.add("has-fails");
-      li.setAttribute("aria-expanded", String(shown));
-      li.title = shown ? "hide the failing checks" : `show the ${failing.length} failing check${failing.length === 1 ? "" : "s"}`;
-      li.addEventListener("click", () => {
-        this.prsShown.set(p.n, !shown);
-        this.draw();
-      });
-      if (shown) {
-        const fl = el("ul", "w-pr-fails");
-        for (const c of failing) {
-          const fi = el("li", "");
-          fi.append(c.url ? link(`✗ ${c.name}`, c.url, "w-pr-f") : el("span", "w-pr-f", `✗ ${c.name}`));
-          fl.append(fi);
-        }
-        li.append(fl);
-      }
-    }
-    return li;
-  }
-
   /** Pick `r` in the list, opening its day if it was folded: the pane
    *  flipped to it. Its row stays in sight beside the pane. */
   private reveal(r: Row): void {
     const key = `row:${r.id}`;
     const at = this.list.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
     if (!at) return this.viewer.render(r);
-    if (at.closest(".w-day.folded, .w-grp.later")) {
-      const dk = dayKey(local(r.created_at));
-      this.dayFold.set(dk, false);
-      this.dayAll.add(dk);
+    if (at.closest(".w-day.folded")) {
+      this.dayFold.set(dayOf(Date.parse(r.created_at)), false);
       this.draw();
     }
     this.selectKey(key, true);
@@ -1443,8 +1323,8 @@ ${p.url}`;
   }
 
   /** Keep every file at risk: the first click asks, a second within 3.5 s
-   *  keeps. `b` is the button asked from (the header's, or Needs you's). */
-  private async keepAll(b: HTMLButtonElement = this.keepAllBtn, n = Number(this.keepAllBtn.dataset.n)): Promise<void> {
+   *  keeps. `b` is Needs you's button, `n` the files it names. */
+  private async keepAll(b: HTMLButtonElement, n: number): Promise<void> {
     b.dataset.n = String(n);
     if (!b.classList.contains("sure")) {
       arm(b);
@@ -1561,9 +1441,9 @@ ${p.url}`;
         }
         break;
       case " ":
-        if (r) {
+        if (this.selKey) {
           e.preventDefault();
-          this.list.querySelector(`[data-key="${CSS.escape(this.selKey ?? "")}"]`)?.closest(".w-grp")?.querySelector<HTMLElement>(".w-prompt")?.click();
+          this.list.querySelector(`[data-key="${CSS.escape(this.selKey ?? "")}"]`)?.closest(".w-card")?.querySelector<HTMLElement>(".w-prompt")?.click();
         }
         break;
       case "K":

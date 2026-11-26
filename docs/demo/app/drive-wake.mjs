@@ -77,9 +77,46 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     await page.waitForTimeout(400);
     say(await wake.locator('.w-seg-b[aria-pressed="true"]', { hasText: "Timeline" }).isVisible(), "t switches to Timeline");
     await page.screenshot({ path: join(out, "timeline.png") });
+
+    // Timeline: Needs you on top, then one card per turn, split into sections.
+    const cards = wake.locator(".w-card");
+    say((await cards.count()) >= 3, "Timeline draws a card per turn", String(await cards.count()));
+    say(await wake.locator(".w-need").first().isVisible(), "Needs you stays on top in Timeline");
+    const names = await wake.locator(".w-card-n").allTextContents();
+    say(names.some((n) => /^Increment 2 of Take coupon codes at checkout$/.test(n)), "a go 2 card is named after its increment", names.join(" | "));
+    const sects = await cards.first().locator(".w-sect").evaluateAll((els) => els.map((e) => e.className.replace("w-sect ", "")));
+    const order7 = ["reviews", "plans", "prs", "pictures", "files", "commits"];
+    say(sects.length > 0 && sects.every((x, i) => i === 0 || order7.indexOf(x) > order7.indexOf(sects[i - 1])), "a card's sections follow the shelves' order", sects.join());
+    // j walks the cards in the order they show, every key once.
+    await wake.locator(".w-card-hd").first().click({ position: { x: 4, y: 4 } });
+    const tl = [];
+    for (let i = 0; i < 60; i++) {
+      await page.keyboard.press("j");
+      const k = await sel(page);
+      if (!k || tl[tl.length - 1] === k) break;
+      tl.push(k);
+    }
+    const raw = await wake.locator("[data-key]").evaluateAll((els) => els.map((e) => e.getAttribute("data-key")));
+    const tlShown = [...new Set(raw)];
+    say(raw.length === tlShown.length, "every item in Timeline has a key of its own", `${raw.length} drawn, ${tlShown.length} keys`);
+    // From wherever the pick was (Shelves' pick carries over), to the end.
+    const from = tlShown.indexOf(tl[0]);
+    say(tl.length > 0 && JSON.stringify(tl) === JSON.stringify(tlShown.slice(from)), "j walks Timeline in the order it shows", `${tl.length} from ${from} of ${tlShown.length}`);
+    // Space opens the picked row's card prompt whole.
+    const rowInCard = wake.locator(".w-card .w-row").first();
+    const rk = await rowInCard.getAttribute("data-key");
+    await page.evaluate((k) => document.querySelector(`.sheet-wake [data-key="${k}"]`)?.scrollIntoView(), rk);
+    // k from the top lets the pick go; then j down to the row.
+    for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
+    for (let i = 0; i < 60 && (await sel(page)) !== rk; i++) await page.keyboard.press("j");
+    await page.keyboard.press(" ");
+    await page.waitForTimeout(200);
+    say(await page.evaluate((k) => !!document.querySelector(`.sheet-wake [data-key="${k}"]`)?.closest(".w-card.open"), rk), "Space opens the card's whole prompt", rk);
+
     await page.keyboard.press("t");
     await page.waitForTimeout(400);
     say(await wake.locator('.w-shelf[data-shelf="needs"]').isVisible(), "t switches back to Shelves");
+    say((await sel(page)) === rk, "the pick stays across the switch when both show it", String(await sel(page)));
 
     // Keep all asks first, and a redraw between ask and confirm keeps the ask.
     const keepAll = wake.locator(".w-need.n-risk .w-act");

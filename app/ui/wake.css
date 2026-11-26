@@ -321,3 +321,25 @@
 /* The pick, on whatever kind of item it is. */
 :is(.w-need, .w-rv, .w-past, .w-lane, .w-thumb).sel { background: color-mix(in srgb, var(--accent) 12%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); outline-offset: -1px; }
 .wake.viewing.side .w-list > .w-shelf { max-width: none; }
+
+/* ---------------------------------------------------------------- timeline
+   One card per turn, newest first, split into the shelves' sections. */
+.w-card { margin: 8px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--card); overflow: visible; }
+.w-card-hd { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.w-card-hd .w-prompt { flex: 1 1 160px; font-weight: 700; color: var(--fg); }
+.w-card-hd .w-prompt::before { content: "\201C"; color: var(--muted); }
+.w-card-hd .w-prompt::after { content: "\201D"; color: var(--muted); }
+.w-card-hd .w-prompt.none::before, .w-card-hd .w-prompt.none::after { content: none; }
+.w-card.open .w-card-hd .w-prompt { white-space: normal; }
+.w-card-m { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; font-size: var(--fs-2); color: var(--muted); }
+.w-card-n { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+.w-card-m time { font-variant-numeric: tabular-nums; }
+.w-card-hd .w-sess { margin-left: auto; }
+.w-sect { padding: 6px 12px 8px; }
+.w-sect + .w-sect { border-top: 1px dashed var(--line); }
+.w-sect-h { margin: 2px 0 4px; font-size: var(--fs-1); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--section); }
+.w-sect-h .w-n { color: var(--muted); font-weight: 400; letter-spacing: 0; }
+.w-sect .w-rows { padding: 0; }
+.w-sect .w-row { padding-left: 0; padding-right: 0; }
+.w-li { list-style: none; }
+.w-sect .w-lane, .w-sect .w-rv { border: 1px solid var(--line); border-radius: 8px; margin: 2px 0; }
