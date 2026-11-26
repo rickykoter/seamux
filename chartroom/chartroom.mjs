@@ -33,7 +33,7 @@ const USAGE = `chartroom ${VERSION}: charts kept with the repo, reviewed in a lo
   chartroom link <id> <claude.ai artifact url> [--version N]
   chartroom pull <id> <rows dir or file>    replay the published page's comments and picks
   chartroom threads <id> [--open] [--json]
-  chartroom reply <id> <t#> <text>
+  chartroom reply <id> <t#> <text>        put -- before text that holds words starting with --
   chartroom resolve|reopen <id> <t#> [text]
   chartroom wait [id] [--timeout SECONDS]   until the person comments or picks (exit 3: nothing yet)
   chartroom share [on|off|status]
@@ -50,8 +50,13 @@ const verb = argv[0] && !argv[0].startsWith("-") ? argv[0] : (argv[0] === "--ver
 const rest = verb === "version" && argv[0] === "--version" ? [] : argv.slice(verb === argv[0] ? 1 : 0);
 const VALUED = new Set(["--purpose", "--id", "--note", "--decision", "--version", "--timeout"]);
 const flags = {}, pos = [];
+// "--" ends the flags: everything after it is words, so a title or a reply
+// can hold "--" words (chartroom reply id t1 -- --version is wrong).
+let words = false;
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
+  if (words) { pos.push(a); continue; }
+  if (a === "--") { words = true; continue; }
   if (VALUED.has(a)) {
     if (i + 1 >= rest.length) die(`${a} needs a value`, 2);
     flags[a.slice(2)] = rest[++i];
@@ -100,7 +105,8 @@ function threadOp(op) {
   need(op === "reply" ? 3 : 2, op === "reply" ? "a chart id, a thread and the text" : "a chart id and a thread");
   const [id, item, ...words] = pos;
   const l = where();
-  const [code, res] = S.applyChartOp(l.dir, id, { op, item, text: words.join(" ") }, "agent");
+  let code, res;
+  try { [code, res] = S.applyChartOp(l.dir, id, { op, item, text: words.join(" ") }, "agent"); } catch (e) { die(e.message); }
   if (code !== 200) die(res.error || "refused");
   out({ ok: true, item: res.item }, `${id} ${res.item}: ${op === "reply" ? "replied" : op === "resolve" ? "resolved" : "reopened"}`);
 }
@@ -201,6 +207,9 @@ const verbs = {
     let rows, r;
     try { rows = A.readRows(pos[1]); } catch (e) { die(`cannot read rows from ${pos[1]}: ${e.message}`); }
     try { r = A.pull(l, pos[0], rows); } catch (e) { die(e.message); }
+    // The prompt hook speaks only for rooms it knows; a repo that never ran
+    // chartroom open (a cloud session, say) is added so pulled rows are heard.
+    try { SV.addRoom(l); } catch { /* the pull itself stands */ }
     out(r, `${pos[0]}: ${r.applied.length} applied, ${r.skipped.length} skipped` +
       r.skipped.map(x => `\n  skipped ${x.rid}: ${x.why}`).join("") +
       (r.applied.length ? "\nthe session hears them at its next prompt, marked as from the published page" : ""));
@@ -210,7 +219,8 @@ const verbs = {
     need(1, "a chart id");
     const l = where();
     if (!S.exists(l.dir, pos[0])) die(`no chart ${pos[0]} in ${rel(l.dir)}`);
-    const th = S.readThreads(l.dir, pos[0]);
+    let th;
+    try { th = S.readThreads(l.dir, pos[0]); } catch (e) { die(e.message); }
     const list = th.threads.filter(t => !flags.open || !t.resolved);
     const text = list.length ? list.map(t => {
       const head = `${t.id}  v${t.version} ${t.pane.toUpperCase()}  ${t.resolved ? "resolved" : waitsOnPerson(t) ? "waits on the person" : "open"}` +
@@ -260,6 +270,7 @@ const verbs = {
         "\nshared charts carry their comments and picks into git too");
     } else {
       out(r, `not shared: ${S.EXCLUDE_LINE} is excluded again` +
+        (r.copied && r.copied.length ? `\ncopied this worktree's charts back to the main checkout's hidden folder: ${r.copied.join(", ")}` : "") +
         (r.tracked ? `\n.chartroom/ still holds committed files, so git keeps them; git rm -r --cached .chartroom stops that` : ""));
     }
   },

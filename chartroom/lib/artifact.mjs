@@ -121,6 +121,17 @@ function transport() {
 })();`;
 }
 
+// A pane's file, from its version and key alone: chart.json's `file` field
+// is never trusted for a path (a committed chart.json could name any file on
+// the machine). Refused unless it resolves inside the chart's folder.
+function panePath(dir, id, n, key) {
+  if (!Number.isInteger(n) || n < 1 || !S.KEY_OK.test(String(key))) throw new Error(`${id}: a pane named ${JSON.stringify(key)} in v${n} is not a valid pane`);
+  const root = fs.realpathSync(path.join(dir, id));
+  const f = fs.realpathSync(path.join(root, "v" + n, key + ".html"));
+  if (!f.startsWith(root + path.sep)) throw new Error(`${id}: v${n}/${key}.html is outside the chart's folder`);
+  return f;
+}
+
 // The page to publish, written under CHARTROOM_HOME/exports (never into the
 // chart dir, which a repo may commit). Returns what to publish with.
 export function exportPage(loc, id) {
@@ -132,7 +143,7 @@ export function exportPage(loc, id) {
   const anchor = fs.readFileSync(path.join(PAGE, "anchor.js"), "utf8");
   for (const v of chart.versions)
     for (const p of v.panes)
-      panes[v.n + "/" + p.key] = withCsp(withAnchor(fs.readFileSync(path.join(loc.dir, id, p.file), "utf8"), anchor));
+      panes[v.n + "/" + p.key] = withCsp(withAnchor(fs.readFileSync(panePath(loc.dir, id, v.n, p.key), "utf8"), anchor));
   const data = { chart, threads: { v: threads.v, seq: threads.seq, threads: threads.threads, picks: threads.picks }, panes,
     // Never the local folder's name: a work repo's name stays on this machine.
     repo: "" };

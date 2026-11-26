@@ -654,6 +654,90 @@ if (want("skill: templates and the template verb")) {
     ok("SKILL.md: names chartroom " + v, new RegExp("chartroom " + v + "\\b").test(skill));
 }
 
+if (want("delivery: path safety, corrupt threads, share off, args")) {
+  const A = await import("./lib/artifact.mjs");
+  const d = repo();
+  const dir = S.resolve(d).dir;
+  cli(d, "new", "ux", "Safe");
+  write(d, "a.html", "<p>a</p>");
+  cli(d, "add", "safe", "a.html");
+  // A committed chart.json naming a file outside the chart is never read.
+  const secret = write(d, "secret.txt", "TOP SECRET");
+  const cj = JSON.parse(fs.readFileSync(path.join(dir, "safe", "chart.json"), "utf8"));
+  cj.versions[0].panes[0].file = "../../secret.txt";
+  fs.writeFileSync(path.join(dir, "safe", "chart.json"), JSON.stringify(cj));
+  const e = json(cli(d, "export", "safe", "--json"));
+  const page = e ? fs.readFileSync(e.path, "utf8") : "";
+  const dataTag = /<script type="application\/json" id="chartroom-data">([\s\S]*?)<\/script>/.exec(page);
+  const panes = dataTag ? JSON.parse(dataTag[1]).panes : {};
+  ok("export: a pane's path comes from its version and key, not chart.json's file", e && !page.includes("TOP SECRET") &&
+    String(panes["1/a"] || "").includes("<p>a</p>"), e && e.path);
+  fs.symlinkSync(secret, path.join(dir, "safe", "v1", "b.html"));
+  cj.versions[0].panes.push({ key: "b", label: "B", role: "option", file: "v1/b.html" });
+  fs.writeFileSync(path.join(dir, "safe", "chart.json"), JSON.stringify(cj));
+  ok("export: a pane that is a symlink out of the chart is refused", /outside the chart/.test(cli(d, "export", "safe").stderr));
+  // A threads.json that will not parse is never overwritten.
+  const tf = path.join(dir, "safe", "threads.json");
+  fs.writeFileSync(tf, "{not json");
+  const r = cli(d, "reply", "safe", "t1", "x");
+  ok("corrupt threads.json: a write is refused with a reason", r.status === 1 && /not valid JSON/.test(r.stderr), r.stderr);
+  ok("corrupt threads.json: left as it was", fs.readFileSync(tf, "utf8") === "{not json");
+  ok("corrupt threads.json: threads says so plainly", /not valid JSON/.test(cli(d, "threads", "safe").stderr));
+  fs.rmSync(tf);
+  ok("missing threads.json: read as empty", /no threads yet/.test(cli(d, "threads", "safe").stdout));
+  // pull makes the room known, so the prompt hook tells pulled rows.
+  const rowsDir = path.join(TMP, "pull-rows", "annotations");
+  fs.mkdirSync(rowsDir, { recursive: true });
+  fs.writeFileSync(path.join(rowsDir, "r1.json"), JSON.stringify({ by: "human", at: "2026-01-01T00:00:00.000Z", chart: "safe", op: "comment", version: 1, pane: "a", text: "pulled words" }));
+  const rooms = path.join(ENV.CHARTROOM_HOME, "rooms.json");
+  const before = fs.existsSync(rooms) ? JSON.parse(fs.readFileSync(rooms, "utf8")) : {};
+  ok("pull: this repo's room was not known yet", !before[S.roomId(dir)]);
+  cli(d, "pull", "safe", path.dirname(rowsDir));
+  const hk = spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd: d, env: ENV, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd: d }) });
+  ok("pull: the next prompt hears the pulled comment without chartroom open", /pulled words/.test(hk.stdout), hk.stdout);
+  // One corrupt chart does not silence the others.
+  cli(d, "new", "ux", "Broken");
+  write(d, "b1.html", "<p>b</p>");
+  cli(d, "add", "broken", "b1.html");
+  fs.writeFileSync(path.join(dir, "broken", "threads.json"), "{nope");
+  fs.writeFileSync(path.join(rowsDir, "r2.json"), JSON.stringify({ by: "human", at: "2026-01-01T00:00:01.000Z", chart: "safe", op: "comment", version: 1, pane: "a", text: "still heard" }));
+  cli(d, "pull", "safe", path.dirname(rowsDir));
+  const hk2 = spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd: d, env: ENV, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd: d }) });
+  ok("hook: a corrupt chart is skipped and the others are still heard", /still heard/.test(hk2.stdout), hk2.stdout);
+  // Its already-told messages are not told again once it is repaired.
+  const seenF = path.join(ENV.CHARTROOM_HOME, "seen", S.roomId(dir) + ".json");
+  fs.writeFileSync(path.join(dir, "broken", "threads.json"), JSON.stringify({ v: 1, seq: 1, picks: [], threads: [{ id: "t1", version: 1, pane: "a", pin: null, at: "2026-01-01T00:00:00.000Z", by: "human", resolved: false,
+    messages: [{ id: "m1", by: "human", text: "old broken words", at: "2026-01-01T00:00:00.000Z" }] }] }));
+  const hk3 = spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd: d, env: ENV, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd: d }) });
+  ok("hook: a repaired chart's message is told once", /old broken words/.test(hk3.stdout), hk3.stdout);
+  fs.writeFileSync(path.join(dir, "broken", "threads.json"), "{broken again");
+  // Something new on another chart, so this claim really prunes and writes
+  // the seen file while "broken" is skipped.
+  fs.writeFileSync(path.join(rowsDir, "r3.json"), JSON.stringify({ by: "human", at: "2026-01-01T00:00:02.000Z", chart: "safe", op: "comment", version: 1, pane: "a", text: "fresh while broken" }));
+  cli(d, "pull", "safe", path.dirname(rowsDir));
+  const hkb = spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd: d, env: ENV, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd: d }) });
+  ok("hook: while a chart is broken, a new comment elsewhere is still told", /fresh while broken/.test(hkb.stdout), hkb.stdout);
+  ok("seen: a broken chart's keys survive a claim that prunes", JSON.parse(fs.readFileSync(seenF, "utf8")).seen.includes("broken/t1/m1"));
+  fs.writeFileSync(path.join(dir, "broken", "threads.json"), JSON.stringify({ v: 1, seq: 1, picks: [], threads: [{ id: "t1", version: 1, pane: "a", pin: null, at: "2026-01-01T00:00:00.000Z", by: "human", resolved: false,
+    messages: [{ id: "m1", by: "human", text: "old broken words", at: "2026-01-01T00:00:00.000Z" }] }] }));
+  const hk4 = spawnSync("sh", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", cwd: d, env: ENV, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", cwd: d }) });
+  ok("hook: repaired again, nothing is told twice", !/old broken words/.test(hk4.stdout), hk4.stdout);
+  fs.rmSync(path.join(dir, "broken"), { recursive: true });
+  // "--" ends the flags.
+  cli(d, "reply", "safe", "t1", "--", "use", "--version", "two");
+  ok("args: words after -- are text, flags included", S.readThreads(dir, "safe").threads[0].messages.at(-1).text === "use --version two");
+  // share off from a worktree copies its charts back to the hidden folder.
+  const e2 = repo();
+  const wt = path.join(TMP, "wt-off-" + n);
+  sh(e2, `git worktree add -q -b side ${JSON.stringify(wt)}`);
+  cli(wt, "share", "on");
+  cli(wt, "new", "ux", "Made While Shared");
+  const off = json(cli(wt, "share", "off", "--json"));
+  ok("share off in a worktree: copies its charts back to the main checkout's hidden folder", off && off.copied.includes("made-while-shared") &&
+    fs.existsSync(path.join(e2, ".chartroom", "made-while-shared", "chart.json")) && S.resolve(wt).dir === path.join(e2, ".chartroom"), JSON.stringify(off));
+  ok("share off in a worktree: the chart is listed again", (json(cli(wt, "list", "--json")).charts || []).some(c => c.id === "made-while-shared"));
+}
+
 if (want("plugin: manifest and shim")) {
   const pj = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8"));
   ok("plugin.json: named chartroom with a version", pj.name === "chartroom" && /^\d+\.\d+\.\d+$/.test(pj.version));

@@ -266,7 +266,7 @@ export function makeServer({ version, root, token, onRequest = () => {}, apply =
       log(`${code === 200 ? "OK  " : "FAIL"} ${m[1]} ${op.op ?? "None"} ${op.chart ?? ""} ${out.error || out.item || ""}`);
       return reply(res, code, out);
     } catch (e) {
-      log(`FAIL ${req.method} ${req.url}: ${e.message}`);
+      log(`FAIL ${req.method} ${String(req.url || "").split("?")[0]}: ${e.message}`);
       if (!res.headersSent) reply(res, 500, { error: e.message });
     }
   });

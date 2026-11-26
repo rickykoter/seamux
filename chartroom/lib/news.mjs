@@ -19,10 +19,15 @@ export function readSeen(room) {
 }
 
 // Every human message and pick in the dir: [{ key, chart, kind, ... }].
-export function humanItems(dir) {
+// `skipped`, when given, collects the ids of charts whose threads.json would
+// not parse, so the seen file keeps their keys until they are repaired.
+export function humanItems(dir, skipped) {
   const out = [];
   for (const c of S.list(dir)) {
-    const th = S.readThreads(dir, c.id);
+    // One chart whose threads.json will not parse is skipped, not the rest:
+    // its own commands say what is wrong when they touch it.
+    let th;
+    try { th = S.readThreads(dir, c.id); } catch { if (skipped) skipped.push(c.id); continue; }
     const paneLabel = (n, key) => {
       const v = (c.versions || []).find(x => x.n === n);
       const p = v && v.panes.find(x => x.key === key);
@@ -56,12 +61,16 @@ export function claim(dir, room, only = "") {
   const f = seenFile(room);
   return S.withLock(f + ".lock", () => {
     const seen = readSeen(room);
-    const all = humanItems(dir);
+    const skipped = [];
+    const all = humanItems(dir, skipped);
     const fresh = all.filter(x => !seen.has(x.key) && (!only || x.chart.id === only));
     if (!fresh.length) return { shown: [], total: 0 };
     const shown = fresh.slice(0, MAX_LINES);
     const live = new Set(all.map(x => x.key));
-    const keep = new Set([...seen].filter(k => live.has(k)));
+    // A chart skipped for a broken threads.json still exists: its keys stay,
+    // or its old messages would be told again once the file is repaired.
+    const held = k => skipped.some(id => k.startsWith(id + "/"));
+    const keep = new Set([...seen].filter(k => live.has(k) || held(k)));
     for (const x of shown) keep.add(x.key);
     S.writeAtomic(f, JSON.stringify({ seen: [...keep] }) + "\n");
     return { shown, total: fresh.length };

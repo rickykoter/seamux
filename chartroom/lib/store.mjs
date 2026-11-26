@@ -345,7 +345,18 @@ export function shareOff(loc) {
   spawnSync("git", ["-C", g.top, "config", "--unset", "chartroom.share"], { timeout: 10000 });
   const added = addExclude(g);
   const tracked = hasTracked(g, DEFAULT_DIR);
-  return { changed: added, tracked };
+  // From a worktree, the hidden folder is the main checkout's: charts made
+  // or copied here while shared are copied there, so none goes unread.
+  const here = path.join(g.top, DEFAULT_DIR), main = path.join(g.main, DEFAULT_DIR), copied = [];
+  if (real(here) !== real(main) && fs.existsSync(here)) {
+    fs.mkdirSync(main, { recursive: true });
+    for (const n of fs.readdirSync(here)) {
+      if (!ID_OK.test(n) || fs.existsSync(path.join(main, n))) continue;
+      fs.cpSync(path.join(here, n), path.join(main, n), { recursive: true });
+      copied.push(n);
+    }
+  }
+  return { changed: added, tracked, copied };
 }
 
 // ------------------------------------------------------------ ops
@@ -354,9 +365,14 @@ export function shareOff(loc) {
 // the seen cursor).
 export const roomId = dir => crypto.createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 12);
 
+// A missing threads.json is an empty one. One that will not parse is an
+// error: returning it as empty would let the next write erase every thread.
 export function readThreads(dir, id) {
-  try { return normalize(JSON.parse(fs.readFileSync(chartPaths(dir, id).threads, "utf8"))); }
-  catch { return emptyThreads(); }
+  const f = chartPaths(dir, id).threads;
+  let text;
+  try { text = fs.readFileSync(f, "utf8"); } catch (e) { if (e.code === "ENOENT") return emptyThreads(); throw e; }
+  try { return normalize(JSON.parse(text)); }
+  catch (e) { throw new Error(`${f} is not valid JSON (${e.message}); fix or restore it before chartroom writes to it`); }
 }
 
 // One op on one chart, under its lock: [code, reply]. chart.json is written
