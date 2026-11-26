@@ -6,6 +6,15 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Videos in the Wake.** A recording is now a `video` row, wherever it is
+  saved: the repo, `/tmp`, or the session's scratchpad. Before, one in the
+  workspace was dropped and one in `/tmp` was filed as `temp`. Since ffmpeg,
+  playwright and `screencapture -v` write their own files, the indexer also
+  reads the video and image paths a Bash command names, and keeps one only
+  when the file changed while that command ran, so a command that only
+  reads a video adds nothing. The Wake has a `video` filter, and an at-risk
+  video in `/tmp` can be kept.
+
 - **Diagrams in patch-file reviews.** `lookout open --patch` now draws an
   added or deleted `.bpmn` or `.bpmn20.xml` file, rebuilt from the patch's
   own lines. A changed diagram in a patch still shows as XML, since a patch

@@ -271,6 +271,7 @@ What gets indexed:
 |---|---|
 | `temp` | a Write into a temp directory, a literal `> /tmp/…` redirect, and every file in the session's scratchpad (listed, so files made through `$S/x` count too) |
 | `image` | the same, for images, anywhere |
+| `video` | an `.mp4`, `.m4v`, `.mov` or `.webm` anywhere, the workspace included. Recorders write their own output, so a Bash command that names a video or image path also counts, if the file's mtime falls between the call and its result (`ffprobe in.mp4` adds nothing). The preview plays it |
 | `doc` | a `.md` or `.html` Write inside the workspace (other source code is git's job) |
 | `file` | a Write anywhere else under `~` |
 | `artifact` | a claude.ai publish, with its URL |

@@ -402,7 +402,7 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
   var boot = {};
   try { boot = JSON.parse(document.getElementById("boot").textContent); } catch (e) {}
   var T = boot.t || "", WS = boot.ws || "";
-  var KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit", "pr", "issue"];
+  var KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "video", "file", "commit", "pr", "issue"];
   // Kinds carry no colour of their own: colour means state here (at risk).
   var KIND = "var(--kind)";
   // A pull request's or issue's URL: owner/repo and its number.

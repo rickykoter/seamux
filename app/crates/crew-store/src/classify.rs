@@ -14,6 +14,12 @@ use std::sync::OnceLock;
 pub const PROMPT_MAX: usize = 500;
 pub const IMAGE_EXT: [&str; 9] = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic", ".bmp", ".tiff"];
 pub const DOC_EXT: [&str; 4] = [".md", ".markdown", ".html", ".htm"];
+/// The recordings the Wake plays (wakeview.ts mediaOf, wake_app.rs show_kind).
+pub const VIDEO_EXT: [&str; 4] = [".mp4", ".m4v", ".mov", ".webm"];
+/// How far outside a Bash call's run a media file's mtime may fall and
+/// still count as written by it: the transcript's timestamps are read to
+/// the second, and a filesystem's mtime may round too.
+pub const MEDIA_SLACK: f64 = 2.0;
 
 /// Whether `path` is a BPMN diagram: `.bpmn`, or `.bpmn20.xml` as Flowable
 /// and Activiti name theirs. A diagram is a document to look at, not
@@ -162,6 +168,9 @@ pub fn classify(p: &Paths, path: &str, cwd: &str, root: &str) -> Option<&'static
     if IMAGE_EXT.contains(&ext.as_str()) {
         return Some("image");
     }
+    if VIDEO_EXT.contains(&ext.as_str()) {
+        return Some("video");
+    }
     if [cwd, root].iter().any(|c| !c.is_empty() && under(path, &crate::paths::norm(c))) {
         return if DOC_EXT.contains(&ext.as_str()) || is_bpmn(path) { Some("doc") } else { None };
     }
@@ -172,6 +181,74 @@ pub fn classify(p: &Paths, path: &str, cwd: &str, root: &str) -> Option<&'static
         return Some("file");
     }
     None
+}
+
+/// Whether `path` names an image or a video, by its extension.
+pub fn is_media(path: &str) -> bool {
+    let ext = splitext_ext(path).to_lowercase();
+    IMAGE_EXT.contains(&ext.as_str()) || VIDEO_EXT.contains(&ext.as_str())
+}
+
+/// The image and video paths a Bash command names, resolved: what a
+/// recorder or script may have written itself (ffmpeg, playwright, a node
+/// script). Only a guess at what was written: the caller counts a path only
+/// when the file's mtime falls inside the command's run.
+///
+/// The command is cut into segments at `&&`, `||`, `;`, `|`, `&` and line
+/// ends, and each segment into words at blanks, quotes and brackets. A
+/// `cd <dir>` segment moves where later relative paths resolve. A git
+/// segment names files it checks out or restores, not ones it made, and is
+/// skipped; so is a word holding `$`, a glob or a `~user`, which only the
+/// shell can resolve. A path with a blank in it is missed.
+pub fn media_paths(cmd: &str, cwd: &str, home: &str) -> Vec<String> {
+    let resolve = |w: &str, dir: &str| -> Option<String> {
+        let w = w.strip_prefix("file://").unwrap_or(w);
+        if w.is_empty() || w.contains(['$', '*', '?', '[', '{', '\\']) {
+            return None;
+        }
+        let abs = if w.starts_with('/') {
+            w.to_string()
+        } else if w == "~" || w.starts_with("~/") {
+            if home.is_empty() {
+                return None;
+            }
+            format!("{}{}", home.trim_end_matches('/'), &w[1..])
+        } else if w.starts_with('~') || dir.is_empty() {
+            return None;
+        } else {
+            format!("{}/{}", dir.trim_end_matches('/'), w)
+        };
+        Some(crate::paths::normpath(&abs))
+    };
+    let mut dir = cwd.to_string();
+    let mut out: Vec<String> = Vec::new();
+    for seg in cmd.split(['\n', ';', '&', '|']) {
+        // The program: the first word after any VAR=value assignments.
+        let mut raw = seg.split_whitespace().skip_while(|w| {
+            w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        });
+        let Some(prog) = raw.next() else { continue };
+        match prog.trim_matches(['"', '\'', '(', ')']) {
+            "cd" => {
+                // `cd`, `cd -` or a dir only the shell can resolve: later
+                // relative paths are not guessed at.
+                dir = raw.next().map(|w| w.trim_matches(['"', '\''])).filter(|w| *w != "-").and_then(|w| resolve(w, &dir)).unwrap_or_default();
+                continue;
+            }
+            "git" => continue,
+            _ => {}
+        }
+        for w in seg.split(|c: char| c.is_whitespace() || "'\"`()<>,{}[]=".contains(c)) {
+            if is_media(w) {
+                if let Some(p) = resolve(w, &dir) {
+                    if !out.contains(&p) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -233,6 +310,64 @@ mod tests {
         assert_eq!((&g[1], &g[2]), ("octo", "shop"));
         let g = github_re().captures("https://github.com/octo/shop/").unwrap();
         assert_eq!((&g[1], &g[2]), ("octo", "shop"));
+    }
+
+    fn paths_at(root: &str) -> Paths {
+        let home = format!("{root}/hm");
+        Paths {
+            crew_home: format!("{home}/.claude/crew"),
+            db: format!("{home}/.claude/crew/artifacts.db"),
+            lock: format!("{home}/.claude/crew/index.lock"),
+            again: format!("{home}/.claude/crew/index.lock.again"),
+            kept: format!("{home}/.claude/crew/kept"),
+            projects: format!("{home}/.claude/projects"),
+            plans: format!("{home}/.claude/plans"),
+            dp_state: format!("{home}/.claude/deep-plan/state"),
+            scratch_base: format!("{root}/tmp/claude-501"),
+            temp_roots: vec![format!("{root}/tmp/")],
+            home,
+        }
+    }
+
+    #[test]
+    fn a_video_is_a_video_wherever_it_is() {
+        let p = paths_at("/r");
+        let ws = "/r/hm/code/shop";
+        // In the workspace, where only docs were kept before.
+        assert_eq!(classify(&p, "/r/hm/code/shop/docs/demo/media/walk.webm", ws, ws), Some("video"));
+        assert_eq!(classify(&p, "/r/hm/code/shop/out/Demo.MP4", ws, ws), Some("video"));
+        assert_eq!(classify(&p, "/r/hm/code/shop/src/app.py", ws, ws), None);
+        // In a temp directory and a session's scratchpad.
+        assert_eq!(classify(&p, "/r/tmp/rec.mov", ws, ws), Some("video"));
+        assert_eq!(classify(&p, "/r/tmp/claude-501/-proj/sess/scratchpad/clip.m4v", ws, ws), Some("video"));
+        // Under ~, and never Claude Code's own files.
+        assert_eq!(classify(&p, "/r/hm/Movies/take.mp4", ws, ws), Some("video"));
+        assert_eq!(classify(&p, "/r/hm/.claude/projects/x/clip.mp4", ws, ws), None);
+        assert_eq!(classify(&p, "/r/tmp/rec.mkv", ws, ws), Some("temp"), "only the kinds the Wake plays");
+    }
+
+    #[test]
+    fn media_paths_reads_what_a_command_names() {
+        let got = |cmd: &str| media_paths(cmd, "/w", "/h");
+        // Relative to the cwd, absolute and ~ as written; other files ignored.
+        assert_eq!(
+            got("ffmpeg -y -i in.mov -c:v libvpx out/walk.webm 2>&1 | tail -3; ls /tmp/x.log"),
+            vec!["/w/in.mov", "/w/out/walk.webm"]
+        );
+        assert_eq!(got("screencapture -v -V 5 ~/Movies/take.mov"), vec!["/h/Movies/take.mov"]);
+        // A cd moves later relative paths; one the shell must resolve stops them.
+        assert_eq!(got("cd docs/demo && node rec.mjs --out media/x.mp4"), vec!["/w/docs/demo/media/x.mp4"]);
+        assert_eq!(got("cd \"$D\" && node rec.mjs media/x.mp4 /abs/y.png"), vec!["/abs/y.png"]);
+        // Quoted, in a script's text, after = and file://, each once.
+        assert_eq!(
+            got("node -e \"page.screenshot({path: 'shots/a.png'}); v.saveAs('file:///tmp/v.webm')\" --out=shots/a.png"),
+            vec!["/w/shots/a.png", "/tmp/v.webm"]
+        );
+        assert_eq!(got("FPS=30 ./rec.sh ./a/../b.mp4"), vec!["/w/b.mp4"]);
+        // What git touches, shell variables and globs are not guessed at.
+        assert!(got("git checkout -- docs/shot.png && git add demo.mp4").is_empty());
+        assert!(got("ffmpeg -i $S/in.mp4 *.webm ~bob/x.mov").is_empty());
+        assert!(media_paths("ffmpeg -i a.mp4", "", "/h").is_empty(), "no cwd: no relative path");
     }
 
     #[test]

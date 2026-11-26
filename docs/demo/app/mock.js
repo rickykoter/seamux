@@ -383,8 +383,10 @@ const WAKE = [
   // Pictures, a video and a page from one prompt: what the Wake's preview flips through.
   [18, "api", "image", "checkout-after.png", 30, { path: `${TREES}/coupons-api/docs/checkout-after.png`, prompt: "go 2" }],
   [19, "api", "image", "coupon-error.png", 29, { path: "/tmp/claude/coupon-error.png", prompt: "go 2", state: "risk" }],
-  [20, "api", "temp", "checkout-walkthrough.webm", 28, { path: "/tmp/claude/checkout-walkthrough.webm", prompt: "go 2" }],
+  [20, "api", "video", "checkout-walkthrough.webm", 28, { path: "/tmp/claude/checkout-walkthrough.webm", prompt: "go 2", state: "risk" }],
   [21, "api", "temp", "totals-report.html", 27, { path: "/tmp/claude/totals-report.html", prompt: "go 2" }],
+  // A recording a Bash command saved in the repo: a video row wherever it lands.
+  [22, "checkout", "video", "coupon-error-flow.mp4", 18, { path: `${TREES}/checkout-flow/docs/demo/coupon-error-flow.mp4`, prompt: "go 2" }],
 ];
 
 /** A stand-in screenshot for a Wake image row: a checkout card in the row's hue. */
