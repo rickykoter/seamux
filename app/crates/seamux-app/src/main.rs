@@ -277,6 +277,7 @@ fn main() {
             land_watch::landing_prs,
             land_watch::landing_log,
             land_watch::ship_view,
+            land_watch::ship_merge,
             links_app::link_file,
             pane_app::open_in_vscode,
             pane_app::term_look,

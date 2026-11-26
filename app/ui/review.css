@@ -105,6 +105,9 @@
 .r-ctl { padding: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; }
 .r-detail { margin: 0; font-size: var(--fs-2); color: var(--muted); overflow-wrap: anywhere; }
 .r-detail.bad { color: var(--bad-t); }
+/* The Merge stage's observe line and the person's Ship it (release.ts). */
+.r-detail.r-observe { font-style: italic; }
+.r-shipit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 /* A done post or a Re-review's ask, in its review's detail line: news, not an error. */
 .r-note { margin: 0; font-size: var(--fs-2); color: var(--fg); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; overflow-wrap: anywhere; }
 .r-note .r-link { text-decoration: none; }

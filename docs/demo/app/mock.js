@@ -526,7 +526,9 @@ const OTHER_FINDINGS = {
 // The workspaces' PRs (land_watch.rs workspace_prs: crew-sync's lists with
 // their worktree), the landing of #41's merge (landing_get), and what ship
 // says of each open PR's worktree (ship_view). #41 and #44 are the PRs the
-// reviews above cover; #43 is one no review covers yet.
+// reviews above cover; #43 is one no review covers yet. #45 is a delivered
+// plan at auto-pr with green checks: the Merge stage offers Ship it there,
+// and the mock's ship_merge merges it.
 const MERGE_41 = "4f1c2ab9e07d3c5a81b6e2d94f0a7c3e5b8d1f26";
 const prUrl = (n) => `https://github.com/${GH}/pull/${n}`;
 const prRow = (w, o) => ({ cwd: treeOf(w), ws: w.id, ws_title: w.title, url: prUrl(o.n), review: "", conflict: false, failing: [], gating: [], ...o });
@@ -540,6 +542,7 @@ const PRS = [
     n: 43, title: "Clear errors for bad coupon codes", state: "draft", checks: { fail: 1, run: 0, pass: 5, gate: 0, unseen: 0 },
     failing: [{ name: "test / checkout", url: `https://github.com/${GH}/actions/runs/1187` }],
   }),
+  prRow(W.docs, { n: 45, title: "Coupon codes in the help pages", state: "open", review: "", checks: { fail: 0, run: 0, pass: 3, gate: 0, unseen: 0 } }),
 ];
 const landStage = (name, status, startMin, endMin) => ({ name, status, ...(startMin != null ? { start: ago(startMin) } : {}), ...(endMin != null ? { end: ago(endMin) } : {}) });
 const landing41 = {
@@ -581,8 +584,38 @@ const SHIP = {
     policy: { source: "origin/main", ref: "origin/main", why: "" },
     gates: [{ gate: "delivered", ok: false, why: "increment 2 of 4 is waiting on you" }],
     action: "wait", waits: ["the plan is delivered"],
+    pr: { number: 43, url: prUrl(43), state: "OPEN", draft: true },
+  },
+  [treeOf(W.docs)]: {
+    plan: "docs-copy", level: "auto-pr", levelBy: "docs/help/coupons.md: docs/** (auto-pr)",
+    policy: { source: "base", ref: "origin/main", why: "origin/main:.seamux/policy.json" },
+    gates: [
+      { gate: "delivered", ok: true, why: "the plan is delivered" },
+      { gate: "kept checkout", ok: true, why: "the kept checkout is on main, clean for the landing" },
+      { gate: "pushed", ok: true, why: "the branch is pushed" },
+      { gate: "token", ok: true, why: "the token reads checks and commit statuses" },
+    ],
+    action: "none", waits: [], say: "at auto-pr, PR #45 is open for a person to merge: ship --merge on their word",
+    pr: { number: 45, url: prUrl(45), state: "OPEN", draft: false },
+    observe: { level: "auto-merge", by: "docs/help/coupons.md: docs/**", action: "merge", would: "would merge", waits: [] },
+    status: { state: "success", description: "ship's gates passed at auto-pr; a person merges; observe auto-merge: would merge" },
   },
 };
+/** ship_merge: deep-plan ship --merge's answer. A verdict that waits on
+ *  nothing merges at once (the PR turns merged, as GitHub would tell crew);
+ *  one that waits says on what, and merges nothing. */
+function shipMerge(cwd) {
+  const v = SHIP[cwd];
+  if (!v || !v.plan) throw "ship acts on a deep-plan plan; this worktree has none";
+  if (v.waits.length) return { ...v, lever: "ship --merge", action: "wait", result: { ok: true, note: "ship waits; run it again once those are met" } };
+  const pr = PRS.find((p) => p.cwd === cwd && p.state === "open");
+  if (!pr) throw "no open PR for this worktree";
+  pr.state = "merged";
+  pr.merge = { sha: "7b2e9d41c08a5f36e1d4b7c90a2f5e83d6c1b049", at: iso(ago(0)), base: "main" };
+  SHIP[cwd] = { ...v, pr: { ...v.pr, state: "MERGED" }, action: "none", say: `PR #${pr.n} is merged`, observe: undefined, status: null };
+  return { ...v, lever: "ship --merge", action: "merge", result: { ok: true, note: `merged PR #${pr.n} on your ship --merge; its landing runs from the app` } };
+}
+
 /** land_act: what the person did at the Land stage, as the watcher tells it. */
 function landAct(merge, recipe, act) {
   if (merge !== MERGE_41) throw "no landing for that merge";
@@ -1254,6 +1287,9 @@ const handlers = {
   ship_view: ({ cwd }) =>
     SHIP[cwd] ?? { plan: null, level: "auto-merge", levelBy: "src/** (auto-merge)", policy: { source: "origin/main", ref: "origin/main", why: "" }, gates: [], action: "none", waits: [] },
   land_act: ({ merge, recipe, act }) => landAct(merge, recipe, act),
+  // The person's Ship it (land_watch.rs ship_merge, deep-plan ship --merge):
+  // it merges a verdict with nothing to wait on, and says what a wait holds.
+  ship_merge: ({ cwd }) => shipMerge(cwd),
 
   radar_frame: radarFrame,
 

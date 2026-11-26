@@ -467,6 +467,8 @@ choices:
   refused in, out of the conversation.
 - **Run and allow `<branch>` this session**, for a force push, also lets a
   leased push to that branch through for the rest of the Claude session.
+  For a held PR merge it is **Run and allow PR `#n` this session**, and a
+  merge of that PR in that repo goes through after. An approval is copy only.
 - **Copy** and **Dismiss**.
 
 Run is offered for one-line git commands only. Anything else, including a

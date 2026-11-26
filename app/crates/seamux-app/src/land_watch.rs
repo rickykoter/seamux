@@ -826,6 +826,28 @@ pub async fn ship_view(cwd: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || ship_of(&cwd)).await.map_err(|e| e.to_string())?
 }
 
+/// The person's Ship it: `deep-plan ship --at <cwd> --merge --json`, run as
+/// them (CLAUDECODE unset, as ship_of), since the click is theirs. It waives
+/// the policy level and nothing else: ship's gates and red checks still
+/// hold it, and the result says what it did or waits on. A wait (exit 3) is
+/// an answer, not an error.
+fn ship_merge_of(cwd: &str) -> Result<Value, String> {
+    let path = format!("PATH={}", crate::shell::login_path());
+    let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
+    let args = ["-u", "CLAUDECODE", path.as_str(), "node", script.as_str(), "ship", "--at", cwd, "--merge", "--json"];
+    let (code, out, err) = crew_core::py::run("env", &args, Duration::from_secs(120)).ok_or("deep-plan did not run (no node, or it timed out)")?;
+    match serde_json::from_str::<Value>(out.trim()) {
+        Ok(v) => Ok(v),
+        Err(_) if code != 0 => Err(err.trim().lines().last().unwrap_or("deep-plan ship --merge failed").to_string()),
+        Err(e) => Err(format!("deep-plan ship's answer was not JSON: {e}")),
+    }
+}
+
+#[tauri::command]
+pub async fn ship_merge(cwd: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || ship_merge_of(&cwd)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn land_act(cwd: String, merge: String, recipe: String, act: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || self::act(&cwd, &merge, &recipe, &act)).await.map_err(|e| e.to_string())?

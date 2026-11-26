@@ -3,7 +3,7 @@ import { follow, openFramed, openPage } from "./panelinks";
 import { openAsk } from "./bosun_ask";
 import { reviewAsk, type AskContext } from "./bosun_model";
 import { listen } from "@tauri-apps/api/event";
-import { chipFor, landPanel, mergePanel, prPanel, railEl, readLandings, stageFor, stagesOf, type Landing, type PrRow, type ShipView, type Stage } from "./release";
+import { chipFor, landPanel, mergePanel, prPanel, railEl, readLandings, stageFor, stagesOf, type Landing, type PrRow, type ShipMerged, type ShipView, type Stage } from "./release";
 
 // A job as review_app.rs serves it.
 /** What review_app's orphan() refusal says: an agent from the last session still runs there. */
@@ -507,6 +507,16 @@ export class ReviewView {
     return c?.v ?? null;
   }
 
+  /** The person's Ship it: deep-plan ship --merge for the PR's worktree. Ship's
+   *  verdict and the PR list are read again after it, so the stage shows what
+   *  happened. */
+  private async shipIt(pr: PrRow): Promise<ShipMerged> {
+    const r = await invoke<ShipMerged>("ship_merge", { cwd: pr.cwd });
+    this.ships.delete(pr.cwd);
+    void this.loadPrs();
+    return r;
+  }
+
   private async loadLanding(pr: PrRow, draw: boolean): Promise<void> {
     if (await readLandings([pr], this.lands, getLanding) && draw) this.render();
   }
@@ -960,7 +970,7 @@ export class ReviewView {
     // the browser, a localhost page (a preview) into the Dock.
     const open = (url: string) => void follow(url, null, undefined, (m) => (this.err.textContent = m));
     const panel = stage === "pr" ? prPanel(pr, open)
-      : stage === "merge" ? mergePanel(pr, open, this.shipFor(pr))
+      : stage === "merge" ? mergePanel(pr, open, this.shipFor(pr), () => this.shipIt(pr))
       : stage === "land" ? landPanel(land, pr.state === "merged", {
           open,
           act: (recipe, what) => void invoke<string>("land_act", { cwd: pr.cwd, merge: pr.merge?.sha ?? "", recipe, act: what }).then(

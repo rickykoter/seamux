@@ -78,7 +78,8 @@ export const WORKSPACES = [
     agent: null,
     state: "shell",
     sinceMin: 25,
-    plan: null,
+    plan: { slug: "docs-copy", title: "Coupon codes in the help pages", phase: "done", done: 1, total: 1, n: 0, open: false },
+    pr: 45,
   },
 ];
 

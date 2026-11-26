@@ -2,7 +2,8 @@
 //! banner over Claude's prompt and the Dock card: what it is, and the
 //! person's answer. Running it is the page's own act (it types `!cmd` into
 //! Claude's prompt, or into the ⌘J shell); this side only reads the record,
-//! clears it once acted on, and writes a session's force-push allow (ADR 0096).
+//! clears it once acted on, and writes a session's force-push or merge allow
+//! (ADR 0096; the merge list from ship-and-land).
 //!
 //! The command always comes from the file (ADR 0094): held_act names a record
 //! by its pane and its time, never by its text.
@@ -45,10 +46,11 @@ pub fn act(dir: &Path, surface: &str, at: u64, what: &str) -> Result<bool, Strin
     }
     match what {
         "ran" | "dismiss" => {}
-        "allow" => {
-            let branch = h.allowable().ok_or("this command can't be allowed for the session")?;
-            held::allow(dir, &h.session, branch, crew_core::history::now_ms())?;
-        }
+        "allow" => match (h.allowable(), h.merge_allowable()) {
+            (Some(branch), _) => held::allow(dir, &h.session, branch, crew_core::history::now_ms())?,
+            (None, Some(pr)) => held::allow_merge(dir, &h.session, pr, crew_core::history::now_ms())?,
+            _ => return Err("this command can't be allowed for the session".into()),
+        },
         _ => return Err(format!("unknown answer: {what}")),
     }
     Ok(held::clear(dir, &key, at))
@@ -116,6 +118,25 @@ mod tests {
         assert!(act(&d, "P1", 7, "allow").is_err());
         assert!(held::path(&d, "P1").exists());
         assert_eq!(act(&d, "P1", 7, "dismiss"), Ok(true));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn run_and_allow_a_held_merge_writes_its_pr() {
+        let d = dir("merge");
+        setup(&d, "idle", held::FORCE_PUSH, Some("dev/x"));
+        assert_eq!(act(&d, "P1", 7, "allow"), Ok(true));
+        let mut p = status::Pane::new("W1", "P1");
+        p.session = "s1".into();
+        p.state = "idle".into();
+        status::write(&d, &p);
+        let rec = json!({"pane": "P1", "workspace": "W1", "session": "s1", "cwd": "/w", "reason": held::MERGE, "kind": "run",
+                         "command": "gh pr merge 12 --squash", "truncated": false, "branch": null, "pr": "o/r#12", "at": 8});
+        std::fs::write(held::path(&d, "P1"), rec.to_string()).unwrap();
+        assert_eq!(view(&d, "P1").unwrap()["allowKind"].as_str(), Some("merge"));
+        assert_eq!(act(&d, "P1", 8, "allow"), Ok(true));
+        assert_eq!(held::allowed_merges(&d, "s1"), vec!["o/r#12".to_string()]);
+        assert_eq!(held::allowed(&d, "s1"), vec!["dev/x".to_string()], "the push allow stays");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
