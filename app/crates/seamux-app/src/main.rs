@@ -318,6 +318,8 @@ fn main() {
             shell::open_in_cmux,
             wake_app::wake_data,
             wake_app::wake_prs,
+            wake_app::wake_reviews,
+            wake_app::wake_plans,
             wake_app::wake_open,
             wake_app::wake_keep,
             wake_app::wake_keep_all,
