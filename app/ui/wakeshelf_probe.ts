@@ -1,7 +1,7 @@
 // node app/ui/wakeshelf_probe.ts — the Wake's shelves and turn cards
 // (wakeshelf.ts), a pure module, which Node runs as TypeScript.
 import {
-  backgroundTask, incrementAt, laneStates, lanesOf, liveFirst, needsOf, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
+  backgroundTask, incrementAt, laneStates, lanesOf, lastingFirst, needsOf, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
   type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
 } from "./wakeshelf.ts";
 
@@ -101,7 +101,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   const reviews = [review("live1"), review("old", { past: true, stage: "past", closedAt: at(9, 0) }), review("older", { past: true, stage: "past", closedAt: at(8, 0) })];
   const s = shelves({ ...empty, rows, reviews, prs: [pr(47, "open", "you"), pr(42, "draft", "draft")] });
   ok("shelves: pictures, files, commits and plans from the rows", s.pictures.length === 2 && s.files.length === 2 && s.commits.length === 1 && s.plans.length === 2);
-  ok("shelves: a file at risk comes first, even when older", s.files[0].title === "coupon-totals.json");
+  ok("shelves: a file that lasts comes before one at risk (Needs you gathers those)", s.files.map((r) => r.title).join() === "totals-report.html,coupon-totals.json");
   ok("shelves: review rows stay off the shelves (lookout's reviews are drawn there)", !s.order.some((k) => k === `row:${rows[5].id}`));
   ok("shelves: past reviews newest closed first", s.reviews.past.map((r) => r.id).join() === "old,older");
   const kinds = s.order.map((k) => k.split(":")[0]);
@@ -118,10 +118,10 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
       { n: 2, title: "two", status: "working", authorizedAt: Date.parse(at(13, 10)), doneAt: 0 },
     ],
   }];
-  ok("incrementAt: inside a done increment's window", incrementAt(plans, Date.parse(at(12, 39))) === "Increment 1 of Take coupon codes at checkout");
-  ok("incrementAt: an open increment's window runs on", incrementAt(plans, Date.parse(at(18, 0))) === "Increment 2 of Take coupon codes at checkout");
+  ok("incrementAt: inside a done increment's window", incrementAt(plans, Date.parse(at(12, 39))) === "coupons · increment 1");
+  ok("incrementAt: an open increment's window runs on", incrementAt(plans, Date.parse(at(18, 0))) === "coupons · increment 2");
   ok("incrementAt: between increments there is no name", incrementAt(plans, Date.parse(at(13, 0))) === null);
-  ok("incrementAt: a plan with no title is named by its slug", incrementAt([{ slug: "s", increments: [{ n: 3, title: "", status: "working", authorizedAt: 1 }] }], 5) === "Increment 3 of s");
+  ok("incrementAt: named by the plan's slug, as Reviews names it", incrementAt([{ slug: "s", title: "A long title", increments: [{ n: 3, title: "", status: "working", authorizedAt: 1 }] }], 5) === "s · increment 3");
   const rows = [
     row("commit", "c2", "go 2", at(13, 36)), row("image", "after.png", "go 2", at(13, 15)), row("temp", "totals.json", "go 2", at(13, 14), { state: "risk" }),
     row("commit", "c1", "go 1", at(12, 32)), row("review", "inc1", "go 1", at(12, 39)),
@@ -131,7 +131,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   const cards = turns({ ...empty, rows, plans });
   ok("turns: one card per run of a prompt, a new day a new card", cards.map((c) => c.prompt).join("|") === "go 2|go 1|Take coupons|go 1", cards.map((c) => c.prompt));
   ok("turns: a card spans its rows' times", cards[0].start === Date.parse(at(13, 14)) && cards[0].end === Date.parse(at(13, 36)));
-  ok("turns: named by the increment whose window holds the turn", cards[0].name === "Increment 2 of Take coupon codes at checkout" && cards[1].name === "Increment 1 of Take coupon codes at checkout" && cards[2].name === null);
+  ok("turns: named by the increment whose window holds the turn", cards[0].name === "coupons · increment 2" && cards[1].name === "coupons · increment 1" && cards[2].name === null);
   ok("turns: sections follow the shelves' order and skip empty ones", cards[0].sections.map((s) => s.shelf).join() === "pictures,files,commits" && cards[1].sections.map((s) => s.shelf).join() === "reviews,commits");
   ok("turns: a card's day is local", cards[3].day === "2026-11-25" && cards[0].day === "2026-11-26");
   const order = timelineOrder([{ key: "risk", kind: "risk", title: "", rows: [] }], cards);
@@ -154,7 +154,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
 // ------------------------------------------------------------ gone last, background tasks, review names
 {
   const rs = [row("temp", "a", "go", at(13, 3), { state: "gone" }), row("temp", "b", "go", at(13, 2)), row("temp", "c", "go", at(13, 1), { state: "risk" })];
-  ok("liveFirst: at risk, then what still exists, then gone", liveFirst(rs).map((r) => r.title).join() === "c,b,a");
+  ok("lastingFirst: what lasts, then at risk, then gone", lastingFirst(rs).map((r) => r.title).join() === "b,c,a");
   const s2 = shelves({ ...empty, rows: [row("image", "dead.png", "go", at(13, 5), { state: "gone" }), row("image", "live.png", "go", at(13, 4))] });
   ok("shelves: a gone picture sorts after a live one", s2.pictures.map((r) => r.title).join() === "live.png,dead.png");
 

@@ -115,7 +115,7 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     say((await cards.count()) >= 3, "Timeline draws a card per turn", String(await cards.count()));
     say(await wake.locator(".w-need").first().isVisible(), "Needs you stays on top in Timeline");
     const names = await wake.locator(".w-card-n").allTextContents();
-    say(names.some((n) => /^Increment 2 of Take coupon codes at checkout$/.test(n)), "a go 2 card is named after its increment", names.join(" | "));
+    say(names.some((n) => /^demo-coupons · increment 2$/.test(n)), "a go 2 card is named after its increment", names.join(" | "));
     const sects = await cards.first().locator(".w-sect").evaluateAll((els) => els.map((e) => e.className.replace("w-sect ", "")));
     const order7 = ["reviews", "plans", "prs", "pictures", "files", "commits"];
     say(sects.length > 0 && sects.every((x, i) => i === 0 || order7.indexOf(x) > order7.indexOf(sects[i - 1])), "a card's sections follow the shelves' order", sects.join());

@@ -184,6 +184,11 @@ export class Wake {
   private shelfAll = new Set<ShelfId>();
   /** Gone rows the person unfolded: a shelf's id, or a card's "<turn>:<shelf>". */
   private goneOpen = new Set<string>();
+  /** A card's sections opened past their first few: "<turn>:<shelf>". */
+  private moreOpen = new Set<string>();
+  /** Each row's turn, for Space's prompt on Shelves (built once per draw). */
+  private turnIdx = new Map<number, Turn<Row>>();
+  private cards: Turn<Row>[] = [];
   /** Needs you's keep-all, made once so its ask-then-confirm survives a redraw. */
   private riskKeep = button("", "w-act");
   /** Thumbnails by row id, kept across redraws so a picture is not fetched
@@ -251,31 +256,35 @@ export class Wake {
     keys.title = "the keyboard keys (?)";
     keys.addEventListener("click", () => (this.help.hidden = !this.help.hidden));
     this.help.hidden = true;
-    this.help.append(
-      el("h3", "", "keys"),
-      ...[
-        ["/", "search · Esc clears"],
-        ["j k", "next · previous, shelf by shelf"],
-        ["t", "Shelves or Timeline"],
+    // Grouped: moving, acting on the pick, the preview, and the app's pages.
+    const groups: [string, [string, string][]][] = [
+      ["Move", [["j k", "next · previous, shelf by shelf (a ▸ fold is a stop: Enter opens it)"], ["t", "Shelves or Timeline"], ["/", "search · Esc clears"]]],
+      ["The picked item", [
         ["Enter", "preview a picture, video or page; open the rest (⌘ opens it outside the Wake)"],
-        ["← → h l", "flip through the previews"],
-        ["v", "preview beside · under the list"],
-        ["f", "fill the Wake with the preview"],
-        ["Esc", "close the keys, the preview, a prompt, then the search"],
-        ["Space", "show the whole prompt of the picked item's turn; again to hide it"],
-        ["K", "keep an at-risk file"],
+        ["Space", "the whole prompt of its turn; again to hide it"],
+        ["⇧K", "keep a file at risk"],
         ["c", "copy the path (a pull request's link)"],
         ["r", "copy the resume command"],
-        ["?", "these keys"],
+      ]],
+      ["Preview", [["← → h l", "flip through the previews"], ["v", "beside · under the list"], ["f", "fill the Wake"]]],
+      ["Close", [["Esc", "the keys, the preview, a prompt, then the search; then the window"], ["?", "these keys"]]],
+      ["Pages beside the terminal", [
         ["⌘E", "the Wake, and again back to the page you were on"],
         ["⌘⇧P ⌘⇧L ⌘⇧A ⌘⇧O", "the plan, review, ask or other pages; again for the next"],
-        ["⌘[ ⌘]", "the previous · next page beside the terminal"],
-        ["⌘⇧E", "hide or show the column beside the terminal"],
-      ].map(([k, v]) => {
-        const p = el("p");
-        p.append(el("b", "", k), document.createTextNode(`  ${v}`));
-        return p;
-      }),
+        ["⌘[ ⌘]", "the previous · next page"],
+        ["⌘⇧E", "hide or show the column"],
+      ]],
+    ];
+    this.help.append(
+      el("h3", "", "Keys"),
+      ...groups.flatMap(([g, rows]) => [
+        el("h4", "", g),
+        ...rows.map(([k, v]) => {
+          const p = el("p");
+          p.append(el("b", "", k), document.createTextNode(`  ${v}`));
+          return p;
+        }),
+      ]),
     );
     this.help.addEventListener("click", () => (this.help.hidden = true));
 
@@ -529,7 +538,7 @@ export class Wake {
     const total = this.data.workspaces.find((w) => w.ws === this.ws)?.n ?? rows.length;
     const n = (x: number) => x.toLocaleString();
     const bits: (string | HTMLElement)[] = this.query
-      ? [el("b", "", n(rows.length)), ` for “${this.query}”`]
+      ? [el("b", "", n(here)), ` for “${this.query}”`]
       : [el("b", "", n(here)), ` ${here === 1 ? "thing" : "things"} left behind`];
     if (risk) bits.push(" · ", el("span", "risk", `${n(risk)} at risk`));
     if (kept) bits.push(" · ", el("span", "kept", `${n(kept)} kept`));
@@ -538,6 +547,8 @@ export class Wake {
     this.stats.replaceChildren(...bits);
     for (const m of ["shelves", "timeline"] as const) this.modeBtns[m].setAttribute("aria-pressed", String(this.mode === m));
     this.acts.clear();
+    this.cards = turns(this.shelfInput());
+    this.turnIdx = new Map(this.cards.flatMap((t) => t.sections.flatMap((sec) => sec.rows.map((r) => [r.id, t] as const))));
     if (this.mode === "shelves") return this.drawShelves();
 
     return this.drawTimeline();
@@ -560,11 +571,11 @@ export class Wake {
     // (a search shows every match).
     const page = (id: ShelfId, rows: Row[], n: number) => (q || this.shelfAll.has(id) ? rows : rows.slice(0, n));
     const more = (id: ShelfId, all: number, shown: number) =>
-      all > shown ? [this.fold(`show ${all - shown} more`, () => this.shelfAll.add(id))] : [];
+      all > shown ? [this.fold(`${all - shown} more`, () => this.shelfAll.add(id), false, `fold:more:${id}`)] : [];
     // Gone rows wait behind their own fold, after what still exists.
     const shownRows: Row[] = [];
     const goneFold = (key: string, gone: number) =>
-      gone ? [this.fold(this.goneOpen.has(key) ? `hide ${gone} gone` : `${gone} gone`, () => (this.goneOpen.has(key) ? this.goneOpen.delete(key) : this.goneOpen.add(key)), this.goneOpen.has(key))] : [];
+      gone ? [this.fold(this.goneOpen.has(key) ? `hide ${gone} gone` : `${gone} gone`, () => (this.goneOpen.has(key) ? this.goneOpen.delete(key) : this.goneOpen.add(key)), this.goneOpen.has(key), `fold:gone:${key}`)] : [];
     const split = (rows: Row[]) => ({ here: rows.filter((r) => r.state !== "gone"), gone: rows.filter((r) => r.state === "gone") });
     const list = (id: ShelfId, rows: Row[]) => {
       const { here, gone } = split(rows);
@@ -574,10 +585,8 @@ export class Wake {
       for (const r of shown) ul.append(this.row(r));
       return [...(shown.length ? [ul] : []), ...more(id, here.length, Math.min(here.length, page(id, here, 12).length)), ...goneFold(id, gone.length)];
     };
-    const counted = (rows: Row[]) => {
-      const g = rows.filter((r) => r.state === "gone").length;
-      return `${rows.length - g}${g ? ` · ${g} gone` : ""}`;
-    };
+    // A shelf counts what is here; its fold says what is gone.
+    const counted = (rows: Row[]) => String(rows.filter((r) => r.state !== "gone").length);
     // A search asks about things by name: Needs you steps aside.
     if (!q) out.push(this.needsBlock(s.needs));
     const live = s.reviews.live.filter((r) => hit(r.title));
@@ -589,7 +598,7 @@ export class Wake {
       if (s.reviews.past.length) {
         const shown = this.pastAll || pq ? past : past.slice(0, 4);
         const items = shown.map((r) => this.pastRow(r));
-        if (past.length > shown.length) items.push(this.fold(`${past.length - shown.length} older review${past.length - shown.length === 1 ? "" : "s"}`, () => (this.pastAll = true)));
+        if (past.length > shown.length) items.push(this.fold(`${past.length - shown.length} older review${past.length - shown.length === 1 ? "" : "s"}`, () => (this.pastAll = true), false, "fold:past"));
         if (!items.length) items.push(el("div", "w-none", `no past review matches “${this.pastQ || this.query}”`));
         body.push(this.box("Past", this.pastQEl, items));
       }
@@ -603,18 +612,23 @@ export class Wake {
       const shown = lanes.filter((l) => this.lanesAll || !l.fold || q);
       const t = el("div", "w-lanes w-box");
       const hd = el("div", "w-lane-hd");
-      hd.append(el("span", "", "pull request"), ...["review", "checks", "merged", "landed"].map((x) => el("span", "", x)));
+      // Narrow, each stage keeps its first letter (wake.css).
+      hd.append(el("span", "", "pull request"), ...["review", "checks", "merged", "landed"].map((x) => {
+        const c = el("span", "", x);
+        c.dataset.s = x[0].toUpperCase();
+        return c;
+      }));
       t.append(hd, ...shown.map((l) => this.laneRow(l)));
       const extra = lanes.length - shown.length;
-      shelf("prs", String(lanes.length), t, ...(extra ? [this.fold(`${extra} older`, () => (this.lanesAll = true))] : []));
+      shelf("prs", String(lanes.length), t, ...(extra ? [this.fold(`${extra} older pull request${extra === 1 ? "" : "s"}`, () => (this.lanesAll = true), false, "fold:lanes")] : []));
     }
     const picSplit = split(s.pictures);
-    const pics = [...page("pictures", picSplit.here, 24), ...(this.goneOpen.has("pictures") ? picSplit.gone : [])];
+    const pics = [...page("pictures", picSplit.here, 12), ...(this.goneOpen.has("pictures") ? picSplit.gone : [])];
     if (s.pictures.length) {
       const g = el("div", "w-thumbs");
       for (const r of pics) g.append(this.thumb(r));
       shelf("pictures", counted(s.pictures), ...(pics.length ? [g] : []),
-        ...more("pictures", picSplit.here.length, Math.min(picSplit.here.length, page("pictures", picSplit.here, 24).length)), ...goneFold("pictures", picSplit.gone.length));
+        ...more("pictures", picSplit.here.length, Math.min(picSplit.here.length, page("pictures", picSplit.here, 12).length)), ...goneFold("pictures", picSplit.gone.length));
     }
     if (s.files.length) shelf("files", counted(s.files), ...list("files", s.files));
     if (s.commits.length) shelf("commits", String(s.commits.length), ...list("commits", s.commits));
@@ -705,7 +719,10 @@ export class Wake {
     const red = this.shelfPrs().filter((p) => p.state !== "merged" && p.state !== "closed" && ((p.checks?.fail ?? 0) > 0 || p.conflict));
     if (red.length) {
       c.classList.add("warn");
-      c.append(el("span", "w-calm-ok", "·"), document.createTextNode(`Nothing waits on you. ${red.length === 1 ? `#${red[0].n} is` : `${red.length} pull requests are`} failing below.`));
+      const go = button(red.length === 1 ? `#${red[0].n} failing ↓` : `${red.length} pull requests failing ↓`, "w-calm-red");
+      go.title = "its lane on Pull requests and landings";
+      go.addEventListener("click", () => this.selectKey(`pr:${red[0].n}`, true));
+      c.append(document.createTextNode("Nothing needs you."), go);
     } else c.append(el("span", "w-calm-ok", "✓"), document.createTextNode("Nothing needs you."));
     return c;
   }
@@ -719,7 +736,7 @@ export class Wake {
   private drawTimeline(): void {
     const q = this.query;
     const input = this.shelfInput();
-    const cards = turns(input);
+    const cards = this.cards;
     const reviews = new Map(input.reviews.map((r) => [r.id, r]));
     const lanes = new Map(lanesOf(input.prs).map((l) => [l.pr.n, l]));
     const out: HTMLElement[] = [];
@@ -781,9 +798,11 @@ export class Wake {
    *  A pull request the worktree knows draws as its lane, a review lookout
    *  knows as its stage, as on the shelves. */
   private card(c: Turn<Row>, reviews: Map<string, ReviewSum>, lanes: Map<number, Lane>): HTMLElement {
-    // A short prompt ("go 3") yields the heading to the increment it ran.
-    const short = !!c.name && c.prompt.trim().split(/\s+/).length <= 2;
-    const a = el("article", `w-card${this.openGroups.has(c.key) ? " open" : ""}${short ? " named" : ""}`);
+    // One heading grammar: the increment the turn ran when there is one, else
+    // the person's prompt; under it the time, background tasks and, under an
+    // increment, the prompt itself, muted.
+    const named = !!c.name;
+    const a = el("article", `w-card${this.openGroups.has(c.key) ? " open" : ""}${named ? " named" : ""}`);
     const first = c.sections[0]?.rows[0];
     const hd = el("div", "w-card-hd");
     const said = c.prompt || (c.background.length ? `a background task: ${c.background[0]}` : "");
@@ -810,7 +829,7 @@ export class Wake {
       hd.append(sb);
     }
     // Opened (Space or a click on the prompt), the card shows its prompt
-    // whole under its heading, however short; Esc closes it.
+    // whole under its heading, however short, and its background tasks.
     const open = this.openGroups.has(c.key);
     prompt.setAttribute("role", "button");
     prompt.setAttribute("aria-expanded", String(open));
@@ -829,28 +848,47 @@ export class Wake {
     const wh = el("div", "w-turnp-h");
     wh.append(el("b", "", "Prompt"), el("span", "w-turnp-esc", "Space or Esc closes"));
     whole.append(wh, wb);
+    if (c.background.length) {
+      const bl = el("div", "w-turnp-bg");
+      bl.append(el("b", "", "Background tasks"), ...c.background.map((t) => el("div", "", t)));
+      whole.append(bl);
+    }
     a.dataset.rows = c.sections.flatMap((s) => s.rows.map((r) => r.id)).join(",");
     a.append(hd, whole);
+    // A turn that left only what is gone is its heading and one fold.
+    const here = c.sections.reduce((n, sec) => n + sec.rows.filter((r) => r.state !== "gone").length, 0);
+    const keys = c.sections.map((sec) => `${c.key}:${sec.shelf}`);
+    if (!here && !keys.some((k) => this.goneOpen.has(k))) {
+      a.classList.add("stub");
+      const total = c.sections.reduce((n, sec) => n + sec.rows.length, 0);
+      a.append(this.fold(`${total} gone`, () => keys.forEach((k) => this.goneOpen.add(k)), false, `fold:stub:${c.key}`));
+      return a;
+    }
     for (const sec of c.sections) {
       const box = el("div", `w-sect ${sec.shelf}`);
       const h = el("h3", "w-sect-h");
-      const gone = sec.rows.filter((r) => r.state === "gone");
       const gk = `${c.key}:${sec.shelf}`;
-      const rows = this.goneOpen.has(gk) ? sec.rows : sec.rows.filter((r) => r.state !== "gone");
+      const live = sec.rows.filter((r) => r.state !== "gone");
+      const gone = sec.rows.filter((r) => r.state === "gone");
+      // A card shows a few of each; the rest wait behind "N more".
+      const cap = sec.shelf === "pictures" ? 6 : 5;
+      const liveShown = this.query || this.moreOpen.has(gk) ? live : live.slice(0, cap);
+      const rows = [...liveShown, ...(this.goneOpen.has(gk) ? gone : [])];
       this.cardRows.push(...rows);
-      h.append(document.createTextNode(`${SHELF_SAID[sec.shelf]} `), el("span", "w-n", `${sec.rows.length - gone.length}${gone.length ? ` · ${gone.length} gone` : ""}`));
+      h.append(document.createTextNode(`${SHELF_SAID[sec.shelf]} `), el("span", "w-n", String(live.length)));
       box.append(h);
-      const goneFold = gone.length
-        ? [this.fold(this.goneOpen.has(gk) ? `hide ${gone.length} gone` : `${gone.length} gone`, () => (this.goneOpen.has(gk) ? this.goneOpen.delete(gk) : this.goneOpen.add(gk)), this.goneOpen.has(gk))]
-        : [];
+      const folds = [
+        ...(live.length > liveShown.length ? [this.fold(`${live.length - liveShown.length} more`, () => this.moreOpen.add(gk), false, `fold:more:${gk}`)] : []),
+        ...(gone.length
+          ? [this.fold(this.goneOpen.has(gk) ? `hide ${gone.length} gone` : `${gone.length} gone`, () => (this.goneOpen.has(gk) ? this.goneOpen.delete(gk) : this.goneOpen.add(gk)), this.goneOpen.has(gk), `fold:gone:${gk}`)]
+          : []),
+      ];
       if (sec.shelf === "pictures") {
         const g = el("div", "w-thumbs");
         for (const r of rows) g.append(this.thumb(r));
         if (rows.length) box.append(g);
-        box.append(...goneFold);
       } else {
         const ul = el("ul", "w-rows");
-        box.append(...goneFold);
         for (const r of rows) {
           const gh = ghLink(r);
           const pr = sec.shelf === "prs" && gh ? this.prsByUrl.get(`https://github.com/${gh.repo}/pull/${gh.n}`) : undefined;
@@ -866,8 +904,9 @@ export class Wake {
           }
           ul.append(this.row(r));
         }
-        if (rows.length) box.insertBefore(ul, box.querySelector(".w-daymore"));
+        if (rows.length) box.append(ul);
       }
+      box.append(...folds);
       a.append(box);
     }
     return a;
@@ -943,12 +982,20 @@ export class Wake {
       this.turnRow = r.id;
       this.turnP.scrollTop = 0;
     }
+    // The turn it came from, as its Timeline card names it: the increment,
+    // the person's prompt (a background task's row takes the prompt before
+    // it), and the background task that made it.
+    const t = this.turnIdx.get(r.id);
+    const bg = backgroundTask(r.prompt);
+    const said = t ? t.prompt : bg === null ? r.prompt : "";
     const d = local(r.created_at);
     const hd = el("div", "w-turnp-h");
-    hd.append(el("b", "", "Prompt"), el("span", "w-turnp-m", [r.title, d ? `${dayLabel(d)} ${hm(d)}` : ""].filter(Boolean).join(" · ")), el("span", "w-turnp-esc", "Space or Esc closes"));
-    const body = el("div", `w-turnp-b${r.prompt ? "" : " none"}`);
-    body.append(r.prompt ? marked(r.prompt, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
-    this.turnP.replaceChildren(hd, body);
+    hd.append(el("b", "", t?.name ?? "Prompt"), el("span", "w-turnp-m", [r.title, d ? `${dayLabel(d)} ${hm(d)}` : ""].filter(Boolean).join(" · ")), el("span", "w-turnp-esc", "Space or Esc closes"));
+    const body = el("div", `w-turnp-b${said ? "" : " none"}`);
+    body.append(said ? marked(said, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
+    const parts: HTMLElement[] = [hd, body];
+    if (bg !== null) parts.push(el("div", "w-turnp-bg", `made by a background task: ${bg}`));
+    this.turnP.replaceChildren(...parts);
   }
 
   /** The latest card opened that is open and drawn now, for Esc. */
@@ -995,9 +1042,15 @@ export class Wake {
     return b;
   }
 
-  private fold(text: string, open: () => void, opened = false): HTMLElement {
+  private fold(text: string, open: () => void, opened = false, key = ""): HTMLElement {
     const b = button(`${opened ? "▾" : "▸"} ${text}`, "w-daymore");
     b.setAttribute("aria-expanded", String(opened));
+    // Keyed, a fold is a stop on the j/k walk and Enter opens it.
+    if (key) {
+      b.dataset.key = key;
+      b.classList.toggle("sel", key === this.selKey);
+      this.acts.set(key, { open: () => b.click() });
+    }
     b.addEventListener("click", () => {
       open();
       this.draw();
@@ -1084,8 +1137,7 @@ export class Wake {
     const d = el("div", `w-rv${key === this.selKey ? " sel" : ""}`);
     d.dataset.key = key;
     const top = el("div", "w-rv-top");
-    const t = el("span", "w-rv-t", reviewName(r));
-    t.title = r.title;
+    const t = this.reviewTitle(r, "w-rv-t");
     top.append(t, el("span", `w-stage ${r.needsPerson ? "needs" : r.stage}`, stageSaid(r)));
     if (r.updatedAt) top.append(el("time", "w-rv-age", age(r.updatedAt)));
     const sub = el("div", "w-rv-sub");
@@ -1107,6 +1159,19 @@ export class Wake {
     return d;
   }
 
+  /** A review's name in two parts, so a narrow column cuts the plan and
+   *  keeps "increment N": the part that tells reviews apart. */
+  private reviewTitle(r: ReviewSum, cls: string): HTMLElement {
+    const t = el("span", `${cls} w-rname`);
+    t.title = r.title;
+    if (!r.plan || r.inc === null || r.inc === undefined) {
+      t.append(el("span", "w-rname-p", r.title));
+      return t;
+    }
+    t.append(el("span", "w-rname-p", r.plan), el("span", "w-rname-i", `\u00a0· ${r.inc === "all" ? "delivery" : `increment ${r.inc}`}`));
+    return t;
+  }
+
   /** A past review: when it closed, what it was, how many rounds it took. */
   private pastRow(r: ReviewSum): HTMLElement {
     const key = `review:${r.id}`;
@@ -1115,11 +1180,10 @@ export class Wake {
     const when = r.closedAt ? new Date(r.closedAt) : null;
     d.append(
       el("time", "w-past-d", when ? `${MON[when.getMonth()]} ${when.getDate()}` : ""),
-      el("span", "w-past-t", reviewName(r)),
+      this.reviewTitle(r, "w-past-t"),
       el("span", "w-past-v", r.round.sealed ? `${r.round.sealed} round${r.round.sealed === 1 ? "" : "s"}` : "one pass"),
       ...(r.reviewer === "panel" ? [el("span", "w-st", "panel")] : []),
     );
-    (d.children[1] as HTMLElement).title = r.title;
     d.addEventListener("click", () => {
       this.selectKey(key);
       this.openReview(r.id, r.title);
@@ -1696,6 +1760,7 @@ ${p.url}`;
         this.step(-1);
         break;
       case "Enter":
+        if (!act) this.toast("pick something first: j");
         if (act) {
           e.preventDefault();
           if (r && !this.openable(r)) this.toast("gone: nothing is left to open");
@@ -1722,19 +1787,20 @@ ${p.url}`;
         }
         break;
       case "K":
-        if (r?.state === "risk") void this.keep(r);
-        else if (act) this.toast(r?.state === "kept" ? "already kept" : "only a file at risk can be kept");
+        if (!act) this.toast("pick something first: j");
+        else if (r?.state === "risk") void this.keep(r);
+        else this.toast(r?.state === "kept" ? "already kept" : "only a file at risk can be kept");
         break;
       case "c":
         if (act?.copy) act.copy();
-        else if (act) this.toast("nothing to copy here");
+        else this.toast(act ? "nothing to copy here" : "pick something first: j");
         break;
       case "t":
         this.setMode(this.mode === "shelves" ? "timeline" : "shelves");
         break;
       case "r":
         if (r?.session_id) void this.copy(resumeCmd(r), "the resume command");
-        else if (act) this.toast("no session to resume from here");
+        else this.toast(act ? "no session to resume from here" : "pick something first: j");
         break;
       case "?":
         this.help.hidden = !this.help.hidden;

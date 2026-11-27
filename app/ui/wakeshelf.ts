@@ -200,13 +200,14 @@ export function lanesOf(prs: ShelfPr[]): Lane[] {
   });
 }
 
-/** At risk first, then what still exists, then what is gone; newest first
- *  within each. The page folds the gone ones away. */
-export function liveFirst<R extends ShelfRow>(rows: R[]): R[] {
-  return [...rows.filter((r) => r.state === "risk"), ...rows.filter((r) => r.state !== "risk" && r.state !== "gone"), ...rows.filter((r) => r.state === "gone")];
+/** What lasts first, then what is at risk, then what is gone; newest first
+ *  within each. Needs you already gathers the at-risk ones, so a shelf leads
+ *  with the files a session made to keep; the page folds the gone away. */
+export function lastingFirst<R extends ShelfRow>(rows: R[]): R[] {
+  return [...rows.filter((r) => r.state !== "risk" && r.state !== "gone"), ...rows.filter((r) => r.state === "risk"), ...rows.filter((r) => r.state === "gone")];
 }
 function filesOf<R extends ShelfRow>(rows: R[]): R[] {
-  return liveFirst(rows.filter((r) => shelfOf(r.kind) === "files"));
+  return lastingFirst(rows.filter((r) => shelfOf(r.kind) === "files"));
 }
 
 /** A review by what it reviewed: "<plan> · increment N" (or "· delivery")
@@ -231,7 +232,7 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
   const past = inp.reviews.filter((r) => r.past).sort((a, b) => (b.closedAt || "").localeCompare(a.closedAt || ""));
   const plans = inp.rows.filter((r) => shelfOf(r.kind) === "plans");
   const lanes = lanesOf(inp.prs);
-  const pictures = liveFirst(inp.rows.filter((r) => shelfOf(r.kind) === "pictures"));
+  const pictures = lastingFirst(inp.rows.filter((r) => shelfOf(r.kind) === "pictures"));
   const files = filesOf(inp.rows);
   const commits = inp.rows.filter((r) => shelfOf(r.kind) === "commits");
   const order = [
@@ -256,7 +257,8 @@ export type Turn<R extends ShelfRow = ShelfRow> = {
   prompt: string;
   /** Background tasks whose rows joined this turn, by their description. */
   background: string[];
-  /** "Increment 2 of <plan title>" when the turn falls in an increment's window. */
+  /** "<plan> · increment 2" when the turn falls in an increment's window:
+   *  the name Needs you and Reviews give it too. */
   name: string | null;
   session: string;
   /** ms */
@@ -287,7 +289,7 @@ export function incrementAt(plans: PlanRow[], at: number): string | null {
       const from = i.authorizedAt || 0;
       if (!from || at < from) continue;
       if (i.doneAt && at > i.doneAt) continue;
-      if (!best || from > best.at) best = { at: from, name: `Increment ${i.n} of ${p.title || p.slug}` };
+      if (!best || from > best.at) best = { at: from, name: `${p.slug} · increment ${i.n}` };
     }
   }
   return best ? best.name : null;
@@ -326,7 +328,7 @@ export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
     const rows = cur.rows;
     cur.t.sections = SECTION_ORDER.map((shelf) => ({
       shelf,
-      rows: shelf === "files" ? filesOf(rows) : shelf === "pictures" ? liveFirst(rows.filter((r) => shelfOf(r.kind) === shelf)) : rows.filter((r) => shelfOf(r.kind) === shelf),
+      rows: shelf === "files" ? filesOf(rows) : shelf === "pictures" ? lastingFirst(rows.filter((r) => shelfOf(r.kind) === shelf)) : rows.filter((r) => shelfOf(r.kind) === shelf),
     })).filter((s) => s.rows.length);
     cur.t.background = [...new Set(rows.map((r) => task.get(r)).filter((x): x is string => !!x))];
     cur.t.name = incrementAt(inp.plans, cur.t.start);
