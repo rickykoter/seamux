@@ -117,6 +117,20 @@ fn folder_stamp(folder: &std::path::Path, keep: fn(&str) -> bool) -> Option<u128
     Some(newest.wrapping_mul(1_000_003).wrapping_add(n))
 }
 
+/// A stamp over every plan's sealed scenarios, verdicts and revisions, by
+/// their files' times alone (never their contents); 0 with no sealed folder.
+fn sealed_stamp(root: &std::path::Path) -> u128 {
+    let Ok(entries) = std::fs::read_dir(root) else { return 0 };
+    let mut acc = 0u128;
+    for e in entries.flatten() {
+        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            let s = folder_stamp(&e.path(), |n| n == "scenarios.json" || n == "verdicts.json" || n == "revisions.json").unwrap_or(0);
+            acc = acc.wrapping_mul(31).wrapping_add(s);
+        }
+    }
+    acc
+}
+
 /// The plans rooted at worktree `dir`, as `deep-plan status --json` gives
 /// them (each with its title and every increment's go and done times): the
 /// Wake names a turn after the increment whose window holds it.
@@ -140,7 +154,10 @@ pub async fn wake_plans(dir: String) -> Result<Value, String> {
             (Some(a), Some(b)) => Some(a.wrapping_mul(31).wrapping_add(b)),
             (Some(a), None) => Some(a),
             _ => None,
-        };
+        }
+        // A plan's scenarios summary comes from its sealed folder: a judge or
+        // revise run that writes only there moves the stamp too (times only).
+        .map(|s| s.wrapping_mul(31).wrapping_add(sealed_stamp(&folder("DEEP_PLAN_SEALED_DIR", "sealed"))));
         static CACHE: Cache = std::sync::OnceLock::new();
         if let Some(v) = cached(&CACHE, &dir, stamp) {
             return Ok(v);
@@ -466,6 +483,26 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(d.join("a.json"), "{\"x\":1}").unwrap();
         assert_ne!(two, stamp(&d), "a review rewritten in place moves it");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn sealed_stamp_moves_when_a_verdict_or_revision_is_written() {
+        let d = std::env::temp_dir().join(format!("wake-sealed-{}", std::process::id()));
+        let plan = d.join("p1");
+        std::fs::create_dir_all(&plan).unwrap();
+        assert_eq!(sealed_stamp(&d.join("missing")), 0, "no sealed folder: 0");
+        std::fs::write(plan.join("scenarios.json"), "{}").unwrap();
+        let one = sealed_stamp(&d);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(plan.join("verdicts.json"), "{}").unwrap();
+        let two = sealed_stamp(&d);
+        assert_ne!(one, two, "a judge run's verdict moves it");
+        std::fs::write(plan.join("judge-1.json"), "{}").unwrap();
+        assert_eq!(two, sealed_stamp(&d), "a transcript leaves it");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(plan.join("revisions.json"), "{}").unwrap();
+        assert_ne!(two, sealed_stamp(&d), "a revise run's proposals move it");
         std::fs::remove_dir_all(&d).ok();
     }
 

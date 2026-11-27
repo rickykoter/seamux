@@ -21,6 +21,11 @@ use crate::state::state_dir;
 pub const WAKE_VIEW: &str = "wake-view"; // the tab files and pages open in, beside the Wake
 pub const WAKE_TAB: &str = "wake"; // the tab the Wake itself lives in
 pub const WAKE_LIMIT: usize = 2000; // rows per answer; the page says when it is cut
+/// Kinds the Wake never loses to WAKE_LIMIT: few, and what the person
+/// navigates by. A worktree whose temp files fill the read still shows every
+/// review, plan, ask, pull request and issue.
+pub const WAKE_KEEP: [&str; 5] = ["review", "plan", "ask", "pr", "issue"];
+const WAKE_KEEP_LIMIT: usize = 10_000;
 const VIEW_IN_WAKE: [&str; 13] = [
     ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".m4v", ".mov", ".webm",
 ];
@@ -338,15 +343,24 @@ pub fn wake_data(ws: &str, q: &str, kind: &str) -> Result<Value, String> {
 /// /artifacts/data route calls `wake_data`, which searches `ws` alone.
 pub fn wake_data_in(ws: &str, also: &[String], q: &str, kind: &str) -> Result<Value, String> {
     let dirs: Vec<&str> = if ws.is_empty() { Vec::new() } else { std::iter::once(ws).chain(also.iter().map(String::as_str)).collect() };
-    let rows = crew_store::search_in(q, &dirs, (!kind.is_empty()).then_some(kind), WAKE_LIMIT)
+    let mut rows = crew_store::search_in(q, &dirs, (!kind.is_empty()).then_some(kind), WAKE_LIMIT)
         .map_err(|e| e.to_string())?;
+    let truncated = rows.len() >= WAKE_LIMIT;
+    // Cut at the limit: the kinds the person navigates by come back whole.
+    if truncated && kind.is_empty() {
+        let mut more = Vec::new();
+        for k in WAKE_KEEP {
+            more.extend(crew_store::search_in(q, &dirs, Some(k), WAKE_KEEP_LIMIT).map_err(|e| e.to_string())?);
+        }
+        rows = with_kept(rows, more);
+    }
     let wss = crew_store::workspaces().map_err(|e| e.to_string())?;
     let key = if ws.is_empty() { String::new() } else { crew_store::wskey(ws) };
     Ok(json!({
         "ws": key,
         "rows": rows.iter().map(wake_row).collect::<Vec<_>>(),
         "limit": WAKE_LIMIT,
-        "truncated": rows.len() >= WAKE_LIMIT,
+        "truncated": truncated,
         "workspaces": wss.iter().map(|w| {
             let base = w.ws.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
             json!({"ws": w.ws, "n": w.n, "last": w.last.clone().unwrap_or_default(),
@@ -354,6 +368,15 @@ pub fn wake_data_in(ws: &str, also: &[String], q: &str, kind: &str) -> Result<Va
                    "here": Path::new(&w.ws).is_dir()})
         }).collect::<Vec<_>>(),
     }))
+}
+
+/// `rows` with the rows of `more` it lacks, newest first as the read orders
+/// them (created_at, then id).
+fn with_kept(mut rows: Vec<crew_store::Row>, more: Vec<crew_store::Row>) -> Vec<crew_store::Row> {
+    let have: std::collections::HashSet<i64> = rows.iter().map(|r| r.id).collect();
+    rows.extend(more.into_iter().filter(|r| !have.contains(&r.id)));
+    rows.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+    rows
 }
 
 fn row_by(rid: &str) -> Result<crew_store::Row, (bool, String)> {
@@ -675,6 +698,18 @@ mod tests {
             source: String::new(),
             kept_at: None,
         }
+    }
+
+    /// A read cut at its limit takes back the kept kinds it lacked, once
+    /// each, in the read's order.
+    #[test]
+    fn a_cut_read_takes_back_the_kept_kinds() {
+        let at = |id: i64, kind: &str, when: &str| crew_store::Row { id, created_at: when.into(), ..row(kind, "", "", "") };
+        let read = vec![at(9, "temp", "2026-11-27T10:00:00Z"), at(8, "temp", "2026-11-27T09:00:00Z")];
+        let more = vec![at(8, "temp", "2026-11-27T09:00:00Z"), at(3, "plan", "2026-11-25T08:00:00Z"), at(5, "review", "2026-11-27T09:30:00Z")];
+        let ids: Vec<i64> = with_kept(read, more).iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![9, 5, 8, 3], "newest first, no row twice");
+        assert!(WAKE_KEEP.contains(&"plan") && WAKE_KEEP.contains(&"review") && WAKE_KEEP.contains(&"pr") && WAKE_KEEP.contains(&"ask"));
     }
 
     /// resolve_row names what open_artifact opens, for every row kind,

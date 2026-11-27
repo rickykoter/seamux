@@ -363,3 +363,86 @@
 /* Timeline: an opened card shows its whole prompt under its heading. */
 .w-card-p { margin: 0 12px; padding: 6px 0 8px; border-bottom: 1px dashed var(--line); font-size: var(--fs-2); }
 .w-card-p[hidden] { display: none; }
+
+/* UX sweep, round 1. */
+/* The pick: a bar at its left edge as well as the tint, so it reads in bad light. */
+.w-row.sel, :is(.w-need, .w-rv, .w-past, .w-lane).sel { box-shadow: inset 3px 0 0 var(--accent); }
+.w-thumb.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* What is gone is a muted count; a read cut at its limit says so on its own line. */
+.w-sub .w-gone-n { opacity: .8; }
+.w-trunc { display: block; font-size: var(--fs-1); opacity: .85; }
+/* Nothing waits on the person, but a pull request fails below: no check mark. */
+.w-calm.warn .w-calm-ok { color: var(--bad-t); }
+/* A short prompt ("go 3") yields the card's heading to the increment it ran. */
+.w-card.named .w-card-hd .w-card-m { order: -1; flex: 1 1 100%; }
+.w-card.named .w-card-n { font-weight: 700; color: var(--fg); }
+.w-card.named .w-card-hd .w-prompt { flex: 0 1 auto; font-weight: 400; color: var(--muted); }
+.w-card-bg { color: var(--muted); }
+/* Resume waits for the card in use, as on the rows. */
+.w-card:not(:hover):not(:focus-within):not(:has(.sel)) .w-card-hd .w-sess { display: none; }
+.w-card-hd { cursor: pointer; }
+/* Narrow: lanes keep room for their titles; each dot names its stage on hover. */
+@container (max-width: 520px) {
+  .w-lane-hd, .w-lane { grid-template-columns: minmax(0, 1fr) repeat(4, 22px); }
+  .w-lane-hd span:first-child { visibility: visible; }
+  /* Each stage keeps its first letter, so the dots never rely on colour alone. */
+  .w-lane-hd span[data-s] { font-size: 0; }
+  .w-lane-hd span[data-s]::after { content: attr(data-s); font-size: var(--fs-1); }
+}
+
+/* UX sweep, round 2. */
+/* A review's name: the plan gives way before "increment N" does. */
+.w-rname { display: flex; min-width: 0; }
+.w-rname-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Narrow, a live review's stage wraps under its name rather than squeeze it. */
+.w-rv-top { flex-wrap: wrap; }
+.w-rv-top .w-rv-t { flex: 1 1 12ch; }
+.w-rname-i { flex: none; white-space: nowrap; }
+/* A fold picked by j/k. */
+.w-daymore.sel { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+/* A turn that left only what is gone: its heading and one fold. */
+.w-card.stub > .w-card-hd { border-bottom: 0; }
+.w-card.stub > .w-daymore { margin: 0 12px 8px; }
+.w-card.stub .w-card-hd .w-prompt, .w-card.stub .w-card-n { color: var(--muted); }
+/* Nothing needs you, but a pull request fails: its jump, in red. */
+.w-calm.warn { color: var(--fg); }
+.w-calm-red { margin-left: auto; font: inherit; color: var(--bad-t); background: none; border: 1px solid color-mix(in srgb, var(--bad-t) 55%, transparent); border-radius: 10px; padding: 1px 8px; cursor: pointer; }
+.w-turnp-bg { margin-top: 4px; color: var(--muted); }
+.w-turnp-bg b { display: block; color: var(--fg); }
+/* The keys, grouped. */
+.w-help h4 { grid-column: 1 / -1; margin: 6px 0 0; font-size: var(--fs-1); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+/* A toast stays clear of the prompt panel and the preview. */
+.wake:has(.w-turnp:not([hidden])) .w-toast, .wake.viewing .w-toast { bottom: auto; top: 72px; }
+/* A row's keep waits for the row in use; its "at risk" pill says it all along. */
+.w-row:not(:hover):not(.sel):not(:focus-within) .w-badges > .w-act { visibility: hidden; }
+
+/* UX sweep, round 3. */
+/* Rows of one name show their folders, which tell them apart. */
+.w-row.dup:not(.sel) .w-p:not(.was):not(.hit) { display: block; }
+/* A failing pull request, named under Needs you's tiles too. */
+.w-shelf.needs > .w-calm-red { margin: 6px 0 0; }
+.w-calm.warn .w-calm-red { margin: 0 8px 0 0; }
+/* Folds and day headings are easier to hit. */
+.w-daymore { padding: 4px 2px; }
+.w-need-tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* A plan on Plans and asks: a card, its increments and its pages one click away. */
+.w-plans .w-li + .w-li, .w-plans .w-li + .w-row, .w-plans .w-row + .w-li { border-top: 1px solid var(--line); }
+.w-plan { display: grid; gap: 4px; padding: 9px 12px; cursor: pointer; }
+.w-plan:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.w-plan-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.w-plan-t { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-plan-ph { flex: none; font-size: var(--fs-1); color: var(--muted); }
+.w-plan-ph.done { color: var(--good-t); }
+.w-plan-sub { font-size: var(--fs-2); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-plan-strip { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--fs-2); }
+.w-plan-dot { width: 1.4em; text-align: center; color: var(--muted); }
+.w-plan-dot.done { color: var(--good-t); }
+.w-plan-dot.now { color: var(--ask-t); }
+.w-plan-dot.blocked { color: var(--bad-t); }
+.w-plan-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.w-chip { font: inherit; font-size: var(--fs-2); padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+.w-chip:hover { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.w-chip.good { color: var(--good-t); border-color: color-mix(in srgb, var(--good-t) 45%, transparent); }
+.w-chip.bad { color: var(--bad-t); border-color: color-mix(in srgb, var(--bad-t) 45%, transparent); }
+.w-chip.needs { color: var(--ask-t); border-color: color-mix(in srgb, var(--ask-t) 55%, transparent); }

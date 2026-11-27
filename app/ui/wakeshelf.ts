@@ -57,11 +57,43 @@ export type ReviewSum = {
 };
 
 /** A plan row from `deep-plan status --json` (wake_plans). */
+/** A plan's sealed scenarios as deep-plan status tells them: how many, the
+ *  last run (titles and scores only) and revisions waiting on the person. */
+export type ScenarioSum = {
+  count: number;
+  last: { at: string; pass: boolean; full: boolean; threshold: number; met: number; total: number; failing: { id: string; title: string; score: number }[] } | null;
+  waiting: number;
+};
+
 export type PlanRow = {
   slug: string;
   title?: string;
+  phase?: string;
+  progress?: { total: number; done: number };
+  checksOutstanding?: { n: number; id: string; kind: string; status: string }[];
+  scenarios?: ScenarioSum;
   increments?: { n: number; title: string; status: string; authorizedAt?: number; doneAt?: number }[];
 };
+
+/** Kinds the Wake never folds, caps or hides: few, and what the person
+ *  navigates by. The store's read keeps them too (crew-board WAKE_KEEP). */
+export const KEPT_KINDS = new Set(["review", "plan", "ask", "pr", "issue"]);
+export const kept = (r: { kind: string }) => KEPT_KINDS.has(r.kind);
+
+/** A plan card's increment strip and status line, from deep-plan status. */
+export function planState(p: PlanRow): { dots: { n: number; title: string; mark: string }[]; said: string; now: number | null } {
+  const inc = p.increments ?? [];
+  const mark = (s: string) => (s === "done" ? "done" : s === "blocked" ? "blocked" : s === "working" || s === "authorized" ? "now" : "todo");
+  const dots = inc.map((i) => ({ n: i.n, title: `${i.n}. ${i.title} · ${i.status}`, mark: mark(i.status) }));
+  const open = inc.find((i) => i.status === "working" || i.status === "authorized" || i.status === "blocked");
+  const total = p.progress?.total ?? inc.length;
+  const done = p.progress?.done ?? inc.filter((i) => i.status === "done").length;
+  const out = (p.checksOutstanding ?? []).filter((c) => !open || c.n === open.n);
+  const said = total && done === total ? "every increment done"
+    : open ? `increment ${open.n} of ${total}${out.length ? ` · ${out.length} check${out.length === 1 ? "" : "s"} to go` : " · checks passed"}`
+    : `${done} of ${total} done`;
+  return { dots, said, now: open ? open.n : null };
+}
 
 /** `R` is the caller's own row type: the rows come back as given. */
 export type Input<R extends ShelfRow = ShelfRow> = {
@@ -86,8 +118,6 @@ export type Lane = {
   pr: ShelfPr;
   /** review, checks, merged, landed */
   states: [LaneState, LaneState, LaneState, LaneState];
-  /** Shown only after "older": landed or closed, past the newest one. */
-  fold: boolean;
 };
 
 /** The shelves, in the order they show. Empty ones are left for the page to hide. */
@@ -154,12 +184,17 @@ export function needsOf<R extends ShelfRow>(inp: Input<R>): Need[] {
     // Two ways a review waits on the person: findings only they may close,
     // or fixes waiting after the re-review rounds are used up (their call).
     if (r.needsPerson)
-      out.push({ key: `needreview:${r.id}`, kind: "review", title: r.title, id: r.id,
-        findings: r.stage === "ask" ? r.addressed : r.closeIds.length, why: r.stage === "ask" ? "rounds used up: your call" : "close its finding" });
+      out.push({ key: `needreview:${r.id}`, kind: "review", title: reviewName(r), id: r.id,
+        findings: r.stage === "ask" ? r.addressed : r.closeIds.length, why: stageSaid(r) });
   }
   const risk = inp.rows.filter((r) => r.state === "risk");
-  if (risk.length)
-    out.push({ key: "risk", kind: "risk", title: `${risk.length} file${risk.length === 1 ? "" : "s"} will be lost`, rows: risk });
+  if (risk.length) {
+    // Said as the shelves count them: files, and pictures and recordings.
+    const pics = risk.filter((r) => shelfOf(r.kind) === "pictures").length;
+    const files = risk.length - pics;
+    const said = [files ? `${files} file${files === 1 ? "" : "s"}` : "", pics ? `${pics} picture${pics === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
+    out.push({ key: "risk", kind: "risk", title: `${said} will be lost`, rows: risk });
+  }
   return out;
 }
 
@@ -190,20 +225,37 @@ function laneRank(p: ShelfPr): number {
   return 6;
 }
 
+/** Every pull request's lane, what needs the person first. None is folded
+ *  away: pull requests are one of the kinds the Wake always shows. */
 export function lanesOf(prs: ShelfPr[]): Lane[] {
   const sorted = prs.map((p, i) => ({ p, i })).sort((a, b) => laneRank(a.p) - laneRank(b.p) || a.i - b.i);
-  let shownDone = 0;
-  return sorted.map(({ p }) => {
-    const finished = laneRank(p) === 6;
-    const fold = finished && shownDone++ >= 1;
-    return { key: prKey(p), pr: p, states: laneStates(p), fold };
-  });
+  return sorted.map(({ p }) => ({ key: prKey(p), pr: p, states: laneStates(p) }));
 }
 
-/** Files at risk first, then newest first. */
+/** At risk first, then what lasts, then what is gone; newest first within
+ *  each. A shelf is where the person looks over what is about to be lost,
+ *  row by row, before keeping it; the page folds the gone away. */
+export function atRiskFirst<R extends ShelfRow>(rows: R[]): R[] {
+  return [...rows.filter((r) => r.state === "risk"), ...rows.filter((r) => r.state !== "risk" && r.state !== "gone"), ...rows.filter((r) => r.state === "gone")];
+}
 function filesOf<R extends ShelfRow>(rows: R[]): R[] {
-  const f = rows.filter((r) => shelfOf(r.kind) === "files");
-  return [...f.filter((r) => r.state === "risk"), ...f.filter((r) => r.state !== "risk")];
+  return atRiskFirst(rows.filter((r) => shelfOf(r.kind) === "files"));
+}
+
+/** A review by what it reviewed: "<plan> · increment N" (or "· delivery")
+ *  when lookout knows, else its own title. */
+export function reviewName(r: ReviewSum): string {
+  if (!r.plan || r.inc === null || r.inc === undefined) return r.title;
+  return `${r.plan} · ${r.inc === "all" ? "delivery" : `increment ${r.inc}`}`;
+}
+
+/** A prompt Claude Code made from a background task's notification, not one
+ *  the person typed: its ids, output path and the command's description. */
+export function backgroundTask(prompt: string): string | null {
+  const p = prompt.trim();
+  if (!/^(<task-notification>|[a-z0-9]{6,12}\s+toolu_[A-Za-z0-9]+\s)/.test(p)) return null;
+  const m = /Background command "([^"]+)"/.exec(p) ?? /<summary>([^<]+)<\/summary>/.exec(p);
+  return m ? m[1] : "a background task";
 }
 
 export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
@@ -212,7 +264,7 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
   const past = inp.reviews.filter((r) => r.past).sort((a, b) => (b.closedAt || "").localeCompare(a.closedAt || ""));
   const plans = inp.rows.filter((r) => shelfOf(r.kind) === "plans");
   const lanes = lanesOf(inp.prs);
-  const pictures = inp.rows.filter((r) => shelfOf(r.kind) === "pictures");
+  const pictures = atRiskFirst(inp.rows.filter((r) => shelfOf(r.kind) === "pictures"));
   const files = filesOf(inp.rows);
   const commits = inp.rows.filter((r) => shelfOf(r.kind) === "commits");
   const order = [
@@ -220,7 +272,7 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
     ...live.map(reviewKey),
     ...past.map(reviewKey),
     ...plans.map(rowKey),
-    ...lanes.filter((l) => !l.fold).map((l) => l.key),
+    ...lanes.map((l) => l.key),
     ...pictures.map(rowKey),
     ...files.map(rowKey),
     ...commits.map(rowKey),
@@ -233,8 +285,12 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
 export type Section<R extends ShelfRow = ShelfRow> = { shelf: Exclude<ShelfId, "needs">; rows: R[] };
 export type Turn<R extends ShelfRow = ShelfRow> = {
   key: string;
+  /** The person's prompt; a turn only background tasks made has none. */
   prompt: string;
-  /** "Increment 2 of <plan title>" when the turn falls in an increment's window. */
+  /** Background tasks whose rows joined this turn, by their description. */
+  background: string[];
+  /** "<plan> · increment 2" when the turn falls in an increment's window:
+   *  the name Needs you and Reviews give it too. */
   name: string | null;
   session: string;
   /** ms */
@@ -265,7 +321,7 @@ export function incrementAt(plans: PlanRow[], at: number): string | null {
       const from = i.authorizedAt || 0;
       if (!from || at < from) continue;
       if (i.doneAt && at > i.doneAt) continue;
-      if (!best || from > best.at) best = { at: from, name: `Increment ${i.n} of ${p.title || p.slug}` };
+      if (!best || from > best.at) best = { at: from, name: `${p.slug} · increment ${i.n}` };
     }
   }
   return best ? best.name : null;
@@ -274,19 +330,44 @@ export function incrementAt(plans: PlanRow[], at: number): string | null {
 const SECTION_ORDER: Section["shelf"][] = ["reviews", "plans", "prs", "pictures", "files", "commits"];
 
 /** One card per turn: a run of rows with the same session and prompt on the
- *  same day (the same prompt later in the day is a new card). Newest first. */
+ *  same day (the same prompt later in the day is a new card). Newest first.
+ *  A background task's notification is a prompt Claude Code makes, not the
+ *  person: its rows join the person's prompt before it in that session. */
 export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
   const out: Turn<R>[] = [];
   let cur: { t: Turn<R>; rows: R[] } | null = null;
-  const keyOf = (r: R) => `${dayOf(t(r.created_at))}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
+  // Each row's own prompt, or for a background task's row the person's
+  // prompt it came after (rows are newest first: walk them oldest first).
+  const said = new Map<R, string>();
+  const task = new Map<R, string>();
+  const lastHuman = new Map<string, string>();
+  for (let i = inp.rows.length - 1; i >= 0; i--) {
+    const r = inp.rows[i];
+    const bg = backgroundTask(r.prompt);
+    // By session and day: a task finishing the next morning does not take
+    // the prompt typed the day before.
+    const sd = `${r.session_id}|${dayOf(t(r.created_at))}`;
+    if (bg === null) {
+      said.set(r, r.prompt);
+      if (r.prompt) lastHuman.set(sd, r.prompt);
+    } else {
+      said.set(r, lastHuman.get(sd) ?? "");
+      task.set(r, bg);
+    }
+  }
+  const promptOf = (r: R) => said.get(r) ?? r.prompt;
+  const keyOf = (r: R) => `${dayOf(t(r.created_at))}|${r.session_id}|${promptOf(r)}|${promptOf(r) || task.has(r) ? "" : r.kind}`;
   let last = "";
   const close = () => {
     if (!cur) return;
     const rows = cur.rows;
     cur.t.sections = SECTION_ORDER.map((shelf) => ({
       shelf,
-      rows: shelf === "files" ? filesOf(rows) : rows.filter((r) => shelfOf(r.kind) === shelf),
+      rows: shelf === "files" ? filesOf(rows) : shelf === "pictures" ? atRiskFirst(rows.filter((r) => shelfOf(r.kind) === shelf)) : rows.filter((r) => shelfOf(r.kind) === shelf),
     })).filter((s) => s.rows.length);
+    cur.t.background = [...new Set(rows.map((r) => task.get(r)).filter((x): x is string => !!x))];
+    // Keyed by its oldest row: a new row joining the turn keeps its folds.
+    cur.t.key = `turn:${rows[rows.length - 1].id}`;
     cur.t.name = incrementAt(inp.plans, cur.t.start);
     out.push(cur.t);
     cur = null;
@@ -296,7 +377,7 @@ export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
     const at = t(r.created_at);
     if (!cur || k !== last) {
       close();
-      cur = { t: { key: `turn:${r.id}`, prompt: r.prompt, name: null, session: r.session_id, start: at, end: at, day: dayOf(at), sections: [] }, rows: [] };
+      cur = { t: { key: `turn:${r.id}`, prompt: promptOf(r), background: [], name: null, session: r.session_id, start: at, end: at, day: dayOf(at), sections: [] }, rows: [] };
       last = k;
     }
     cur.rows.push(r);

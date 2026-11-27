@@ -1,7 +1,7 @@
 // node app/ui/wakeshelf_probe.ts — the Wake's shelves and turn cards
 // (wakeshelf.ts), a pure module, which Node runs as TypeScript.
 import {
-  incrementAt, laneStates, lanesOf, needsOf, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
+  backgroundTask, incrementAt, laneStates, lanesOf, atRiskFirst, kept, needsOf, planState, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
   type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
 } from "./wakeshelf.ts";
 
@@ -61,7 +61,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   ok("needs: a review whose rounds are used up counts its waiting fixes and says it is the person's call",
     asked[0]?.kind === "review" && asked[0].findings === 3 && /your call/.test(asked[0].why), asked);
   const risk = n.find((x) => x.kind === "risk");
-  ok("needs: files at risk are one item that lists them", risk?.kind === "risk" && risk.rows.length === 2 && risk.title === "2 files will be lost");
+  ok("needs: files at risk are one item that lists them", risk?.kind === "risk" && risk.rows.length === 2 && risk.title === "1 file and 1 picture will be lost", risk?.title);
 }
 
 // ------------------------------------------------------------ lanes
@@ -79,7 +79,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
     pr(47, "open", "you"),
   ]);
   ok("lanes: needs you, then landings, people, open, draft, done", lanes.map((l) => l.pr.n).join() === "47,39,41,46,45,42,38,36", lanes.map((l) => l.pr.n));
-  ok("lanes: only the newest finished PR shows; older ones fold", lanes.filter((l) => l.fold).map((l) => l.pr.n).join() === "36");
+  ok("lanes: every PR has a lane, finished ones included (none folds away)", lanes.length === 8);
 }
 
 // ------------------------------------------------------------ shelves
@@ -101,7 +101,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   const reviews = [review("live1"), review("old", { past: true, stage: "past", closedAt: at(9, 0) }), review("older", { past: true, stage: "past", closedAt: at(8, 0) })];
   const s = shelves({ ...empty, rows, reviews, prs: [pr(47, "open", "you"), pr(42, "draft", "draft")] });
   ok("shelves: pictures, files, commits and plans from the rows", s.pictures.length === 2 && s.files.length === 2 && s.commits.length === 1 && s.plans.length === 2);
-  ok("shelves: a file at risk comes first, even when older", s.files[0].title === "coupon-totals.json");
+  ok("shelves: a file at risk comes first, even when older", s.files.map((r) => r.title).join() === "coupon-totals.json,totals-report.html");
   ok("shelves: review rows stay off the shelves (lookout's reviews are drawn there)", !s.order.some((k) => k === `row:${rows[5].id}`));
   ok("shelves: past reviews newest closed first", s.reviews.past.map((r) => r.id).join() === "old,older");
   const kinds = s.order.map((k) => k.split(":")[0]);
@@ -118,10 +118,10 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
       { n: 2, title: "two", status: "working", authorizedAt: Date.parse(at(13, 10)), doneAt: 0 },
     ],
   }];
-  ok("incrementAt: inside a done increment's window", incrementAt(plans, Date.parse(at(12, 39))) === "Increment 1 of Take coupon codes at checkout");
-  ok("incrementAt: an open increment's window runs on", incrementAt(plans, Date.parse(at(18, 0))) === "Increment 2 of Take coupon codes at checkout");
+  ok("incrementAt: inside a done increment's window", incrementAt(plans, Date.parse(at(12, 39))) === "coupons · increment 1");
+  ok("incrementAt: an open increment's window runs on", incrementAt(plans, Date.parse(at(18, 0))) === "coupons · increment 2");
   ok("incrementAt: between increments there is no name", incrementAt(plans, Date.parse(at(13, 0))) === null);
-  ok("incrementAt: a plan with no title is named by its slug", incrementAt([{ slug: "s", increments: [{ n: 3, title: "", status: "working", authorizedAt: 1 }] }], 5) === "Increment 3 of s");
+  ok("incrementAt: named by the plan's slug, as Reviews names it", incrementAt([{ slug: "s", title: "A long title", increments: [{ n: 3, title: "", status: "working", authorizedAt: 1 }] }], 5) === "s · increment 3");
   const rows = [
     row("commit", "c2", "go 2", at(13, 36)), row("image", "after.png", "go 2", at(13, 15)), row("temp", "totals.json", "go 2", at(13, 14), { state: "risk" }),
     row("commit", "c1", "go 1", at(12, 32)), row("review", "inc1", "go 1", at(12, 39)),
@@ -131,7 +131,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   const cards = turns({ ...empty, rows, plans });
   ok("turns: one card per run of a prompt, a new day a new card", cards.map((c) => c.prompt).join("|") === "go 2|go 1|Take coupons|go 1", cards.map((c) => c.prompt));
   ok("turns: a card spans its rows' times", cards[0].start === Date.parse(at(13, 14)) && cards[0].end === Date.parse(at(13, 36)));
-  ok("turns: named by the increment whose window holds the turn", cards[0].name === "Increment 2 of Take coupon codes at checkout" && cards[1].name === "Increment 1 of Take coupon codes at checkout" && cards[2].name === null);
+  ok("turns: named by the increment whose window holds the turn", cards[0].name === "coupons · increment 2" && cards[1].name === "coupons · increment 1" && cards[2].name === null);
   ok("turns: sections follow the shelves' order and skip empty ones", cards[0].sections.map((s) => s.shelf).join() === "pictures,files,commits" && cards[1].sections.map((s) => s.shelf).join() === "reviews,commits");
   ok("turns: a card's day is local", cards[3].day === "2026-11-25" && cards[0].day === "2026-11-26");
   const order = timelineOrder([{ key: "risk", kind: "risk", title: "", rows: [] }], cards);
@@ -149,6 +149,58 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
     stageSaid(review("r", { stage: "finding", reviewer: "panel" })) === "panel · finding" &&
     stageSaid(review("r", { stage: "close", needsPerson: true })) === "you close it" &&
     stageSaid(review("r", { stage: "claims", claims: { unchecked: 3, broken: 0 } })) === "3 claims unchecked");
+}
+
+// ------------------------------------------------------------ gone last, background tasks, review names
+{
+  const rs = [row("temp", "a", "go", at(13, 3), { state: "gone" }), row("temp", "b", "go", at(13, 2)), row("temp", "c", "go", at(13, 1), { state: "risk" })];
+  ok("atRiskFirst: at risk, then what lasts, then gone", atRiskFirst(rs).map((r) => r.title).join() === "c,b,a");
+  const s2 = shelves({ ...empty, rows: [row("image", "dead.png", "go", at(13, 5), { state: "gone" }), row("image", "live.png", "go", at(13, 4))] });
+  ok("shelves: a gone picture sorts after a live one", s2.pictures.map((r) => r.title).join() === "live.png,dead.png");
+  const mixed = needsOf({ ...empty, rows: [row("temp", "a.log", "go", at(13, 3), { state: "risk" }), row("image", "b.png", "go", at(13, 2), { state: "risk" }), row("image", "c.png", "go", at(13, 1), { state: "risk" })] });
+  ok("needs: the risk tile counts files and pictures as the shelves do", mixed[0]?.title === "1 file and 2 pictures will be lost", mixed[0]?.title);
+
+  const note = 'ba8u2crv3 toolu_01CWm2gazdggKGnc85nzSxaL /private/tmp/claude-501/x/tasks/ba8u2crv3.output completed Background command "Run the full Rust suite" completed (exit code 0)';
+  ok("backgroundTask: a notification's command description", backgroundTask(note) === "Run the full Rust suite");
+  ok("backgroundTask: the person's own prompt is not one", backgroundTask("go 3") === null && backgroundTask("toolu_ is a word here") === null);
+  // Oldest last: the person says "go 3", files land, a background task
+  // finishes and leaves more: one card, the person's prompt, one task.
+  const rows = [
+    row("temp", "after-task.log", note, at(14, 20)),
+    row("temp", "first.log", "go 3", at(14, 10)),
+    row("commit", "c1", "go 3", at(14, 5)),
+  ];
+  const cards = turns({ ...empty, rows });
+  ok("turns: a background task's rows join the person's prompt before it", cards.length === 1 && cards[0].prompt === "go 3", cards.map((c) => c.prompt));
+  ok("turns: the card counts the background task it took in", cards[0].background.join() === "Run the full Rust suite");
+  const alone = turns({ ...empty, rows: [row("temp", "x.log", note, at(9, 0), { session_id: "s9" })] });
+  ok("turns: a background task with no prompt before it is its own card, with no prompt", alone.length === 1 && alone[0].prompt === "" && alone[0].background.length === 1);
+
+  const late = turns({ ...empty, rows: [row("temp", "morning.log", note, at(8, 0, 27)), row("temp", "evening.log", "go 3", at(22, 0, 26))] });
+  ok("turns: a background task the next morning takes no prompt from the day before", late.length === 2 && late[0].prompt === "" && late[1].prompt === "go 3", late.map((c) => c.prompt));
+  const older = row("temp", "one.log", "go 4", at(15, 0));
+  const k1 = turns({ ...empty, rows: [older] })[0].key;
+  const k2 = turns({ ...empty, rows: [row("temp", "two.log", "go 4", at(15, 5)), older] })[0].key;
+  ok("turns: a card keeps its key when a new row joins the turn", k1 === k2 && k1 === `turn:${older.id}`, [k1, k2]);
+  ok("reviewName: plan and increment when lookout knows them", reviewName(review("x", { plan: "wake-shelves", inc: 6, title: "dev/wake-shelves vs 1c0ee2e4" })) === "wake-shelves · increment 6");
+  ok("reviewName: a delivery review", reviewName(review("x", { plan: "p", inc: "all" })) === "p · delivery");
+  ok("reviewName: its own title otherwise", reviewName(review("x", { title: "main vs spike" })) === "main vs spike");
+  const tile = needsOf({ ...empty, reviews: [review("r", { stage: "ask", needsPerson: true, addressed: 2, plan: "p", inc: 2, round: { sealed: 2, pending: 2, max: 2, n: 2 } })] })[0];
+  ok("needs: a review's tile says its stage in the Reviews shelf's words", tile?.kind === "review" && tile.why === "2 rounds done: your call" && tile.title === "p · increment 2", tile);
+}
+
+// ------------------------------------------------------------ plan cards, kept kinds
+{
+  const p: PlanRow = {
+    slug: "p", title: "P", phase: "implementing", progress: { total: 3, done: 2 },
+    checksOutstanding: [{ n: 3, id: "t", kind: "test", status: "pending" }, { n: 1, id: "old", kind: "manual", status: "pending" }],
+    increments: [{ n: 1, title: "a", status: "done" }, { n: 2, title: "b", status: "done" }, { n: 3, title: "c", status: "working" }],
+  };
+  const st = planState(p);
+  ok("planState: a mark per increment", st.dots.map((d) => d.mark).join() === "done,done,now" && st.now === 3);
+  ok("planState: says the open increment and its checks to go (not another increment's)", st.said === "increment 3 of 3 · 1 check to go", st.said);
+  ok("planState: a finished plan says so", planState({ ...p, progress: { total: 3, done: 3 }, increments: p.increments!.map((i) => ({ ...i, status: "done" })) }).said === "every increment done");
+  ok("kept: reviews, plans, asks, pull requests and issues are never folded", ["review", "plan", "ask", "pr", "issue"].every((k) => kept({ kind: k })) && !kept({ kind: "temp" }) && !kept({ kind: "image" }));
 }
 
 console.log(`wakeshelf probe: ${pass} passed, ${fail} failed`);

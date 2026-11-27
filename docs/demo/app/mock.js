@@ -796,7 +796,20 @@ function plansOf(w) {
     if (!mins.length) return { n, title: `increment ${n}`, status: done ? "done" : "pending", authorizedAt: 0, doneAt: 0 };
     return { n, title: `increment ${n}`, status: done ? "done" : "working", authorizedAt: ago(Math.max(...mins) + 3), doneAt: done ? ago(Math.min(...mins) - 2) : 0 };
   });
-  return [{ slug: w.plan.slug, title: w.plan.title, root: treeOf(w), realRoot: treeOf(w), phase: w.plan.phase, increments }];
+  // As deep-plan status gives them: phase, progress, checks still to run on
+  // the open increment, and the sealed scenarios' summary (titles and scores).
+  const open = increments.find((i) => i.status === "working");
+  const scenarios = {
+    "demo-coupons": { count: 6, last: { at: iso(ago(25)), pass: false, full: true, threshold: 0.8, met: 5, total: 6, failing: [{ id: "s4", title: "A percent-off code rounds the total down", score: 0.4 }] }, waiting: 0 },
+    "checkout-errors": { count: 4, last: null, waiting: 2 },
+    "search-index": { count: 5, last: { at: iso(ago(60 * 20)), pass: true, full: true, threshold: 0.8, met: 5, total: 5, failing: [] }, waiting: 0 },
+  }[w.plan.slug];
+  return [{
+    slug: w.plan.slug, title: w.plan.title, root: treeOf(w), realRoot: treeOf(w),
+    phase: w.plan.phase === "working" ? "implementing" : w.plan.phase, progress: { total: w.plan.total, done: w.plan.done },
+    checksOutstanding: open ? [{ n: open.n, id: "test-unit", kind: "test", status: "pending" }, { n: open.n, id: "review", kind: "review", status: "pending" }] : [],
+    ...(scenarios ? { scenarios } : {}), increments,
+  }];
 }
 // The demo workspace whose worktree is `dir`.
 function wakeOf(dir) {
@@ -1305,9 +1318,11 @@ const handlers = {
   },
   // A plan, ask or review row opens as a sheet page, as the app's does with
   // here: the rest says it went to cmux.
-  wake_open: ({ id, here }) => {
+  wake_open: ({ id, sub, here }) => {
     const row = WAKE.find(([i]) => i === id);
     const kind = row?.[2];
+    // A plan's scenarios page, as wake.rs opens it (the app adds the page's key).
+    if (here && kind === "plan" && sub === "scenarios" && row?.[5].locator) return { sheet: `/scenarios/${row[5].locator}`, detail: "" };
     if (here && row?.[5].locator && ["plan", "ask", "review"].includes(kind)) return { sheet: `/${kind}/${row[5].locator}`, detail: "" };
     opening("wake_open", { id, here });
     return { sheet: null, detail: "opened in cmux" };
