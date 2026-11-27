@@ -2,7 +2,7 @@
 // (wakeshelf.ts), a pure module, which Node runs as TypeScript.
 import {
   incrementAt, laneStates, lanesOf, needsOf, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
-  type AskPage, type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
+  type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
 } from "./wakeshelf.ts";
 
 let pass = 0;
@@ -31,28 +31,28 @@ function review(id: string, extra: Partial<ReviewSum> = {}): ReviewSum {
     claims: { unchecked: 0, broken: 0 }, needsPerson: false, closeIds: [], past: false, closedAt: null, ...extra,
   };
 }
-const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], asks: [], plans: [] };
+const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
 
 // ------------------------------------------------------------ needs
 {
   ok("nothing waiting: no needs (the page says 'Nothing needs you')", needsOf(empty).length === 0);
-  const asks: AskPage[] = [
-    { path: "/ask/a1", label: "Bad code: what should checkout do?", waiting: true, since: 1, root: `${WS}/sub` },
-    { path: "/ask/a2", label: "answered", waiting: false, since: 1, root: WS },
-    { path: "/ask/a3", label: "another worktree", waiting: true, since: 1, root: "/code/shop.worktrees/couponsX" },
-  ];
   const prs = [
     pr(39, "merged", "done", { merge: { sha: "m39", at: at(11, 0) }, landing: { overall: { status: "awaiting", stage: "notebook", recipe: "deploy", live: true } } }),
     pr(47, "open", "you", { checks: { fail: 2, run: 0, pass: 6, gate: 0 } }),
     pr(46, "open", "people"),
   ];
   const reviews = [review("inc1", { stage: "close", needsPerson: true, closeIds: ["f1"] }), review("inc2")];
-  const rows = [row("temp", "coupon-totals.json", "go 2", at(13, 33), { state: "risk" }), row("image", "coupon-error.png", "go 2", at(13, 16), { state: "risk" })];
-  const n = needsOf({ ...empty, asks, prs, reviews, rows });
-  ok("needs: ask, landing, red PR, review to close, files at risk, in that order",
-    n.map((x) => x.kind).join() === "ask,landing,pr,review,risk", n.map((x) => x.kind));
-  ok("needs: an ask counts only while waiting, from inside this worktree (not a name that only starts the same)",
-    n.filter((x) => x.kind === "ask").length === 1);
+  const rows = [
+    row("temp", "coupon-totals.json", "go 2", at(13, 33), { state: "risk" }), row("image", "coupon-error.png", "go 2", at(13, 16), { state: "risk" }),
+    row("ask", "Bad code: what should checkout do?", "go 2", at(13, 10)),
+  ];
+  const n = needsOf({ ...empty, prs, reviews, rows });
+  ok("needs: landing, red PR, review to close, files at risk, in that order",
+    n.map((x) => x.kind).join() === "landing,pr,review,risk", n.map((x) => x.kind));
+  // An ask's page says it waits until answered there; one answered in
+  // Claude's terminal would stay. So asks are not in Needs you.
+  ok("needs: an ask is not in Needs you; it is on Plans and asks",
+    !n.some((x) => (x.kind as string) === "ask") && shelves({ ...empty, rows }).plans.some((r) => r.kind === "ask"));
   const land = n.find((x) => x.kind === "landing");
   ok("needs: a landing names the stage it waits at", land?.kind === "landing" && land.stage === "notebook" && /approve notebook/.test(land.title));
   const red = n.find((x) => x.kind === "pr");
