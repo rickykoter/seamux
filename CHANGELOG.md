@@ -13,10 +13,11 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   re-review, rounds used up and your call, fixing, or closing), its open
   findings by severity, and a search over past reviews. It reads `lookout
   list --json --root`, which now gives a summary of each review. Needs you
-  gathers what waits on a person: an open ask, a review to close or to
-  decide on, an open pull request the board files under you (failing
-  checks, a conflict, changes requested), a landing step to approve, and
-  files at risk. A shelf with
+  gathers what waits on a person: a review to close or to decide on, an
+  open pull request the board files under you (failing checks, a
+  conflict, changes requested), a landing step to approve, and files at
+  risk. Asks stay on Plans and asks, not in Needs you: an ask answered in
+  Claude's terminal still reads as waiting on its page. A shelf with
   nothing on it is not drawn. `t` switches to Timeline, where each turn is
   a card split into the same sections and named after its plan increment;
   `deep-plan status --json` now gives each plan's title and when each

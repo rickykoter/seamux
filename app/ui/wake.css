@@ -253,7 +253,7 @@
 .w-need-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-need-t .w-act { margin-left: auto; flex: none; }
 .w-need-s { font-size: var(--fs-2); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.w-need.n-ask .w-need-s, .w-need.n-landing .w-need-s, .w-need.n-review .w-need-s { color: var(--ask-t); }
+.w-need.n-landing .w-need-s, .w-need.n-review .w-need-s { color: var(--ask-t); }
 .w-need.n-risk .w-need-s, .w-need.n-pr .w-need-s { color: var(--bad-t); }
 
 /* Reviews: live ones by stage, past ones searchable. */
