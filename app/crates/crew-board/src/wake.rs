@@ -535,6 +535,13 @@ pub fn chart_card(folder: &str) -> Option<Value> {
 pub fn chart_card_in(home: &str, folder: &str) -> Option<Value> {
     let dir = Path::new(folder).parent()?.to_string_lossy().into_owned();
     let id = Path::new(folder).file_name()?.to_string_lossy().into_owned();
+    // A chart id as chartroom makes them (ID_OK): a folder chartroom could
+    // not have made is no chart, whatever a page names.
+    let id_ok = !id.is_empty() && id.len() <= 64 && !id.starts_with('-')
+        && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !id_ok {
+        return None;
+    }
     let room = crew_store::stores::chart_rooms(home).into_iter().find(|(_, d, _)| d.trim_end_matches('/') == dir)?;
     let read = |n: &str| std::fs::read(Path::new(folder).join(n)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let c = read("chart.json").filter(Value::is_object)?;
@@ -815,8 +822,6 @@ mod tests {
         }
     }
 
-    /// A read cut at its limit takes back the kept kinds it lacked, once
-    /// each, in the read's order.
     /// A chart card reads only a folder in a room chartroom lists, and says
     /// the pick by its label, the open threads and those waiting on Claude.
     #[test]
@@ -846,9 +851,15 @@ mod tests {
         assert_eq!((c["versions"].as_u64(), c["panes"].as_u64(), c["open"].as_u64(), c["waiting"].as_u64()), (Some(2), Some(1), Some(2), Some(1)));
         assert_eq!((c["room"].as_str(), c["published"].as_str(), c["role"].as_str()), (Some("r1"), Some("https://claude.ai/artifact/x"), Some("option")));
         assert!(chart_card_in(&h, &root.join("elsewhere/checkout").to_string_lossy()).is_none(), "a folder in no room");
+        std::fs::create_dir_all(dir.join("Not_An_Id")).unwrap();
+        std::fs::write(dir.join("Not_An_Id/chart.json"), "{}").unwrap();
+        assert!(chart_card_in(&h, &dir.join("Not_An_Id").to_string_lossy()).is_none(), "a folder chartroom could not have made is no chart");
+        assert!(chart_card_in(&h, &dir.join("..").to_string_lossy()).is_none(), "nor the room's parent");
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A read cut at its limit takes back the kept kinds it lacked, once
+    /// each, in the read's order.
     #[test]
     fn a_cut_read_takes_back_the_kept_kinds() {
         let at = |id: i64, kind: &str, when: &str| crew_store::Row { id, created_at: when.into(), ..row(kind, "", "", "") };
