@@ -9887,7 +9887,7 @@ if (want("policy and ship: levels from the base branch")) {
     "api graphql": { stdout: { data: { repository: { autoMergeAllowed: true } } } },
     "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[{ type: "deletion" }, { type: "required_status_checks",
       parameters: { required_status_checks: [{ context: "probes", integration_id: 1 }] } }]] },
-    "api repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+    "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: administration=read\r\n\r\n{}", stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
     "pr merge 12 --auto": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: where GraphQL says the repo allows auto-merge and the base's ruleset requires the checks, GitHub's auto-merge is asked instead",
@@ -9895,7 +9895,7 @@ if (want("policy and ship: levels from the base branch")) {
     ghCalls().some(c => /^api graphql -F owner=\{owner\} -F name=\{repo\} -f query=.*autoMergeAllowed/.test(c)) &&
     !ghCalls().some(c => /protection/.test(c)), r.stdout + ghCalls().join("\n"));
   ghMap({ "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[]] },
-    "api repos/{owner}/{repo}/branches/main/protection/required_status_checks": { stdout: { contexts: ["a"], checks: [{ context: "b" }, { context: "a" }] } } });
+    "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { stdout: "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n" + JSON.stringify({ contexts: ["a"], checks: [{ context: "b" }, { context: "a" }] }) } });
   const reqd = spawnSync("node", ["--input-type=module", "-e",
     `import { requiredChecks } from ${JSON.stringify(path.join(HERE, "lib", "ci.mjs"))}; console.log(JSON.stringify(requiredChecks(${JSON.stringify(PR_)}, "main")))`],
     { encoding: "utf8", env: PENV }).stdout.trim();
@@ -10044,6 +10044,22 @@ if (want("policy and ship: levels from the base branch")) {
       [`run list --commit ${ksHead()}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "completed", conclusion: "failure" }]] },
       "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "success", url: "" }, { name: "lint", status: "completed", conclusion: "failure", url: "" }] } } });
     const nt = pc("ship", "pol-lever", "--dry-run").stdout;
+    // The person's narrow-token run (s7): at auto-merge, gh pr checks and classic
+    // protection refused, rules and Actions answering, the token probes unmapped.
+    ghMap({ [PRV]: pvK(), [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${ksHead()}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "in_progress", conclusion: "" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "in_progress", conclusion: "", url: "" }] } },
+      "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[{ type: "deletion" }]] },
+      "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: administration=read\r\n\r\n{}", stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+      "api graphql": { stdout: { data: { repository: { autoMergeAllowed: true } } } }, "pr merge": { stdout: "" } });
+    const sr = pc("ship", "pol-lever", "--merge", "--dry-run", "--json");
+    const sj = JSON.parse(sr.stdout || "{}"), st7 = (sj.gates || []).find(g => g.gate === "token");
+    ok("ship: on a narrow token at auto-merge, a dry run names checks=read and administration=read from GitHub's refusals, reads the checks from Actions, and says how it would merge",
+      st7 && st7.warn && st7.missing.includes("checks=read") && st7.missing.includes("administration=read") &&
+      /required checks come from its rulesets, as classic branch protection is refused/.test(st7.why) &&
+      sj.action === "merge-when-green" && sj.autoMerge === false && ghCalls().some(c => /^api graphql/.test(c)) && ghCalls().some(c => /rules\/branches\/main/.test(c)) &&
+      !ghCalls().some(c => /^pr merge/.test(c)) && (sj.gates || []).some(g => g.gate === "ci" && /1 PR check\(s\) still running/.test(g.why)), sr.stdout + ghCalls().join("\n"));
+    ok("ship: …and the text says the merge would wait in ship's own wait", /by ship's own wait/.test(pc("ship", "pol-lever", "--merge", "--dry-run").stdout));
     ok("ship: the text verdict shows both lines as warnings", /! token: the token lacks checks=read, statuses=read/.test(nt) && /! ci: 1 passed, 0 running, 1 failed/.test(nt), nt);
   }
   // Observe: ship acts at the level and records what it would have done at observe.

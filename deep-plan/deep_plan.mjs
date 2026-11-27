@@ -5433,7 +5433,7 @@ function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
     // Below auto-merge ship does not wait on the checks, but the person who
     // merges there does: read them, to show and hold nothing.
     const c = acting !== "auto-merge" ? CI.checksNow(root, pr.headRefOid) : null;
-    tokenGate(root, pr.headRefOid, v, c);
+    tokenGate(root, pr.headRefOid, v);
     if (c) checksInfo(c, v);
   }
   if (!POL.atLeast(acting, "auto-pr")) { v.action = "none"; v.say = `at ${level}, a person opens the PR and merges it`; return v; }
@@ -5454,6 +5454,7 @@ function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
   if (acting !== "auto-merge") { v.action = "none"; v.say = capped || `at auto-pr, PR #${pr.number} is open for a person to merge: ship --merge on their word`; return v; }
   if (pr.mergeable === "CONFLICTING") { gate("mergeable", false, `PR #${pr.number} has conflicts with its base`); v.action = "wait"; return v; }
   const c = CI.checksNow(root, head);
+  if (c.via === "actions") noteRefusals(v);
   if (c.error) { gate("ci", false, c.error); v.action = "wait"; return v; }
   if (c.failed.length) {
     // A check that is red on the base's tip too is labelled, so a lane can
@@ -5463,7 +5464,15 @@ function verdictCore({ st, root, fetch = true, merge = false, as = null }) {
     const named = c.failed.map(f => red && red.has(f.check) ? `${f.name} (also failing on ${baseBranch} at ${tip.slice(0, 8)})` : f.name);
     gate("ci", false, `${c.failed.length} PR check(s) failed: ${named.join(", ")}`); v.action = "wait"; return v;
   }
-  if (c.pending.length || !c.total) { v.gates.push({ gate: "ci", ok: false, why: c.total ? `${c.pending.length} PR check(s) still running` : "no PR checks reported yet" }); v.action = "merge-when-green"; return v; }
+  if (c.pending.length || !c.total) {
+    v.gates.push({ gate: "ci", ok: false, why: c.total ? `${c.pending.length} PR check(s) still running` : "no PR checks reported yet" });
+    v.action = "merge-when-green";
+    // Which way it would merge once green, read as a real run reads it: the
+    // repo's auto-merge setting and the base's required checks.
+    v.autoMerge = CI.githubAutoMerge(root, baseBranch, c.names || []);
+    noteRefusals(v);
+    return v;
+  }
   v.gates.push({ gate: "ci", ok: true, why: `all ${c.passed.length} PR check(s) passed` });
   v.action = "merge";
   return v;
@@ -5516,19 +5525,32 @@ function checksInfo(c, v) {
 // Actions runs (lib/ci.mjs checksNow), and a check from another service is
 // not seen there. A probe that said nothing adds no gate.
 // c, when the PR's checks were read here: a gh pr checks refused for the
-// token names checks=read too.
+// token names checks=read too, and so does any other read GitHub refused in
+// this verdict (noteRefusals).
 function tokenGate(root, head, v, c = null) {
   const t = CI.tokenReads(root, head);
+  v.tokenReads = t;
+  writeTokenGate(v, c);
+}
+function writeTokenGate(v) {
+  const t = v.tokenReads || { missing: [], unread: [], fromHeader: false };
   const missing = [...t.missing];
-  const refused = c && c.via === "actions" && !missing.includes("checks=read");
-  if (refused) missing.unshift("checks=read");
+  const more = CI.refusals().filter(r => !missing.includes(r.perm));
+  missing.push(...more.map(r => r.perm));
   const needs = `ship needs ${CI.SHIP_NEEDS.join(", ")}`;
-  const from = [t.fromHeader && "GitHub's X-Accepted-GitHub-Permissions header", (refused || (missing.length && !t.fromHeader)) && "GitHub's refusals"].filter(Boolean).join(" and ");
+  const from = [t.fromHeader && "GitHub's X-Accepted-GitHub-Permissions header",
+    ...more.map(r => `${r.perm}: ${r.what}`), (!t.fromHeader && t.missing.length) && "GitHub's refusals"].filter(Boolean).join("; ");
+  v.gates = v.gates.filter(g => g.gate !== "token");
   if (missing.length)
     v.gates.push({ gate: "token", ok: true, warn: true, missing,
       why: `the token lacks ${missing.join(", ")} (${from})` +
-        (missing.includes("checks=read") ? ": ship reads the PR's checks from its Actions runs, where a check from another service is not seen" : "") + `; ${needs}` });
+        (missing.includes("checks=read") ? ": ship reads the PR's checks from its Actions runs, where a check from another service is not seen" : "") +
+        (missing.includes("administration=read") ? "; the base's required checks come from its rulesets, as classic branch protection is refused" : "") + `; ${needs}` });
   else if (!t.unread.length) v.gates.push({ gate: "token", ok: true, missing: [], why: `the token reads checks and commit statuses; ${needs}` });
+}
+// Fold every read GitHub refused so far into the token gate.
+function noteRefusals(v) {
+  if (v.tokenReads || CI.refusals().length) writeTokenGate(v);
 }
 
 // The stacked gate (lib/stack.mjs). A family child whose branch carries its
@@ -5577,7 +5599,9 @@ function shipLines(v) {
   for (const g of v.gates) out.push(`  ${!g.ok ? "·" : g.warn ? "!" : "✓"} ${g.gate}: ${g.why}`);
   if (v.pr) out.push(`  PR #${v.pr.number}${v.pr.draft ? " (draft)" : ""} ${v.pr.url}`);
   const what = { none: v.say || "nothing for ship to do", wait: `waits on: ${v.waits.join("; ")}`, push: `pushes ${v.branch} to origin (fast-forward only)`, open: "opens the PR", ready: `marks PR #${v.pr && v.pr.number} ready for review`,
-    merge: `merges PR #${v.pr && v.pr.number} (${v.method})`, "merge-when-green": `merges PR #${v.pr && v.pr.number} (${v.method}) once its checks are green` }[v.action];
+    merge: `merges PR #${v.pr && v.pr.number} (${v.method})`,
+    "merge-when-green": `merges PR #${v.pr && v.pr.number} (${v.method}) once its checks are green` +
+      (v.autoMerge === true ? ", by GitHub's auto-merge (the base requires every check on the PR)" : v.autoMerge === false ? ", by ship's own wait (GitHub's auto-merge can't wait on these checks here)" : "") }[v.action];
   out.push(`  → ${what}`);
   if (v.observe) out.push(`  observe ${v.observe.level} (${v.observe.by}): ${v.observe.would}${v.observe.waits.length ? ` (waits on: ${v.observe.waits.join("; ")})` : ""}`);
   if (v.status) out.push(`  seamux/ship: ${v.status.state} (${v.status.description})`);
@@ -5757,7 +5781,7 @@ function shipAct(st, root, v) {
     return { ok: true, note: `merged PR #${n}${v.lever ? " on your ship --merge" : ""}; its landing runs from the app` };
   }
   // merge-when-green
-  if (CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""), (CI.checksNow(root, v.head).names || []))) {
+  if (v.autoMerge ?? CI.githubAutoMerge(root, v.base.replace(/^origin\//, ""), (CI.checksNow(root, v.head).names || []))) {
     const r = CI.ghAct(["pr", "merge", n, "--auto", `--${v.method}`, "--match-head-commit", v.head], root);
     if (r.ok) {
       log(`asked GitHub to merge PR #${n} once its required checks pass${v.lever ? ", on the person's ship --merge" : ""}`);

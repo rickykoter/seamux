@@ -127,7 +127,12 @@ commit's Actions runs, where a check from another service is not seen. A
 `X-Accepted-GitHub-Permissions` header, at every level once the PR's head
 is HEAD, and lists what ship needs:
 pull requests write, contents write, checks read, and commit statuses
-read and write. It warns and does not hold. A failed check that is also
+read and write. It warns and does not hold. Any other read GitHub refuses on the way is named
+there too: `gh pr checks` refused is checks read, and classic branch
+protection refused is administration read, when the base's rulesets
+require nothing. With checks still running, a dry run reads what a real
+run would (the repo's auto-merge setting and the base's required checks)
+and says whether GitHub's auto-merge or ship's own wait would merge it. A failed check that is also
 red on the base's tip says "also failing on main at <sha>", and still
 holds the merge. Below auto-merge, where ship does not wait on them, the
 PR's checks are still read (from the Actions runs when `gh pr checks` is

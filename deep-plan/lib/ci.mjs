@@ -87,6 +87,7 @@ export function checksNow(cwd, head) {
   if (!Array.isArray(rows)) {
     const why = c.errText.split("\n").pop() || "no JSON";
     if (!TOKEN_REFUSED.test(c.errText)) return { error: `gh pr checks: ${why}` };
+    if (!refused.has("checks=read")) refused.set("checks=read", "gh pr checks (GraphQL statusCheckRollup)");
     const a = actionsChecks(cwd, head || localHead(cwd));
     if (a.error) return { error: `gh pr checks was refused (${why}), and the Actions runs could not be read either: ${a.error}` };
     return { ...a, via: "actions", refused: why };
@@ -216,9 +217,29 @@ export function requiredChecks(cwd, base) {
   const fromRules = Array.isArray(rules) ? rules.filter(x => x && x.type === "required_status_checks")
     .flatMap(x => ((x.parameters || {}).required_status_checks || []).map(c => c && c.context)).filter(Boolean) : [];
   if (fromRules.length) return [...new Set(fromRules)];
-  const p = gh(["api", `repos/{owner}/{repo}/branches/${base}/protection/required_status_checks`], cwd);
-  const req = !p.err && p.status === 0 && parse(p.out);
+  // With -i, so a refusal (administration read, which a narrow token lacks)
+  // is named from its header.
+  const p = headed(gh(["api", "-i", `repos/{owner}/{repo}/branches/${base}/protection/required_status_checks`], cwd), "administration=read");
+  const req = p.ok && parse(p.body);
   return req ? [...new Set([...(req.contexts || []), ...((req.checks || []).map(c => c && c.context).filter(Boolean))])] : [];
+}
+
+// The permissions GitHub refused reads for in this process, by name (from
+// X-Accepted-GitHub-Permissions, else the one the read was for), with what
+// the read was. The token gate lists them.
+const refused = new Map();
+export const refusals = () => [...refused.entries()].map(([perm, what]) => ({ perm, what }));
+// A `gh api -i` answer: {ok, code, body}, a refusal recorded under `want`.
+function headed(r, want, what = want) {
+  if (r.err) return { ok: false, code: 0, body: "" };
+  const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out) || [])[1]) || 0;
+  const cut = r.out.search(/\r?\n\r?\n/);
+  const body = cut >= 0 ? r.out.slice(cut).trim() : (code ? "" : r.out);
+  if (code >= 200 && code < 300) return { ok: true, code, body };
+  const named = (/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out) || [])[1];
+  if (code === 403 || code === 404 || (!code && r.status !== 0 && TOKEN_REFUSED.test(`${r.errText}\n${r.out}`)))
+    for (const perm of (named || want).split(/\s*,\s*/).filter(Boolean)) if (!refused.has(perm)) refused.set(perm, what);
+  return { ok: false, code, body };
 }
 
 // Post ship's commit status on sha (ADR 0108): context seamux/ship, with
