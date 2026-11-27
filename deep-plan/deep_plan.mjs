@@ -6179,6 +6179,8 @@ function statusRows() {
   const fams = familiesBySlug();
   return allStates().filter(st => st.phase !== "closed").map(st => ({
     slug: st.slug, root: st.root || "", phase: st.phase,
+    // The plan's title from its archived spec, "" when there is none.
+    title: planSpec(st.slug).title || "",
     // The root with symlinks resolved, as the gate compares it: a session in
     // /private/tmp/x is inside a plan rooted at /tmp/x on macOS.
     realRoot: st.root ? canon(st.root) : "",
@@ -6211,6 +6213,10 @@ function statusRows() {
     ...(st.policy ? { policy: st.policy } : {}),
     increments: (st.increments || []).map(i => ({
       n: i.n, title: i.title, status: i.status, obs: checksAggregate(i), by: i.by || "",
+      // When the increment's go came and when it was done (ms, 0 when not
+      // yet): a reader can match a turn to the increment whose window holds
+      // it (the seamux app's Wake names its turn cards this way).
+      authorizedAt: i.authorizedAt || 0, doneAt: i.doneAt || 0,
       // The policy's level for the increment's files, from the last render.
       ...(i.level ? { level: i.level } : {}),
       checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => {

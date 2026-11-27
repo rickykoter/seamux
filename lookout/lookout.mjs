@@ -34,6 +34,7 @@ import * as N from "./lib/notes.mjs";
 import * as CT from "./lib/contracts.mjs";
 import { brief, claimsBrief, DIMENSIONS } from "./lib/prompt.mjs";
 import * as CL from "./lib/claims.mjs";
+import * as SM from "./lib/summary.mjs";
 import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
@@ -727,11 +728,15 @@ function cmdShow() {
         (f.collapsed ? "  [collapsed" + (f.binary ? ": binary" : f.generated ? ": generated" : f.large ? ": large" : "") + "]" : ""));
 }
 
+// `--root DIR` keeps the reviews of that worktree. With --json each review
+// also carries its state (lib/summary.mjs): stage, gate, round, open findings
+// by severity, claims, whether the person must close a finding, and past.
 function cmdList() {
-  const all = S.list();
+  const root = opt("root");
+  if (flag("root") && !root) die("list --root wants a directory");
+  const all = root ? SM.underRoot(S.list(), root) : S.list();
   if (flag("json")) {
-    process.stdout.write(JSON.stringify(all.map(r => ({ id: r.id, title: r.title, root: r.source?.root,
-      updatedAt: r.updatedAt, files: r.stats?.files })), null, 2) + "\n");
+    process.stdout.write(JSON.stringify(all.map(r => ({ ...SM.summarize(r), files: r.stats?.files })), null, 2) + "\n");
     return;
   }
   if (!all.length) { say("no reviews yet (lookout open)"); return; }
@@ -802,7 +807,7 @@ function usage() {
   lookout render <id>       redraw the page from the store
   lookout sync <id>         re-rank and redraw (crew's intent server runs it after a page edit)
   lookout show <id> [--json]
-  lookout list [--json]
+  lookout list [--json] [--root DIR]
   lookout setup             engine pointer, ~/.local/bin shim, pinned highlight.js
   lookout engine            print the engine pointer and the detected host
   lookout export-artifact <id> [--json]

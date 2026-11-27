@@ -3,9 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 import type { Sheet, Shown } from "./sheet";
 import { openElsewhere } from "./panelinks";
 import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
-import { fileUrl, mediaOf, PREVIEW, previewable, Viewer } from "./wakeview";
-import { age, badgeOf, bar, byUrl, countsSaid, doneSaid, GROUP_SAID, grouped, type Group, type Pr } from "./prs";
+import { fileUrl, mediaOf, PREVIEW, previewable, thumbUrl, Viewer } from "./wakeview";
+import { age, badgeOf, byUrl, groupOf, type Group, type Pr } from "./prs";
 import { chipFor, readLandings, type Landing, type PrRow } from "./release";
+import { dayOf, lanesOf, needsOf, SHELF_SAID, shelves, stageSaid, stepKey, turns, type AskPage, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -133,10 +134,8 @@ function tooSoon(b: HTMLElement): boolean {
 
 export class Wake {
   private stats = el("span", "w-stats");
-  private keepAllBtn = button("", "w-act keepall");
   private picker = el("select", "w-ws");
   private q = el("input", "w-q");
-  private chipsEl = el("div", "w-chips");
   private list = el("div", "w-list");
   private toastEl = el("div", "w-toast");
   private help = el("div", "w-help");
@@ -151,17 +150,53 @@ export class Wake {
    *  one: a change in the sheet's page roots then leaves the Wake alone. */
   private picked = false;
   private query = "";
-  private kinds = new Set<string>();
-  /** The kind chips past the five busiest, shown after "more". */
-  private allChips = false;
   private openGroups = new Set<string>();
   /** Days the person folded or opened by hand, over the default (older days
    *  fold when the list is long). */
   private dayFold = new Map<string, boolean>();
-  /** Long days the person asked to see in full ("show N more"). */
-  private dayAll = new Set<string>();
+  /** The rows shown, in reading order: the preview strip flips through them. */
   private vis: Row[] = [];
-  private sel = -1;
+  /** The picked item: a row, a pull request's lane, a review or a Needs you
+   *  tile, by key (wakeshelf.ts). j and k walk the keys the page shows, in
+   *  the order it shows them. */
+  private selKey: string | null = null;
+  /** What Enter, c and the rest do to each key drawn. */
+  private acts = new Map<string, { row?: Row; open: (e?: MouseEvent | KeyboardEvent) => void; copy?: () => void }>();
+  /** Shelves (the default) or Timeline, kept across launches. */
+  private mode: "shelves" | "timeline" = (() => {
+    try {
+      return localStorage.getItem("seamux.wake.mode") === "timeline" ? "timeline" : "shelves";
+    } catch {
+      return "shelves";
+    }
+  })();
+  private modeBtns = { shelves: button("Shelves", "w-seg-b"), timeline: button("Timeline", "w-seg-b") };
+  /** lookout's reviews of the worktree, its plans, and the asks waiting in it. */
+  private reviews: ReviewSum[] = [];
+  private plans: PlanRow[] = [];
+  private asks: AskPage[] = [];
+  private sideWs = "";
+  private sideAt = 0;
+  /** The past reviews' search, and whether older ones and older lanes show. */
+  private pastQ = "";
+  private pastAll = false;
+  private lanesAll = false;
+  /** Shelves opened past their first page ("show N more"). */
+  private shelfAll = new Set<ShelfId>();
+  /** Needs you's keep-all, made once so its ask-then-confirm survives a redraw. */
+  private riskKeep = button("", "w-act");
+  /** Thumbnails by row id, kept across redraws so a picture is not fetched
+   *  again: a search, a switch to Timeline and back, or a poll redraws them
+   *  from here. Let go only when another worktree is shown. */
+  private thumbs = new Map<number, HTMLElement>();
+  private thumbsWs = "";
+  /** Shelves: the turn prompt Space showed for the picked row, under the
+   *  list; it follows the pick until Space or Esc closes it. */
+  private turnP = el("div", "w-turnp");
+  private turnOn = false;
+  private turnRow = -1;
+  /** Timeline: cards Space opened, latest last, for Esc to close in turn. */
+  private spaceOpened: string[] = [];
   private home = "";
   private seq = 0;
   private lastTop = -1;
@@ -176,14 +211,12 @@ export class Wake {
   private prsByUrl = new Map<string, Pr>();
   private prsAt = 0;
   private prsWs = "";
-  /** The done group is folded until opened; the rest are open. */
-  private prsOpen = new Set<Group>(["you", "people", "draft", "open"]);
-  /** PRs whose failing checks are listed; a red one that needs you starts open. */
-  private prsShown = new Map<number, boolean>();
   /** A group the Dock's pill asked for, and for which worktree ("" for the
    *  next one shown): scrolled to and marked once that worktree's block is drawn. */
   private prsFocus: Group | null = null;
   private prsFocusDir = "";
+  /** The pill's group as it asked: "open" is every open group. */
+  private prsAsk = "";
   /** The directory the sheet last asked for, as it spelled it: `ws` takes
    *  the store's realpath'd spelling once read, so a focus matches either. */
   private askedDir = "";
@@ -198,8 +231,7 @@ export class Wake {
       this.ws = this.picker.value;
       this.also = [];
       this.picked = true;
-      this.kinds.clear();
-      this.sel = -1;
+      this.selKey = null;
       void this.load();
     });
     this.q.type = "search";
@@ -214,8 +246,6 @@ export class Wake {
         void this.load();
       }, 140);
     });
-    this.keepAllBtn.hidden = true;
-    this.keepAllBtn.addEventListener("click", () => void this.keepAll());
     const keys = button("keys", "w-act w-keys");
     keys.title = "the keyboard keys (?)";
     keys.addEventListener("click", () => (this.help.hidden = !this.help.hidden));
@@ -224,15 +254,16 @@ export class Wake {
       el("h3", "", "keys"),
       ...[
         ["/", "search · Esc clears"],
-        ["j k", "next · previous row"],
+        ["j k", "next · previous, shelf by shelf"],
+        ["t", "Shelves or Timeline"],
         ["Enter", "preview a picture, video or page; open the rest (⌘ in cmux)"],
         ["← →", "flip through the previews"],
         ["v", "preview beside · under the list"],
         ["f", "fill the Wake with the preview"],
-        ["Esc", "close the preview"],
-        ["Space", "show the whole prompt"],
+        ["Esc", "close the keys, the preview, a prompt, then the search"],
+        ["Space", "show the whole prompt of the picked item's turn; again to hide it"],
         ["K", "keep an at-risk file"],
-        ["c", "copy the path"],
+        ["c", "copy the path (a pull request's link)"],
         ["r", "copy the resume command"],
         ["⌘E", "the Wake, and again back to the page you were on"],
         ["⌘⇧P ⌘⇧L ⌘⇧A ⌘⇧O", "the plan, review, ask or other pages; again for the next"],
@@ -249,15 +280,27 @@ export class Wake {
     const head = el("header", "w-head");
     const ttl = el("div", "w-ttl");
     const sub = el("div", "w-sub");
-    sub.append(this.stats, this.keepAllBtn);
+    sub.append(this.stats);
     // The sheet already names the workspace.
     ttl.append(sub);
-    head.append(ttl, this.picker);
+    const seg = el("div", "w-seg");
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "layout");
+    for (const m of ["shelves", "timeline"] as const) {
+      const b = this.modeBtns[m];
+      b.title = m === "shelves" ? "what is here, by kind (t)" : "what each turn left, newest first (t)";
+      b.addEventListener("click", () => this.setMode(m));
+      seg.append(b);
+    }
+    head.append(ttl, this.picker, seg);
     const bar = el("div", "w-bar");
     bar.append(this.q, keys);
     this.toastEl.setAttribute("role", "status");
     const main = el("div", "w-main");
-    main.append(head, bar, this.chipsEl, this.list);
+    this.turnP.hidden = true;
+    this.turnP.setAttribute("role", "region");
+    this.turnP.setAttribute("aria-label", "the turn's prompt");
+    main.append(head, bar, this.list, this.turnP);
     this.viewer = new Viewer(root, {
       pick: (r) => this.reveal(r),
       openElsewhere: (r, e) => void this.open(r, "", e, true),
@@ -268,14 +311,18 @@ export class Wake {
       },
     });
     root.replaceChildren(main, this.viewer.gripX, this.viewer.gripY, this.viewer.el, this.help, this.toastEl);
-    this.chipsEl.addEventListener("click", (e) => this.chip(e));
     // A click in the Wake gives it the keys: a tab button or the Dock's
     // terminal focused elsewhere would keep j/k and ← → otherwise.
     root.addEventListener("pointerdown", () => {
       const at = document.activeElement;
       if (at instanceof HTMLElement && at !== document.body && !root.contains(at)) at.blur();
     });
-    document.addEventListener("keydown", (e) => this.key(e));
+    // Escape in the capture phase: the app's own listener (main.ts) hides
+    // the window on any Escape not taken before it, and it is registered
+    // first. Taken here, Esc closes the Wake's topmost open thing; with
+    // nothing open it goes on, and the window hides. Other keys bubble.
+    document.addEventListener("keydown", (e) => e.key === "Escape" && this.key(e), true);
+    document.addEventListener("keydown", (e) => e.key !== "Escape" && this.key(e));
   }
 
   async start(): Promise<void> {
@@ -285,20 +332,35 @@ export class Wake {
       this.home = "";
     }
     // New rows land at each turn's end; the views feed says when.
-    await listen<{ wake: { id: number }[]; tucked?: TuckRow[] }>("views:frame", (e) => {
+    await listen<{ wake: { id: number }[]; tucked?: TuckRow[]; pages?: (AskPage & { kind: string })[] }>("views:frame", (e) => {
+      this.takeAsks(e.payload.pages);
       const tucked = (e.payload.tucked ?? []).filter((r) => r.level === "tuck");
       if (JSON.stringify(tucked.map((r) => r.path)) !== JSON.stringify(this.tucked.map((r) => r.path))) {
         this.tucked = tucked;
         if (this.data.workspaces.length) this.draw();
       }
       if (this.visible() && Date.now() - this.prsAt > 30_000) void this.loadPrs();
+      if (this.visible() && Date.now() - this.sideAt > 30_000) void this.loadSide();
       const top = e.payload.wake?.[0]?.id ?? -1;
       if (top !== this.lastTop) {
         this.lastTop = top;
         if (this.visible()) void this.load(true);
       }
     });
+    // The feed sends a frame when something changes: the asks already
+    // waiting come from the frame as it is now.
+    const now = await invoke<{ pages?: (AskPage & { kind: string })[] } | null>("views_frame").catch(() => null);
+    this.takeAsks(now?.pages);
     await this.load();
+  }
+
+  /** The asks waiting on the person, from the views feed's pages: Needs you
+   *  shows the ones in this worktree. Redrawn when they change. */
+  private takeAsks(pages: (AskPage & { kind: string })[] | undefined): void {
+    const asks = (pages ?? []).filter((p) => p.kind === "ask").map(({ path, label, waiting, since, root }) => ({ path, label, waiting, since, root }));
+    if (JSON.stringify(asks) === JSON.stringify(this.asks)) return;
+    this.asks = asks;
+    if (this.data.workspaces.length) this.draw();
   }
 
   private visible(): boolean {
@@ -315,8 +377,7 @@ export class Wake {
     if (dir && dir !== this.ws) {
       this.clearPreview();
       this.ws = dir;
-      this.kinds.clear();
-      this.sel = -1;
+      this.selKey = null;
       this.q.value = "";
       this.query = "";
       void this.load();
@@ -343,10 +404,13 @@ export class Wake {
    *  its group opened and scrolled to. "open" is every open group. */
   showPrs(group: string, dir = ""): void {
     const g: Group = group === "people" ? "people" : group === "draft" ? "draft" : group === "done" ? "done" : "open";
-    this.prsOpen.add(g);
-    // The open pill scrolls to the first open group: needs you, if any.
     this.prsFocus = g === "open" ? "you" : g;
-    this.prsOpen.add(this.prsFocus);
+    this.prsAsk = g;
+    // Finished pull requests past the newest fold behind "older": asked for, they show.
+    if (g === "done") this.lanesAll = true;
+    // The lanes are on Shelves: shown there this once, the person's own
+    // choice of layout left as it was.
+    this.mode = "shelves";
     this.prsFocusDir = dir;
     if (!dir || this.focusHere(dir)) void this.loadPrs();
   }
@@ -380,6 +444,36 @@ export class Wake {
     }
   }
 
+  /** lookout's reviews and deep-plan's plans for the worktree: the Reviews
+   *  shelf, Needs you's reviews and the turn cards' names. Redrawn on change. */
+  private async loadSide(): Promise<void> {
+    const ws = this.ws;
+    this.sideAt = Date.now();
+    if (!ws) return;
+    const [reviews, plans] = await Promise.all([
+      invoke<ReviewSum[]>("wake_reviews", { dir: ws }).catch(() => [] as ReviewSum[]),
+      invoke<PlanRow[]>("wake_plans", { dir: ws }).catch(() => [] as PlanRow[]),
+    ]);
+    if (ws !== this.ws) return;
+    const same = ws === this.sideWs && JSON.stringify([reviews, plans]) === JSON.stringify([this.reviews, this.plans]);
+    this.reviews = Array.isArray(reviews) ? reviews : [];
+    this.plans = Array.isArray(plans) ? plans : [];
+    this.sideWs = ws;
+    if (!same && this.data.workspaces.length) this.draw();
+  }
+
+  /** Shelves or Timeline; the pick stays where both show it. */
+  private setMode(m: "shelves" | "timeline"): void {
+    if (m === this.mode) return;
+    this.mode = m;
+    try {
+      localStorage.setItem("seamux.wake.mode", m);
+    } catch {
+      /* kept for this run only */
+    }
+    this.draw();
+  }
+
   private toast(text: string, bad = false): void {
     this.toastEl.textContent = text;
     this.toastEl.className = `w-toast on${bad ? " bad" : ""}`;
@@ -400,6 +494,7 @@ export class Wake {
       }
       this.draw();
       if (this.ws !== this.prsWs || Date.now() - this.prsAt > 30_000) void this.loadPrs();
+      if (this.ws !== this.sideWs || Date.now() - this.sideAt > 30_000) void this.loadSide();
     } catch (e) {
       if (!quiet) this.toast(`the Wake log could not be read: ${String(e)}`, true);
     }
@@ -434,35 +529,7 @@ export class Wake {
     }
     this.picker.replaceChildren(...opts);
 
-    // Chips: all, then each kind with its count.
     const rows = this.data.rows;
-    const n = new Map<string, number>();
-    for (const r of rows) n.set(r.kind, (n.get(r.kind) ?? 0) + 1);
-    const all = button("", `w-chip${this.kinds.size ? "" : " on"}`);
-    all.dataset.k = "";
-    all.append(document.createTextNode("all "), el("span", "", String(rows.length)));
-    // The five busiest kinds show; the rest wait behind "more" (a picked one
-    // always shows), so the filter row stays one short line.
-    const busy = KINDS.filter((k) => n.get(k)).sort((a, b) => (n.get(b) ?? 0) - (n.get(a) ?? 0));
-    // Six or fewer fit on the line: all show. Past that, the five busiest.
-    const top = new Set(busy.length > 6 ? busy.slice(0, 5) : busy);
-    // Only the kinds "more" actually hides: a picked kind always shows.
-    const extra = busy.filter((k) => !top.has(k) && !this.kinds.has(k)).length;
-    const more = button(this.allChips ? "fewer" : `more ${extra}`, "w-chip w-more");
-    more.dataset.k = "\u0000more";
-    more.hidden = extra <= 0;
-    this.chipsEl.replaceChildren(
-      all,
-      ...KINDS.map((k) => {
-        const b = button("", `w-chip${this.kinds.has(k) ? " on" : ""}`);
-        // A kind with nothing in it is no filter: hidden, unless it is the one picked.
-        b.hidden = (!n.get(k) || (!this.allChips && !top.has(k))) && !this.kinds.has(k);
-        b.dataset.k = k;
-        b.append(document.createTextNode(`${k} `), el("span", "", String(n.get(k) ?? 0)));
-        return b;
-      }),
-      more,
-    );
 
     // Stats and keep all.
     const risk = rows.filter((r) => r.state === "risk").length;
@@ -474,132 +541,81 @@ export class Wake {
     if (gone) bits.push(` · ${gone} gone`);
     if (this.data.truncated) bits.push(` · newest ${this.data.limit} shown; search to reach older`);
     this.stats.replaceChildren(...bits);
-    // One at-risk file has its own keep button: keep all is for two or more.
-    this.keepAllBtn.hidden = risk < 2 || !!this.query;
-    if (!this.keepAllBtn.classList.contains("sure")) this.keepAllBtn.textContent = `keep all ${risk}`;
-    this.keepAllBtn.dataset.n = String(risk);
+    for (const m of ["shelves", "timeline"] as const) this.modeBtns[m].setAttribute("aria-pressed", String(this.mode === m));
+    this.acts.clear();
+    if (this.mode === "shelves") return this.drawShelves();
 
-    // Rows by day, then by the prompt that made them.
-    const keepId = this.vis[this.sel]?.id;
-    this.vis = rows.filter((r) => !this.kinds.size || this.kinds.has(r.kind));
+    return this.drawTimeline();
+  }
+
+  // ------------------------------------------------------------ shelves
+
+  /** The Shelves layout (the chart wake-landing v9): Needs you, or one calm
+   *  line; Reviews; Plans and asks; Pull requests and landings; Pictures and
+   *  recordings; Files; Commits. A shelf with nothing on it is left out. */
+  private drawShelves(): void {
+    // Read before the box below moves the search box (the move itself blurs it).
+    const typing = document.activeElement === this.pastQEl ? this.pastQEl.selectionStart : null;
+    const q = this.query.toLowerCase();
+    const hit = (t: string) => !q || t.toLowerCase().includes(q);
+    const s = shelves(this.shelfInput());
     const out: HTMLElement[] = [];
-    let day = "";
-    let group = "";
-    let section: HTMLElement | null = null;
-    let ul: HTMLElement | null = null;
-    let tail: HTMLElement | undefined;
-    // The branch and session of the group above: a header that repeats them
-    // shows them only on hover, so each card leads with its prompt.
-    let lastBr = "";
-    let shownToday = 0;
-    let lastSess = "";
-    const keyOf = (r: Row) => {
-      const dk = dayKey(local(r.created_at));
-      return `${dk}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
+    const shelf = (id: ShelfId, count: string, ...body: HTMLElement[]) => out.push(this.shelfEl(id, count, ...body));
+    // A long shelf shows its first page; the rest wait behind "show N more"
+    // (a search shows every match).
+    const page = (id: ShelfId, rows: Row[], n: number) => (q || this.shelfAll.has(id) ? rows : rows.slice(0, n));
+    const more = (id: ShelfId, all: number, shown: number) =>
+      all > shown ? [this.fold(`show ${all - shown} more`, () => this.shelfAll.add(id))] : [];
+    const list = (id: ShelfId, rows: Row[]) => {
+      const shown = page(id, rows, 12);
+      const ul = el("ul", "w-rows w-box");
+      for (const r of shown) ul.append(this.row(r));
+      return [ul, ...more(id, rows.length, shown.length)];
     };
-    // How many rows each card holds (a run of rows with one key; the same
-    // prompt later in the day is a new card): a card of one drops its band.
-    const perDay = new Map<string, number>();
-    const riskPerDay = new Map<string, number>();
-    for (const r of this.vis) {
-      const k = dayKey(local(r.created_at));
-      perDay.set(k, (perDay.get(k) ?? 0) + 1);
-      if (r.state === "risk") riskPerDay.set(k, (riskPerDay.get(k) ?? 0) + 1);
+    // A search asks about things by name: Needs you steps aside.
+    if (!q) out.push(this.needsBlock(s.needs));
+    const live = s.reviews.live.filter((r) => hit(r.title));
+    const pq = this.pastQ.toLowerCase();
+    const past = s.reviews.past.filter((r) => hit(r.title) && (!pq || `${r.title} ${r.plan}`.toLowerCase().includes(pq)));
+    if (live.length || s.reviews.past.length) {
+      const body: HTMLElement[] = [];
+      if (live.length) body.push(this.box("Live", null, live.map((r) => this.reviewRow(r))));
+      if (s.reviews.past.length) {
+        const shown = this.pastAll || pq ? past : past.slice(0, 4);
+        const items = shown.map((r) => this.pastRow(r));
+        if (past.length > shown.length) items.push(this.fold(`${past.length - shown.length} older review${past.length - shown.length === 1 ? "" : "s"}`, () => (this.pastAll = true)));
+        if (!items.length) items.push(el("div", "w-none", `no past review matches “${this.pastQ || this.query}”`));
+        body.push(this.box("Past", this.pastQEl, items));
+      }
+      shelf("reviews", `${live.length} live · ${q || pq ? past.length : s.reviews.past.length} past`, ...body);
     }
-    const newest = this.vis.length ? dayKey(local(this.vis[0].created_at)) : "";
-    const runs: number[] = [];
-    // Whether each card holds a row at risk: such a card never folds away.
-    const runRisk: boolean[] = [];
-    this.vis.forEach((r, i) => {
-      if (i > 0 && keyOf(r) === keyOf(this.vis[i - 1])) runs[runs.length - 1]++;
-      else {
-        runs.push(1);
-        runRisk.push(false);
-      }
-      if (r.state === "risk") runRisk[runRisk.length - 1] = true;
-    });
-    let run = -1;
-    this.vis.forEach((r, i) => {
-      const d = local(r.created_at);
-      const dk = dayKey(d);
-      const gk = keyOf(r);
-      if (dk !== day) {
-        // A long list folds older days to a count; a search never folds (its
-        // matches are the point). A click toggles.
-        // A long list (over 20 things) folds every day but the newest.
-        const folded = !this.query && (this.dayFold.get(dk) ?? (dk !== newest && this.vis.length > 20));
-        section = el("section", `w-day${folded ? " folded" : ""}`);
-        section.dataset.day = dk;
-        const h = el("h2", "");
-        const n = perDay.get(dk) ?? 0;
-        const tog = button(`${folded ? "▸" : "▾"} ${dayLabel(d)}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
-        // A folded day still says when something in it is at risk.
-        const atRisk = riskPerDay.get(dk) ?? 0;
-        if (folded && atRisk) tog.append(el("span", "w-dayrisk", ` · ${atRisk} at risk`));
-        tog.setAttribute("aria-expanded", String(!folded));
-        tog.addEventListener("click", () => {
-          this.dayFold.set(dk, !folded);
-          this.draw();
-        });
-        h.append(tog);
-        section.append(h);
-        out.push(section);
-        day = dk;
-        shownToday = 0;
-        group = "";
-        lastBr = "";
-        lastSess = "";
-      }
-      if (gk !== group) {
-        run++;
-        const solo = runs[run] === 1;
-        // A long day (over 15 things) shows its newest groups up to about 10
-        // rows; the rest are "later", behind a "show N more" at the day's end.
-        // A card with a row at risk is never later, wherever it sits: only
-        // safe cards fold.
-        const later = !this.query && !runRisk[run] && (perDay.get(dk) ?? 0) > 15 && shownToday >= 10 && !this.dayAll.has(dk);
-        const g = el("div", `w-grp${later ? " later" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
-        const ph = el("div", "w-ph");
-        // A card of one row whose prompt is its title says it once.
-        const same = solo && !!r.prompt && r.prompt.trim() === (r.title ?? "").trim();
-        const prompt = el("span", `w-prompt${r.prompt ? "" : " none"}${same ? " same" : ""}`);
-        prompt.title = r.prompt;
-        prompt.append(r.prompt ? marked(r.prompt, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
-        prompt.addEventListener("click", () => {
-          if (this.openGroups.has(gk)) this.openGroups.delete(gk);
-          else this.openGroups.add(gk);
-          g.classList.toggle("open");
-        });
-        // Every group is a caption over its rows, so titles line up down the
-        // column: the caption's time in the kind column, its prompt at the
-        // titles' edge. Branch and session wait for hover, focus or the pick
-        // (wake.css). A caption that would be only a time is dropped: its
-        // time, branch and session sit at the end of the row instead.
-        const cap = same ? el("span", "w-tm") : ph;
-        if (!same) ph.append(el("time", "", hm(d)), prompt);
-        if (r.branch) cap.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
-        if (r.session_id) {
-          // Said as what it does: a bare id read as a commit's sha.
-          const s = button("copy resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
-          s.title = `copy the command that resumes session ${r.session_id.slice(0, 8)}`;
-          s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
-          cap.append(s);
-        }
-        if (same) cap.append(el("time", "", hm(d)));
-        tail = same ? cap : undefined;
-        lastBr = r.branch ?? "";
-        lastSess = r.session_id ?? "";
-        ul = el("ul", "w-rows");
-        if (same) g.append(ul);
-        else g.append(ph, ul);
-        section!.append(g);
-        group = gk;
-      }
-      ul!.append(this.row(r, i, r.id === keepId, tail));
-      tail = undefined;
-      if (!ul!.parentElement?.classList.contains("later")) shownToday++;
-    });
-    if (!this.vis.length) {
+    const plans = s.plans;
+    if (plans.length) shelf("plans", String(plans.length), ...list("plans", plans));
+    const lanes = s.lanes.filter((l) => hit(`#${l.pr.n} ${l.pr.title}`));
+    if (lanes.length) {
+      const shown = lanes.filter((l) => this.lanesAll || !l.fold || q);
+      const t = el("div", "w-lanes w-box");
+      const hd = el("div", "w-lane-hd");
+      hd.append(el("span", "", "needs you first"), ...["review", "checks", "merged", "landed"].map((x) => el("span", "", x)));
+      t.append(hd, ...shown.map((l) => this.laneRow(l)));
+      const extra = lanes.length - shown.length;
+      shelf("prs", String(lanes.length), t, ...(extra ? [this.fold(`${extra} older`, () => (this.lanesAll = true))] : []));
+    }
+    const pics = page("pictures", s.pictures, 24);
+    if (s.pictures.length) {
+      const g = el("div", "w-thumbs");
+      for (const r of pics) g.append(this.thumb(r));
+      shelf("pictures", String(s.pictures.length), g, ...more("pictures", s.pictures.length, pics.length));
+    }
+    if (s.files.length) shelf("files", String(s.files.length), ...list("files", s.files));
+    if (s.commits.length) shelf("commits", String(s.commits.length), ...list("commits", s.commits));
+    // Thumbnails of rows gone from the worktree are let go; a search's
+    // narrower list keeps the rest for when it clears.
+    if (!this.query) {
+      const ids = new Set(this.data.rows.map((r) => r.id));
+      for (const id of [...this.thumbs.keys()]) if (!ids.has(id)) this.thumbs.delete(id);
+    }
+    if (!this.data.rows.length && !out.some((x) => x.classList.contains("w-shelf"))) {
       const e = el("div", "w-empty");
       e.textContent = this.query
         ? `nothing in the wake matches “${this.query}”`
@@ -608,155 +624,702 @@ export class Wake {
           : "no workspace yet.";
       out.push(e);
     }
-    // A long day's later groups wait behind one "show N more" at its end.
-    for (const sec of out) {
-      const hid = sec.querySelectorAll(".w-grp.later .w-row").length;
-      if (!hid) continue;
-      // Not "w-more": that is the kind chips' own "more N".
-      // Never at risk: a card holding a row at risk is never later.
-      const more = button(`show ${hid} more`, "w-daymore");
-      const dk = sec.dataset.day ?? "";
-      more.addEventListener("click", () => {
-        this.dayAll.add(dk);
-        this.draw();
-      });
-      sec.append(more);
-    }
-    // The worktree's pull requests, pinned above the days: not while a
-    // search or a kind other than pr is picked, which ask about rows.
-    const prsBlock = this.ws === this.prsWs && !this.query && (!this.kinds.size || this.kinds.has("pr")) ? this.prsBlock() : null;
-    if (prsBlock) out.unshift(prsBlock);
+    this.vis = [...page("plans", s.plans, 12), ...pics, ...page("files", s.files, 12), ...page("commits", s.commits, 12)];
     this.list.classList.toggle("searching", !!this.query);
+    // Moving the past reviews' search box blurs it: someone typing in it keeps
+    // their focus and caret across the redraw their typing caused.
     this.list.replaceChildren(...out);
-    if (prsBlock && this.prsFocus && this.focusHere(this.prsFocusDir)) {
-      const at = prsBlock.querySelector<HTMLElement>(`[data-g="${this.prsFocus}"]`) ?? prsBlock;
-      at.scrollIntoView({ block: "start" });
-      at.classList.add("asked");
-      this.prsFocus = null;
+    if (typing !== null && this.pastQEl.isConnected) {
+      this.pastQEl.focus();
+      this.pastQEl.setSelectionRange(typing, typing);
     }
-    this.sel = keepId === undefined ? -1 : this.vis.findIndex((r) => r.id === keepId);
-    // A pick whose day was just folded is out of sight: Enter must not open it.
-    if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded, .w-grp.later")) this.sel = -1;
-    if (this.viewer.open) this.viewer.setRows(this.vis.filter(previewable));
+    // The Dock's PR pill asked for this worktree's pull requests.
+    if (this.prsFocus && this.focusHere(this.prsFocusDir) && this.ws === this.prsWs) {
+      const at = this.list.querySelector<HTMLElement>(".w-shelf.prs");
+      // Kept until the shelf shows (a search can hide every lane); a worktree
+      // with no pull requests lets it go in loadPrs.
+      if (at) {
+        // The first lane of the group asked for is picked, so j and k and
+        // Enter start there; "open" is the first lane not finished.
+        const want = this.prsAsk;
+        const lane = s.lanes.find((l) => (want === "open" || !want ? l.pr.group !== "done" : l.pr.group === want));
+        const laneEl = lane ? at.querySelector<HTMLElement>(`.w-lane[data-key="${CSS.escape(lane.key)}"]`) : null;
+        at.classList.add("asked");
+        if (laneEl && lane) {
+          this.list.querySelectorAll(".sel[data-key]").forEach((x) => x.classList.remove("sel"));
+          this.selKey = lane.key;
+          at.scrollIntoView({ block: "start" });
+          laneEl.scrollIntoView({ block: "nearest" });
+        } else at.scrollIntoView({ block: "start" });
+        this.prsFocus = null;
+      }
+    }
+    this.restoreSel();
   }
 
-  /** The Pull requests block: groups needs you, needs people, draft, open,
-   *  then done folded to its counts. Null with no PRs. */
-  private prsBlock(): HTMLElement | null {
-    if (!this.prs.length) return null;
-    const sec = el("section", "w-prs");
-    sec.setAttribute("aria-label", "pull requests");
-    const h = el("h2", "w-prs-h");
-    h.append(document.createTextNode("Pull requests "), el("span", "", String(this.prs.length)));
-    sec.append(h);
-    for (const [g, list] of grouped(this.prs)) {
-      if (!list.length) continue;
-      const box = el("div", `w-prs-g ${g}`);
-      box.dataset.g = g;
-      const open = this.prsOpen.has(g);
-      const head = button("", "w-prs-gh");
-      head.setAttribute("aria-expanded", String(open));
-      head.append(el("span", "w-prs-tw", open ? "▾" : "▸"), document.createTextNode(` ${GROUP_SAID[g]} `),
-        el("span", "w-prs-gn", g === "done" ? doneSaid(list) : String(list.length)));
-      head.addEventListener("click", () => {
-        if (this.prsOpen.has(g)) this.prsOpen.delete(g);
-        else this.prsOpen.add(g);
-        this.draw();
-      });
-      box.append(head);
-      if (open) {
-        const ul = el("ul", "w-prs-l");
-        for (const p of list) ul.append(this.prLine(p, g));
-        box.append(ul);
-      }
-      sec.append(box);
-    }
+  /** What the model reads: this worktree's rows, pull requests with their
+   *  landings, and its reviews and plans once read for it (another
+   *  worktree's wait for loadSide), with the asks waiting. */
+  private shelfInput() {
+    return {
+      ws: this.ws,
+      rows: this.data.rows,
+      prs: this.shelfPrs(),
+      reviews: this.sideWs === this.ws ? this.reviews : [],
+      asks: this.asks,
+      plans: this.sideWs === this.ws ? this.plans : [],
+    };
+  }
+
+  private shelfPrs(): ShelfPr[] {
+    const prs = this.ws === this.prsWs ? this.prs : [];
+    return prs.map((p) => ({ ...p, group: groupOf(p), landing: p.merge ? this.lands.get(p.merge.sha) ?? null : null }));
+  }
+
+  private shelfEl(id: ShelfId, count: string, ...body: HTMLElement[]): HTMLElement {
+    const sec = el("section", `w-shelf ${id}`);
+    sec.dataset.shelf = id;
+    sec.setAttribute("aria-label", SHELF_SAID[id]);
+    const h = el("h2", "w-shelf-h");
+    h.append(document.createTextNode(`${SHELF_SAID[id]} `), el("span", "w-n", count));
+    sec.append(h, ...body);
     return sec;
   }
 
-  private prLine(p: Pr, g: Group): HTMLElement {
-    const li = el("li", `w-pr ${p.state}`);
-    const link = (text: string, url: string, cls: string): HTMLElement => {
-      const a = el("a", cls, text);
-      a.href = url;
-      a.title = url;
-      a.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        void invoke("open_url", { url }).catch((err) => this.toast(String(err), true));
-      });
-      return a;
-    };
-    li.append(link(`#${p.n}`, p.url, "w-pr-n"));
-    const b = el("span", "w-pr-bar");
-    const segs = bar(p.checks);
-    b.title = countsSaid(p.checks);
-    for (const s of segs) {
-      const seg = el("span", `seg ${s.kind}`);
-      seg.style.flexGrow = String(s.cells);
-      b.append(seg);
-    }
-    if (!segs.length) b.classList.add("none");
-    li.append(b);
-    const t = el("span", "w-pr-t", p.title || p.url);
-    if (p.state === "draft" && g !== "draft") t.prepend(el("span", "w-pr-tag", "draft "));
-    li.append(t, el("time", "w-pr-age", age(p.updatedAt)));
-    // A merged PR's landing: where it is, and a click to follow it in the
-    // Lookout tab at its Land stage.
-    const land = p.merge ? this.lands.get(p.merge.sha) ?? null : null;
-    const chip = p.merge ? chipFor({ ...p, cwd: this.ws, ws: "", ws_title: "" } as PrRow, land) : null;
-    if (p.merge && land && chip) {
-      const c = el("button", `w-pr-land ${chip.cls}`, chip.text);
-      c.type = "button";
-      c.title = "Follow this merge's landing in the Lookout tab";
-      const merge = p.merge.sha, cwd = this.ws;
-      c.addEventListener("click", (e) => {
-        e.stopPropagation();
-        window.dispatchEvent(new CustomEvent("seamux:land-open", { detail: { cwd, merge } }));
-      });
-      li.append(c);
-    }
-    const failing = p.failing ?? [];
-    if (failing.length) {
-      const shown = this.prsShown.get(p.n) ?? g === "you";
-      li.classList.add("has-fails");
-      li.setAttribute("aria-expanded", String(shown));
-      li.title = shown ? "hide the failing checks" : `show the ${failing.length} failing check${failing.length === 1 ? "" : "s"}`;
-      li.addEventListener("click", () => {
-        this.prsShown.set(p.n, !shown);
-        this.draw();
-      });
-      if (shown) {
-        const fl = el("ul", "w-pr-fails");
-        for (const c of failing) {
-          const fi = el("li", "");
-          fi.append(c.url ? link(`✗ ${c.name}`, c.url, "w-pr-f") : el("span", "w-pr-f", `✗ ${c.name}`));
-          fl.append(fi);
-        }
-        li.append(fl);
+  /** Needs you's tiles, or one calm line when nothing waits. */
+  private needsBlock(needs: Need[]): HTMLElement {
+    if (needs.length) return this.shelfEl("needs", String(needs.length), this.needsGrid(needs));
+    const c = el("div", "w-calm");
+    c.append(el("span", "w-calm-ok", "✓"), document.createTextNode("Nothing needs you."));
+    return c;
+  }
+
+  // ------------------------------------------------------------ timeline
+
+  /** The Timeline layout (the chart's timeline mode): Needs you, then one
+   *  card per turn, newest first, each split into the shelves' sections.
+   *  Days past the newest fold to a count when the list is long; a search
+   *  unfolds every match. */
+  private drawTimeline(): void {
+    const q = this.query;
+    const input = this.shelfInput();
+    const cards = turns(input);
+    const reviews = new Map(input.reviews.map((r) => [r.id, r]));
+    const lanes = new Map(lanesOf(input.prs).map((l) => [l.pr.n, l]));
+    const out: HTMLElement[] = [];
+    if (!q) out.push(this.needsBlock(needsOf(input)));
+    const newest = cards[0]?.day ?? "";
+    const per = new Map<string, number>();
+    const risky = new Map<string, number>();
+    for (const c of cards)
+      for (const sec of c.sections) {
+        per.set(c.day, (per.get(c.day) ?? 0) + sec.rows.length);
+        risky.set(c.day, (risky.get(c.day) ?? 0) + sec.rows.filter((r) => r.state === "risk").length);
       }
+    let day = "";
+    let dayEl: HTMLElement | null = null;
+    for (const c of cards) {
+      if (c.day !== day) {
+        day = c.day;
+        const dk = day;
+        const folded = !q && (this.dayFold.get(dk) ?? (dk !== newest && this.data.rows.length > 20));
+        dayEl = el("section", `w-day${folded ? " folded" : ""}`);
+        dayEl.dataset.day = dk;
+        const n = per.get(dk) ?? 0;
+        const tog = button(`${folded ? "▸" : "▾"} ${dayLabel(new Date(c.start))}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
+        // A folded day still says when something in it is at risk.
+        const atRisk = risky.get(dk) ?? 0;
+        if (folded && atRisk) tog.append(el("span", "w-dayrisk", ` · ${atRisk} at risk`));
+        tog.setAttribute("aria-expanded", String(!folded));
+        tog.addEventListener("click", () => {
+          this.dayFold.set(dk, !folded);
+          this.draw();
+        });
+        const h = el("h2", "");
+        h.append(tog);
+        dayEl.append(h);
+        out.push(dayEl);
+      }
+      dayEl!.append(this.card(c, reviews, lanes));
     }
+    if (!cards.length) {
+      const e = el("div", "w-empty");
+      e.textContent = this.query
+        ? `nothing in the wake matches “${this.query}”`
+        : this.ws
+          ? "nothing in this workspace's wake yet. Each file, plan or commit a session makes shows up here when its turn ends."
+          : "no workspace yet.";
+      out.push(e);
+    }
+    this.vis = cards.flatMap((c) => c.sections.flatMap((sec) => sec.rows));
+    this.list.classList.toggle("searching", !!this.query);
+    this.list.replaceChildren(...out);
+    this.restoreSel();
+  }
+
+  /** One turn's card: its prompt (Space or a click opens it whole), the
+   *  increment it belongs to, its time span and resume, then its sections.
+   *  A pull request the worktree knows draws as its lane, a review lookout
+   *  knows as its stage, as on the shelves. */
+  private card(c: Turn<Row>, reviews: Map<string, ReviewSum>, lanes: Map<number, Lane>): HTMLElement {
+    const a = el("article", `w-card${this.openGroups.has(c.key) ? " open" : ""}`);
+    const first = c.sections[0]?.rows[0];
+    const hd = el("div", "w-card-hd");
+    const prompt = el("span", `w-prompt${c.prompt ? "" : " none"}`);
+    prompt.title = c.prompt;
+    prompt.append(c.prompt ? marked(c.prompt, this.query) : document.createTextNode((first && SOURCE[first.source]) ?? "no prompt recorded"));
+    a.dataset.turn = c.key;
+    prompt.addEventListener("click", () => this.toggleCard(c.key, a));
+    const meta = el("span", "w-card-m");
+    if (c.name) meta.append(el("span", "w-card-n", c.name));
+    const span = c.start === c.end ? hm(new Date(c.start)) : `${hm(new Date(c.start))}–${hm(new Date(c.end))}`;
+    meta.append(el("time", "", span));
+    hd.append(prompt, meta);
+    if (first?.session_id) {
+      const sb = button("copy resume", "w-sess");
+      sb.title = `copy the command that resumes session ${first.session_id.slice(0, 8)}`;
+      sb.addEventListener("click", () => void this.copy(resumeCmd(first), "the resume command"));
+      hd.append(sb);
+    }
+    // Opened (Space or a click on the prompt), the card shows its prompt
+    // whole under its heading, however short; Esc closes it.
+    const open = this.openGroups.has(c.key);
+    prompt.setAttribute("role", "button");
+    prompt.setAttribute("aria-expanded", String(open));
+    // Reached by Tab too: Enter or Space on it opens or closes the card.
+    prompt.tabIndex = 0;
+    prompt.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleCard(c.key, a);
+    });
+    const whole = el("div", "w-card-p");
+    whole.hidden = !open;
+    const wb = el("div", `w-turnp-b${c.prompt ? "" : " none"}`);
+    wb.append(c.prompt ? marked(c.prompt, this.query) : document.createTextNode((first && SOURCE[first.source]) ?? "no prompt recorded"));
+    const wh = el("div", "w-turnp-h");
+    wh.append(el("b", "", "Prompt"), el("span", "w-turnp-esc", "Space or Esc closes"));
+    whole.append(wh, wb);
+    a.dataset.rows = c.sections.flatMap((s) => s.rows.map((r) => r.id)).join(",");
+    a.append(hd, whole);
+    for (const sec of c.sections) {
+      const box = el("div", `w-sect ${sec.shelf}`);
+      const h = el("h3", "w-sect-h");
+      h.append(document.createTextNode(`${SHELF_SAID[sec.shelf]} `), el("span", "w-n", String(sec.rows.length)));
+      box.append(h);
+      if (sec.shelf === "pictures") {
+        const g = el("div", "w-thumbs");
+        for (const r of sec.rows) g.append(this.thumb(r));
+        box.append(g);
+      } else {
+        const ul = el("ul", "w-rows");
+        for (const r of sec.rows) {
+          const gh = ghLink(r);
+          const pr = sec.shelf === "prs" && gh ? this.prsByUrl.get(`https://github.com/${gh.repo}/pull/${gh.n}`) : undefined;
+          const rv = sec.shelf === "reviews" ? reviews.get(r.locator) : undefined;
+          const lane = pr ? lanes.get(pr.n) : undefined;
+          if (lane) {
+            ul.append(this.li(this.laneRow({ ...lane, fold: false }, c.key)));
+            continue;
+          }
+          if (rv) {
+            ul.append(this.li(this.reviewRow(rv, c.key)));
+            continue;
+          }
+          ul.append(this.row(r));
+        }
+        box.append(ul);
+      }
+      a.append(box);
+    }
+    return a;
+  }
+
+  /** Open or close a card's whole prompt. The latest opened is the first
+   *  one Esc closes. */
+  private toggleCard(key: string, a: HTMLElement): void {
+    this.setCard(key, a, !this.openGroups.has(key));
+  }
+
+  private setCard(key: string, a: HTMLElement, open: boolean): void {
+    if (open) this.openGroups.add(key);
+    else this.openGroups.delete(key);
+    this.spaceOpened = this.spaceOpened.filter((k) => k !== key);
+    if (open) this.spaceOpened.push(key);
+    a.classList.toggle("open", open);
+    a.querySelector(".w-card-hd .w-prompt")?.setAttribute("aria-expanded", String(open));
+    const whole = a.querySelector<HTMLElement>(".w-card-p");
+    if (whole) whole.hidden = !open;
+    if (open) (whole ?? a).scrollIntoView({ block: "nearest" });
+  }
+
+  /** The row a pick came from, for its turn: a row itself, or the row a
+   *  pull request's lane, a review or a Needs you tile stands for. */
+  private rowFor(key: string | null): Row | undefined {
+    if (!key) return undefined;
+    const direct = this.acts.get(key)?.row;
+    if (direct) return direct;
+    // A lane or review drawn inside a card carries "@turn:<id>"; an ask's
+    // key is its page path, which may hold an "@" of its own.
+    const k = key.replace(/@turn:[^@]*$/, "");
+    const at = k.indexOf(":");
+    const kind = at < 0 ? k : k.slice(0, at);
+    const v = at < 0 ? "" : k.slice(at + 1);
+    const rows = this.data.rows;
+    if (kind === "pr" || kind === "needpr" || kind === "land") return rows.find((r) => r.kind === "pr" && ghLink(r)?.n === v);
+    if (kind === "review" || kind === "needreview") return rows.find((r) => r.kind === "review" && r.locator === v);
+    if (kind === "ask") return rows.find((r) => r.kind === "ask" && (r.path === v || r.locator === v || v.endsWith(`/${r.locator}`)));
+    if (kind === "risk") return rows.find((r) => r.state === "risk");
+    return undefined;
+  }
+
+  /** Timeline: the card that holds the pick, or the card of the turn the
+   *  pick came from; with nothing picked, the first card. */
+  private cardFor(key: string | null): HTMLElement | null {
+    if (!key) return this.list.querySelector<HTMLElement>(".w-day:not(.folded) .w-card");
+    const at = this.list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.closest<HTMLElement>(".w-card");
+    if (at) return at;
+    const r = this.rowFor(key);
+    if (!r) return null;
+    return [...this.list.querySelectorAll<HTMLElement>(".w-card")].find((c) => (c.dataset.rows ?? "").split(",").includes(String(r.id))) ?? null;
+  }
+
+  /** Shelves: the picked row's turn prompt under the list, while Space has
+   *  it on and the pick is a row. Hidden on Timeline, where each card holds
+   *  its own. */
+  private showTurn(): void {
+    const on = this.turnOn && this.mode === "shelves" && !!this.selKey;
+    const r = on ? this.rowFor(this.selKey) : undefined;
+    this.turnP.hidden = !on;
+    if (!on) return;
+    if (!r) {
+      // A pick no turn in this Wake made (a pull request crew-sync found, a
+      // review opened by hand): said so, rather than nothing.
+      this.turnRow = -1;
+      const at = this.list.querySelector<HTMLElement>(`[data-key="${CSS.escape(this.selKey!)}"]`);
+      const name = (at?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+      const hd = el("div", "w-turnp-h");
+      hd.append(el("b", "", "Prompt"), el("span", "w-turnp-m", name), el("span", "w-turnp-esc", "Space or Esc closes"));
+      this.turnP.replaceChildren(hd, el("div", "w-turnp-b none", "no turn in this Wake made it, so there is no prompt to show"));
+      return;
+    }
+    if (this.turnRow !== r.id) {
+      this.turnRow = r.id;
+      this.turnP.scrollTop = 0;
+    }
+    const d = local(r.created_at);
+    const hd = el("div", "w-turnp-h");
+    hd.append(el("b", "", "Prompt"), el("span", "w-turnp-m", [r.title, d ? `${dayLabel(d)} ${hm(d)}` : ""].filter(Boolean).join(" · ")), el("span", "w-turnp-esc", "Space or Esc closes"));
+    const body = el("div", `w-turnp-b${r.prompt ? "" : " none"}`);
+    body.append(r.prompt ? marked(r.prompt, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
+    this.turnP.replaceChildren(hd, body);
+  }
+
+  /** The latest card opened that is open and drawn now, for Esc. */
+  private openCard(): HTMLElement | null {
+    for (let i = this.spaceOpened.length - 1; i >= 0; i--) {
+      const k = this.spaceOpened[i];
+      if (!this.openGroups.has(k)) continue;
+      const a = this.list.querySelector<HTMLElement>(`.w-day:not(.folded) .w-card.open[data-turn="${CSS.escape(k)}"]`);
+      if (a) return a;
+    }
+    return null;
+  }
+
+  /** A list item holding a lane or a review row inside a card's list. */
+  private li(child: HTMLElement): HTMLElement {
+    const li = el("li", "w-li");
+    li.append(child);
     return li;
+  }
+
+  /** The past reviews' search box, made once so typing keeps its focus. */
+  private pastQEl = (() => {
+    const i = el("input", "w-pastq");
+    i.type = "search";
+    i.placeholder = "search past reviews";
+    i.setAttribute("aria-label", "search past reviews");
+    let t = 0;
+    i.addEventListener("input", () => {
+      clearTimeout(t);
+      t = window.setTimeout(() => {
+        this.pastQ = i.value.trim();
+        this.draw();
+      }, 140);
+    });
+    return i;
+  })();
+
+  private box(title: string, tool: HTMLElement | null, items: HTMLElement[]): HTMLElement {
+    const b = el("div", "w-box");
+    const hd = el("div", "w-boxhd");
+    hd.append(el("b", "", title), el("span", "grow"));
+    if (tool) hd.append(tool);
+    b.append(hd, ...items);
+    return b;
+  }
+
+  private fold(text: string, open: () => void): HTMLElement {
+    const b = button(`▸ ${text}`, "w-daymore");
+    b.addEventListener("click", () => {
+      open();
+      this.draw();
+    });
+    return b;
+  }
+
+  /** "4 min", "1 h 4 min", "2 d": how long since `ms`. */
+  private since(ms: number): string {
+    const m = Math.max(0, Math.round((Date.now() - ms) / 60_000));
+    if (m < 60) return `${m} min`;
+    if (m < 60 * 24) return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+    return `${Math.floor(m / 1440)} d`;
+  }
+
+  private openUrl(url: string): void {
+    void invoke("open_url", { url }).catch((err) => this.toast(String(err), true));
+  }
+
+  private openReview(id: string, title: string): void {
+    void Promise.resolve(this.host.open({ path: `/review/${id}`, title, ...this.host.here() })).catch((err) => this.toast(String(err), true));
+  }
+
+  private needsGrid(needs: Need[]): HTMLElement {
+    const g = el("div", "w-needs");
+    for (const n of needs) g.append(this.needTile(n));
+    return g;
+  }
+
+  /** A Needs you tile: what waits, and a click (or Enter) does it. */
+  private needTile(n: Need): HTMLElement {
+    // Prefixed: a bare "review" or "risk" class meets the app's global rules.
+    const t = el("div", `w-need n-${n.kind}${n.key === this.selKey ? " sel" : ""}`);
+    t.dataset.key = n.key;
+    const head = el("div", "w-need-t", n.title);
+    head.title = n.title;
+    const sub = el("div", "w-need-s");
+    let open: () => void = () => undefined;
+    if (n.kind === "ask") {
+      sub.textContent = `ask · waiting ${this.since(n.since)}`;
+      open = () => void Promise.resolve(this.host.open({ path: n.path, title: n.title, ...this.host.here() })).catch((e) => this.toast(String(e), true));
+    } else if (n.kind === "landing") {
+      sub.textContent = `${n.recipe || "its landing"} waits at ${n.stage || "a stage"}: approve or skip`;
+      open = () => {
+        const p = this.prs.find((x) => x.n === n.n);
+        if (p?.merge) window.dispatchEvent(new CustomEvent("seamux:land-open", { detail: { cwd: this.ws, merge: p.merge.sha } }));
+      };
+    } else if (n.kind === "pr") {
+      sub.textContent = n.why;
+      open = () => {
+        const p = this.prs.find((x) => x.n === n.n);
+        if (p) this.openUrl(p.url);
+      };
+    } else if (n.kind === "review") {
+      sub.textContent = `${n.why}${n.findings ? ` · ${n.findings} finding${n.findings === 1 ? "" : "s"}` : ""}`;
+      open = () => this.openReview(n.id, n.title);
+    } else if (n.kind === "risk") {
+      const names = n.rows.slice(0, 3).map((r) => r.title).join(", ");
+      sub.textContent = n.rows.length > 3 ? `${names} and ${n.rows.length - 3} more` : names;
+      const one = n.rows.length === 1;
+      // Made once: a redraw between its ask and its confirm keeps the ask.
+      const b = this.riskKeep;
+      if (!b.classList.contains("sure")) b.textContent = one ? "keep" : `keep all ${n.rows.length}`;
+      b.title = "copy into ~/.claude/crew/kept before temp storage is cleared";
+      b.onclick = (e) => {
+        e.stopPropagation();
+        if (one) void this.keep(n.rows[0] as Row);
+        else void this.keepAll(b, n.rows.length);
+      };
+      head.append(b);
+      open = () => b.click();
+    }
+    t.append(head, sub);
+    t.addEventListener("click", () => {
+      this.selectKey(n.key);
+      open();
+    });
+    this.acts.set(n.key, { open });
+    return t;
+  }
+
+  /** A live review: its stage, findings so far and gate. */
+  /** `at` makes the key unique where the same review shows more than once
+   *  (Timeline draws it in every turn that touched it). */
+  private reviewRow(r: ReviewSum, at = ""): HTMLElement {
+    const key = `review:${r.id}${at ? `@${at}` : ""}`;
+    const d = el("div", `w-rv${key === this.selKey ? " sel" : ""}`);
+    d.dataset.key = key;
+    const top = el("div", "w-rv-top");
+    const t = el("span", "w-rv-t", r.title);
+    t.title = r.title;
+    top.append(t, el("span", `w-stage ${r.needsPerson ? "needs" : r.stage}`, stageSaid(r)));
+    if (r.updatedAt) top.append(el("time", "w-rv-age", age(r.updatedAt)));
+    const sub = el("div", "w-rv-sub");
+    const sev = (["blocker", "major", "minor", "nit"] as const).filter((k) => r.counts[k]);
+    for (const k of sev) sub.append(el("span", `w-sev ${k === "blocker" || k === "major" ? "hi" : ""}`, `${r.counts[k]} ${k}`));
+    if (!sev.length && r.stage !== "finding") sub.append(el("span", "w-sev", "no open findings"));
+    const gate = r.gate.code === 0 ? "gate open" : r.gate.code === 4 ? `gate shut · ${r.claims.unchecked} claim${r.claims.unchecked === 1 ? "" : "s"} unchecked`
+      : r.gate.code === 1 ? "gate shut · a blocker or major is open" : "gate shut · no reviewer yet";
+    const g = el("span", `w-gate ${r.gate.code === 0 ? "open" : "shut"}`, gate);
+    g.title = r.gate.why;
+    sub.append(g);
+    if (r.reviewer === "panel") sub.append(el("span", "w-st", "panel"));
+    d.append(top, sub);
+    d.addEventListener("click", () => {
+      this.selectKey(key);
+      this.openReview(r.id, r.title);
+    });
+    this.acts.set(key, { open: () => this.openReview(r.id, r.title) });
+    return d;
+  }
+
+  /** A past review: when it closed, what it was, how many rounds it took. */
+  private pastRow(r: ReviewSum): HTMLElement {
+    const key = `review:${r.id}`;
+    const d = el("div", `w-past${key === this.selKey ? " sel" : ""}`);
+    d.dataset.key = key;
+    const when = r.closedAt ? new Date(r.closedAt) : null;
+    d.append(
+      el("time", "w-past-d", when ? `${MON[when.getMonth()]} ${when.getDate()}` : ""),
+      el("span", "w-past-t", r.title),
+      el("span", "w-past-v", r.round.sealed ? `${r.round.sealed} round${r.round.sealed === 1 ? "" : "s"}` : "one pass"),
+      el("span", "w-st", r.reviewer),
+    );
+    (d.children[1] as HTMLElement).title = r.title;
+    d.addEventListener("click", () => {
+      this.selectKey(key);
+      this.openReview(r.id, r.title);
+    });
+    this.acts.set(key, { open: () => this.openReview(r.id, r.title) });
+    return d;
+  }
+
+  /** A pull request's lane: review, checks, merged, landed, and a line on
+   *  where it is. A click opens it on GitHub; its landing chip follows the
+   *  landing in the Lookout tab. */
+  /** `at` makes the key unique where the same pull request shows more than
+   *  once (Timeline draws its lane in every turn that touched it). */
+  private laneRow(l: Lane, at = ""): HTMLElement {
+    const p = l.pr;
+    const key = at ? `${l.key}@${at}` : l.key;
+    const red = l.states.includes("failed");
+    const d = el("div", `w-lane${red ? " bad" : l.states[3] === "needs" ? " attn" : ""}${key === this.selKey ? " sel" : ""}`);
+    d.dataset.key = key;
+    const who = el("span", "w-lane-who");
+    who.append(el("span", "w-pr-n", `#${p.n}`), el("span", "w-lane-t", p.title || p.url));
+    who.title = `${p.title}
+${p.url}`;
+    d.append(who, ...l.states.map((st, i) => {
+      const c = el("span", "w-cell");
+      const dot = el("span", `w-dot ${st}`);
+      dot.title = `${["review", "checks", "merged", "landed"][i]}: ${st === "none" ? "not yet" : st}`;
+      c.append(dot);
+      return c;
+    }));
+    const note = el("div", "w-lane-note");
+    const land = p.merge ? this.lands.get(p.merge.sha) ?? null : null;
+    const chip = chipFor({ ...(p as Pr), cwd: this.ws, ws: "", ws_title: "" } as unknown as PrRow, land);
+    if (chip) {
+      const c = el(p.merge && land ? "button" : "span", `w-pr-land ${chip.cls}`, chip.text);
+      if (c instanceof HTMLButtonElement && p.merge) {
+        c.type = "button";
+        c.title = "Follow this merge's landing in the Lookout tab";
+        const merge = p.merge.sha, cwd = this.ws;
+        c.addEventListener("click", (e) => {
+          e.stopPropagation();
+          window.dispatchEvent(new CustomEvent("seamux:land-open", { detail: { cwd, merge } }));
+        });
+      }
+      note.append(c);
+    }
+    const full = this.prs.find((x) => x.n === p.n);
+    const failing = full?.failing ?? [];
+    note.append(el("span", "w-lane-s", failing.length ? `failing: ${failing.map((f) => f.name).join(", ")}`
+      : p.review === "REVIEW_REQUIRED" ? "review asked" : p.updatedAt ? age(p.updatedAt) : ""));
+    d.append(note);
+    d.addEventListener("click", () => {
+      this.selectKey(key);
+      this.openUrl(p.url);
+    });
+    this.acts.set(key, { open: () => this.openUrl(p.url), copy: () => void this.copy(p.url, "the link") });
+    return d;
+  }
+
+  /** A picture or recording on its shelf: a thumbnail made once per row and
+   *  kept across redraws (a redraw must not fetch it again). */
+  private thumb(r: Row): HTMLElement {
+    const key = `row:${r.id}`;
+    if (this.thumbsWs !== this.ws) {
+      this.thumbs.clear();
+      this.thumbsWs = this.ws;
+    }
+    let t = this.thumbs.get(r.id);
+    if (!t) {
+      t = el("div", "w-thumb");
+      const pic = el("div", "w-thumb-pic");
+      const tile = () => {
+        const x = el("span", "w-thumb-tile", mediaOf(r.path) === "video" ? "▶" : (r.path.split(".").pop() || r.kind).slice(0, 5));
+        return x;
+      };
+      if (mediaOf(r.path) === "image" && r.state !== "gone") {
+        const img = el("img");
+        img.loading = "lazy";
+        img.decoding = "async";
+        img.alt = "";
+        img.src = thumbUrl(r);
+        img.addEventListener("error", () => img.replaceWith(tile()));
+        pic.append(img);
+      } else if (mediaOf(r.path) === "video" && r.state !== "gone") pic.append(this.videoPoster(r, tile()));
+      else pic.append(tile());
+      // A recording saved in the worktree's folder says so, apart from one in
+      // temp storage or a scratchpad. (Whether git tracks it is not known here.)
+      const ws = this.ws.replace(/\/+$/, "");
+      if (mediaOf(r.path) === "video" && ws && r.path.startsWith(ws + "/")) {
+        const m = el("span", "w-repo", "repo");
+        m.title = "saved in this worktree's folder";
+        pic.append(m);
+      }
+      const cap = el("span", "w-thumb-cap", r.title);
+      cap.title = r.path || r.title;
+      t.append(pic, cap);
+      const id = r.id;
+      t.addEventListener("click", (e) => {
+        const now = this.data.rows.find((x) => x.id === id);
+        if (!now) return;
+        this.selectKey(`row:${id}`);
+        if (this.openable(now)) void this.open(now, "", e);
+      });
+      this.thumbs.set(r.id, t);
+    }
+    t.dataset.key = key;
+    t.classList.toggle("sel", key === this.selKey);
+    t.classList.toggle("risk", r.state === "risk");
+    t.classList.toggle("gone", r.state === "gone");
+    this.acts.set(key, { row: r, open: (e) => void this.open(r, "", e), copy: r.path ? () => void this.copy(r.path, "the path") : undefined });
+    return t;
+  }
+
+  /** A video's poster: a muted frame of it, read only once its thumbnail
+   *  scrolls into view (each read is a ranged request for the file), with
+   *  its length when the file states it. A recording that does not (a
+   *  canvas's, or some browsers' own webm) shows its frame alone: learning
+   *  its length would mean reading the whole file. Until the frame is in,
+   *  and for a video that will not load (after one retry), the play tile
+   *  shows. */
+  private videoPoster(r: Row, tile: HTMLElement): HTMLElement {
+    const box = el("span", "w-thumb-vid");
+    const v = el("video");
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = "none";
+    v.tabIndex = -1;
+    v.setAttribute("aria-hidden", "true");
+    const dur = el("span", "w-dur");
+    dur.hidden = true;
+    box.append(tile, dur);
+    const length = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+    v.addEventListener("loadedmetadata", () => {
+      if (Number.isFinite(v.duration) && v.duration > 0) {
+        dur.textContent = length(v.duration);
+        dur.hidden = false;
+        v.currentTime = Math.min(1, v.duration / 10);
+      } else v.currentTime = 0.1;
+    });
+    // The first frame seeked to swaps in for the tile, once.
+    let swapped = false;
+    v.addEventListener("seeked", () => {
+      if (swapped) return;
+      swapped = true;
+      tile.replaceWith(v);
+      box.append(el("span", "w-thumb-play", "▶"));
+    });
+    // One retry a moment later: a file still being written, or a source not
+    // ready yet, often loads the second time.
+    let retried = false;
+    v.addEventListener("error", () => {
+      if (retried || swapped) return;
+      retried = true;
+      window.setTimeout(() => {
+        v.src = fileUrl(r);
+      }, 1500);
+    });
+    const io = new IntersectionObserver((seen) => {
+      if (!seen.some((e) => e.isIntersecting)) return;
+      io.disconnect();
+      v.preload = "metadata";
+      v.src = fileUrl(r);
+    });
+    io.observe(box);
+    return box;
+  }
+
+  // ------------------------------------------------------------ selection
+
+  /** The keys the page shows now, in the order it shows them. */
+  private keysShown(): string[] {
+    return [...this.list.querySelectorAll<HTMLElement>("[data-key]")]
+      .filter((e) => !e.closest(".w-day.folded"))
+      .map((e) => e.dataset.key ?? "");
+  }
+
+  private selectKey(key: string | null, scroll = false): void {
+    // A card's prompt holding the focus lets go: Space then acts on the pick.
+    const f = document.activeElement;
+    if (f instanceof HTMLElement && f.classList.contains("w-prompt") && this.list.contains(f)) f.blur();
+    this.list.querySelectorAll(".sel[data-key]").forEach((x) => x.classList.remove("sel"));
+    this.selKey = key;
+    const at = key ? this.list.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`) : null;
+    if (at) {
+      at.classList.add("sel");
+      if (scroll) at.scrollIntoView({ block: "nearest" });
+    }
+    // An open pane, and a shown prompt, follow the pick.
+    const r = key ? this.acts.get(key)?.row : undefined;
+    if (this.viewer.open && r) this.viewer.show(this.vis.filter(previewable), r);
+    this.showTurn();
+  }
+
+  /** j / k: the next item in reading order; k from the first lets go. */
+  private step(by: 1 | -1): void {
+    const keys = this.keysShown();
+    if (by < 0 && this.selKey && keys[0] === this.selKey) return this.selectKey(null, true);
+    const next = stepKey(keys, this.selKey && keys.includes(this.selKey) ? this.selKey : null, by);
+    if (next) this.selectKey(next, true);
+  }
+
+  /** After a redraw, the pick stays when its item still shows. */
+  private restoreSel(): void {
+    if (this.selKey && !this.keysShown().includes(this.selKey)) this.selKey = null;
+    if (this.selKey) this.list.querySelector(`[data-key="${CSS.escape(this.selKey)}"]`)?.classList.add("sel");
+    if (this.viewer.open) this.viewer.setRows(this.vis.filter(previewable));
+    this.showTurn();
   }
 
   /** Pick `r` in the list, opening its day if it was folded: the pane
    *  flipped to it. Its row stays in sight beside the pane. */
   private reveal(r: Row): void {
-    let i = this.vis.findIndex((x) => x.id === r.id);
-    if (i < 0) return this.viewer.render(r);
-    if (this.list.querySelectorAll(".w-row")[i]?.closest(".w-day.folded, .w-grp.later")) {
-      const dk = dayKey(local(r.created_at));
-      this.dayFold.set(dk, false);
-      this.dayAll.add(dk);
+    const key = `row:${r.id}`;
+    const at = this.list.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
+    if (!at) return this.viewer.render(r);
+    if (at.closest(".w-day.folded")) {
+      this.dayFold.set(dayOf(Date.parse(r.created_at)), false);
       this.draw();
-      i = this.vis.findIndex((x) => x.id === r.id);
     }
-    this.select(i, true);
+    this.selectKey(key, true);
   }
 
-  private row(r: Row, i: number, sel: boolean, tail?: HTMLElement): HTMLElement {
-    const li = el("li", `w-row ${r.state}${sel ? " sel" : ""}`);
-    li.dataset.i = String(i);
+  private row(r: Row, tail?: HTMLElement): HTMLElement {
+    const key = `row:${r.id}`;
+    const li = el("li", `w-row ${r.state}${key === this.selKey ? " sel" : ""}`);
+    li.dataset.key = key;
+    this.acts.set(key, {
+      row: r,
+      open: (e) => {
+        if (this.openable(r)) void this.open(r, "", e);
+      },
+      copy: r.path ? () => void this.copy(r.path, "the path") : undefined,
+    });
     li.append(el("span", "w-k", r.kind));
     const t = el("span", "w-t");
     const gh = ghLink(r);
@@ -875,7 +1438,7 @@ export class Wake {
       // A drag that selected some text ends in a click: that is a copy, not an open.
       const s = window.getSelection();
       if (s && !s.isCollapsed && li.contains(s.anchorNode)) return;
-      this.select(i);
+      this.selectKey(key);
       if (this.openable(r)) void this.open(r, "", e);
     });
     return li;
@@ -884,52 +1447,6 @@ export class Wake {
   /** Whether the row has anything to open: a gone file has nothing, unless a URL or commit stands in. */
   private openable(r: Row): boolean {
     return r.kind === "plan" || r.state !== "gone" || !!r.url || r.kind === "commit";
-  }
-
-  private chip(e: MouseEvent): void {
-    const b = (e.target as HTMLElement).closest<HTMLButtonElement>(".w-chip");
-    if (!b) return;
-    const k = b.dataset.k ?? "";
-    if (k === "\u0000more") {
-      this.allChips = !this.allChips;
-      this.draw();
-      return;
-    }
-    if (!k) this.kinds.clear();
-    else if (e.shiftKey) {
-      if (this.kinds.has(k)) this.kinds.delete(k);
-      else this.kinds.add(k);
-    } else {
-      const only = this.kinds.has(k) && this.kinds.size === 1;
-      this.kinds.clear();
-      if (!only) this.kinds.add(k);
-    }
-    this.sel = -1;
-    this.draw();
-  }
-
-  /** j / k: the next row in that direction that shows. A folded day's rows
-   *  are in the list but hidden, so they are stepped over. */
-  private step(by: 1 | -1): void {
-    const els = this.list.querySelectorAll<HTMLElement>(".w-row");
-    let i = this.sel + by;
-    while (i >= 0 && i < els.length && els[i].closest(".w-day.folded, .w-grp.later")) i += by;
-    if (i < 0 && by < 0) return this.select(-1, true);
-    if (i >= els.length) return;
-    this.select(i, true);
-  }
-
-  private select(i: number, scroll = false): void {
-    const els = this.list.querySelectorAll<HTMLElement>(".w-row");
-    els.forEach((x) => x.classList.remove("sel"));
-    this.sel = Math.max(-1, Math.min(i, this.vis.length - 1));
-    const at = els[this.sel];
-    if (at) {
-      at.classList.add("sel");
-      if (scroll) at.scrollIntoView({ block: "nearest" });
-    }
-    // An open pane follows the pick.
-    if (this.viewer.open) this.viewer.show(this.vis.filter(previewable), this.vis[this.sel] ?? null);
   }
 
   /** Open row `r`. A picture, video or page previews in the pane, unless
@@ -948,11 +1465,10 @@ export class Wake {
     try {
       if (e?.metaKey) return await away();
       if (!elsewhere && !sub && previewable(r)) {
-        const i = this.vis.findIndex((x) => x.id === r.id);
-        if (i >= 0 && i !== this.sel) this.select(i);
+        if (this.selKey !== `row:${r.id}`) this.selectKey(`row:${r.id}`);
         this.viewer.show(this.vis.filter(previewable), r);
         // The pane took room from the list: keep the picked row in sight.
-        requestAnimationFrame(() => this.list.querySelector(".w-row.sel")?.scrollIntoView({ block: "nearest" }));
+        requestAnimationFrame(() => this.list.querySelector(".sel[data-key]")?.scrollIntoView({ block: "nearest" }));
         return;
       }
       // Markdown renders in the Dock, as a pane's link to it does.
@@ -1023,8 +1539,10 @@ export class Wake {
     }
   }
 
-  private async keepAll(): Promise<void> {
-    const b = this.keepAllBtn;
+  /** Keep every file at risk: the first click asks, a second within 3.5 s
+   *  keeps. `b` is Needs you's button, `n` the files it names. */
+  private async keepAll(b: HTMLButtonElement, n: number): Promise<void> {
+    b.dataset.n = String(n);
     if (!b.classList.contains("sure")) {
       arm(b);
       b.classList.add("sure");
@@ -1033,7 +1551,7 @@ export class Wake {
       b.dataset.timer = String(
         window.setTimeout(() => {
           b.classList.remove("sure");
-          b.textContent = `keep all ${b.dataset.n}`;
+          if (b.isConnected) b.textContent = `keep all ${b.dataset.n}`;
         }, 3500),
       );
       return;
@@ -1075,6 +1593,13 @@ export class Wake {
         this.help.hidden = true;
       } else if (this.viewer.open && !inQ) {
         this.viewer.close();
+      } else if (!inQ && this.turnOn && !this.turnP.hidden) {
+        this.turnOn = false;
+        this.showTurn();
+      } else if (!inQ && this.openCard()) {
+        // The latest card opened, and drawn, closes first.
+        const a = this.openCard()!;
+        this.setCard(a.dataset.turn ?? "", a, false);
       } else if (this.q.value || inQ) {
         this.q.value = "";
         this.query = "";
@@ -1089,7 +1614,8 @@ export class Wake {
       if (e.key === "Enter" || e.key === "ArrowDown") {
         e.preventDefault();
         this.q.blur();
-        this.select(0, true);
+        this.selKey = null;
+        this.step(1);
       }
       return;
     }
@@ -1107,11 +1633,12 @@ export class Wake {
       if (e.key === "f") return this.viewer.toggleFull();
       if (e.key === "v") return this.viewer.flipLayout();
     }
-    const r = this.vis[this.sel];
+    const act = this.selKey ? this.acts.get(this.selKey) : undefined;
+    const r = act?.row;
     if (e.metaKey) {
-      if (e.key === "Enter" && r) {
+      if (e.key === "Enter" && act) {
         e.preventDefault();
-        void this.open(r, "", e);
+        act.open(e);
       }
       return;
     }
@@ -1132,22 +1659,38 @@ export class Wake {
         this.step(-1);
         break;
       case "Enter":
-        if (r) {
+        if (act) {
           e.preventDefault();
-          void this.open(r, "");
+          act.open();
         }
         break;
       case " ":
-        if (r) {
-          e.preventDefault();
-          this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-grp")?.querySelector<HTMLElement>(".w-prompt")?.click();
+        e.preventDefault();
+        if (this.mode === "timeline") {
+          // The pick's card, or its turn's card; nothing picked, the first.
+          const card = this.cardFor(this.selKey);
+          if (card) this.toggleCard(card.dataset.turn ?? "", card);
+          break;
+        }
+        // Nothing picked: the first item is picked and its prompt shows.
+        const had = !!this.selKey;
+        if (!had) this.step(1);
+        if (this.selKey) {
+          // Shelves have no cards: the row's turn prompt shows under the list.
+          this.turnOn = had ? !this.turnOn : true;
+          this.showTurn();
+          // The panel takes room from the list: the pick stays in sight.
+          this.list.querySelector<HTMLElement>(".sel[data-key]")?.scrollIntoView({ block: "nearest" });
         }
         break;
       case "K":
         void this.keep(r);
         break;
       case "c":
-        if (r?.path) void this.copy(r.path, "the path");
+        act?.copy?.();
+        break;
+      case "t":
+        this.setMode(this.mode === "shelves" ? "timeline" : "shelves");
         break;
       case "r":
         if (r?.session_id) void this.copy(resumeCmd(r), "the resume command");

@@ -97,7 +97,7 @@ export const VIEWS = {
   dock: { go: (p) => tab(p, "Dock"), shows: ".dockview .sheet .native-term .xterm-screen" },
   wake: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-list li" },
   // checkout-flow (the Dock's first pick) has PR #43 open as a draft.
-  wakeprs: { go: wakeUp, shows: ".dockview .sheet .sheet-wake .w-prs" },
+  wakeprs: { go: wakeUp, shows: ".dockview .sheet .sheet-wake :is(.w-shelf.prs, .w-prs)" },
   // coupons-api's Claude runs its dev server in the background.
   bgshells: { go: (p) => pickRow(p, "api"), shows: ".dockview .bg-summary" },
   lookout: { go: (p) => tab(p, "Lookout"), shows: ".review .r-stage-chip, .r-side .r-stage-chip" },

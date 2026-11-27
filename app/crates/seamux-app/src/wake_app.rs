@@ -33,6 +33,150 @@ pub async fn wake_prs(dir: String) -> Result<Value, String> {
     blocking(move || Ok(Value::Array(if dir.is_empty() { Vec::new() } else { crew_core::prs::list(&dir) }))).await
 }
 
+/// lookout's reviews of worktree `dir`, each with the state lookout works out
+/// by its own rules (`lookout list --json --root`, lookout/lib/summary.mjs):
+/// stage, gate, round, open findings by severity, claims, whether only the
+/// person can close a finding, and past. The Wake's Reviews shelf. The
+/// answer is kept until a review file changes, so a refresh with nothing new
+/// costs a directory listing, not a node start.
+#[tauri::command]
+pub async fn wake_reviews(dir: String) -> Result<Value, String> {
+    blocking(move || {
+        if dir.is_empty() {
+            return Ok(Value::Array(Vec::new()));
+        }
+        let stamp = folder_stamp(&crew_board::review::reviews_dir(), is_review_file);
+        static CACHE: Cache = std::sync::OnceLock::new();
+        if let Some(v) = cached(&CACHE, &dir, stamp) {
+            return Ok(v);
+        }
+        // The engine the pointer file names, as the app's other lookout calls
+        // find it (an app opened from Finder may not have the shim on PATH);
+        // else `lookout` from PATH.
+        let args = ["list", "--json", "--root", dir.as_str()];
+        let ran = match crew_board::act::lookout_engine() {
+            Some((node, engine)) => {
+                let mut a = vec![engine.as_str()];
+                a.extend_from_slice(&args);
+                crew_core::py::run(&node, &a, std::time::Duration::from_secs(15))
+            }
+            None => crew_core::py::run("lookout", &args, std::time::Duration::from_secs(15)),
+        };
+        let (code, out, err) = ran.ok_or("lookout list did not run (no lookout engine, or it timed out)")?;
+        if code != 0 {
+            return Err(format!("lookout list failed: {}", err.trim().lines().last().unwrap_or("")));
+        }
+        let v: Value = serde_json::from_str(&out).map_err(|_| "lookout list printed no reviews".to_string())?;
+        if !v.is_array() {
+            return Err("lookout list printed no reviews".into());
+        }
+        store(&CACHE, dir, stamp, &v);
+        Ok(v)
+    })
+    .await
+}
+
+type Cache = std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u128, Value)>>>;
+
+/// The answer kept for `key` while its folder's stamp has not moved. A
+/// folder that could not be read has no stamp, and nothing is kept for it.
+fn cached(cache: &Cache, key: &str, stamp: Option<u128>) -> Option<Value> {
+    let stamp = stamp?;
+    let map = cache.get_or_init(Default::default).lock().ok()?;
+    map.get(key).filter(|(at, _)| *at == stamp).map(|(_, v)| v.clone())
+}
+
+fn store(cache: &Cache, key: String, stamp: Option<u128>, v: &Value) {
+    if let (Some(stamp), Ok(mut map)) = (stamp, cache.get_or_init(Default::default).lock()) {
+        map.insert(key, (stamp, v.clone()));
+    }
+}
+
+/// A review's own file, not one lookout derives beside it (rows, seen
+/// cursors, a reviewer's incoming findings), which change when no review did.
+fn is_review_file(name: &str) -> bool {
+    name.ends_with(".json") && ![".rows.json", ".seen.json", ".incoming.json"].iter().any(|x| name.ends_with(x))
+}
+
+/// A stamp that moves whenever a file `keep` names is written, added or
+/// removed: the newest change time among them, and their count. lookout and
+/// deep-plan rewrite their files in place, so the folder's own time is not
+/// enough. None when the folder cannot be read.
+fn folder_stamp(folder: &std::path::Path, keep: fn(&str) -> bool) -> Option<u128> {
+    let entries = std::fs::read_dir(folder).ok()?;
+    let (mut newest, mut n) = (0u128, 0u128);
+    for e in entries.flatten() {
+        if !keep(&e.file_name().to_string_lossy()) {
+            continue;
+        }
+        n += 1;
+        let t = e.metadata().and_then(|m| m.modified()).ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+        newest = newest.max(t);
+    }
+    Some(newest.wrapping_mul(1_000_003).wrapping_add(n))
+}
+
+/// The plans rooted at worktree `dir`, as `deep-plan status --json` gives
+/// them (each with its title and every increment's go and done times): the
+/// Wake names a turn after the increment whose window holds it.
+#[tauri::command]
+pub async fn wake_plans(dir: String) -> Result<Value, String> {
+    blocking(move || {
+        if dir.is_empty() {
+            return Ok(Value::Array(Vec::new()));
+        }
+        // A row comes from a plan's state file and, for its title, its
+        // archived spec (deep-plan's keys folder), so the answer is kept until
+        // a file in either is written. Each folder as deep-plan resolves it.
+        let folder = |var: &str, name: &str| {
+            std::env::var_os(var).filter(|s| !s.is_empty()).map(std::path::PathBuf::from)
+                .unwrap_or_else(|| crew_core::py::home().join(".claude/deep-plan").join(name))
+        };
+        let stamp = match (
+            folder_stamp(&folder("DEEP_PLAN_STATE_DIR", "state"), |n| n.ends_with(".json")),
+            folder_stamp(&folder("DEEP_PLAN_KEYS_DIR", "keys"), |n| n.ends_with(".spec.json")),
+        ) {
+            (Some(a), Some(b)) => Some(a.wrapping_mul(31).wrapping_add(b)),
+            (Some(a), None) => Some(a),
+            _ => None,
+        };
+        static CACHE: Cache = std::sync::OnceLock::new();
+        if let Some(v) = cached(&CACHE, &dir, stamp) {
+            return Ok(v);
+        }
+        let script = crew_core::dp_engine::script();
+        let node = crew_board::act::node().unwrap_or_else(|| "node".into());
+        let (code, out, err) = crew_core::py::run(&node, &[&script.to_string_lossy(), "status", "--json"], std::time::Duration::from_secs(15))
+            .ok_or("deep-plan status did not run (no node, or it timed out)")?;
+        if code != 0 {
+            return Err(format!("deep-plan status failed: {}", err.trim().lines().last().unwrap_or("")));
+        }
+        let rows: Vec<Value> = serde_json::from_str(&out).map_err(|_| "deep-plan status printed no plans".to_string())?;
+        let v = Value::Array(plans_rooted(rows, &dir));
+        store(&CACHE, dir, stamp, &v);
+        Ok(v)
+    })
+    .await
+}
+
+/// The rows whose root is `dir`, compared with symlinks resolved and
+/// without a trailing slash (a plan rooted at /tmp/x matches /private/tmp/x).
+fn plans_rooted(rows: Vec<Value>, dir: &str) -> Vec<Value> {
+    let canon = |p: &str| {
+        let t = if p.len() > 1 { p.trim_end_matches('/') } else { p };
+        std::fs::canonicalize(t).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| t.to_string())
+    };
+    let want = canon(dir);
+    rows.into_iter()
+        .filter(|r| {
+            let root = r.get("realRoot").and_then(Value::as_str).filter(|s| !s.is_empty())
+                .or_else(|| r.get("root").and_then(Value::as_str)).unwrap_or("");
+            !root.is_empty() && canon(root) == want
+        })
+        .collect()
+}
+
 /// What opening a row did: a page for the app's sheet, or what cmux did.
 #[derive(Serialize)]
 pub struct Opened {
@@ -286,6 +430,55 @@ pub fn wakefile(req: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plans_rooted_keeps_the_worktrees_plans_only() {
+        let d = std::env::temp_dir().join(format!("wake-plans-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let ds = d.to_string_lossy().into_owned();
+        let rows = vec![
+            json!({"slug": "mine", "root": format!("{ds}/"), "realRoot": ""}),
+            json!({"slug": "real", "root": "/nowhere", "realRoot": ds}),
+            json!({"slug": "other", "root": "/elsewhere", "realRoot": "/elsewhere"}),
+            json!({"slug": "rootless", "root": ""}),
+        ];
+        let kept: Vec<String> = plans_rooted(rows, &ds).iter().map(|r| r["slug"].as_str().unwrap().to_string()).collect();
+        assert_eq!(kept, vec!["mine", "real"]);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn reviews_stamp_moves_when_a_review_is_rewritten_or_added() {
+        let d = std::env::temp_dir().join(format!("wake-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let stamp = |d: &std::path::Path| folder_stamp(d, is_review_file);
+        assert_eq!(stamp(&d.join("missing")), None, "an unreadable folder has no stamp");
+        std::fs::write(d.join("a.json"), "{}").unwrap();
+        let one = stamp(&d);
+        std::fs::write(d.join("b.json"), "{}").unwrap();
+        let two = stamp(&d);
+        assert_ne!(one, two, "a new review moves the stamp");
+        std::fs::write(d.join("notes.txt"), "x").unwrap();
+        std::fs::write(d.join("a.rows.json"), "[]").unwrap();
+        std::fs::write(d.join("a.seen.json"), "[]").unwrap();
+        std::fs::write(d.join("a.incoming.json"), "[]").unwrap();
+        assert_eq!(two, stamp(&d), "files that are not reviews leave it");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(d.join("a.json"), "{\"x\":1}").unwrap();
+        assert_ne!(two, stamp(&d), "a review rewritten in place moves it");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_cache_keeps_an_answer_only_while_its_stamp_holds() {
+        static C: Cache = std::sync::OnceLock::new();
+        store(&C, "w".into(), Some(7), &json!([1]));
+        assert_eq!(cached(&C, "w", Some(7)), Some(json!([1])));
+        assert_eq!(cached(&C, "w", Some(8)), None, "a moved stamp misses");
+        assert_eq!(cached(&C, "w", None), None, "an unreadable folder never hits");
+        store(&C, "x".into(), None, &json!([2]));
+        assert_eq!(cached(&C, "x", None), None, "nothing is kept without a stamp");
+    }
 
     #[test]
     fn the_sheet_shows_images_html_and_pdfs_only() {

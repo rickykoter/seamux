@@ -1803,6 +1803,13 @@ ok("status --json gate/progress shapes",
 ok("done is refused while the example's checks are pending", cli("done", spec.slug, "1").status === 1);
 passAll(spec.slug, 1);
 ok("done closes the increment once they pass", cli("done", spec.slug, "1").status === 0);
+{
+  const row = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === spec.slug);
+  const [i1, i2] = row.increments;
+  ok("status --json carries the plan's title from its spec", row.title === spec.title, row.title);
+  ok("status --json: a done increment has its go and done times", i1.authorizedAt > 0 && i1.doneAt >= i1.authorizedAt, JSON.stringify(i1));
+  ok("status --json: an increment not yet done has doneAt 0", i2.doneAt === 0 && "authorizedAt" in i2, JSON.stringify(i2));
+}
 ok("block records a note", cli("block", spec.slug, "2", "waiting on schema call").status === 0 &&
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"))
     .increments[1].note === "waiting on schema call");

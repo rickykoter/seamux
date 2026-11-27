@@ -463,7 +463,7 @@ const PAGE_LIST = [
 // Every workspace's open pages, as views.rs sends them: framed from the
 // stand-in's placeholder unless a real intent server is given (PAGES).
 const pages = () =>
-  PAGE_LIST.filter(([k]) => ws.some((w) => w.key === k)).map(([k, kind, path, label, state, waiting]) => ({ ws: byKey[k].id, kind, path, label, state, waiting, since: ago(10) }));
+  PAGE_LIST.filter(([k]) => ws.some((w) => w.key === k)).map(([k, kind, path, label, state, waiting]) => ({ ws: byKey[k].id, kind, path, label, state, waiting, since: ago(10), root: treeOf(byKey[k]) }));
 let tucked = [
   { path: `${TREES}/legacy-cart`, level: "tuck", at: ago(60 * 26), name: "legacy-cart", branch: "sam/legacy-cart", workspaces: [], waiting: false, last: ago(60 * 26) },
   { path: `${TREES}/gift-cards`, level: "tuck", at: ago(60 * 50), name: "gift-cards", branch: "sam/gift-cards", workspaces: [], waiting: false, last: ago(60 * 49) },
@@ -755,6 +755,55 @@ const EXCHANGE = {
   ui: ["Put the coupon field above the total, with its error under it.", "Wiring the field into the checkout form now: it posts to /api/coupons/apply and shows the server's message under the input."],
   search: ["Merge it once the checks pass.", "PR #41 merged into main. The worktree has nothing unpushed, so it can be reclaimed."],
 };
+// A review as `lookout list --json --root` reports it (lookout/lib/summary.mjs).
+function reviewSum(id, title, min, o = {}) {
+  const counts = { blocker: 0, major: 0, minor: 0, nit: 0, ...(o.counts ?? {}) };
+  const stage = o.stage ?? "past";
+  return {
+    id, title, root: o.root ?? "", branch: "", plan: o.plan ?? "", inc: o.inc ?? null,
+    createdAt: iso(ago(min + 20)), updatedAt: iso(ago(min)), reviewedAt: stage === "finding" ? null : iso(ago(min + 5)),
+    reviewer: o.reviewer ?? "agent", agentMayClose: !!o.agentMayClose, stage,
+    gate: o.gate ?? { code: 0, why: "no open findings" }, counts,
+    unaddressed: o.unaddressed ?? 0, addressed: o.addressed ?? 0,
+    round: { sealed: 0, pending: 0, max: 2, n: 0, ...(o.round ?? {}) },
+    claims: { unchecked: 0, broken: 0, ...(o.claims ?? {}) },
+    needsPerson: !!o.needsPerson, closeIds: o.closeIds ?? [], past: stage === "past",
+    closedAt: stage === "past" ? iso(ago(min)) : null, files: o.files ?? 4,
+  };
+}
+// The Wake's Reviews shelf, by worktree: live reviews at each stage, and past ones.
+const REVIEWS = {
+  api: [
+    reviewSum("demo-coupons-inc2", "demo-coupons · increment 2", 6, { plan: "demo-coupons", inc: 2, stage: "finding", reviewer: "panel", gate: { code: 3, why: "no reviewer has reported on this review yet" } }),
+    reviewSum("rv-coupons-inc1", "demo-coupons · increment 1", 60, { plan: "demo-coupons", inc: 1, stage: "close", needsPerson: true, closeIds: ["f2"], addressed: 1, counts: { minor: 1 }, round: { sealed: 1, n: 1 } }),
+    reviewSum("coupons-api-spike", "coupons-api vs main · the lookup spike", 60 * 26, { round: { sealed: 1, n: 1 } }),
+    reviewSum("coupons-ui-inc1", "coupons-ui · increment 1", 60 * 50, { reviewer: "panel", round: { sealed: 2, n: 2 } }),
+  ],
+  checkout: [
+    reviewSum("checkout-errors-delivery", "checkout-errors · delivery", 40, { plan: "checkout-errors", inc: "all", stage: "claims", gate: { code: 4, why: "3 assumption(s) wait on the claims check" }, claims: { unchecked: 3 }, addressed: 2, counts: { major: 1, minor: 2 }, unaddressed: 1 }),
+  ],
+  search: [reviewSum("rv-search-41", "search-index · increment 3", 43, { plan: "search-index", inc: 3, round: { sealed: 1, n: 1 } })],
+};
+// deep-plan status rows for a worktree's plan, each increment's go and done
+// times placed around the Wake rows its "go N" turns left.
+function plansOf(w) {
+  if (!w.plan) return [];
+  const rows = WAKE.filter(([, k]) => k === w.key);
+  const increments = Array.from({ length: w.plan.total }, (_, i) => {
+    const n = i + 1;
+    const mins = rows.filter((r) => r[5].prompt === `go ${n}`).map((r) => r[4]);
+    const done = n <= w.plan.done;
+    if (!mins.length) return { n, title: `increment ${n}`, status: done ? "done" : "pending", authorizedAt: 0, doneAt: 0 };
+    return { n, title: `increment ${n}`, status: done ? "done" : "working", authorizedAt: ago(Math.max(...mins) + 3), doneAt: done ? ago(Math.min(...mins) - 2) : 0 };
+  });
+  return [{ slug: w.plan.slug, title: w.plan.title, root: treeOf(w), realRoot: treeOf(w), phase: w.plan.phase, increments }];
+}
+// The demo workspace whose worktree is `dir`.
+function wakeOf(dir) {
+  const d = (dir ?? "").replace(/\/+$/, "");
+  return WORKSPACES.find((w) => treeOf(w) === d) ?? null;
+}
+
 /** A workspace's PRs as the Wake lists them (crew-sync's list for its worktree). */
 function wakePrs(dir) {
   const d = (dir ?? "").replace(/\/+$/, "");
@@ -1348,6 +1397,14 @@ const handlers = {
   // A pane's strips and banners. Nothing is held and nothing stopped in the
   // demo, so those banners stay away, as on a quiet pane.
   wake_prs: ({ dir }) => wakePrs(dir),
+  wake_reviews: ({ dir }) => {
+    const w = wakeOf(dir);
+    return w ? (REVIEWS[w.key] ?? []).map((r) => ({ ...r, root: treeOf(w) })) : [];
+  },
+  wake_plans: ({ dir }) => {
+    const w = wakeOf(dir);
+    return w ? plansOf(w) : [];
+  },
   bg_shells: ({ surface, tails }) => shellsOf(surface, tails),
   bg_stop: ({ surface, id }) => stopShell(surface, id),
   pane_held: ({ surface }) => (surface === W.docs.surface ? heldDocs : null),
@@ -1436,7 +1493,53 @@ const handlers = {
 const unknown = new Set();
 mockWindows("main");
 // The Wake's images stream from the app's wakefile: scheme by row id; here, drawn.
-window.__TAURI_INTERNALS__.convertFileSrc = (id, protocol) => (protocol === "wakefile" && WAKE.some(([i, , kind]) => String(i) === id && kind === "image") ? demoShot(id) : `${protocol}://localhost/${id}`);
+// The Wake's videos: the demo has no video files, so one short clip is drawn
+// on a canvas and recorded at load; every video row streams it. Without a
+// recorder, video rows keep their play tile.
+let demoClip = null;
+(async () => {
+  try {
+    const c = document.createElement("canvas");
+    c.width = 320;
+    c.height = 200;
+    const g = c.getContext("2d");
+    const rec = new MediaRecorder(c.captureStream(15), { mimeType: "video/webm" });
+    const parts = [];
+    rec.ondataavailable = (e) => parts.push(e.data);
+    const stopped = new Promise((r) => (rec.onstop = r));
+    rec.start();
+    const t0 = performance.now();
+    await new Promise((done) => {
+      const frame = () => {
+        const t = (performance.now() - t0) / 1000;
+        g.fillStyle = "hsl(200 30% 88%)";
+        g.fillRect(0, 0, 320, 200);
+        g.fillStyle = "hsl(200 35% 30%)";
+        g.fillRect(0, 0, 320, 22);
+        g.fillStyle = "#fff";
+        g.fillRect(90, 40, 140, 130);
+        g.fillStyle = "hsl(150 45% 40%)";
+        g.fillRect(105, 140, 110 * Math.min(1, t / 1.2), 14);
+        g.fillStyle = "#333";
+        g.font = "14px sans-serif";
+        g.fillText("Order summary", 105, 66);
+        if (t < 1.2) requestAnimationFrame(frame);
+        else done();
+      };
+      frame();
+    });
+    rec.stop();
+    await stopped;
+    demoClip = URL.createObjectURL(new Blob(parts, { type: "video/webm" }));
+  } catch {
+    /* no recorder here */
+  }
+})();
+const kindOfRow = (id) => WAKE.find(([i]) => String(i) === id)?.[2];
+window.__TAURI_INTERNALS__.convertFileSrc = (id, protocol) =>
+  protocol === "wakefile" && kindOfRow(id) === "image" ? demoShot(id)
+  : protocol === "wakefile" && kindOfRow(id) === "video" && demoClip ? demoClip
+  : `${protocol}://localhost/${id}`;
 mockIPC(
   async (cmd, args) => {
     const h = handlers[cmd];
