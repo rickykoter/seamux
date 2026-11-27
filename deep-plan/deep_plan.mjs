@@ -6188,7 +6188,8 @@ function scenarioSummary(slug) {
   const v = newest && (newest.scores || []).length ? newest : SCN.priorVerdict(slug);
   const r = SCN.revisionState(slug);
   const scores = v ? v.scores || [] : [];
-  const th = v && Number.isFinite(Number(v.threshold)) ? Number(v.threshold) : SCN.DEFAULT_THRESHOLD;
+  // As the scenarios page reads it: missing or null is the default, not 0.
+  const th = v && v.threshold != null && Number.isFinite(Number(v.threshold)) ? Number(v.threshold) : SCN.DEFAULT_THRESHOLD;
   return {
     count: t.count,
     last: v ? { at: v.at, pass: !!v.pass, full: !!v.full, threshold: th, met: scores.filter(s => s.score >= th).length, total: scores.length,

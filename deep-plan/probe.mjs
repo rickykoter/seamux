@@ -9631,11 +9631,11 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
     const vf = path.join(SEALED, "scn-a", "verdicts.json");
     const keep = fs.readFileSync(vf, "utf8");
     const all = JSON.parse(keep);
-    if (all.last) delete all.last.threshold;
+    if (all.last) all.last.threshold = null;
     fs.writeFileSync(vf, JSON.stringify(all));
     const s = (JSON.parse(sc("status", "--json").stdout).find(x => x.slug === "scn-a") || {}).scenarios || {};
     fs.writeFileSync(vf, keep);
-    ok("status --json: a verdict with no threshold of its own is read at the default", !s.last || (s.last.threshold === 0.8 && s.last.met + s.last.failing.length === s.last.total), JSON.stringify(s));
+    ok("status --json: a verdict whose threshold is null is read at the default (as the scenarios page reads it)", !s.last || (s.last.threshold === 0.8 && s.last.met + s.last.failing.length === s.last.total), JSON.stringify(s));
   }
   ok("status --json: revisions waiting on the person show in the plan's scenarios summary",
     ((JSON.parse(sc("status", "--json").stdout).find(x => x.slug === "scn-a") || {}).scenarios || {}).waiting === 2);
