@@ -330,7 +330,6 @@
 .w-card-hd .w-prompt::before { content: "\201C"; color: var(--muted); }
 .w-card-hd .w-prompt::after { content: "\201D"; color: var(--muted); }
 .w-card-hd .w-prompt.none::before, .w-card-hd .w-prompt.none::after { content: none; }
-.w-card.open .w-card-hd .w-prompt { white-space: normal; }
 .w-card-m { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; font-size: var(--fs-2); color: var(--muted); }
 .w-card-n { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
 .w-card-m time { font-variant-numeric: tabular-nums; }
@@ -360,3 +359,7 @@
 .w-turnp-esc { margin-left: auto; white-space: nowrap; }
 .w-turnp-b { white-space: pre-wrap; overflow-wrap: anywhere; }
 .w-turnp-b.none { color: var(--muted); }
+
+/* Timeline: an opened card shows its whole prompt under its heading. */
+.w-card-p { margin: 0 12px; padding: 6px 0 8px; border-bottom: 1px dashed var(--line); font-size: var(--fs-2); }
+.w-card-p[hidden] { display: none; }

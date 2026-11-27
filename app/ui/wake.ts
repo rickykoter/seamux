@@ -261,7 +261,7 @@ export class Wake {
         ["v", "preview beside · under the list"],
         ["f", "fill the Wake with the preview"],
         ["Esc", "close the keys, the preview, a prompt, then the search"],
-        ["Space", "show the turn's whole prompt; again to hide it"],
+        ["Space", "show the whole prompt of the picked item's turn; again to hide it"],
         ["K", "keep an at-risk file"],
         ["c", "copy the path (a pull request's link)"],
         ["r", "copy the resume command"],
@@ -776,7 +776,20 @@ export class Wake {
       sb.addEventListener("click", () => void this.copy(resumeCmd(first), "the resume command"));
       hd.append(sb);
     }
-    a.append(hd);
+    // Opened (Space or a click on the prompt), the card shows its prompt
+    // whole under its heading, however short; Esc closes it.
+    const open = this.openGroups.has(c.key);
+    prompt.setAttribute("role", "button");
+    prompt.setAttribute("aria-expanded", String(open));
+    const whole = el("div", "w-card-p");
+    whole.hidden = !open;
+    const wb = el("div", `w-turnp-b${c.prompt ? "" : " none"}`);
+    wb.append(c.prompt ? marked(c.prompt, this.query) : document.createTextNode((first && SOURCE[first.source]) ?? "no prompt recorded"));
+    const wh = el("div", "w-turnp-h");
+    wh.append(el("b", "", "Prompt"), el("span", "w-turnp-esc", "Space or Esc closes"));
+    whole.append(wh, wb);
+    a.dataset.rows = c.sections.flatMap((s) => s.rows.map((r) => r.id)).join(",");
+    a.append(hd, whole);
     for (const sec of c.sections) {
       const box = el("div", `w-sect ${sec.shelf}`);
       const h = el("h3", "w-sect-h");
@@ -813,23 +826,69 @@ export class Wake {
   /** Open or close a card's whole prompt. The latest opened is the first
    *  one Esc closes. */
   private toggleCard(key: string, a: HTMLElement): void {
-    const open = !this.openGroups.has(key);
+    this.setCard(key, a, !this.openGroups.has(key));
+  }
+
+  private setCard(key: string, a: HTMLElement, open: boolean): void {
     if (open) this.openGroups.add(key);
     else this.openGroups.delete(key);
     this.spaceOpened = this.spaceOpened.filter((k) => k !== key);
     if (open) this.spaceOpened.push(key);
     a.classList.toggle("open", open);
+    a.querySelector(".w-card-hd .w-prompt")?.setAttribute("aria-expanded", String(open));
+    const whole = a.querySelector<HTMLElement>(".w-card-p");
+    if (whole) whole.hidden = !open;
+    if (open) (whole ?? a).scrollIntoView({ block: "nearest" });
+  }
+
+  /** The row a pick came from, for its turn: a row itself, or the row a
+   *  pull request's lane, a review or a Needs you tile stands for. */
+  private rowFor(key: string | null): Row | undefined {
+    if (!key) return undefined;
+    const direct = this.acts.get(key)?.row;
+    if (direct) return direct;
+    const k = key.split("@")[0];
+    const at = k.indexOf(":");
+    const kind = at < 0 ? k : k.slice(0, at);
+    const v = at < 0 ? "" : k.slice(at + 1);
+    const rows = this.data.rows;
+    if (kind === "pr" || kind === "needpr" || kind === "land") return rows.find((r) => r.kind === "pr" && ghLink(r)?.n === v);
+    if (kind === "review" || kind === "needreview") return rows.find((r) => r.kind === "review" && r.locator === v);
+    if (kind === "ask") return rows.find((r) => r.kind === "ask" && (r.path === v || r.locator === v || v.endsWith(`/${r.locator}`)));
+    if (kind === "risk") return rows.find((r) => r.state === "risk");
+    return undefined;
+  }
+
+  /** Timeline: the card that holds the pick, or the card of the turn the
+   *  pick came from; with nothing picked, the first card. */
+  private cardFor(key: string | null): HTMLElement | null {
+    if (!key) return this.list.querySelector<HTMLElement>(".w-card");
+    const at = this.list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.closest<HTMLElement>(".w-card");
+    if (at) return at;
+    const r = this.rowFor(key);
+    if (!r) return null;
+    return [...this.list.querySelectorAll<HTMLElement>(".w-card")].find((c) => (c.dataset.rows ?? "").split(",").includes(String(r.id))) ?? null;
   }
 
   /** Shelves: the picked row's turn prompt under the list, while Space has
    *  it on and the pick is a row. Hidden on Timeline, where each card holds
    *  its own. */
   private showTurn(): void {
-    // A pick that is not a row (a lane, a review) hides the prompt; the
-    // next row picked shows its own again.
-    const r = this.turnOn && this.mode === "shelves" && this.selKey ? this.acts.get(this.selKey)?.row : undefined;
-    this.turnP.hidden = !r;
-    if (!r) return;
+    const on = this.turnOn && this.mode === "shelves" && !!this.selKey;
+    const r = on ? this.rowFor(this.selKey) : undefined;
+    this.turnP.hidden = !on;
+    if (!on) return;
+    if (!r) {
+      // A pick no turn in this Wake made (a pull request crew-sync found, a
+      // review opened by hand): said so, rather than nothing.
+      this.turnRow = -1;
+      const at = this.list.querySelector<HTMLElement>(`[data-key="${CSS.escape(this.selKey!)}"]`);
+      const name = (at?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+      const hd = el("div", "w-turnp-h");
+      hd.append(el("b", "", "Prompt"), el("span", "w-turnp-m", name), el("span", "w-turnp-esc", "Space or Esc closes"));
+      this.turnP.replaceChildren(hd, el("div", "w-turnp-b none", "no turn in this Wake made it, so there is no prompt to show"));
+      return;
+    }
     if (this.turnRow !== r.id) {
       this.turnRow = r.id;
       this.turnP.scrollTop = 0;
@@ -1522,10 +1581,7 @@ ${p.url}`;
       } else if (!inQ && this.openCard()) {
         // The latest card opened, and drawn, closes first.
         const a = this.openCard()!;
-        const k = a.dataset.turn ?? "";
-        this.openGroups.delete(k);
-        this.spaceOpened = this.spaceOpened.filter((x) => x !== k);
-        a.classList.remove("open");
+        this.setCard(a.dataset.turn ?? "", a, false);
       } else if (this.q.value || inQ) {
         this.q.value = "";
         this.query = "";
@@ -1591,11 +1647,16 @@ ${p.url}`;
         }
         break;
       case " ":
-        if (!this.selKey) break;
         e.preventDefault();
         if (this.mode === "timeline") {
-          this.list.querySelector(`[data-key="${CSS.escape(this.selKey)}"]`)?.closest(".w-card")?.querySelector<HTMLElement>(".w-prompt")?.click();
-        } else if (r) {
+          // The pick's card, or its turn's card; nothing picked, the first.
+          const card = this.cardFor(this.selKey);
+          if (card) this.toggleCard(card.dataset.turn ?? "", card);
+          break;
+        }
+        // Nothing picked: the first item is, and its prompt shows.
+        if (!this.selKey) this.step(1);
+        if (this.selKey) {
           // Shelves have no cards: the row's turn prompt shows under the list.
           this.turnOn = !this.turnOn;
           this.showTurn();

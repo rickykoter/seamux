@@ -130,11 +130,41 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     for (let i = 0; i < 60 && (await sel(page)) !== rk; i++) await page.keyboard.press("j");
     await page.keyboard.press(" ");
     await page.waitForTimeout(200);
-    say(await page.evaluate((k) => !!document.querySelector(`.sheet-wake [data-key="${k}"]`)?.closest(".w-card.open"), rk), "Space opens the card's whole prompt", rk);
+    const openWhole = (k) => page.evaluate((k) => {
+      const c = document.querySelector(`.sheet-wake [data-key="${k}"]`)?.closest(".w-card");
+      const w = c?.querySelector(".w-card-p");
+      return !!c && c.classList.contains("open") && !!w && !w.hidden && w.getBoundingClientRect().height > 0 ? w.textContent : "";
+    }, k);
+    const shownWhole = await openWhole(rk);
+    say(!!shownWhole, "Space opens the card's whole prompt, shown under its heading", shownWhole.slice(0, 40));
     await page.keyboard.press("Escape");
     await page.waitForTimeout(200);
-    say(await page.evaluate((k) => !document.querySelector(`.sheet-wake [data-key="${k}"]`)?.closest(".w-card.open"), rk) && (await wake.isVisible()),
-      "Esc closes the card's prompt, and the Wake stays");
+    say(!(await openWhole(rk)) && (await wake.isVisible()), "Esc closes the card's prompt, and the Wake stays");
+    // Two cards opened: Esc closes the latest first, then the other, then nothing is left open.
+    const cardKeys = await wake.locator(".w-card").evaluateAll((els) => els.slice(0, 2).map((c) => c.getAttribute("data-turn")));
+    for (const k of cardKeys) await wake.locator(`.w-card[data-turn="${k}"] .w-card-hd .w-prompt`).click();
+    const openNow = () => wake.locator(".w-card.open").evaluateAll((els) => els.map((c) => c.getAttribute("data-turn")));
+    const both = await openNow();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+    const one = await openNow();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+    const none = await openNow();
+    say(both.length === 2 && one.length === 1 && one[0] === cardKeys[0] && none.length === 0 && (await wake.isVisible()),
+      "Esc closes opened cards latest first, one at a time", JSON.stringify({ both, one, none }));
+    // Space on a pick outside any card (a Needs you tile) opens the card of the turn it came from.
+    const needKey = await wake.locator(".w-need").first().getAttribute("data-key");
+    for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
+    for (let i = 0; i < 60 && (await sel(page)) !== needKey; i++) await page.keyboard.press("j");
+    await page.keyboard.press(" ");
+    await page.waitForTimeout(200);
+    const fromNeed = await wake.locator(".w-card.open .w-card-p").count();
+    say((await sel(page)) === needKey && fromNeed === 1, "Space on a Needs you tile opens its turn's card", `${needKey} → ${fromNeed} open`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+    for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
+    for (let i = 0; i < 60 && (await sel(page)) !== rk; i++) await page.keyboard.press("j");
 
     await page.keyboard.press("t");
     await page.waitForTimeout(400);
@@ -162,6 +192,18 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     await page.waitForTimeout(200);
     say(viewerUp && !afterOne.viewer && afterOne.prompt && !(await turnp.isVisible()) && (await wake.isVisible()),
       "Esc closes the preview first, then the prompt, and the Wake stays", JSON.stringify({ viewerUp, ...afterOne }));
+    // Space on a pull request's lane shows the prompt of the turn that opened it.
+    const laneKey = await wake.locator(".w-shelf.prs .w-lane").first().getAttribute("data-key");
+    for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
+    for (let i = 0; i < 60 && (await sel(page)) !== laneKey; i++) await page.keyboard.press("j");
+    await page.keyboard.press(" ");
+    await page.waitForTimeout(200);
+    const laneP = (await turnp.isVisible()) ? await turnp.locator(".w-turnp-b").textContent() : "";
+    // coupons-api's #44 came from crew-sync's list, not a turn: the panel says so.
+    say((await sel(page)) === laneKey && /no turn in this Wake made it/.test(laneP ?? ""), "Space on a PR lane no turn made says there is no prompt", `${laneKey}: ${laneP}`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+    say(!(await turnp.isVisible()) && (await wake.isVisible()), "Esc closes it, and the Wake stays");
 
     // A redraw (a search, then clearing it) keeps each thumbnail: the same element, not fetched again.
     const tk = await wake.locator(".w-thumb").first().getAttribute("data-key");
@@ -204,6 +246,17 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     say(await mp4.locator(".w-repo").isVisible().catch(() => false), "a recording saved in the worktree is marked repo");
     say(!(await wake.locator(".w-thumb", { hasText: "checkout-walkthrough.webm" }).count()), "another worktree's videos are not shown");
     await page.screenshot({ path: join(out, "videos-repo.png") });
+
+    // search-index's #41 was opened in a turn ("merge it"): Space on its lane shows that prompt.
+    await wake.locator(".w-ws").selectOption(treeOf(byKey.search));
+    await wake.locator('.w-shelf.prs .w-lane[data-key="pr:41"]').waitFor({ timeout: 8000 }).catch(() => {});
+    await wake.locator(".w-shelf-h").first().click();
+    for (let i = 0; i < 60 && (await sel(page)) !== "pr:41"; i++) await page.keyboard.press("j");
+    await page.keyboard.press(" ");
+    await page.waitForTimeout(200);
+    const p41 = (await wake.locator(".w-turnp").isVisible()) ? await wake.locator(".w-turnp .w-turnp-b").textContent() : "";
+    say(p41 === "merge it", "Space on a PR lane shows the prompt of the turn that opened it", `pr:41: ${p41}`);
+    await page.keyboard.press("Escape");
 
     // A video that will not load keeps its play tile (the webm, row 20, made
     // to point nowhere; coming back to coupons-api draws its poster afresh).
