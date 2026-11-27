@@ -120,7 +120,8 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     const order7 = ["reviews", "plans", "prs", "pictures", "files", "commits"];
     say(sects.length > 0 && sects.every((x, i) => i === 0 || order7.indexOf(x) > order7.indexOf(sects[i - 1])), "a card's sections follow the shelves' order", sects.join());
     // j walks the cards in the order they show, every key once.
-    await wake.locator(".w-card-hd").first().click({ position: { x: 4, y: 4 } });
+    // The Wake's header takes the keys without opening a card (a click on a card's heading does).
+    await wake.locator(".w-head").click({ position: { x: 4, y: 4 } });
     const tl = [];
     for (let i = 0; i < 60; i++) {
       await page.keyboard.press("j");

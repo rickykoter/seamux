@@ -318,7 +318,10 @@ export class Wake {
       closed: () => this.list.querySelector<HTMLElement>(".w-row.sel")?.scrollIntoView({ block: "nearest" }),
       when: (r) => {
         const d = local(r.created_at);
-        return [r.kind, d ? `${dayLabel(d)} ${hm(d)}` : "", r.prompt || SOURCE[r.source] || ""].filter(Boolean).join(" · ");
+        const t = this.turnIdx.get(r.id);
+        const bg = backgroundTask(r.prompt);
+        const said = t?.prompt || (bg !== null ? `a background task: ${bg}` : r.prompt);
+        return [r.kind, d ? `${dayLabel(d)} ${hm(d)}` : "", said || SOURCE[r.source] || ""].filter(Boolean).join(" · ");
       },
     });
     root.replaceChildren(main, this.viewer.gripX, this.viewer.gripY, this.viewer.el, this.help, this.toastEl);
@@ -582,7 +585,14 @@ export class Wake {
       const shown = [...page(id, here, 12), ...(this.goneOpen.has(id) ? gone : [])];
       shownRows.push(...shown);
       const ul = el("ul", "w-rows w-box");
-      for (const r of shown) ul.append(this.row(r));
+      // Two rows of one name show their folders, which tell them apart.
+      const seen = new Map<string, number>();
+      for (const r of shown) seen.set(r.title, (seen.get(r.title) ?? 0) + 1);
+      for (const r of shown) {
+        const li = this.row(r);
+        li.classList.toggle("dup", (seen.get(r.title) ?? 0) > 1);
+        ul.append(li);
+      }
       return [...(shown.length ? [ul] : []), ...more(id, here.length, Math.min(here.length, page(id, here, 12).length)), ...goneFold(id, gone.length)];
     };
     // A shelf counts what is here; its fold says what is gone.
@@ -596,7 +606,7 @@ export class Wake {
       const body: HTMLElement[] = [];
       if (live.length) body.push(this.box("Live", null, live.map((r) => this.reviewRow(r))));
       if (s.reviews.past.length) {
-        const shown = this.pastAll || pq ? past : past.slice(0, 4);
+        const shown = this.pastAll || pq ? past : past.slice(0, 2);
         const items = shown.map((r) => this.pastRow(r));
         if (past.length > shown.length) items.push(this.fold(`${past.length - shown.length} older review${past.length - shown.length === 1 ? "" : "s"}`, () => (this.pastAll = true), false, "fold:past"));
         if (!items.length) items.push(el("div", "w-none", `no past review matches “${this.pastQ || this.query}”`));
@@ -712,17 +722,24 @@ export class Wake {
 
   /** Needs you's tiles, or one calm line when nothing waits. */
   private needsBlock(needs: Need[]): HTMLElement {
-    if (needs.length) return this.shelfEl("needs", String(needs.length), this.needsGrid(needs));
-    const c = el("div", "w-calm");
-    // Nothing waits on the person, but a failing pull request (one the board
-    // files elsewhere, a draft say) is said, not hidden under a check mark.
-    const red = this.shelfPrs().filter((p) => p.state !== "merged" && p.state !== "closed" && ((p.checks?.fail ?? 0) > 0 || p.conflict));
-    if (red.length) {
-      c.classList.add("warn");
-      const go = button(red.length === 1 ? `#${red[0].n} failing ↓` : `${red.length} pull requests failing ↓`, "w-calm-red");
+    // A failing pull request the board files elsewhere (a draft, say) is
+    // named here, with a jump to its lane, whatever else waits.
+    const red = needs.some((n) => n.kind === "pr") ? [] : this.shelfPrs().filter((p) => p.state !== "merged" && p.state !== "closed" && ((p.checks?.fail ?? 0) > 0 || p.conflict));
+    const jump = () => {
+      const go = button(red.length === 1 ? `#${red[0].n} is failing ↓` : `${red.length} pull requests are failing ↓`, "w-calm-red");
       go.title = "its lane on Pull requests and landings";
       go.addEventListener("click", () => this.selectKey(`pr:${red[0].n}`, true));
-      c.append(document.createTextNode("Nothing needs you."), go);
+      return go;
+    };
+    if (needs.length) {
+      const sec = this.shelfEl("needs", String(needs.length), this.needsGrid(needs));
+      if (red.length) sec.append(jump());
+      return sec;
+    }
+    const c = el("div", "w-calm");
+    if (red.length) {
+      c.classList.add("warn");
+      c.append(jump(), document.createTextNode("Nothing else needs you."));
     } else c.append(el("span", "w-calm-ok", "✓"), document.createTextNode("Nothing needs you."));
     return c;
   }
@@ -751,6 +768,7 @@ export class Wake {
       }
     let day = "";
     let dayEl: HTMLElement | null = null;
+    let lastName: string | null = null;
     for (const c of cards) {
       if (c.day !== day) {
         day = c.day;
@@ -760,6 +778,12 @@ export class Wake {
         dayEl.dataset.day = dk;
         const n = per.get(dk) ?? 0;
         const tog = button(`${folded ? "▸" : "▾"} ${dayLabel(new Date(c.start))}${folded ? ` · ${n} thing${n === 1 ? "" : "s"}` : ""}`, "w-dayh");
+        // A day's heading is a stop on the j/k walk; Enter folds or opens it.
+        const dayKey = `fold:day:${dk}`;
+        tog.dataset.key = dayKey;
+        tog.classList.toggle("sel", dayKey === this.selKey);
+        this.acts.set(dayKey, { open: () => tog.click() });
+        lastName = null;
         // A folded day still says when something in it is at risk.
         const atRisk = risky.get(dk) ?? 0;
         if (folded && atRisk) tog.append(el("span", "w-dayrisk", ` · ${atRisk} at risk`));
@@ -773,7 +797,10 @@ export class Wake {
         dayEl.append(h);
         out.push(dayEl);
       }
-      dayEl!.append(this.card(c, reviews, lanes));
+      // The increment names the first of its run of turns; the rest lead
+      // with their own prompts.
+      dayEl!.append(this.card(c, reviews, lanes, !!c.name && c.name === lastName));
+      lastName = c.name;
     }
     if (!cards.length) {
       const e = el("div", "w-empty");
@@ -797,11 +824,11 @@ export class Wake {
    *  increment it belongs to, its time span and resume, then its sections.
    *  A pull request the worktree knows draws as its lane, a review lookout
    *  knows as its stage, as on the shelves. */
-  private card(c: Turn<Row>, reviews: Map<string, ReviewSum>, lanes: Map<number, Lane>): HTMLElement {
+  private card(c: Turn<Row>, reviews: Map<string, ReviewSum>, lanes: Map<number, Lane>, again = false): HTMLElement {
     // One heading grammar: the increment the turn ran when there is one, else
     // the person's prompt; under it the time, background tasks and, under an
     // increment, the prompt itself, muted.
-    const named = !!c.name;
+    const named = !!c.name && !again;
     const a = el("article", `w-card${this.openGroups.has(c.key) ? " open" : ""}${named ? " named" : ""}`);
     const first = c.sections[0]?.rows[0];
     const hd = el("div", "w-card-hd");
@@ -810,7 +837,11 @@ export class Wake {
     prompt.title = said;
     prompt.append(said ? marked(said, this.query) : document.createTextNode((first && SOURCE[first.source]) ?? "no prompt recorded"));
     a.dataset.turn = c.key;
-    prompt.addEventListener("click", () => this.toggleCard(c.key, a));
+    // A click anywhere on the heading opens or closes the card, but its buttons.
+    hd.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("button, a")) return;
+      this.toggleCard(c.key, a);
+    });
     const meta = el("span", "w-card-m");
     if (c.name) meta.append(el("span", "w-card-n", c.name));
     const span = c.start === c.end ? hm(new Date(c.start)) : `${hm(new Date(c.start))}–${hm(new Date(c.end))}`;
@@ -871,7 +902,7 @@ export class Wake {
       const live = sec.rows.filter((r) => r.state !== "gone");
       const gone = sec.rows.filter((r) => r.state === "gone");
       // A card shows a few of each; the rest wait behind "N more".
-      const cap = sec.shelf === "pictures" ? 6 : 5;
+      const cap = sec.shelf === "pictures" ? 4 : 5;
       const liveShown = this.query || this.moreOpen.has(gk) ? live : live.slice(0, cap);
       const rows = [...liveShown, ...(this.goneOpen.has(gk) ? gone : [])];
       this.cardRows.push(...rows);
@@ -963,7 +994,7 @@ export class Wake {
    *  it on and the pick is a row. Hidden on Timeline, where each card holds
    *  its own. */
   private showTurn(): void {
-    const on = this.turnOn && this.mode === "shelves" && !!this.selKey;
+    const on = this.turnOn && this.mode === "shelves" && !!this.selKey && !this.selKey.startsWith("fold:");
     const r = on ? this.rowFor(this.selKey) : undefined;
     this.turnP.hidden = !on;
     if (!on) return;
@@ -1052,8 +1083,16 @@ export class Wake {
       this.acts.set(key, { open: () => b.click() });
     }
     b.addEventListener("click", () => {
+      // Opened from the walk, the first thing it shows takes the fold's place,
+      // so the next j goes on from there rather than from the top.
+      const at = key && this.selKey === key ? this.keysShown().indexOf(key) : -1;
       open();
       this.draw();
+      if (at >= 0 && (!opened || this.selKey !== key)) {
+        const now = this.keysShown();
+        const next = now[Math.min(at, now.length - 1)];
+        if (next) this.selectKey(next, true);
+      }
     });
     return b;
   }
@@ -1085,7 +1124,9 @@ export class Wake {
     // Prefixed: a bare "review" or "risk" class meets the app's global rules.
     const t = el("div", `w-need n-${n.kind}${n.key === this.selKey ? " sel" : ""}`);
     t.dataset.key = n.key;
-    const head = el("div", "w-need-t", n.title);
+    // The title truncates in its own span; the tile's button stays whole.
+    const head = el("div", "w-need-t");
+    head.append(el("span", "w-need-tt", n.title));
     head.title = n.title;
     const sub = el("div", "w-need-s");
     let open: () => void = () => undefined;
@@ -1118,7 +1159,15 @@ export class Wake {
         else void this.keepAll(b, n.rows.length);
       };
       head.append(b);
-      open = () => b.click();
+      // A click (or Enter) shows them, row by row on their shelves; keeping
+      // them all is the button's alone.
+      open = () => {
+        this.shelfAll.add("files");
+        this.shelfAll.add("pictures");
+        if (this.mode !== "shelves") this.setMode("shelves");
+        else this.draw();
+        this.selectKey(`row:${n.rows[0].id}`, true);
+      };
     }
     t.append(head, sub);
     t.addEventListener("click", () => {
@@ -1356,7 +1405,7 @@ ${p.url}`;
   /** The keys the page shows now, in the order it shows them. */
   private keysShown(): string[] {
     return [...this.list.querySelectorAll<HTMLElement>("[data-key]")]
-      .filter((e) => !e.closest(".w-day.folded"))
+      .filter((e) => e.classList.contains("w-dayh") || !e.closest(".w-day.folded"))
       .map((e) => e.dataset.key ?? "");
   }
 

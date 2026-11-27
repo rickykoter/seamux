@@ -379,7 +379,8 @@
 .w-card.named .w-card-hd .w-prompt { flex: 0 1 auto; font-weight: 400; color: var(--muted); }
 .w-card-bg { color: var(--muted); }
 /* Resume waits for the card in use, as on the rows. */
-.w-card:not(:hover):not(:focus-within):not(:has(.sel)) .w-card-hd .w-sess { visibility: hidden; }
+.w-card:not(:hover):not(:focus-within):not(:has(.sel)) .w-card-hd .w-sess { display: none; }
+.w-card-hd { cursor: pointer; }
 /* Narrow: lanes keep room for their titles; each dot names its stage on hover. */
 @container (max-width: 520px) {
   .w-lane-hd, .w-lane { grid-template-columns: minmax(0, 1fr) repeat(4, 22px); }
@@ -392,7 +393,7 @@
 /* UX sweep, round 2. */
 /* A review's name: the plan gives way before "increment N" does. */
 .w-rname { display: flex; min-width: 0; }
-.w-rname-p { min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-rname-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Narrow, a live review's stage wraps under its name rather than squeeze it. */
 .w-rv-top { flex-wrap: wrap; }
 .w-rv-top .w-rv-t { flex: 1 1 12ch; }
@@ -414,3 +415,13 @@
 .wake:has(.w-turnp:not([hidden])) .w-toast, .wake.viewing .w-toast { bottom: auto; top: 72px; }
 /* A row's keep waits for the row in use; its "at risk" pill says it all along. */
 .w-row:not(:hover):not(.sel):not(:focus-within) .w-badges > .w-act { visibility: hidden; }
+
+/* UX sweep, round 3. */
+/* Rows of one name show their folders, which tell them apart. */
+.w-row.dup:not(.sel) .w-p:not(.was):not(.hit) { display: block; }
+/* A failing pull request, named under Needs you's tiles too. */
+.w-shelf.needs > .w-calm-red { margin: 6px 0 0; }
+.w-calm.warn .w-calm-red { margin: 0 8px 0 0; }
+/* Folds and day headings are easier to hit. */
+.w-daymore { padding: 4px 2px; }
+.w-need-tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

@@ -1,7 +1,7 @@
 // node app/ui/wakeshelf_probe.ts — the Wake's shelves and turn cards
 // (wakeshelf.ts), a pure module, which Node runs as TypeScript.
 import {
-  backgroundTask, incrementAt, laneStates, lanesOf, lastingFirst, needsOf, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
+  backgroundTask, incrementAt, laneStates, lanesOf, atRiskFirst, needsOf, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
   type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
 } from "./wakeshelf.ts";
 
@@ -61,7 +61,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   ok("needs: a review whose rounds are used up counts its waiting fixes and says it is the person's call",
     asked[0]?.kind === "review" && asked[0].findings === 3 && /your call/.test(asked[0].why), asked);
   const risk = n.find((x) => x.kind === "risk");
-  ok("needs: files at risk are one item that lists them", risk?.kind === "risk" && risk.rows.length === 2 && risk.title === "2 files will be lost");
+  ok("needs: files at risk are one item that lists them", risk?.kind === "risk" && risk.rows.length === 2 && risk.title === "1 file and 1 picture will be lost", risk?.title);
 }
 
 // ------------------------------------------------------------ lanes
@@ -101,7 +101,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   const reviews = [review("live1"), review("old", { past: true, stage: "past", closedAt: at(9, 0) }), review("older", { past: true, stage: "past", closedAt: at(8, 0) })];
   const s = shelves({ ...empty, rows, reviews, prs: [pr(47, "open", "you"), pr(42, "draft", "draft")] });
   ok("shelves: pictures, files, commits and plans from the rows", s.pictures.length === 2 && s.files.length === 2 && s.commits.length === 1 && s.plans.length === 2);
-  ok("shelves: a file that lasts comes before one at risk (Needs you gathers those)", s.files.map((r) => r.title).join() === "totals-report.html,coupon-totals.json");
+  ok("shelves: a file at risk comes first, even when older", s.files.map((r) => r.title).join() === "coupon-totals.json,totals-report.html");
   ok("shelves: review rows stay off the shelves (lookout's reviews are drawn there)", !s.order.some((k) => k === `row:${rows[5].id}`));
   ok("shelves: past reviews newest closed first", s.reviews.past.map((r) => r.id).join() === "old,older");
   const kinds = s.order.map((k) => k.split(":")[0]);
@@ -154,9 +154,11 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
 // ------------------------------------------------------------ gone last, background tasks, review names
 {
   const rs = [row("temp", "a", "go", at(13, 3), { state: "gone" }), row("temp", "b", "go", at(13, 2)), row("temp", "c", "go", at(13, 1), { state: "risk" })];
-  ok("lastingFirst: what lasts, then at risk, then gone", lastingFirst(rs).map((r) => r.title).join() === "b,c,a");
+  ok("atRiskFirst: at risk, then what lasts, then gone", atRiskFirst(rs).map((r) => r.title).join() === "c,b,a");
   const s2 = shelves({ ...empty, rows: [row("image", "dead.png", "go", at(13, 5), { state: "gone" }), row("image", "live.png", "go", at(13, 4))] });
   ok("shelves: a gone picture sorts after a live one", s2.pictures.map((r) => r.title).join() === "live.png,dead.png");
+  const mixed = needsOf({ ...empty, rows: [row("temp", "a.log", "go", at(13, 3), { state: "risk" }), row("image", "b.png", "go", at(13, 2), { state: "risk" }), row("image", "c.png", "go", at(13, 1), { state: "risk" })] });
+  ok("needs: the risk tile counts files and pictures as the shelves do", mixed[0]?.title === "1 file and 2 pictures will be lost", mixed[0]?.title);
 
   const note = 'ba8u2crv3 toolu_01CWm2gazdggKGnc85nzSxaL /private/tmp/claude-501/x/tasks/ba8u2crv3.output completed Background command "Run the full Rust suite" completed (exit code 0)';
   ok("backgroundTask: a notification's command description", backgroundTask(note) === "Run the full Rust suite");

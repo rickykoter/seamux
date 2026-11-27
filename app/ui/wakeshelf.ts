@@ -158,8 +158,13 @@ export function needsOf<R extends ShelfRow>(inp: Input<R>): Need[] {
         findings: r.stage === "ask" ? r.addressed : r.closeIds.length, why: stageSaid(r) });
   }
   const risk = inp.rows.filter((r) => r.state === "risk");
-  if (risk.length)
-    out.push({ key: "risk", kind: "risk", title: `${risk.length} file${risk.length === 1 ? "" : "s"} will be lost`, rows: risk });
+  if (risk.length) {
+    // Said as the shelves count them: files, and pictures and recordings.
+    const pics = risk.filter((r) => shelfOf(r.kind) === "pictures").length;
+    const files = risk.length - pics;
+    const said = [files ? `${files} file${files === 1 ? "" : "s"}` : "", pics ? `${pics} picture${pics === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
+    out.push({ key: "risk", kind: "risk", title: `${said} will be lost`, rows: risk });
+  }
   return out;
 }
 
@@ -200,14 +205,14 @@ export function lanesOf(prs: ShelfPr[]): Lane[] {
   });
 }
 
-/** What lasts first, then what is at risk, then what is gone; newest first
- *  within each. Needs you already gathers the at-risk ones, so a shelf leads
- *  with the files a session made to keep; the page folds the gone away. */
-export function lastingFirst<R extends ShelfRow>(rows: R[]): R[] {
-  return [...rows.filter((r) => r.state !== "risk" && r.state !== "gone"), ...rows.filter((r) => r.state === "risk"), ...rows.filter((r) => r.state === "gone")];
+/** At risk first, then what lasts, then what is gone; newest first within
+ *  each. A shelf is where the person looks over what is about to be lost,
+ *  row by row, before keeping it; the page folds the gone away. */
+export function atRiskFirst<R extends ShelfRow>(rows: R[]): R[] {
+  return [...rows.filter((r) => r.state === "risk"), ...rows.filter((r) => r.state !== "risk" && r.state !== "gone"), ...rows.filter((r) => r.state === "gone")];
 }
 function filesOf<R extends ShelfRow>(rows: R[]): R[] {
-  return lastingFirst(rows.filter((r) => shelfOf(r.kind) === "files"));
+  return atRiskFirst(rows.filter((r) => shelfOf(r.kind) === "files"));
 }
 
 /** A review by what it reviewed: "<plan> · increment N" (or "· delivery")
@@ -232,7 +237,7 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
   const past = inp.reviews.filter((r) => r.past).sort((a, b) => (b.closedAt || "").localeCompare(a.closedAt || ""));
   const plans = inp.rows.filter((r) => shelfOf(r.kind) === "plans");
   const lanes = lanesOf(inp.prs);
-  const pictures = lastingFirst(inp.rows.filter((r) => shelfOf(r.kind) === "pictures"));
+  const pictures = atRiskFirst(inp.rows.filter((r) => shelfOf(r.kind) === "pictures"));
   const files = filesOf(inp.rows);
   const commits = inp.rows.filter((r) => shelfOf(r.kind) === "commits");
   const order = [
@@ -328,7 +333,7 @@ export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
     const rows = cur.rows;
     cur.t.sections = SECTION_ORDER.map((shelf) => ({
       shelf,
-      rows: shelf === "files" ? filesOf(rows) : shelf === "pictures" ? lastingFirst(rows.filter((r) => shelfOf(r.kind) === shelf)) : rows.filter((r) => shelfOf(r.kind) === shelf),
+      rows: shelf === "files" ? filesOf(rows) : shelf === "pictures" ? atRiskFirst(rows.filter((r) => shelfOf(r.kind) === shelf)) : rows.filter((r) => shelfOf(r.kind) === shelf),
     })).filter((s) => s.rows.length);
     cur.t.background = [...new Set(rows.map((r) => task.get(r)).filter((x): x is string => !!x))];
     cur.t.name = incrementAt(inp.plans, cur.t.start);
