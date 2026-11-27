@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L17 -->
+<!-- next: L19 -->
 
 ## L1
 applies: **
@@ -95,3 +95,15 @@ applies: **
 from: links-open-in-place (correction cfd5ec4ef), 2026-11-23
 
 The scenarios judge scores every scenario of the plan at each check: put the scenarios check on the last increment only, and prove earlier increments by recipes and a try on the harness.
+
+## L17
+applies: **
+from: ship-and-land inc 7 (retry c8222cfe3), 2026-11-26
+
+When a scenarios check misses the same scenario twice and prints no hint, stop guessing: ask the person to read the judge's reasons and say what it found missing, and check whether the scenario asks for more than the plan promises, which is the person's to edit.
+
+## L18
+applies: **
+from: ship-and-land (correction ceb39cb67), 2026-11-26
+
+Commit the increment before running a scenarios check: the judge scores a throwaway worktree at HEAD, not the working tree.
