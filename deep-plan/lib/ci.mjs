@@ -228,9 +228,12 @@ export function githubAutoMerge(cwd, base, names = []) {
   if (!s || Date.now() - s.at > AUTO_MERGE_TTL_MS) {
     const r = gh(["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", `query=${AUTO_MERGE_Q}`], cwd);
     const d = !r.err && r.status === 0 ? parse(r.out) : null;
-    const allowed = !!(d && d.data && d.data.repository && d.data.repository.autoMergeAllowed === true);
+    const read = !!(d && d.data && d.data.repository && typeof d.data.repository.autoMergeAllowed === "boolean");
+    const allowed = read && d.data.repository.autoMergeAllowed === true;
     s = { at: Date.now(), allowed, need: allowed ? requiredChecks(cwd, base) : [] };
-    autoMergeSeen.set(k, s);
+    // Only an answer is kept: a failed read (an error, a rate limit) or an
+    // empty list of required checks is read again on the next look.
+    if (read && (!allowed || s.need.length)) autoMergeSeen.set(k, s);
   }
   return s.allowed && s.need.length > 0 && names.length > 0 && names.every(n => s.need.includes(n));
 }
