@@ -1,0 +1,10 @@
+{
+  "name": "chartroom",
+  "version": "0.1.0",
+  "description": "Charts kept with the repo (UX mocks with options, architecture views, domain explorers), reviewed in a local studio beside the terminal with pins, picks and versions, and published as an Artifact only on your yes.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/chartroom",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["artifacts", "mockups", "architecture", "diagrams", "review"]
+}

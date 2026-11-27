@@ -85,6 +85,7 @@ fn fixture(name: &str) -> Fx {
     std::fs::write(format!("{sp}/notes.md"), "notes").unwrap();
     std::fs::write(format!("{sp}/stray.py"), "print(1)").unwrap();
     std::fs::write(format!("{sp}/shot.png"), "png").unwrap();
+    std::fs::write(format!("{sp}/walkthrough.webm"), "webm").unwrap();
     std::fs::write(format!("{sp}/repo/.git/HEAD"), "ref").unwrap();
     let tr = s(&pdir.join(format!("{sess}.jsonl")));
 
@@ -195,7 +196,7 @@ fn the_index_finds_every_kind() {
     assert!(n >= rows.len() && !rows.is_empty(), "index counts every row it wrote ({n} for {})", rows.len());
     assert!(!curs.is_empty(), "the transcript has a cursor");
     let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
-    for k in ["temp", "doc", "file", "image", "commit", "artifact", "plan", "review", "ask"] {
+    for k in ["temp", "doc", "file", "image", "video", "commit", "artifact", "plan", "review", "ask"] {
         assert!(kinds.contains(&k), "no {k} row in {kinds:?}");
     }
     assert!(rows.iter().all(|r| !r["locator"].as_str().unwrap().ends_with("1a2b3c4")), "a fixture's commit line is not a commit");
@@ -220,11 +221,26 @@ fn the_index_finds_every_kind() {
     w["type"] = json!("assistant");
     w["timestamp"] = json!(now);
     w["message"] = json!({"content": [{"type": "tool_use", "id": "u21", "name": "Write", "input": {"file_path": format!("{}/docs/later.md", f.ws)}}]});
-    jl(&f.tr, &[a, r, w]);
+    // A recording a command saved in the workspace, which no Write names.
+    std::fs::create_dir_all(format!("{}/docs/demo", f.ws)).unwrap();
+    std::fs::write(format!("{}/docs/demo/checkout.mp4", f.ws), "mp4").unwrap();
+    let mut rec = base.clone();
+    rec["type"] = json!("assistant");
+    rec["timestamp"] = json!(now);
+    rec["message"] = json!({"content": [{"type": "tool_use", "id": "u22", "name": "Bash", "input": {"command": "node rec.mjs docs/demo/checkout.mp4"}}]});
+    let mut recd = base.clone();
+    recd["type"] = json!("user");
+    recd["timestamp"] = json!(now);
+    recd["toolUseResult"] = json!({"stdout": "saved", "stderr": ""});
+    recd["message"] = json!({"content": [{"type": "tool_result", "tool_use_id": "u22"}]});
+    jl(&f.tr, &[a, r, w, rec, recd]);
     std::fs::write(format!("{}/late.txt", f.sp), "late").unwrap();
     assert!(rs_index(&pb) > 0, "the appended chunk adds rows");
     let (rows, _) = dump(&format!("{pb}/artifacts.db"));
     assert!(rows.iter().any(|r| r["title"] == "Quiet and silent"));
+    let mut videos: Vec<&str> = rows.iter().filter(|r| r["kind"] == "video").map(|r| r["title"].as_str().unwrap()).collect();
+    videos.sort();
+    assert_eq!(videos, vec!["checkout.mp4", "walkthrough.webm"], "a scratchpad video and one saved in the workspace");
     let later = rows.iter().find(|r| r["locator"].as_str().unwrap().ends_with("later.md")).unwrap();
     // Written now, between the 2020 prompt and the 2099 one: the 2020 prompt
     // was in flight, and it sits before the cursor's offset.

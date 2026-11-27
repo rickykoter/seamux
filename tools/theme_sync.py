@@ -65,6 +65,7 @@ TARGETS = [
     ("deep-plan/deep_plan.mjs", "both"),
     ("deep-plan/lib/scenarios.mjs", "both"),
     ("lookout/page/review.css", "both"),
+    ("chartroom/page/studio.css", "both"),
     ("app/ui/everforest.css", "both"),
     ("crew/board/board.html", "both"),
     ("crew/board/usage.tmpl.html", "both"),

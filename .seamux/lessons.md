@@ -4,7 +4,7 @@ Rules this repo's plans learned from their misses. `deep-plan retro` adds,
 merges and retires them, at most 30. Each names the paths it applies to;
 a plan that touches them says how it heeds the rule (cite its id).
 
-<!-- next: L19 -->
+<!-- next: L21 -->
 
 ## L1
 applies: **
@@ -26,7 +26,7 @@ A bug or idea found mid-plan becomes a deep-plan note first. It joins a plan onl
 
 ## L4
 applies: **
-from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22; window-keeps-focus (grade c768b8e3e), 2026-11-22; scenarios-true (grade cb8a68459), 2026-11-23
+from: dock-density-and-hopping (grade c03e73c60), 2026-11-06; landing-latency (grade c6243f494), 2026-11-22; window-keeps-focus (grade c768b8e3e), 2026-11-22; scenarios-true (grade cb8a68459), 2026-11-23; gate-leftovers (grade c6bcbfc5a), 2026-11-26
 
 A quiz question names the change it asks about, never an increment number, and states every input its answer depends on. After adding an increment or changing a decision, re-read each question whose answer it can move before the quiz is taken. When a grade fails and the person confirms the plan, the question is the broken one: reword it to state the input it left out.
 
@@ -97,12 +97,24 @@ from: links-open-in-place (correction cfd5ec4ef), 2026-11-23
 The scenarios judge scores every scenario of the plan at each check: put the scenarios check on the last increment only, and prove earlier increments by recipes and a try on the harness.
 
 ## L17
+applies: **/page/**, **/serve.mjs, app/ui/**
+from: chartroom (correction cf3e45ed2), 2026-11-25; chartroom (correction c62fdcbf1), 2026-11-25
+
+Before handing the person a page for a manual check, fetch its link to confirm it answers, and drive it in a real browser (headless Brave over its debugging port works here), using every new control the ways a person can: mouse, touch and keys. A server that prints links for people keeps them working across an idle exit.
+
+## L18
+applies: .seamux/verify.json, deep-plan/packs/**
+from: chartroom inc 7 (retry ca94ce4f9), 2026-11-25
+
+A recipe in .seamux/verify.json with a pack mark is the pack's: change the pack's copy too (bump its version and re-stamp with pack update, dropping a stale stamp so it is re-adopted), or the deep-plan probe's pack check fails.
+
+## L19
 applies: **
 from: ship-and-land inc 7 (retry c8222cfe3), 2026-11-26
 
 When a scenarios check misses the same scenario twice and prints no hint, stop guessing: ask the person to read the judge's reasons and say what it found missing, and check whether the scenario asks for more than the plan promises, which is the person's to edit.
 
-## L18
+## L20
 applies: **
 from: ship-and-land (correction ceb39cb67), 2026-11-26
 

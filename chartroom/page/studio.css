@@ -1,0 +1,370 @@
+/* everforest:start */
+:root {
+  --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
+  --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
+  --ef-line: #3d484d; --ef-line2: #4f5b58; --ef-card: #3a464c; --ef-card2: #343f44; --ef-card3: #424e54;
+  --ef-red: #e67e80; --ef-orange: #e69875; --ef-yellow: #dbbc7f; --ef-green: #a7c080;
+  --ef-aqua: #83c092; --ef-blue: #7fbbb3; --ef-purple: #d699b6;
+  --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
+  --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
+  --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #bac2bc; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
+  --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
+  --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
+  /* roles: what a colour means, the same on every surface. A page maps its
+     own names onto these and never picks a hue for a state itself. Each state
+     has a fill (rings, dots, borders: 3:1) and a word colour (-t: 4.5:1).
+     A role names a palette token where one passes; a raw hex is a palette
+     hue made darker or lighter to pass. Amber is needs-you and nothing else;
+     working, links and focus share the teal accent in both modes (in light,
+     a teal of their own: --ef-accent stays Everforest's blue, a palette
+     colour that means nothing). Lines and edges are separators, held to no floor. */
+  --role-attend: #dfa000; --role-attend-t: var(--ef-text-mark);
+  --role-working: var(--ef-blue); --role-working-t: var(--ef-text-accent);
+  --role-done: var(--ef-green); --role-done-t: var(--ef-text-green);
+  --role-broken: var(--ef-red); --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: var(--ef-line); --role-edge: var(--ef-line2);
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: var(--ef-text-accent); --role-focus: var(--ef-accent);
+  /* terminal: the app's terminals draw with these in every mode, whatever a
+     cmux or Ghostty config names (that config sets only the font). Ground,
+     words, cursor and selection, then the 16 ANSI slots (0-7 black, red,
+     green, yellow, blue, magenta, cyan, white; 8-15 their brights). Dark is
+     Ghostty's Everforest Dark Hard. Each slot a program prints words in is
+     4.5:1 or better on --term-bg (theme_sync.py --check); the slots it paints
+     as grounds are held to nothing (TERM_GROUND_SLOTS). Six 256-colour
+     slots keep their usual sense but take seamux's tints per mode, so a
+     Claude theme on slots (seamux foam) gets tints that follow the flip:
+     22 and 52 diff lines, 28 and 88 changed words (dark green and red),
+     236 and 237 raised bands (a grey a step off the ground). */
+  --term-bg: #1e2326; --term-text: #d3c6aa; --term-cursor: #e69875; --term-cursor-text: #4c3743;
+  --term-selection: #4c3743; --term-selection-text: #d3c6aa;
+  --term-0: #7a8478; --term-1: #e67e80; --term-2: #a7c080; --term-3: #dbbc7f; --term-4: #7fbbb3; --term-5: #d699b6; --term-6: #83c092; --term-7: #f2efdf;
+  --term-8: #a6b0a0; --term-9: #f85552; --term-10: #8da101; --term-11: #dfa000; --term-12: #3a94c5; --term-13: #df69ba; --term-14: #35a77c; --term-15: #fffbef;
+  --term-22: #384532; --term-52: #5f3538; --term-28: #425237; --term-88: #753c3f; --term-236: #343f44; --term-237: #2d353b;
+  --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* type scale: every page sizes words with these, never a px value of its own.
+     1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
+     3 body and UI default · 4 emphasis, card titles · 5 section and page titles
+     6 the plan page's h1 alone */
+  --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
+}
+/* light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+    --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+    --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+    --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+    --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+    --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+    --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+    --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+    --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+    --role-working: #2a8079; --role-working-t: #22675f;
+    --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+    --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+    --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+    --role-line: #ddd8bf; --role-edge: #b9bea6;
+    --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+    --role-link: #22675f; --role-focus: #2a8079;
+    /* terminal, light: Light Med's hues are 2:1 as words on its cream, so
+       each slot is the palette's light word colour, the brights a shade
+       deeper. The words are the palette's text, darker than Light Med's, so a
+       tint can sit a step off the ground and still hold them at 4.5:1; black
+       is darker still, white is the words' colour, bright black the quiet
+       grey, and bright white stays light, since programs print it as a
+       ground. */
+    --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+    --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
+    --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+    --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+    --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
+  }
+}
+:root[data-theme="light"] {
+  --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+  --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+  --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+  --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+  --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+  --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+  --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+  --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  --role-attend: #946c00; --role-attend-t: var(--ef-text-mark);
+  --role-working: #2a8079; --role-working-t: #22675f;
+  --role-done: #6f7f00; --role-done-t: var(--ef-text-green);
+  --role-broken: #d94a47; --role-broken-t: var(--ef-text-red);
+  --role-text: var(--ef-text); --role-text-quiet: var(--ef-text-dim);
+  --role-line: #ddd8bf; --role-edge: #b9bea6;
+  --role-primary: var(--ef-fg); --role-on-primary: var(--ef-ink);
+  --role-link: #22675f; --role-focus: #2a8079;
+  --term-bg: #efebd4; --term-text: #3e4a51; --term-cursor: #9a4e18; --term-cursor-text: #efebd4;
+  --term-selection: #c9d8c6; --term-selection-text: #3e4a51;
+  --term-0: #2f3a40; --term-1: #ae3b39; --term-2: #5d6a01; --term-3: #815d00; --term-4: #296a8d; --term-5: #98477e; --term-6: #247053; --term-7: #3e4a51;
+  --term-8: #545f58; --term-9: #9c2f2d; --term-10: #4f5a00; --term-11: #6f5000; --term-12: #215b79; --term-13: #843a6c; --term-14: #1d5f46; --term-15: #fffbef;
+  --term-22: #d7d9a1; --term-52: #f1cebb; --term-28: #c4ca77; --term-88: #f2b6a6; --term-236: #e6e2cc; --term-237: #e0dcc3;
+}
+/* everforest:end */
+
+/* The studio in seamux's palette (theme/everforest.css), mapped once for both
+   modes. The stage is a plain ground so a chart's own colours read true.
+   Amber is "waits on you" and nothing else: a chart's status wears the
+   working teal (exploring), done green (chosen) or a quiet grey (superseded). */
+:root {
+  --bg: var(--ef-bg); --fg: var(--role-text); --muted: var(--role-text-quiet); --border: var(--role-edge);
+  --side: var(--ef-bg-dim); --hover: var(--ef-bg1); --sel: var(--ef-bg-blue); --accent: var(--role-focus); --accent-t: var(--role-link);
+  --card: var(--ef-bg1); --stage: #ffffff;
+  --st-exploring: var(--role-working); --st-exploring-t: var(--role-working-t);
+  --st-chosen: var(--role-done); --st-chosen-t: var(--role-done-t);
+  --st-superseded: var(--ef-grey0); --st-superseded-t: var(--role-text-quiet);
+  --attend: var(--role-attend); --attend-t: var(--role-attend-t);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { --sel: color-mix(in srgb, var(--role-focus) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3); }
+}
+:root[data-theme="light"] { --sel: color-mix(in srgb, var(--role-focus) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3); }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--fg); font: var(--fs-3, 14px)/1.45 var(--sans); }
+button { font: inherit; color: inherit; }
+code, kbd { font-family: var(--mono); font-size: .92em; }
+a { color: var(--accent-t); }
+.quiet { color: var(--muted); }
+.small { font-size: var(--fs-2, 12px); }
+.pad { padding: 8px 14px; }
+.gap { flex: 1; }
+
+#app {
+  display: grid; height: 100vh;
+  grid-template-columns: minmax(200px, 250px) minmax(0, 1fr) minmax(240px, 300px);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "top top top" "register main rail";
+}
+#top {
+  grid-area: top; display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; border-bottom: 1px solid var(--border); background: var(--side);
+}
+.mark { color: var(--accent-t); flex: none; }
+.brand { font-weight: 600; letter-spacing: .02em; color: var(--accent-t); }
+#repo { font-family: var(--mono); font-size: var(--fs-2, 12px); }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border); font-size: var(--fs-2, 12px); white-space: nowrap; }
+.icon-btn { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--border); background: var(--bg); cursor: pointer; }
+.icon-btn[aria-expanded="true"] { background: var(--sel); }
+
+/* register */
+#register { grid-area: register; background: var(--side); border-right: 1px solid var(--border); overflow: auto; padding-bottom: 12px; }
+.group { margin: 14px 14px 4px; font-size: var(--fs-2, 12px); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.row { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 7px 14px; cursor: pointer; border-left: 3px solid transparent; }
+.row:hover { background: var(--hover); }
+.row.sel { background: var(--sel); border-left-color: var(--accent); }
+.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.row-title { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-meta { display: flex; align-items: center; gap: 8px; font-size: var(--fs-2, 12px); color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-exploring); }
+.dot.st-chosen { background: var(--st-chosen); }
+.dot.st-superseded { background: transparent; border: 1.5px solid var(--st-superseded); }
+.count { margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: 9px; text-align: center; background: var(--attend); color: var(--ef-ink); font-weight: 600; }
+
+/* main */
+#main { grid-area: main; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+#chart { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.empty { margin: auto; text-align: center; max-width: 420px; padding: 24px; }
+.empty-title { font-weight: 600; font-size: var(--fs-4, 16px); margin: 0 0 6px; }
+#head { padding: 12px 16px 6px; }
+.head-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#title { margin: 0; font-size: var(--fs-5, 18px); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#purpose { margin: 4px 0 0; }
+.chip.st-exploring { color: var(--st-exploring-t); border-color: var(--st-exploring); }
+.chip.st-chosen { color: var(--st-chosen-t); border-color: var(--st-chosen); }
+.chip.st-superseded { color: var(--st-superseded-t); border-style: dashed; }
+#bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px 8px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+#versions, #tabs { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.ver { border: 1px solid var(--border); background: none; border-radius: 4px; padding: 1px 8px; cursor: pointer; font-family: var(--mono); font-size: var(--fs-2, 12px); }
+.ver:hover { background: var(--hover); }
+.ver.on { background: var(--sel); border-color: var(--accent); }
+.tab { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: none; border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.tab:hover { background: var(--hover); }
+.tab.on { background: var(--sel); border-color: var(--accent); }
+.tab kbd { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.chosen-mark { font-size: 11px; color: var(--st-chosen-t); }
+#stage { position: relative; flex: 1; min-height: 0; background: var(--side); padding: 10px; }
+#frames { position: absolute; inset: 10px; }
+#frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--stage); visibility: hidden; }
+#frames iframe.shown { visibility: visible; }
+/* The flip and pin-mode notes sit on the stage's own frame, never over the chart's header. */
+#flip-badge, #pin-hint { position: absolute; left: 22px; bottom: 22px; padding: 6px 14px; border-radius: 999px; pointer-events: none;
+  background: var(--accent); color: var(--role-on-primary); font-size: var(--fs-2, 12px); font-weight: 600; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+.ver.was { border-style: dashed; }
+#stage-note { padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--card); font-size: var(--fs-2, 12px); color: var(--fg); }
+.sub.attend { color: var(--attend-t); }
+.thread:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.keys-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.keys-head h2 { margin: 0; }
+#no-versions { max-width: none; margin: 0; position: absolute; inset: 10px; display: flex; flex-direction: column; justify-content: center; align-items: center;
+  border: 1px dashed var(--border); border-radius: 4px; text-align: center; padding: 24px; }
+#toast { position: absolute; bottom: 20px; right: 22px; max-width: 60%; padding: 6px 14px; border-radius: 6px;
+  background: var(--card); border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+
+/* rail */
+#rail { grid-area: rail; border-left: 1px solid var(--border); overflow: auto; padding: 4px 0 16px; }
+#rail h2 { margin: 12px 14px 6px; font-size: var(--fs-2, 12px); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+#threads, #notes { padding: 0 14px; }
+.note { padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); overflow-wrap: anywhere; }
+.note-k { font-size: var(--fs-2, 12px); color: var(--muted); margin-bottom: 2px; }
+
+/* acts, threads and pins */
+.act { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: none; border-radius: 6px;
+  padding: 3px 10px; cursor: pointer; font-size: var(--fs-2, 12px); }
+.act:hover { background: var(--hover); }
+.act.on { background: var(--sel); border-color: var(--accent); color: var(--accent-t); }
+.act.primary { background: var(--role-primary); color: var(--role-on-primary); border-color: var(--role-primary); }
+/* Pick is the one decision on the page: the only filled control in the bar. */
+.act.pick { background: var(--role-primary); color: var(--role-on-primary); border-color: var(--role-primary); font-weight: 600; }
+.act:disabled { opacity: .45; cursor: default; }
+#pick-slot { margin-left: 4px; padding-left: 12px; border-left: 1px solid var(--border); }
+#pick-slot:empty { display: none; }
+.act:focus-visible, .ver:focus-visible, .tab:focus-visible, .link:focus-visible, .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.link { background: none; border: 0; padding: 2px 0; color: var(--accent-t); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; font-size: var(--fs-2, 12px); text-align: left; }
+.hint { margin-right: auto; color: var(--muted); font-size: var(--fs-1, 11px); align-self: center; }
+.ro { color: var(--muted); border: 1px dashed var(--border); border-radius: 6px; padding: 6px 8px; margin: 0 0 10px; }
+.conn { color: var(--role-broken-t); font-size: var(--fs-2, 12px); }
+.act.wide { width: 100%; justify-content: center; margin-bottom: 10px; }
+#pick-slot { display: flex; gap: 6px; align-items: center; }
+#stage.pinning #frames iframe.shown { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.thread { padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); cursor: default; }
+.thread.waits { border-color: var(--attend); }
+.thread.focus { box-shadow: 0 0 0 2px var(--accent); }
+.thread.resolved { background: transparent; }
+.thread.resolved .msg-text { color: var(--muted); }
+.thread.draft { border-color: var(--accent); }
+.thread-k { display: flex; align-items: center; gap: 6px; font-size: var(--fs-2, 12px); color: var(--muted); margin-bottom: 4px; }
+.thread-k .state { white-space: nowrap; }
+.thread.waits .state { color: var(--attend-t); }
+.pin-no { flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--role-working); color: var(--ef-ink);
+  font-weight: 700; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; }
+.pin-no.waits { background: var(--attend); }
+.pin-no.resolved { background: transparent; border: 1.5px solid var(--ef-grey0); color: var(--role-text-quiet); }
+.pin-no.gone { background: transparent; border: 1.5px dashed var(--role-text-quiet); color: var(--role-text-quiet); }
+.thread-k .where { min-width: 0; overflow-wrap: anywhere; }
+.msg { padding: 4px 0; border-top: 1px dashed var(--border); }
+.msg:first-of-type { border-top: 0; }
+.msg-by { font-size: var(--fs-1, 11px); color: var(--muted); }
+.msg.agent .msg-by { color: var(--accent-t); }
+.msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.gone { color: var(--muted); font-style: italic; margin: 2px 0 4px; }
+.thread textarea { width: 100%; margin-top: 6px; resize: vertical; font: inherit; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 5px 7px; }
+.thread textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.thread-acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.sub { margin: 14px 0 6px; font-size: var(--fs-2, 12px); font-weight: 600; color: var(--muted); }
+.count.quiet-count { background: none; color: var(--muted); border: 1px solid var(--border); font-weight: 400; }
+
+/* keys */
+.keys { position: fixed; bottom: 14px; right: 14px; z-index: 10; width: 320px; padding: 10px 14px; border-radius: 8px;
+  background: var(--card); border: 1px solid var(--border); box-shadow: 0 8px 28px rgba(0,0,0,.3); }
+.keys h2 { margin: 0 0 6px; font-size: var(--fs-3, 14px); }
+.keys dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+.keys dt { font-family: var(--mono); font-size: var(--fs-2, 12px); color: var(--accent-t); }
+.keys dd { margin: 0; font-size: var(--fs-2, 12px); }
+
+/* narrow: the rail goes under the stage */
+@media (max-width: 900px) and (min-width: 701px) {
+  #app { grid-template-columns: minmax(160px, 200px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas: "top top" "register main" "rail rail"; }
+  #rail { border-left: 0; border-top: 1px solid var(--border); max-height: 34vh; }
+}
+/* Narrow (a phone, or a narrow pane on a computer with a mouse): stage
+   first. A one-line header whose title opens the chart list, options as a
+   chip row, the chart filling the pane, and a bottom bar with Compare, Pin,
+   Pick and Threads; threads open as a sheet over the chart. Chosen by width,
+   so every key and the mouse keep working. */
+.narrow-only { display: none !important; }
+@media (max-width: 700px) {
+  .narrow-only { display: revert !important; }
+  #app { height: 100%; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "main"; }
+  #top { display: none; }
+  #main { grid-area: main; }
+  #head { padding: 8px 12px 4px; }
+  .head-line { gap: 6px; }
+  #title { font-size: var(--fs-4, 15px); cursor: pointer; flex: 0 1 auto; }
+  #title::after { content: " \25BE"; color: var(--muted); font-size: 12px; }
+  #title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  #kind, #purpose { display: none; }
+  #bar { flex-wrap: nowrap; overflow-x: auto; gap: 6px; padding: 4px 12px 8px; scrollbar-width: none; }
+  #bar::-webkit-scrollbar { display: none; }
+  #bar .gap, #pick-slot { display: none; }
+  #versions, #tabs { flex-wrap: nowrap; }
+  .tab { border-radius: 999px; padding: 6px 12px; white-space: nowrap; }
+  .tab kbd { display: none; }
+  #stage { padding: 6px; }
+  #frames { inset: 6px; overflow: hidden; }
+  #frames.actual { overflow: auto; }
+  #frames iframe { transform-origin: 0 0; }
+  #fit-toggle { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex !important; gap: 0; }
+  #fit-toggle .act { border-radius: 0; background: var(--card); min-height: 28px; padding: 2px 10px; }
+  #fit-toggle .act:first-child { border-radius: 6px 0 0 6px; }
+  #fit-toggle .act:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+  #fit-toggle .act[aria-pressed="true"] { background: var(--sel); border-color: var(--accent); color: var(--accent-t); }
+  #stage-note { padding: 4px 12px; }
+  #flip-badge, #pin-hint { left: 12px; right: 12px; bottom: 12px; text-align: center; border-radius: 12px; }
+  #toast { left: 12px; right: 12px; max-width: none; bottom: 12px; }
+  /* the bottom bar */
+  #narrow-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex !important; gap: 6px;
+    padding: 8px max(10px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
+    background: var(--side); border-top: 1px solid var(--border); }
+  #main { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
+  .nb { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 42px; border-radius: 10px;
+    border: 1px solid var(--border); background: none; color: var(--fg); font: inherit; font-size: var(--fs-2, 12px); cursor: pointer;
+    user-select: none; -webkit-user-select: none; touch-action: none; }
+  .nb:hover { background: var(--hover); }
+  .nb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .nb.on { background: var(--sel); border-color: var(--accent); color: var(--accent-t); }
+  .nb.hold { border-style: dashed; }
+  .nb.hold.on { border-style: solid; }
+  .nb.prim { background: var(--role-primary); color: var(--role-on-primary); border-color: var(--role-primary); font-weight: 600; }
+  .nb:disabled { opacity: .45; cursor: default; }
+  .nb .n { background: var(--attend); color: var(--ef-ink); border-radius: 999px; font-size: 10px; font-weight: 700; padding: 0 6px; }
+  .nb .n.quiet { background: none; color: var(--muted); border: 1px solid var(--border); font-weight: 400; }
+  /* threads as a sheet over the chart */
+  #rail { position: fixed; left: 0; right: 0; bottom: calc(60px + env(safe-area-inset-bottom, 0px)); height: 62vh; z-index: 15;
+    border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--side); box-shadow: 0 -10px 30px rgba(0,0,0,.35);
+    transform: translateY(110%); transition: transform .2s ease; visibility: hidden; padding-top: 0; }
+  :root.sheet-open #rail { transform: none; visibility: visible; }
+  .sheet-head { display: flex !important; align-items: center; justify-content: center; position: relative; padding: 8px 12px 0; }
+  .sheet-head .grab { width: 40px; height: 4px; border-radius: 2px; background: var(--border); }
+  .sheet-head .act { position: absolute; right: 12px; top: 6px; }
+  /* the chart list as a drawer from the title */
+  #register { position: fixed; top: 0; left: 0; bottom: 0; width: min(86vw, 320px); z-index: 25; display: block;
+    border-right: 1px solid var(--border); box-shadow: 10px 0 30px rgba(0,0,0,.35); transform: translateX(-105%); transition: transform .2s ease; visibility: hidden; }
+  :root.reg-open #register { transform: none; visibility: visible; }
+  .drawer-head { display: flex !important; align-items: center; justify-content: space-between; padding: 10px 14px 4px; }
+  #scrim { position: fixed; inset: 0; z-index: 14; background: rgba(0,0,0,.35); }
+  :root.reg-open #scrim { z-index: 24; }
+  #keys { bottom: calc(70px + env(safe-area-inset-bottom, 0px)); left: 12px; right: 12px; width: auto; }
+}
+@media (max-width: 700px) { .narrow-only[hidden] { display: none !important; } }
+@media (max-width: 700px) and (prefers-reduced-motion: reduce) { #rail, #register { transition: none; } }
+/* touch: targets big enough for a thumb */
+@media (pointer: coarse) {
+  .act, .tab, .ver, .row, .link, .icon-btn { min-height: 40px; }
+  .ver { min-width: 40px; }
+}

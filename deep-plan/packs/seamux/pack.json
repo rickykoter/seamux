@@ -1,6 +1,6 @@
 {
   "pack": "seamux",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "describes": "This repo's own set-up for a software factory: its probe, lint and build recipes, its two land recipes (the plugins pulled into the kept checkout, and the app built and installed), a scenarios harness that serves the app's pages in a browser against the demo mock, and a policy that merges app and crew changes on green checks, has a person merge plugin, tool and dependency changes, and keeps the factory's own guards supervised.",
   "detect": [
     ".claude-plugin/marketplace.json",
@@ -45,6 +45,7 @@
         "deep-plan/deep_plan.mjs",
         "deep-plan/lib/scenarios.mjs",
         "lookout/page/review.css",
+        "chartroom/page/studio.css",
         "app/ui/everforest.css",
         "crew/board/*.html"
       ],
@@ -53,7 +54,7 @@
     {
       "id": "plugin-validate",
       "kind": "test",
-      "run": "claude plugin validate . && for p in deep-plan restack bash-guard crew seamux-mods lookout humanize bosun; do claude plugin validate \"$p\" || exit 1; done",
+      "run": "claude plugin validate . && for p in deep-plan restack bash-guard crew seamux-mods lookout humanize bosun chartroom; do claude plugin validate \"$p\" || exit 1; done",
       "match": [
         ".claude-plugin/**",
         "*/.claude-plugin/**",
@@ -484,7 +485,7 @@
         "app/crates/seamux-app/src/shell.rs"
       ],
       "default": true,
-      "note": "the side column's tab groups and their ⌘⇧ keys: a pure module, which Node runs as TypeScript, checked against sheet.ts and shell.rs"
+      "note": "the side column's tab groups and their \u2318\u21e7 keys: a pure module, which Node runs as TypeScript, checked against sheet.ts and shell.rs"
     },
     {
       "id": "app-ui-doctor",
@@ -578,7 +579,9 @@
         "lookout/**",
         "restack/**",
         "bash-guard/**",
-        "humanize/**", "bosun/**",
+        "humanize/**",
+        "bosun/**",
+        "chartroom/**",
         "seamux-mods/**",
         "shared/**",
         ".claude-plugin/**"
