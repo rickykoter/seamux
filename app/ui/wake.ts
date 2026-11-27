@@ -6,7 +6,7 @@ import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, thumbUrl, Viewer } from "./wakeview";
 import { age, badgeOf, byUrl, groupOf, type Group, type Pr } from "./prs";
 import { chipFor, readLandings, type Landing, type PrRow } from "./release";
-import { dayOf, lanesOf, needsOf, SHELF_SAID, shelves, stageSaid, stepKey, turns, type AskPage, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
+import { dayOf, lanesOf, needsOf, SHELF_SAID, shelves, stageSaid, stepKey, turns, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -171,10 +171,9 @@ export class Wake {
     }
   })();
   private modeBtns = { shelves: button("Shelves", "w-seg-b"), timeline: button("Timeline", "w-seg-b") };
-  /** lookout's reviews of the worktree, its plans, and the asks waiting in it. */
+  /** lookout's reviews of the worktree, and its plans. */
   private reviews: ReviewSum[] = [];
   private plans: PlanRow[] = [];
-  private asks: AskPage[] = [];
   private sideWs = "";
   private sideAt = 0;
   /** The past reviews' search, and whether older ones and older lanes show. */
@@ -332,8 +331,7 @@ export class Wake {
       this.home = "";
     }
     // New rows land at each turn's end; the views feed says when.
-    await listen<{ wake: { id: number }[]; tucked?: TuckRow[]; pages?: (AskPage & { kind: string })[] }>("views:frame", (e) => {
-      this.takeAsks(e.payload.pages);
+    await listen<{ wake: { id: number }[]; tucked?: TuckRow[] }>("views:frame", (e) => {
       const tucked = (e.payload.tucked ?? []).filter((r) => r.level === "tuck");
       if (JSON.stringify(tucked.map((r) => r.path)) !== JSON.stringify(this.tucked.map((r) => r.path))) {
         this.tucked = tucked;
@@ -347,20 +345,7 @@ export class Wake {
         if (this.visible()) void this.load(true);
       }
     });
-    // The feed sends a frame when something changes: the asks already
-    // waiting come from the frame as it is now.
-    const now = await invoke<{ pages?: (AskPage & { kind: string })[] } | null>("views_frame").catch(() => null);
-    this.takeAsks(now?.pages);
     await this.load();
-  }
-
-  /** The asks waiting on the person, from the views feed's pages: Needs you
-   *  shows the ones in this worktree. Redrawn when they change. */
-  private takeAsks(pages: (AskPage & { kind: string })[] | undefined): void {
-    const asks = (pages ?? []).filter((p) => p.kind === "ask").map(({ path, label, waiting, since, root }) => ({ path, label, waiting, since, root }));
-    if (JSON.stringify(asks) === JSON.stringify(this.asks)) return;
-    this.asks = asks;
-    if (this.data.workspaces.length) this.draw();
   }
 
   private visible(): boolean {
@@ -666,7 +651,6 @@ export class Wake {
       rows: this.data.rows,
       prs: this.shelfPrs(),
       reviews: this.sideWs === this.ws ? this.reviews : [],
-      asks: this.asks,
       plans: this.sideWs === this.ws ? this.plans : [],
     };
   }
@@ -860,8 +844,7 @@ export class Wake {
     if (!key) return undefined;
     const direct = this.acts.get(key)?.row;
     if (direct) return direct;
-    // A lane or review drawn inside a card carries "@turn:<id>"; an ask's
-    // key is its page path, which may hold an "@" of its own.
+    // A lane or review drawn inside a card carries "@turn:<id>".
     const k = key.replace(/@turn:[^@]*$/, "");
     const at = k.indexOf(":");
     const kind = at < 0 ? k : k.slice(0, at);
@@ -869,7 +852,6 @@ export class Wake {
     const rows = this.data.rows;
     if (kind === "pr" || kind === "needpr" || kind === "land") return rows.find((r) => r.kind === "pr" && ghLink(r)?.n === v);
     if (kind === "review" || kind === "needreview") return rows.find((r) => r.kind === "review" && r.locator === v);
-    if (kind === "ask") return rows.find((r) => r.kind === "ask" && (r.path === v || r.locator === v || v.endsWith(`/${r.locator}`)));
     if (kind === "risk") return rows.find((r) => r.state === "risk");
     return undefined;
   }
@@ -1000,10 +982,7 @@ export class Wake {
     head.title = n.title;
     const sub = el("div", "w-need-s");
     let open: () => void = () => undefined;
-    if (n.kind === "ask") {
-      sub.textContent = `ask · waiting ${this.since(n.since)}`;
-      open = () => void Promise.resolve(this.host.open({ path: n.path, title: n.title, ...this.host.here() })).catch((e) => this.toast(String(e), true));
-    } else if (n.kind === "landing") {
+    if (n.kind === "landing") {
       sub.textContent = `${n.recipe || "its landing"} waits at ${n.stage || "a stage"}: approve or skip`;
       open = () => {
         const p = this.prs.find((x) => x.n === n.n);

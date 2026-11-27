@@ -56,9 +56,6 @@ export type ReviewSum = {
   closedAt: string | null;
 };
 
-/** An ask page from the views feed (views.rs NowPage, kind "ask"). */
-export type AskPage = { path: string; label: string; waiting: boolean; since: number; root?: string };
-
 /** A plan row from `deep-plan status --json` (wake_plans). */
 export type PlanRow = {
   slug: string;
@@ -74,12 +71,10 @@ export type Input<R extends ShelfRow = ShelfRow> = {
   rows: R[];
   prs: ShelfPr[];
   reviews: ReviewSum[];
-  asks: AskPage[];
   plans: PlanRow[];
 };
 
 export type Need =
-  | { key: string; kind: "ask"; title: string; path: string; since: number }
   | { key: string; kind: "landing"; title: string; n: number; stage: string; recipe: string }
   | { key: string; kind: "pr"; title: string; n: number; why: string }
   | { key: string; kind: "review"; title: string; id: string; findings: number; why: string }
@@ -132,13 +127,6 @@ export type Shelves<R extends ShelfRow = ShelfRow> = {
   order: string[];
 };
 
-const under = (path: string | undefined, root: string): boolean => {
-  if (!path || !root) return false;
-  const p = path.replace(/\/+$/, "");
-  const r = root.replace(/\/+$/, "");
-  return p === r || p.startsWith(r + "/");
-};
-
 export const rowKey = (r: ShelfRow) => `row:${r.id}`;
 export const prKey = (p: ShelfPr) => `pr:${p.n}`;
 export const reviewKey = (r: ReviewSum) => `review:${r.id}`;
@@ -153,9 +141,6 @@ function prWhy(p: ShelfPr): string {
 
 export function needsOf<R extends ShelfRow>(inp: Input<R>): Need[] {
   const out: Need[] = [];
-  for (const a of inp.asks) {
-    if (a.waiting && under(a.root, inp.ws)) out.push({ key: `ask:${a.path}`, kind: "ask", title: a.label || "ask", path: a.path, since: a.since });
-  }
   for (const p of inp.prs) {
     const o = p.landing?.overall;
     if (p.state === "merged" && o?.status === "awaiting")
