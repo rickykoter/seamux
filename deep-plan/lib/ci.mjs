@@ -92,11 +92,27 @@ export function checksNow(cwd, head) {
     if (a.error) return { error: `gh pr checks was refused (${why}), and the Actions runs could not be read either: ${a.error}` };
     return { ...a, via: "actions", refused: why };
   }
-  return bucketed(rows.map(r => ({ check: r.name, workflow: r.workflow, bucket: r.bucket, link: r.link })));
+  // seamux/ship is ship's own status, not a check it waits on: counted, it
+  // would read green before CI starts and keep GitHub's auto-merge off.
+  return bucketed(rows.filter(r => r.name !== STATUS_CONTEXT).map(r => ({ check: r.name, workflow: r.workflow, bucket: r.bucket, link: r.link })));
 }
 
 // A refusal a narrower token gets, rather than a missing PR or a gh fault.
-const TOKEN_REFUSED = /Resource not accessible by (personal access token|integration)|HTTP 403|not have permission|insufficient (scope|permission)/i;
+const TOKEN_REFUSED_RE = /Resource not accessible by (personal access token|integration)|HTTP 403|not have permission|insufficient (scope|permission)/i;
+// A 403 for a rate limit or abuse detection is GitHub saying wait, not a
+// permission the token lacks.
+const RATE_LIMITED = /rate limit|abuse detection|secondary rate/i;
+const TOKEN_REFUSED = { test: t => TOKEN_REFUSED_RE.test(t) && !RATE_LIMITED.test(t) };
+// One `gh api -i` answer read: its status, the permission GitHub's header
+// names, and the body after the headers.
+function answer(r) {
+  const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out || "") || [])[1]) || 0;
+  const named = ((/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out || "") || [])[1] || "").trim();
+  const cut = (r.out || "").search(/\r?\n\r?\n/);
+  const body = cut >= 0 ? r.out.slice(cut).trim() : (code ? "" : (r.out || ""));
+  const limited = RATE_LIMITED.test(`${r.errText || ""}\n${r.out || ""}`);
+  return { code, named, body, limited };
+}
 const localHead = cwd => {
   const h = spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" });
   return h.status === 0 ? h.stdout.trim() : "";
@@ -126,6 +142,9 @@ export function actionsChecks(cwd, sha) {
     const v = gh(["run", "view", String(run.databaseId), "--json", "jobs"], cwd);
     const jobs = !v.err && v.status === 0 ? (parse(v.out) || {}).jobs : null;
     if (!Array.isArray(jobs)) return { error: `gh run view ${run.databaseId}: ${v.err || v.errText.split("\n").pop() || "no JSON"}` };
+    // A run with no jobs (a workflow file that does not parse, one not
+    // started yet) is a row of its own, so a red run is never read as none.
+    if (!jobs.length) jobs.push({ name: run.workflowName, status: run.status, conclusion: run.conclusion, url: "" });
     for (const j of jobs)
       rows.push({ check: j.name, workflow: run.workflowName, link: j.url || "",
         bucket: j.status !== "completed" ? "pending" : PASSED.has(j.conclusion) ? (j.conclusion === "success" ? "pass" : "skipping")
@@ -157,10 +176,10 @@ export function tokenReads(cwd, sha) {
   for (const [want, ep] of [["checks=read", `repos/{owner}/{repo}/commits/${sha}/check-runs?per_page=1`], ["statuses=read", `repos/{owner}/{repo}/commits/${sha}/status`]]) {
     const r = gh(["api", "-i", ep], cwd);
     if (r.err) { out.unread.push(`${want}: ${r.err}`); continue; }
-    const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out) || [])[1]) || 0;
+    const { code, named, limited } = answer(r);
     if (code >= 200 && code < 300) continue;
-    const named = (/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out) || [])[1];
-    if (code === 403 || code === 404) { out.missing.push(named ? named.trim() : want); out.fromHeader = out.fromHeader || !!named; }
+    if (limited) out.unread.push(`${want}: rate limited`);
+    else if (code === 403 || code === 404) { out.missing.push(named || want); out.fromHeader = out.fromHeader || !!named; }
     else if (!code && r.status !== 0 && TOKEN_REFUSED.test(`${r.errText}\n${r.out}`)) out.missing.push(want);
     else out.unread.push(`${want}: ${code ? `HTTP ${code}` : (r.errText.split("\n").pop() || "no answer")}`);
   }
@@ -199,12 +218,21 @@ function viewPr(cwd, which) {
 // one (GitHub would merge past a failing check that is not). gh repo view has
 // no autoMergeAllowed field, so GraphQL says whether the repo allows it.
 const AUTO_MERGE_Q = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){autoMergeAllowed}}";
+// Both reads are repo settings, so ship's long wait reads them once per
+// AUTO_MERGE_TTL_MS, not on every look.
+const AUTO_MERGE_TTL_MS = 600000;
+const autoMergeSeen = new Map();
 export function githubAutoMerge(cwd, base, names = []) {
-  const r = gh(["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", `query=${AUTO_MERGE_Q}`], cwd);
-  const d = !r.err && r.status === 0 ? parse(r.out) : null;
-  if (!(d && d.data && d.data.repository && d.data.repository.autoMergeAllowed === true)) return false;
-  const need = requiredChecks(cwd, base);
-  return need.length > 0 && names.length > 0 && names.every(n => need.includes(n));
+  const k = `${cwd}\0${base}`;
+  let s = autoMergeSeen.get(k);
+  if (!s || Date.now() - s.at > AUTO_MERGE_TTL_MS) {
+    const r = gh(["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", `query=${AUTO_MERGE_Q}`], cwd);
+    const d = !r.err && r.status === 0 ? parse(r.out) : null;
+    const allowed = !!(d && d.data && d.data.repository && d.data.repository.autoMergeAllowed === true);
+    s = { at: Date.now(), allowed, need: allowed ? requiredChecks(cwd, base) : [] };
+    autoMergeSeen.set(k, s);
+  }
+  return s.allowed && s.need.length > 0 && names.length > 0 && names.every(n => s.need.includes(n));
 }
 
 // The checks the base branch requires, by context: from its rulesets first
@@ -219,7 +247,8 @@ export function requiredChecks(cwd, base) {
   if (fromRules.length) return [...new Set(fromRules)];
   // With -i, so a refusal (administration read, which a narrow token lacks)
   // is named from its header.
-  const p = headed(gh(["api", "-i", `repos/{owner}/{repo}/branches/${base}/protection/required_status_checks`], cwd), "administration=read");
+  const p = headed(gh(["api", "-i", `repos/{owner}/{repo}/branches/${base}/protection/required_status_checks`], cwd), "administration=read",
+    "classic branch protection", { absent404: true });
   const req = p.ok && parse(p.body);
   return req ? [...new Set([...(req.contexts || []), ...((req.checks || []).map(c => c && c.context).filter(Boolean))])] : [];
 }
@@ -230,16 +259,16 @@ export function requiredChecks(cwd, base) {
 const refused = new Map();
 export const refusals = () => [...refused.entries()].map(([perm, what]) => ({ perm, what }));
 // A `gh api -i` answer: {ok, code, body}, a refusal recorded under `want`.
-function headed(r, want, what = want) {
+// absent404: a 404 with no permission header is an answer (the branch has
+// no protection), not a refusal.
+function headed(r, want, what = want, { absent404 = false } = {}) {
   if (r.err) return { ok: false, code: 0, body: "" };
-  const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out) || [])[1]) || 0;
-  const cut = r.out.search(/\r?\n\r?\n/);
-  const body = cut >= 0 ? r.out.slice(cut).trim() : (code ? "" : r.out);
-  if (code >= 200 && code < 300) return { ok: true, code, body };
-  const named = (/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out) || [])[1];
-  if (code === 403 || code === 404 || (!code && r.status !== 0 && TOKEN_REFUSED.test(`${r.errText}\n${r.out}`)))
-    for (const perm of (named || want).split(/\s*,\s*/).filter(Boolean)) if (!refused.has(perm)) refused.set(perm, what);
-  return { ok: false, code, body };
+  const a = answer(r);
+  if (a.code >= 200 && a.code < 300) return { ok: true, code: a.code, body: a.body };
+  const refusedHere = !a.limited && ((a.code === 403) || (a.code === 404 && (!absent404 || a.named)) ||
+    (!a.code && r.status !== 0 && TOKEN_REFUSED.test(`${r.errText}\n${r.out}`)));
+  if (refusedHere) for (const perm of (a.named || want).split(/\s*,\s*/).filter(Boolean)) if (!refused.has(perm)) refused.set(perm, what);
+  return { ok: false, code: a.code, body: a.body };
 }
 
 // Post ship's commit status on sha (ADR 0108): context seamux/ship, with
@@ -250,10 +279,10 @@ export function postStatus(cwd, sha, { state, description }) {
   const r = gh(["api", "-i", "-X", "POST", `repos/{owner}/{repo}/statuses/${sha}`, "-f", `state=${state}`,
     "-f", `context=${STATUS_CONTEXT}`, "-f", `description=${description}`], cwd);
   if (r.err) return { ok: false, why: r.err };
-  const code = Number((/^HTTP\/[\d.]+ (\d{3})/m.exec(r.out) || [])[1]) || 0;
+  const { code, named, limited } = answer(r);
   if (code >= 200 && code < 300) return { ok: true };
-  const named = (/^x-accepted-github-permissions:\s*(.+)$/im.exec(r.out) || [])[1];
-  if (code === 403 || code === 404) return { ok: false, why: `the token lacks ${named ? named.trim() : "statuses=write"} (GitHub's X-Accepted-GitHub-Permissions header)` };
+  if (limited) return { ok: false, why: "GitHub's rate limit: ship posts it again on its next run" };
+  if (code === 403 || code === 404) return { ok: false, why: `the token lacks ${named || "statuses=write"} (GitHub's X-Accepted-GitHub-Permissions header)` };
   return { ok: false, why: code ? `HTTP ${code}` : (r.errText.split("\n").pop() || `gh exited ${r.status}`) };
 }
 

@@ -8876,6 +8876,30 @@ if (want("ci check: the PR's checks behind the gate")) {
   r = cc("check", "run", "ci-a", "1", "--inline");
   ok("ci: through the Actions runs a pending job is waited out and a timed-out one fails, with its log tail",
     r.status !== 0 && chk("ci-a").fails === 1 && /1 of 1 check\(s\) failed: probes \/ app/.test(r.stdout) && /timed out/.test(r.stdout), r.stdout);
+  // ship's own seamux/ship status is no check to wait on (delivery f9).
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [
+      [{ name: "seamux/ship", workflow: "", bucket: "pass", link: "" }],
+      [{ name: "seamux/ship", workflow: "", bucket: "pass", link: "" }, { name: "probes", workflow: "CI", bucket: "pass", link: "" }]] } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  const f9log = (/\(log: ([^)]+)\)/.exec(r.stdout) || [])[1];
+  const f9said = f9log && fs.existsSync(f9log) ? fs.readFileSync(f9log, "utf8") : "";
+  ok("ci: ship's own seamux/ship status is not counted, so it alone never reads as all green (delivery f9)",
+    r.status === 0 && /all 1 check\(s\) passed/.test(f9said) && !/all 2 check/.test(f9said), r.stdout + f9said);
+  // A rate limit is not a permission the token lacks (delivery f1).
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: "HTTP 403: API rate limit exceeded for user ID 1. (https://api.github.com/graphql)" } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: a rate-limit 403 is an error to wait out, not a refused permission with an Actions fallback (delivery f1)",
+    r.status !== 0 && /gh pr checks: HTTP 403: API rate limit exceeded/.test(r.stdout) && !/reading the head's Actions runs/.test(r.stdout), r.stdout);
+  // A failed run with no jobs is a failure, not "no checks yet" (delivery f10).
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: REFUSED },
+    [`run list --commit ${head}`]: { stdout: [[{ databaseId: 11, workflowName: "CI", status: "completed", conclusion: "startup_failure" }]] },
+    "run view 11 --json jobs": { stdout: { jobs: [] } } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: through the Actions runs, a run that failed before any job is a failed check (delivery f10)",
+    r.status !== 0 && /1 of 1 check\(s\) failed: CI \/ CI/.test(r.stdout), r.stdout);
   gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: "GraphQL: something else broke" } });
   cc("check", "reset", "ci-a", "1", "ci-pr-checks");
   r = cc("check", "run", "ci-a", "1", "--inline");
@@ -10060,6 +10084,16 @@ if (want("policy and ship: levels from the base branch")) {
       sj.action === "merge-when-green" && sj.autoMerge === false && ghCalls().some(c => /^api graphql/.test(c)) && ghCalls().some(c => /rules\/branches\/main/.test(c)) &&
       !ghCalls().some(c => /^pr merge/.test(c)) && (sj.gates || []).some(g => g.gate === "ci" && /1 PR check\(s\) still running/.test(g.why)), sr.stdout + ghCalls().join("\n"));
     ok("ship: …and the text says the merge would wait in ship's own wait", /by ship's own wait/.test(pc("ship", "pol-lever", "--merge", "--dry-run").stdout));
+    // A 404 on classic protection with no header is a branch with no
+    // protection, not a refusal (delivery f2).
+    ghMap({ [PRV]: pvK(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] },
+      "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[]] },
+      "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stdout: "HTTP/2.0 404 Not Found\r\n\r\n{\"message\":\"Branch not protected\"}", stderr: "gh: Branch not protected (HTTP 404)" },
+      "api graphql": { stdout: { data: { repository: { autoMergeAllowed: true } } } } });
+    const nf = JSON.parse(pc("ship", "pol-lever", "--merge", "--dry-run", "--json").stdout || "{}");
+    const nft = (nf.gates || []).find(g => g.gate === "token");
+    ok("ship: a 404 on classic branch protection with no header names no administration=read (delivery f2)",
+      nf.action === "merge-when-green" && !(nft && (nft.missing || []).includes("administration=read")), JSON.stringify(nf.gates));
     ok("ship: the text verdict shows both lines as warnings", /! token: the token lacks checks=read, statuses=read/.test(nt) && /! ci: 1 passed, 0 running, 1 failed/.test(nt), nt);
   }
   // Observe: ship acts at the level and records what it would have done at observe.

@@ -832,6 +832,14 @@ pub async fn ship_view(cwd: String) -> Result<Value, String> {
 /// hold it, and the result says what it did or waits on. A wait (exit 3) is
 /// an answer, not an error.
 fn ship_merge_of(cwd: &str) -> Result<Value, String> {
+    // Only a worktree whose open PR the Lookout tab lists: the page names the
+    // folder, so this side checks it is one the person was shown.
+    let listed = workspace_prs().iter().any(|p| {
+        p.get("cwd").and_then(Value::as_str) == Some(cwd) && matches!(p.get("state").and_then(Value::as_str), Some("open" | "draft"))
+    });
+    if !listed {
+        return Err("Ship it acts only on a worktree with an open PR in the Lookout tab".into());
+    }
     let path = format!("PATH={}", crate::shell::login_path());
     let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
     let args = ["-u", "CLAUDECODE", path.as_str(), "node", script.as_str(), "ship", "--at", cwd, "--merge", "--json"];

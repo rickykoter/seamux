@@ -272,7 +272,10 @@ function shipItButton(v: ShipView, offer: { ready: boolean; why: string }, go: (
     b.disabled = true;
     b.textContent = "Shipping…";
     void go().then(
-      (r) => { said.textContent = shipItSaid(r); b.textContent = r.action === "merge" ? "Merged" : "Ship it"; b.disabled = r.action === "merge"; delete b.dataset.ask; },
+      (r) => {
+        const merged = r.action === "merge" && r.result?.ok !== false;
+        said.textContent = shipItSaid(r); b.textContent = merged ? "Merged" : "Ship it"; b.disabled = merged; delete b.dataset.ask;
+      },
       (e) => { said.textContent = `Ship could not: ${e}`; b.textContent = "Ship it"; b.disabled = false; delete b.dataset.ask; });
   }, "r-btn primary");
   if (!offer.ready) b.disabled = true;

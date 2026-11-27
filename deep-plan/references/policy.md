@@ -205,7 +205,9 @@ gates (its scenarios requirement, the kept checkout as a wait at
 auto-merge), and acts on none of it. Taking `observe` out is the whole undo.
 
 A file's observed level is the lowest of its entries' observe-or-level, and
-a change's is the lowest of its files'. Where that is above the change's
+a change's is the lowest of its files'. The policy's own `observe` is the
+default's: it applies to files no paths entry matches, and an entry that
+matches watches only at its own `observe`. Where that is above the change's
 level, the verdict carries `observe` (its level, the entry, the action and
 its waits). Each ship run that is not `--dry-run` adds one entry per head
 and action to the ship record's `observed` list. The `seamux/ship`
