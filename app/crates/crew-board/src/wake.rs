@@ -581,12 +581,18 @@ pub fn chart_card_in(home: &str, folder: &str) -> Option<Value> {
     }))
 }
 
-/// chartroom's CLI: $CHARTROOM_CLI, else beside the deep-plan engine (both
-/// plugins run from the same seamux checkout).
+/// chartroom's CLI, the first that exists: $CHARTROOM_CLI; beside the
+/// deep-plan engine (both plugins run from the same seamux checkout); the
+/// plugin root chartroom's own server recorded in serve.json (an install
+/// that is not a checkout, once chartroom has served a studio).
 fn chartroom_cli() -> Option<std::path::PathBuf> {
     let from_env = std::env::var_os("CHARTROOM_CLI").filter(|s| !s.is_empty()).map(std::path::PathBuf::from);
     let beside = crew_core::dp_engine::root().parent().map(|p| p.join("chartroom").join("chartroom.mjs"));
-    [from_env, beside].into_iter().flatten().find(|p| p.is_file())
+    let home = crew_store::paths::Paths::from_env().chartroom;
+    let served = std::fs::read(Path::new(&home).join("serve.json")).ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("root").and_then(Value::as_str).map(|r| Path::new(r).join("chartroom.mjs")));
+    [from_env, beside, served].into_iter().flatten().find(|p| p.is_file())
 }
 
 /// The studio's URL for chart `loc` (<room>/<id>): `chartroom open <id>
@@ -604,7 +610,7 @@ fn studio_url(loc: &str) -> Result<String, String> {
     if !Path::new(&top).is_dir() {
         return Err("the chart's worktree is gone".into());
     }
-    let cli = chartroom_cli().ok_or("chartroom is not installed beside deep-plan")?;
+    let cli = chartroom_cli().ok_or("chartroom was not found: run chartroom open once, or set CHARTROOM_CLI")?;
     let node = crate::act::node().unwrap_or_else(|| "node".into());
     let mut cmd = std::process::Command::new(node);
     cmd.arg(&cli).args(["open", id, "--no-open", "--json"]).current_dir(&top);
