@@ -131,11 +131,53 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     await page.keyboard.press(" ");
     await page.waitForTimeout(200);
     say(await page.evaluate((k) => !!document.querySelector(`.sheet-wake [data-key="${k}"]`)?.closest(".w-card.open"), rk), "Space opens the card's whole prompt", rk);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    say(await page.evaluate((k) => !document.querySelector(`.sheet-wake [data-key="${k}"]`)?.closest(".w-card.open"), rk) && (await wake.isVisible()),
+      "Esc closes the card's prompt, and the Wake stays");
 
     await page.keyboard.press("t");
     await page.waitForTimeout(400);
     say(await wake.locator('.w-shelf[data-shelf="needs"]').isVisible(), "t switches back to Shelves");
     say((await sel(page)) === rk, "the pick stays across the switch when both show it", String(await sel(page)));
+
+    // Space on a Shelves row shows its turn's whole prompt under the list;
+    // Enter's preview opens over it, and Esc closes the preview, then the prompt.
+    await page.keyboard.press(" ");
+    await page.waitForTimeout(200);
+    const turnp = wake.locator(".w-turnp");
+    const ptext = (await turnp.isVisible()) ? await turnp.locator(".w-turnp-b").textContent() : "";
+    say(!!ptext && ptext.length > 0, "Space on a Shelves row shows its turn's prompt", ptext?.slice(0, 40));
+    await page.keyboard.press("j");
+    await page.waitForTimeout(150);
+    say(await turnp.isVisible(), "the prompt follows the pick");
+    const pickedPic = await wake.locator(".w-thumb").first().getAttribute("data-key");
+    await page.evaluate((k) => document.querySelector(`.sheet-wake [data-key="${k}"]`)?.dispatchEvent(new MouseEvent("click", { bubbles: true })), pickedPic);
+    await page.waitForTimeout(400);
+    const viewerUp = await page.locator(".sheet-wake .wv").first().isVisible().catch(() => false);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(250);
+    const afterOne = { viewer: await page.locator(".sheet-wake .wv-img, .sheet-wake .wv video").first().isVisible().catch(() => false), prompt: await turnp.isVisible() };
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    say(viewerUp && !afterOne.viewer && afterOne.prompt && !(await turnp.isVisible()) && (await wake.isVisible()),
+      "Esc closes the preview first, then the prompt, and the Wake stays", JSON.stringify({ viewerUp, ...afterOne }));
+
+    // A redraw (a search, then clearing it) keeps each thumbnail: the same element, not fetched again.
+    const tk = await wake.locator(".w-thumb").first().getAttribute("data-key");
+    await page.evaluate((k) => (document.querySelector(`.sheet-wake [data-key="${k}"]`).__kept = 1), tk);
+    await wake.locator(".w-q, input[type=search]").first().fill("zz-no-such-thing");
+    await page.waitForTimeout(700);
+    await wake.locator(".w-q, input[type=search]").first().fill("");
+    await page.waitForTimeout(900);
+    say(await page.evaluate((k) => document.querySelector(`.sheet-wake [data-key="${k}"]`)?.__kept === 1, tk), "a thumbnail survives a search and its clearing", tk);
+    // Out of the search box (Esc there clears it and lets go), so t is a key again.
+    await page.keyboard.press("Escape");
+    await wake.locator(".w-shelf-h").first().click();
+    await page.keyboard.press("t");
+    await page.keyboard.press("t");
+    await page.waitForTimeout(500);
+    say(await page.evaluate((k) => document.querySelector(`.sheet-wake [data-key="${k}"]`)?.__kept === 1, tk), "a thumbnail survives Timeline and back", tk);
 
     // Keep all asks first, and a redraw between ask and confirm keeps the ask.
     const keepAll = wake.locator(".w-need.n-risk .w-act");
@@ -188,13 +230,43 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
   }
 }
 
+// The Dock's PR pill (crew/board/intent.js sends it from the board frame): the
+// Wake opens beside the terminal, even with its column folded, on the lane of
+// the group asked for, picked and in view. The demo's worktrees have one PR
+// each, so the board draws no pill: the frame sends its message itself.
+async function runPill() {
+  const { browser, page, errors } = await launch({ dark: true, width: 1440 });
+  try {
+    await openApp(page, "dock", { url: srv.url });
+    await page.frameLocator(".dock-board iframe").locator("#rows .row").first().waitFor();
+    const frame = page.frames().find((f) => f.url().includes("/board"));
+    for (const [k, group, want] of [["checkout", "open", "pr:43"], ["search", "done", "pr:41"]]) {
+      await frame.evaluate(([ws, g]) => window.parent.postMessage({ crew: "prs", ws, group: g }, "*"), [byKey[k].id, group]);
+      await page.waitForTimeout(1500);
+      const st = await page.evaluate(() => {
+        const w = document.querySelector(".dockview .sheet .sheet-wake");
+        const s = w?.querySelector(".sel[data-key]");
+        const L = w?.querySelector(".w-list")?.getBoundingClientRect();
+        const r = s?.getBoundingClientRect();
+        return { shown: !!w && w.offsetParent !== null, sel: s?.getAttribute("data-key") ?? null, inView: !!(r && L && r.top >= L.top - 1 && r.bottom <= L.bottom + 1) };
+      });
+      say(st.shown && st.sel === want && st.inView, `the PR pill (${group}) shows the Wake on that lane, picked and in view`, JSON.stringify(st));
+    }
+    await page.screenshot({ path: join(out, "pill.png") });
+    say(errors.length === 0, "no page errors (pill)", errors.join(" | "));
+  } finally {
+    await browser.close();
+  }
+}
+
 try {
   await run();
   await run({ dark: false, tag: "-light" });
   await run({ width: 900, tag: "-narrow" });
+  await runPill();
 } finally {
   await srv.close();
+  console.log(seen.join("\n"));
 }
-console.log(seen.join("\n"));
 console.log(`drive-wake: ${seen.length - failed} ok, ${failed} failed (shots in ${out})`);
 process.exit(failed ? 1 : 0);

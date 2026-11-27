@@ -185,8 +185,17 @@ export class Wake {
   private shelfAll = new Set<ShelfId>();
   /** Needs you's keep-all, made once so its ask-then-confirm survives a redraw. */
   private riskKeep = button("", "w-act");
-  /** Thumbnails by row id, kept across redraws so a picture is not fetched again. */
+  /** Thumbnails by row id, kept across redraws so a picture is not fetched
+   *  again: a search, a switch to Timeline and back, or a poll redraws them
+   *  from here. Let go only when another worktree is shown. */
   private thumbs = new Map<number, HTMLElement>();
+  private thumbsWs = "";
+  /** Shelves: the turn prompt Space showed for the picked row, under the
+   *  list; it follows the pick until Space or Esc closes it. */
+  private turnP = el("div", "w-turnp");
+  private turnOn = false;
+  /** Timeline: cards Space opened, latest last, for Esc to close in turn. */
+  private spaceOpened: string[] = [];
   private home = "";
   private seq = 0;
   private lastTop = -1;
@@ -205,6 +214,8 @@ export class Wake {
    *  next one shown): scrolled to and marked once that worktree's block is drawn. */
   private prsFocus: Group | null = null;
   private prsFocusDir = "";
+  /** The pill's group as it asked: "open" is every open group. */
+  private prsAsk = "";
   /** The directory the sheet last asked for, as it spelled it: `ws` takes
    *  the store's realpath'd spelling once read, so a focus matches either. */
   private askedDir = "";
@@ -248,8 +259,8 @@ export class Wake {
         ["← →", "flip through the previews"],
         ["v", "preview beside · under the list"],
         ["f", "fill the Wake with the preview"],
-        ["Esc", "close the preview"],
-        ["Space", "show the whole prompt"],
+        ["Esc", "close the keys, the preview, a prompt, then the search"],
+        ["Space", "show the turn's whole prompt; again to hide it"],
         ["K", "keep an at-risk file"],
         ["c", "copy the path (a pull request's link)"],
         ["r", "copy the resume command"],
@@ -285,7 +296,10 @@ export class Wake {
     bar.append(this.q, keys);
     this.toastEl.setAttribute("role", "status");
     const main = el("div", "w-main");
-    main.append(head, bar, this.list);
+    this.turnP.hidden = true;
+    this.turnP.setAttribute("role", "region");
+    this.turnP.setAttribute("aria-label", "the turn's prompt");
+    main.append(head, bar, this.list, this.turnP);
     this.viewer = new Viewer(root, {
       pick: (r) => this.reveal(r),
       openElsewhere: (r, e) => void this.open(r, "", e, true),
@@ -385,6 +399,9 @@ export class Wake {
   showPrs(group: string, dir = ""): void {
     const g: Group = group === "people" ? "people" : group === "draft" ? "draft" : group === "done" ? "done" : "open";
     this.prsFocus = g === "open" ? "you" : g;
+    this.prsAsk = g;
+    // Finished pull requests past the newest fold behind "older": asked for, they show.
+    if (g === "done") this.lanesAll = true;
     // The lanes are on Shelves: shown there this once, the person's own
     // choice of layout left as it was.
     this.mode = "shelves";
@@ -586,9 +603,6 @@ export class Wake {
     }
     if (s.files.length) shelf("files", String(s.files.length), ...list("files", s.files));
     if (s.commits.length) shelf("commits", String(s.commits.length), ...list("commits", s.commits));
-    // Thumbnails of rows no longer here are let go.
-    const ids = new Set(s.pictures.map((r) => r.id));
-    for (const id of [...this.thumbs.keys()]) if (!ids.has(id)) this.thumbs.delete(id);
     if (!this.data.rows.length && !out.some((x) => x.classList.contains("w-shelf"))) {
       const e = el("div", "w-empty");
       e.textContent = this.query
@@ -613,8 +627,17 @@ export class Wake {
       // Kept until the shelf shows (a search can hide every lane); a worktree
       // with no pull requests lets it go in loadPrs.
       if (at) {
-        at.scrollIntoView({ block: "start" });
+        // The first lane of the group asked for is picked, so j and k and
+        // Enter start there; "open" is the first lane not finished.
+        const want = this.prsAsk;
+        const lane = s.lanes.find((l) => (want === "open" || !want ? l.pr.group !== "done" : l.pr.group === want));
+        const laneEl = lane ? at.querySelector<HTMLElement>(`.w-lane[data-key="${CSS.escape(lane.key)}"]`) : null;
         at.classList.add("asked");
+        if (laneEl && lane) {
+          this.selKey = lane.key;
+          at.scrollIntoView({ block: "start" });
+          laneEl.scrollIntoView({ block: "nearest" });
+        } else at.scrollIntoView({ block: "start" });
         this.prsFocus = null;
       }
     }
@@ -732,11 +755,8 @@ export class Wake {
     const prompt = el("span", `w-prompt${c.prompt ? "" : " none"}`);
     prompt.title = c.prompt;
     prompt.append(c.prompt ? marked(c.prompt, this.query) : document.createTextNode((first && SOURCE[first.source]) ?? "no prompt recorded"));
-    prompt.addEventListener("click", () => {
-      if (this.openGroups.has(c.key)) this.openGroups.delete(c.key);
-      else this.openGroups.add(c.key);
-      a.classList.toggle("open");
-    });
+    a.dataset.turn = c.key;
+    prompt.addEventListener("click", () => this.toggleCard(c.key, a));
     const meta = el("span", "w-card-m");
     if (c.name) meta.append(el("span", "w-card-n", c.name));
     const span = c.start === c.end ? hm(new Date(c.start)) : `${hm(new Date(c.start))}–${hm(new Date(c.end))}`;
@@ -780,6 +800,33 @@ export class Wake {
       a.append(box);
     }
     return a;
+  }
+
+  /** Open or close a card's whole prompt. The latest opened is the first
+   *  one Esc closes. */
+  private toggleCard(key: string, a: HTMLElement): void {
+    const open = !this.openGroups.has(key);
+    if (open) this.openGroups.add(key);
+    else this.openGroups.delete(key);
+    this.spaceOpened = this.spaceOpened.filter((k) => k !== key);
+    if (open) this.spaceOpened.push(key);
+    a.classList.toggle("open", open);
+  }
+
+  /** Shelves: the picked row's turn prompt under the list, while Space has
+   *  it on and the pick is a row. Hidden on Timeline, where each card holds
+   *  its own. */
+  private showTurn(): void {
+    const r = this.turnOn && this.mode === "shelves" && this.selKey ? this.acts.get(this.selKey)?.row : undefined;
+    if (!r) this.turnOn = false;
+    this.turnP.hidden = !r;
+    if (!r) return;
+    const d = local(r.created_at);
+    const hd = el("div", "w-turnp-h");
+    hd.append(el("b", "", "Prompt"), el("span", "w-turnp-m", [r.title, d ? `${dayLabel(d)} ${hm(d)}` : ""].filter(Boolean).join(" · ")), el("span", "w-turnp-esc", "Space or Esc closes"));
+    const body = el("div", `w-turnp-b${r.prompt ? "" : " none"}`);
+    body.append(r.prompt ? marked(r.prompt, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
+    this.turnP.replaceChildren(hd, body);
   }
 
   /** A list item holding a lane or a review row inside a card's list. */
@@ -1005,6 +1052,10 @@ ${p.url}`;
    *  kept across redraws (a redraw must not fetch it again). */
   private thumb(r: Row): HTMLElement {
     const key = `row:${r.id}`;
+    if (this.thumbsWs !== this.ws) {
+      this.thumbs.clear();
+      this.thumbsWs = this.ws;
+    }
     let t = this.thumbs.get(r.id);
     if (!t) {
       t = el("div", "w-thumb");
@@ -1122,9 +1173,10 @@ ${p.url}`;
       at.classList.add("sel");
       if (scroll) at.scrollIntoView({ block: "nearest" });
     }
-    // An open pane follows the pick.
+    // An open pane, and a shown prompt, follow the pick.
     const r = key ? this.acts.get(key)?.row : undefined;
     if (this.viewer.open && r) this.viewer.show(this.vis.filter(previewable), r);
+    this.showTurn();
   }
 
   /** j / k: the next item in reading order; k from the first lets go. */
@@ -1140,6 +1192,7 @@ ${p.url}`;
     if (this.selKey && !this.keysShown().includes(this.selKey)) this.selKey = null;
     if (this.selKey) this.list.querySelector(`[data-key="${CSS.escape(this.selKey)}"]`)?.classList.add("sel");
     if (this.viewer.open) this.viewer.setRows(this.vis.filter(previewable));
+    this.showTurn();
   }
 
   /** Pick `r` in the list, opening its day if it was folded: the pane
@@ -1439,6 +1492,16 @@ ${p.url}`;
         this.help.hidden = true;
       } else if (this.viewer.open && !inQ) {
         this.viewer.close();
+      } else if (!inQ && this.turnOn) {
+        this.turnOn = false;
+        this.showTurn();
+      } else if (!inQ && this.spaceOpened.some((k) => this.openGroups.has(k))) {
+        // The latest card opened closes first.
+        let k = this.spaceOpened.pop();
+        while (k && !this.openGroups.has(k)) k = this.spaceOpened.pop();
+        const a = k ? this.list.querySelector<HTMLElement>(`.w-card[data-turn="${CSS.escape(k)}"]`) : null;
+        if (k) this.openGroups.delete(k);
+        a?.classList.remove("open");
       } else if (this.q.value || inQ) {
         this.q.value = "";
         this.query = "";
@@ -1504,9 +1567,14 @@ ${p.url}`;
         }
         break;
       case " ":
-        if (this.selKey) {
-          e.preventDefault();
-          this.list.querySelector(`[data-key="${CSS.escape(this.selKey ?? "")}"]`)?.closest(".w-card")?.querySelector<HTMLElement>(".w-prompt")?.click();
+        if (!this.selKey) break;
+        e.preventDefault();
+        if (this.mode === "timeline") {
+          this.list.querySelector(`[data-key="${CSS.escape(this.selKey)}"]`)?.closest(".w-card")?.querySelector<HTMLElement>(".w-prompt")?.click();
+        } else if (r) {
+          // Shelves have no cards: the row's turn prompt shows under the list.
+          this.turnOn = !this.turnOn;
+          this.showTurn();
         }
         break;
       case "K":

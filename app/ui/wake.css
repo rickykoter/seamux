@@ -351,3 +351,12 @@
 .w-thumb-play { position: absolute; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; padding-left: 2px; box-sizing: border-box; background: color-mix(in srgb, var(--ink, #000) 55%, transparent); color: #fff; }
 .w-dur { position: absolute; right: 4px; bottom: 4px; font: 600 var(--fs-1) ui-monospace, Menlo, monospace; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, #000 60%, transparent); color: #fff; }
 .w-repo { position: absolute; right: 4px; top: 4px; font-size: var(--fs-1); padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, #000 55%, transparent); color: #fff; }
+
+/* Shelves: Space shows the picked row's turn prompt under the list. */
+.w-turnp { flex: 0 0 auto; max-height: 40%; overflow-y: auto; margin: 0 12px 10px; padding: 8px 12px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); font-size: var(--fs-2); }
+.w-turnp-h { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-bottom: 4px; color: var(--muted); }
+.w-turnp-h b { color: var(--fg); }
+.w-turnp-m { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-turnp-esc { margin-left: auto; white-space: nowrap; }
+.w-turnp-b { white-space: pre-wrap; overflow-wrap: anywhere; }
+.w-turnp-b.none { color: var(--muted); }
