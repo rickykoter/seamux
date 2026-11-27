@@ -72,19 +72,90 @@ export type PlanRow = {
   progress?: { total: number; done: number };
   checksOutstanding?: { n: number; id: string; kind: string; status: string }[];
   scenarios?: ScenarioSum;
-  increments?: { n: number; title: string; status: string; authorizedAt?: number; doneAt?: number }[];
+  /** Who gives each go: the plan's mode (and what runs between increments). */
+  go?: { mode: "human" | "auto" | "parent"; between?: "commit" | "draft-pr" };
+  /** The plan's lookout reviews, as its spec set them. */
+  review?: { increments: number[]; delivery: boolean; reviewer: string; agentMayClose: boolean };
+  /** Where the repo policy came from at the last render. */
+  policy?: { why?: string };
+  increments?: { n: number; title: string; status: string; authorizedAt?: number; doneAt?: number; go?: { by: GoBy; why: string }; level?: string }[];
 };
+
+/** Who gives an increment's go: a person, done's auto-go, or a family's parent agent. */
+export type GoBy = "person" | "auto" | "parent";
+
+/** "1", "1 and 2", "1, 2 and 3". */
+const andList = (ns: number[]) => (ns.length < 2 ? ns.join("") : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`);
+
+/** A plan card's policy line: how its gos are given, the repo policy's
+ *  level, and its reviews; [] for a plan from a deep-plan that predates them. */
+export function planPolicy(p: PlanRow): string[] {
+  const inc = p.increments ?? [];
+  const out: string[] = [];
+  if (p.go) {
+    const stops = inc.filter((i) => i.go && i.go.by !== "auto").map((i) => i.n);
+    out.push(p.go.mode === "parent" ? "go: the parent agent's"
+      : p.go.mode === "auto" ? `go: auto, ${p.go.between === "draft-pr" ? "a draft PR" : "a commit"} between${stops.length ? ` · ${andList(stops)} wait${stops.length === 1 ? "s" : ""} for you` : ""}`
+      : "go: yours, every increment");
+  }
+  const levels = [...new Set(inc.map((i) => i.level).filter((l): l is string => !!l))];
+  if (levels.length) out.push(`policy: ${levels.join(", ")}`);
+  const r = p.review;
+  if (r) {
+    const on = [r.increments.length ? andList(r.increments) : "", r.delivery ? "delivery" : ""].filter(Boolean).join(" + ");
+    out.push(on ? `reviews: ${on} · ${r.reviewer === "panel" ? "panel" : "one reviewer"} · ${r.agentMayClose ? "agent may close" : "you close findings"}` : "no reviews");
+  }
+  return out;
+}
 
 /** Kinds the Wake never folds, caps or hides: few, and what the person
  *  navigates by. The store's read keeps them too (crew-board WAKE_KEEP). */
-export const KEPT_KINDS = new Set(["review", "plan", "ask", "pr", "issue"]);
+export const KEPT_KINDS = new Set(["review", "plan", "ask", "pr", "issue", "chart"]);
+
+/** A chartroom chart's card, read live from its folder (wake_charts). */
+export type ChartCard = {
+  path: string;
+  room: string;
+  id: string;
+  kind: string;
+  title: string;
+  purpose: string;
+  status: string;
+  decision: string;
+  chosen: { version: number; key: string; label: string } | null;
+  versions: number;
+  panes: number;
+  role: string;
+  open: number;
+  waiting: number;
+  threads: number;
+  published: string;
+};
+
+/** A chart card's line under its purpose: the pick, or how many options or
+ *  views, then its version and its threads. */
+export function chartSaid(c: ChartCard): string {
+  const what = c.role === "view" ? "view" : "option";
+  const first = c.chosen ? `picked ${c.chosen.key}${c.chosen.label ? ` · ${c.chosen.label}` : ""}`
+    : c.panes ? `${c.panes} ${what}${c.panes === 1 ? "" : "s"}` : "no panes yet";
+  const talk = c.open ? `${c.open} open${c.waiting ? `, ${c.waiting} wait${c.waiting === 1 ? "s" : ""} on Claude` : ""}`
+    : c.threads ? "every thread resolved" : "no comments yet";
+  return [first, c.versions ? `v${c.versions}` : "", talk].filter(Boolean).join(" · ");
+}
 export const kept = (r: { kind: string }) => KEPT_KINDS.has(r.kind);
 
 /** A plan card's increment strip and status line, from deep-plan status. */
-export function planState(p: PlanRow): { dots: { n: number; title: string; mark: string }[]; said: string; now: number | null } {
+export function planState(p: PlanRow): { dots: { n: number; title: string; mark: string; go: GoBy | null }[]; said: string; now: number | null } {
   const inc = p.increments ?? [];
   const mark = (s: string) => (s === "done" ? "done" : s === "blocked" ? "blocked" : s === "working" || s === "authorized" ? "now" : "todo");
-  const dots = inc.map((i) => ({ n: i.n, title: `${i.n}. ${i.title} · ${i.status}`, mark: mark(i.status) }));
+  const goSaid: Record<GoBy, string> = { person: "a person's go", auto: "goes by itself", parent: "the parent agent's go" };
+  // `go`: who gives the go before the dot (null from a deep-plan that predates it).
+  const dots = inc.map((i) => ({
+    n: i.n,
+    title: `${i.n}. ${i.title} · ${i.status}${i.go ? `\n${goSaid[i.go.by]}: ${i.go.why}` : ""}`,
+    mark: mark(i.status),
+    go: i.go?.by ?? null,
+  }));
   const open = inc.find((i) => i.status === "working" || i.status === "authorized" || i.status === "blocked");
   const total = p.progress?.total ?? inc.length;
   const done = p.progress?.done ?? inc.filter((i) => i.status === "done").length;
@@ -121,12 +192,13 @@ export type Lane = {
 };
 
 /** The shelves, in the order they show. Empty ones are left for the page to hide. */
-export const SHELVES = ["needs", "reviews", "plans", "prs", "pictures", "files", "commits"] as const;
+export const SHELVES = ["needs", "reviews", "plans", "charts", "prs", "pictures", "files", "commits"] as const;
 export type ShelfId = (typeof SHELVES)[number];
 export const SHELF_SAID: Record<ShelfId, string> = {
   needs: "Needs you",
   reviews: "Reviews",
   plans: "Plans and asks",
+  charts: "Charts",
   prs: "Pull requests and landings",
   pictures: "Pictures and recordings",
   files: "Files",
@@ -141,6 +213,7 @@ export function shelfOf(kind: string): ShelfId {
   if (kind === "commit" || kind === "turn") return "commits";
   if (kind === "plan" || kind === "ask" || kind === "issue") return "plans";
   if (kind === "review") return "reviews";
+  if (kind === "chart") return "charts";
   if (kind === "pr") return "prs";
   return "files";
 }
@@ -149,6 +222,7 @@ export type Shelves<R extends ShelfRow = ShelfRow> = {
   needs: Need[];
   reviews: { live: ReviewSum[]; past: ReviewSum[] };
   plans: R[];
+  charts: R[];
   lanes: Lane[];
   pictures: R[];
   files: R[];
@@ -263,6 +337,7 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
   const live = inp.reviews.filter((r) => !r.past);
   const past = inp.reviews.filter((r) => r.past).sort((a, b) => (b.closedAt || "").localeCompare(a.closedAt || ""));
   const plans = inp.rows.filter((r) => shelfOf(r.kind) === "plans");
+  const charts = inp.rows.filter((r) => shelfOf(r.kind) === "charts");
   const lanes = lanesOf(inp.prs);
   const pictures = atRiskFirst(inp.rows.filter((r) => shelfOf(r.kind) === "pictures"));
   const files = filesOf(inp.rows);
@@ -272,12 +347,13 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
     ...live.map(reviewKey),
     ...past.map(reviewKey),
     ...plans.map(rowKey),
+    ...charts.map(rowKey),
     ...lanes.map((l) => l.key),
     ...pictures.map(rowKey),
     ...files.map(rowKey),
     ...commits.map(rowKey),
   ];
-  return { needs, reviews: { live, past }, plans, lanes, pictures, files, commits, order };
+  return { needs, reviews: { live, past }, plans, charts, lanes, pictures, files, commits, order };
 }
 
 // ------------------------------------------------------------ turns
@@ -327,7 +403,7 @@ export function incrementAt(plans: PlanRow[], at: number): string | null {
   return best ? best.name : null;
 }
 
-const SECTION_ORDER: Section["shelf"][] = ["reviews", "plans", "prs", "pictures", "files", "commits"];
+const SECTION_ORDER: Section["shelf"][] = ["reviews", "plans", "charts", "prs", "pictures", "files", "commits"];
 
 /** One card per turn: a run of rows with the same session and prompt on the
  *  same day (the same prompt later in the day is a new card). Newest first.

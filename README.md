@@ -560,13 +560,17 @@ behind the ⋯ menu.
 
 The **Wake** is what a workspace's sessions left behind, on shelves: Needs
 you, Reviews (each lookout review's stage and open findings, and past
-reviews to search), Plans and asks, Pull requests and landings, Pictures and
-recordings, Files, and Commits. A shelf with nothing on it is not drawn, and
+reviews to search), Plans and asks, Charts, Pull requests and landings,
+Pictures and recordings, Files, and Commits. A shelf with nothing on it is not drawn, and
 when nothing waits on you the page says so in one line (a search hides it).
-Reviews, plans, asks and pull requests are never folded away; files and
-pictures that are gone wait behind a "▸ N gone" fold. Each plan is a card
+Reviews, plans, asks, charts and pull requests are never folded away; files
+and pictures that are gone wait behind a "▸ N gone" fold. Each plan is a card
 with its increments and one click to its plan, scenarios (with how the last
-run went), review and markdown pages. A video shows a frame of itself once
+run went), review and markdown pages. Its strip puts a bar before an
+increment that waits for a person's go and a line where it follows on by
+itself, and a line under it says the plan's go, policy levels and reviews.
+Each chartroom chart is a card with its status, the option picked or its
+open threads, and one click to its studio, published page and folder. A video shows a frame of itself once
 it scrolls into view. `t` switches to Timeline: one card per turn, split
 into the same sections, and named after the plan increment it worked on.
 `j` and `k` walk the items drawn on the page in the order it shows them,

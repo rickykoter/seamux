@@ -21,6 +21,9 @@ pub struct Paths {
     pub projects: String,
     pub plans: String,
     pub dp_state: String,
+    /// chartroom's own folder: $CHARTROOM_HOME, else ~/.claude/chartroom.
+    /// Its rooms.json names every folder of charts the studio has served.
+    pub chartroom: String,
     pub scratch_base: String,
     pub temp_roots: Vec<String>,
 }
@@ -65,6 +68,7 @@ impl Paths {
             projects: join(&claude, "projects"),
             plans: join(&claude, "plans"),
             dp_state: join(&join(&claude, "deep-plan"), "state"),
+            chartroom: crew_core::py::env_or("CHARTROOM_HOME").unwrap_or_else(|| join(&claude, "chartroom")),
             crew_home,
             home,
             scratch_base,

@@ -321,6 +321,7 @@ fn main() {
             wake_app::wake_prs,
             wake_app::wake_reviews,
             wake_app::wake_plans,
+            wake_app::wake_charts,
             wake_app::wake_open,
             wake_app::wake_keep,
             wake_app::wake_keep_all,

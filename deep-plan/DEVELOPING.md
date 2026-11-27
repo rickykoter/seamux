@@ -125,6 +125,11 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   `checks`, and `obs` — the checks folded to one word, for an older pane) and
   `checksOutstanding` (plus `obsOutstanding`, its per-increment fold) for the
   seamux-mods pane; the board ignores both.
+- `status --json` rows also carry `go` (`mode`: human, auto or parent, and
+  `between` on an auto plan) and `review` (`increments`, `delivery`,
+  `reviewer`, `agentMayClose`), and each increment its `go` (`by`: person,
+  auto or parent, and `why`, from autogo.mjs `goOf`). The plan page's gates
+  and Policies block and the seamux app's Wake plan card draw them.
 - Family members' rows carry `family` (`role`, `parent`, `members[]` with
   phase and progress, `owns`, `after`, `waitingOn`, `trespasses {total,
   pairs}`, `news`, `done`); rows outside a family have no such key. The

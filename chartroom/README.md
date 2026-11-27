@@ -42,6 +42,10 @@ stable places to pin on, and nothing loaded from the network.
 `chartroom open` prints the studio's address. In cmux it opens beside the
 terminal; in the seamux app, clicking the link opens it in the Dock; in Claude
 desktop it opens in the browser pane; anywhere else, open it in a browser.
+The seamux app's Wake also lists every chart the studio has served on its
+Charts shelf, with a Studio chip that opens it in the Dock. A chart keeps the
+Claude Code session it was made in (`session` in chart.json), so the Wake's
+Timeline shows it on that turn.
 
 The register on the left lists the repo's charts. The stage in the middle
 shows one option or view at a time. Threads and notes are on the right.

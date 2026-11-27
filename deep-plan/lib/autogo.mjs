@@ -30,6 +30,26 @@ export function humanStop(spec, n) {
   return g && typeof g === "object" && typeof g.human === "string" ? g.human.trim() : "";
 }
 
+// Who gives increment n's go, and why: "person", "auto" (done gives it once
+// the increment before passed its checks) or "parent" (a family child whose
+// go is delegated, `delegated` true). The plan page and the Wake draw a gate
+// before each increment that waits for a person or the parent.
+export function goOf(spec, n, delegated = false) {
+  if (delegated) return { by: "parent", why: "the family's parent agent gives it, after reading the verdicts" };
+  const pol = goPolicy(spec);
+  if (!pol.auto) return { by: "person", why: "this plan's go is a person's" };
+  if (n === 1) return { by: "person", why: "the first go comes after the alignment check, from a person" };
+  const why = humanStop(spec, n);
+  if (why) return { by: "person", why };
+  return { by: "auto", why: `follows on once increment ${n - 1}'s checks pass` +
+    (pol.between === "draft-pr" ? ", after a draft PR" : ", after a commit") };
+}
+
+// Which increments carry a lookout review, as goProblems counts them.
+export function reviewedIncrements(spec) {
+  return ((spec || {}).deliverables || []).map((_, i) => i + 1).filter(n => reviewed(spec || {}, n));
+}
+
 // Whether increment n carries a lookout review: one it declares, or one the
 // human chose with review.increments.
 function reviewed(spec, n) {

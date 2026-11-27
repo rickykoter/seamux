@@ -1,6 +1,7 @@
-//! Plan, review, ask and turn rows from their own stores (~/.claude/deep-plan/state,
-//! ~/.claude/plans/reviews, ~/.claude/plans/asks, ~/.claude/plans/turns), keyed
-//! by root or cwd, and the fingerprint that says when to read them again.
+//! Plan, review, ask, turn and chart rows from their own stores
+//! (~/.claude/deep-plan/state, ~/.claude/plans/reviews, ~/.claude/plans/asks,
+//! ~/.claude/plans/turns, and the chart folders chartroom's rooms.json names),
+//! keyed by root or cwd, and the fingerprint that says when to read them again.
 
 use crate::classify::truthy;
 use crate::paths::wskey;
@@ -11,6 +12,30 @@ use serde_json::{Map, Value};
 use std::sync::OnceLock;
 
 pub const STORE_KEY: &str = "store:plans,reviews,asks";
+/// A chart's id, as chartroom's store makes them (ID_OK).
+fn chart_id() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,63}$").expect("static regex"))
+}
+
+/// chartroom's rooms: (room id, the folder of charts, the worktree it was
+/// opened from), from rooms.json under `home`. A room whose record is not
+/// an object with both is skipped.
+pub fn chart_rooms(home: &str) -> Vec<(String, String, String)> {
+    let Some(v) = load(&join(home, "rooms.json")) else { return Vec::new() };
+    let mut out: Vec<(String, String, String)> = v
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, r)| {
+            let dir = r.get("dir").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+            let top = r.get("top").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+            Some((id.clone(), dir.to_string(), top.to_string()))
+        })
+        .collect();
+    out.sort();
+    out
+}
 /// A review's or ask's files beside its record; the record is <id>.json.
 pub const SIDECARS: [&str; 3] = [".rows.json", ".seen.json", ".incoming.json"];
 
@@ -50,12 +75,21 @@ pub fn fingerprint(ctx: &Ctx) -> (i64, f64) {
         (join(&p.plans, "reviews"), ".json"),
         (join(&p.plans, "asks"), ".json"),
         (join(&p.plans, "turns"), ".jsonl"),
+        (p.chartroom.clone(), "rooms.json"),
     ] {
         for name in listdir(&d) {
             if !name.ends_with(ext) {
                 continue;
             }
             let Ok(m) = std::fs::metadata(join(&d, &name)) else { continue };
+            n += 1;
+            newest = newest.max(crew_core::py::mtime(&m));
+        }
+    }
+    // Every chart's own record: a new chart, a pick or a publish moves it.
+    for (_, dir, _) in chart_rooms(&p.chartroom) {
+        for id in listdir(&dir) {
+            let Ok(m) = std::fs::metadata(join(&join(&dir, &id), "chart.json")) else { continue };
             n += 1;
             newest = newest.max(crew_core::py::mtime(&m));
         }
@@ -314,17 +348,107 @@ pub fn store_rows(ctx: &mut Ctx) -> Vec<Map<String, Value>> {
             rows.push(row);
         }
     }
+
+    rows.extend(chart_rows(ctx));
+    rows
+}
+
+/// One row per chart in every room chartroom has served, keyed by the
+/// worktree the room was opened from. `path` is the chart's folder (gone
+/// when the folder is), `url` its latest claude.ai publish, `session_id` the
+/// session that made it (charts made before chartroom kept it have none).
+fn chart_rows(ctx: &mut Ctx) -> Vec<Map<String, Value>> {
+    let mut rows = Vec::new();
+    for (room, dir, top) in chart_rooms(&ctx.paths.chartroom.clone()) {
+        for id in listdir(&dir) {
+            if !chart_id().is_match(&id) {
+                continue;
+            }
+            let folder = join(&dir, &id);
+            let Some(c) = load(&join(&folder, "chart.json")) else { continue };
+            let title = c.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(&id).to_string();
+            let url = c
+                .get("published")
+                .and_then(Value::as_array)
+                .and_then(|a| a.iter().rev().find_map(|p| p.get("url").and_then(Value::as_str)))
+                .filter(|u| u.starts_with("https://claude.ai/"))
+                .unwrap_or("");
+            let row = mk(
+                ctx,
+                &top,
+                vec![
+                    ("kind", s("chart")),
+                    ("locator", s(&format!("{room}/{id}"))),
+                    ("title", s(&title)),
+                    ("path", s(&folder)),
+                    ("url", s(url)),
+                    ("created_at", or_blank(&c, "created")),
+                    ("updated_at", or_blank(&c, "updated")),
+                    ("session_id", or_blank(&c, "session")),
+                    ("source", s("chartroom")),
+                ],
+            );
+            rows.push(row);
+        }
+    }
     rows
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Paths;
 
     fn tmp(name: &str, body: &[u8]) -> String {
         let p = std::env::temp_dir().join(format!("crew-store-heading-{}-{name}", std::process::id()));
         std::fs::write(&p, body).unwrap();
         p.to_string_lossy().into_owned()
+    }
+
+    /// chartroom's rooms become chart rows: one per chart folder with a
+    /// chart.json, keyed by the room's worktree, with its latest publish.
+    #[test]
+    fn charts_come_from_chartrooms_rooms() {
+        let root = std::env::temp_dir().join(format!("crew-store-charts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let r = root.to_string_lossy().into_owned();
+        let home = format!("{r}/hm");
+        let (cr, top) = (format!("{home}/.claude/chartroom"), format!("{r}/repo"));
+        let dir = format!("{top}/.chartroom");
+        std::fs::create_dir_all(format!("{dir}/checkout")).unwrap();
+        std::fs::create_dir_all(format!("{dir}/Bad_Id")).unwrap();
+        std::fs::create_dir_all(format!("{dir}/empty")).unwrap();
+        std::fs::create_dir_all(&cr).unwrap();
+        std::fs::write(format!("{dir}/checkout/chart.json"), r#"{"id":"checkout","title":"Checkout layout","created":"2026-11-27T10:00:00.000Z","updated":"2026-11-27T11:00:00.000Z","session":"s-1","published":[{"url":"https://claude.ai/artifact/old"},{"url":"https://claude.ai/artifact/new"}]}"#).unwrap();
+        std::fs::write(format!("{dir}/Bad_Id/chart.json"), r#"{"title":"x"}"#).unwrap();
+        std::fs::write(format!("{cr}/rooms.json"), format!(r#"{{"abc123":{{"dir":"{dir}","top":"{top}","mode":"hidden"}},"broken":{{"dir":""}}}}"#)).unwrap();
+        let p = Paths {
+            crew_home: format!("{home}/.claude/crew"),
+            db: format!("{home}/.claude/crew/artifacts.db"),
+            lock: format!("{home}/.claude/crew/index.lock"),
+            again: format!("{home}/.claude/crew/index.lock.again"),
+            kept: format!("{home}/.claude/crew/kept"),
+            projects: format!("{home}/.claude/projects"),
+            plans: format!("{home}/.claude/plans"),
+            dp_state: format!("{home}/.claude/deep-plan/state"),
+            chartroom: cr.clone(),
+            scratch_base: format!("{r}/tmp"),
+            temp_roots: vec![format!("{r}/tmp/")],
+            home,
+        };
+        let (n0, _) = fingerprint(&Ctx::new(p.clone()));
+        let rows = chart_rows(&mut Ctx::new(p.clone()));
+        assert_eq!(rows.len(), 1, "one chart: a bad id and a folder with no chart.json are skipped");
+        let c = &rows[0];
+        let f = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        assert_eq!((f("kind"), f("locator"), f("title")), ("chart".into(), "abc123/checkout".into(), "Checkout layout".into()));
+        assert_eq!((f("path"), f("url"), f("session_id")), (format!("{dir}/checkout"), "https://claude.ai/artifact/new".into(), "s-1".into()));
+        assert_eq!((f("created_at"), f("updated_at")), ("2026-11-27T10:00:00.000Z".into(), "2026-11-27T11:00:00.000Z".into()));
+        assert_eq!(f("ws"), wskey(&top));
+        std::fs::create_dir_all(format!("{dir}/second")).unwrap();
+        std::fs::write(format!("{dir}/second/chart.json"), r#"{"id":"second","title":"Second"}"#).unwrap();
+        assert_ne!(fingerprint(&Ctx::new(p)).0, n0, "a new chart moves the fingerprint");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

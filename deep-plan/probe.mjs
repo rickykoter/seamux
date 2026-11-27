@@ -1809,6 +1809,12 @@ ok("done closes the increment once they pass", cli("done", spec.slug, "1").statu
   ok("status --json carries the plan's title from its spec", row.title === spec.title, row.title);
   ok("status --json: a done increment has its go and done times", i1.authorizedAt > 0 && i1.doneAt >= i1.authorizedAt, JSON.stringify(i1));
   ok("status --json: an increment not yet done has doneAt 0", i2.doneAt === 0 && "authorizedAt" in i2, JSON.stringify(i2));
+  ok("status --json: a plan with no go of its own is a person's at every increment",
+    row.go.mode === "human" && row.increments.every(i => i.go.by === "person"), JSON.stringify(row.go));
+  const html = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+  ok("…and its page draws a gate before each card, the reason said once in Policies, not on every gate",
+    [...html.matchAll(/class="dp-hand" data-by="person"/g)].length === row.increments.length &&
+    !/waits for a person's go<\/span><span class="dim">/.test(html) && /<b>Go:<\/b> a person gives every increment its go\./.test(html));
 }
 ok("block records a note", cli("block", spec.slug, "2", "waiting on schema call").status === 0 &&
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"))
@@ -4782,6 +4788,22 @@ if (want("auto-go")) {
   ok("the plan's markdown says it auto-goes and names the stop",
     /Go: auto\..*draft PR/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "ag-plan.md"), "utf8")) &&
     /Go: a person's — the migration runs on prod data/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "ag-plan.md"), "utf8")));
+  {
+    // Who gives each go, for the plan page's gates and the Wake's plan card.
+    const row = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "ag-plan") || {};
+    const by = (row.increments || []).map(i => i.go && i.go.by).join(",");
+    ok("status --json: the plan's go, and who gives each increment's (a person, auto, a person at the stop)",
+      row.go && row.go.mode === "auto" && row.go.between === "draft-pr" && by === "person,auto,person" &&
+      row.increments[2].go.why === "the migration runs on prod data" && /draft PR/.test(row.increments[1].go.why), JSON.stringify([row.go, row.increments && row.increments.map(i => i.go)]));
+    ok("status --json: the plan's reviews", row.review && Array.isArray(row.review.increments) && typeof row.review.agentMayClose === "boolean" &&
+      ["agent", "panel"].includes(row.review.reviewer), JSON.stringify(row.review));
+    const html = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "ag-plan.working.html"), "utf8");
+    const marks = [...html.matchAll(/class="dp-hand" data-by="(\w+)"/g)].map(m => m[1]).join(",");
+    ok("the working page draws who gives each go before its card: a gate, an arrow, a gate with its why",
+      marks === "person,auto,person" && /waits for a person's go<\/span><span class="dim"> · the migration runs on prod data/.test(html), marks);
+    ok("the working page's Policies say the plan auto-goes and which increments wait",
+      /<h2>Policies<\/h2><ul class="dp-pol"><li><b>Go:<\/b> auto\. .*after a draft PR\. Increments 1 and 3 wait for a person\./.test(html), (html.match(/<ul class="dp-pol">[\s\S]*?<\/ul>/) || [""])[0]);
+  }
   graded("ag-plan");
   ok("grading an auto plan authorizes nothing: the first go is a person's", inc("ag-plan", 1).status === "pending");
   cli("go", "ag-plan", "next");

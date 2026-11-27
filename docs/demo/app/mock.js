@@ -390,7 +390,17 @@ const WAKE = [
   [21, "api", "temp", "totals-report.html", 27, { path: "/tmp/claude/totals-report.html", prompt: "go 2" }],
   // A recording a Bash command saved in the repo: a video row wherever it lands.
   [22, "checkout", "video", "coupon-error-flow.mp4", 18, { path: `${TREES}/checkout-flow/docs/demo/coupon-error-flow.mp4`, prompt: "go 2" }],
+  // chartroom charts: a layout picked, and an architecture still open.
+  [23, "api", "chart", "Coupon field layout", 70, { path: `${TREES}/coupons-api/.chartroom/coupon-field`, locator: "r1/coupon-field", source: "chartroom", prompt: "Take coupon codes at checkout", url: "https://claude.ai/artifact/demo-coupon-field" }],
+  [24, "api", "chart", "Coupon lookup flow", 15, { path: `${TREES}/coupons-api/.chartroom/coupon-lookup`, locator: "r1/coupon-lookup", source: "chartroom", prompt: "go 2" }],
 ];
+// The chart cards wake_charts reads from chartroom's files, by folder.
+const CHARTS = {
+  "coupon-field": { kind: "ux", title: "Coupon field layout", purpose: "Pick where the coupon field sits on checkout", status: "chosen", decision: "inline under the total",
+    chosen: { version: 2, key: "b", label: "Inline under the total" }, versions: 3, panes: 3, role: "option", open: 0, waiting: 0, threads: 4, published: "https://claude.ai/artifact/demo-coupon-field" },
+  "coupon-lookup": { kind: "arch", title: "Coupon lookup flow", purpose: "How a code reaches the pricing service", status: "exploring", decision: "",
+    chosen: null, versions: 1, panes: 3, role: "view", open: 2, waiting: 1, threads: 2, published: "" },
+};
 
 /** A stand-in screenshot for a Wake image row: a checkout card in the row's hue. */
 function demoShot(id) {
@@ -808,8 +818,28 @@ function plansOf(w) {
     slug: w.plan.slug, title: w.plan.title, root: treeOf(w), realRoot: treeOf(w),
     phase: w.plan.phase === "working" ? "implementing" : w.plan.phase, progress: { total: w.plan.total, done: w.plan.done },
     checksOutstanding: open ? [{ n: open.n, id: "test-unit", kind: "test", status: "pending" }, { n: open.n, id: "review", kind: "review", status: "pending" }] : [],
-    ...(scenarios ? { scenarios } : {}), increments,
+    ...(scenarios ? { scenarios } : {}),
+    // Who gives each go, as deep-plan status says it: demo-coupons goes on by
+    // itself and stops for a person at its last increment; the rest are a person's.
+    ...goOf(w.plan.slug, increments),
   }];
+}
+function goOf(slug, increments) {
+  const auto = slug === "demo-coupons";
+  const stop = { 3: "the coupon table's migration runs on prod data" };
+  return {
+    go: auto ? { mode: "auto", between: "draft-pr" } : { mode: "human" },
+    review: { increments: auto ? [1, 2] : [1], delivery: true, reviewer: "agent", agentMayClose: auto },
+    policy: { why: ".seamux/policy.json on origin/main" },
+    increments: increments.map((i) => ({
+      ...i,
+      level: auto && i.n === 3 ? "supervised" : "auto-go",
+      go: !auto ? { by: "person", why: "this plan's go is a person's" }
+        : i.n === 1 ? { by: "person", why: "the first go comes after the alignment check, from a person" }
+        : stop[i.n] ? { by: "person", why: stop[i.n] }
+        : { by: "auto", why: `follows on once increment ${i.n - 1}'s checks pass, after a draft PR` },
+    })),
+  };
 }
 // The demo workspace whose worktree is `dir`.
 function wakeOf(dir) {
@@ -1324,6 +1354,11 @@ const handlers = {
     // A plan's scenarios page, as wake.rs opens it (the app adds the page's key).
     if (here && kind === "plan" && sub === "scenarios" && row?.[5].locator) return { sheet: `/scenarios/${row[5].locator}`, detail: "" };
     if (here && row?.[5].locator && ["plan", "ask", "review"].includes(kind)) return { sheet: `/${kind}/${row[5].locator}`, detail: "" };
+    // A chart's studio is a page on this machine, for the Dock's web view.
+    if (here && kind === "chart" && (sub === "" || sub === "studio")) {
+      opening("wake_open", { id, sub, here });
+      return { sheet: null, web: `http://127.0.0.1:7360/room/r1/#${row[5].locator.split("/")[1]}`, detail: "" };
+    }
     opening("wake_open", { id, here });
     return { sheet: null, detail: "opened in cmux" };
   },
@@ -1416,6 +1451,10 @@ const handlers = {
     const w = wakeOf(dir);
     return w ? (REVIEWS[w.key] ?? []).map((r) => ({ ...r, root: treeOf(w) })) : [];
   },
+  wake_charts: ({ paths }) => (paths ?? []).map((p) => {
+    const id = p.split("/").pop();
+    return CHARTS[id] ? { path: p, room: "r1", id, ...CHARTS[id] } : null;
+  }).filter(Boolean),
   wake_plans: ({ dir }) => {
     const w = wakeOf(dir);
     return w ? plansOf(w) : [];
