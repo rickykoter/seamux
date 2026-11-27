@@ -194,6 +194,7 @@ export class Wake {
    *  list; it follows the pick until Space or Esc closes it. */
   private turnP = el("div", "w-turnp");
   private turnOn = false;
+  private turnRow = -1;
   /** Timeline: cards Space opened, latest last, for Esc to close in turn. */
   private spaceOpened: string[] = [];
   private home = "";
@@ -603,6 +604,12 @@ export class Wake {
     }
     if (s.files.length) shelf("files", String(s.files.length), ...list("files", s.files));
     if (s.commits.length) shelf("commits", String(s.commits.length), ...list("commits", s.commits));
+    // Thumbnails of rows gone from the worktree are let go; a search's
+    // narrower list keeps the rest for when it clears.
+    if (!this.query) {
+      const ids = new Set(this.data.rows.map((r) => r.id));
+      for (const id of [...this.thumbs.keys()]) if (!ids.has(id)) this.thumbs.delete(id);
+    }
     if (!this.data.rows.length && !out.some((x) => x.classList.contains("w-shelf"))) {
       const e = el("div", "w-empty");
       e.textContent = this.query
@@ -634,6 +641,7 @@ export class Wake {
         const laneEl = lane ? at.querySelector<HTMLElement>(`.w-lane[data-key="${CSS.escape(lane.key)}"]`) : null;
         at.classList.add("asked");
         if (laneEl && lane) {
+          this.list.querySelectorAll(".sel[data-key]").forEach((x) => x.classList.remove("sel"));
           this.selKey = lane.key;
           at.scrollIntoView({ block: "start" });
           laneEl.scrollIntoView({ block: "nearest" });
@@ -817,16 +825,32 @@ export class Wake {
    *  it on and the pick is a row. Hidden on Timeline, where each card holds
    *  its own. */
   private showTurn(): void {
+    // A pick that is not a row (a lane, a review) hides the prompt; the
+    // next row picked shows its own again.
     const r = this.turnOn && this.mode === "shelves" && this.selKey ? this.acts.get(this.selKey)?.row : undefined;
-    if (!r) this.turnOn = false;
     this.turnP.hidden = !r;
     if (!r) return;
+    if (this.turnRow !== r.id) {
+      this.turnRow = r.id;
+      this.turnP.scrollTop = 0;
+    }
     const d = local(r.created_at);
     const hd = el("div", "w-turnp-h");
     hd.append(el("b", "", "Prompt"), el("span", "w-turnp-m", [r.title, d ? `${dayLabel(d)} ${hm(d)}` : ""].filter(Boolean).join(" · ")), el("span", "w-turnp-esc", "Space or Esc closes"));
     const body = el("div", `w-turnp-b${r.prompt ? "" : " none"}`);
     body.append(r.prompt ? marked(r.prompt, this.query) : document.createTextNode(SOURCE[r.source] ?? "no prompt recorded"));
     this.turnP.replaceChildren(hd, body);
+  }
+
+  /** The latest card opened that is open and drawn now, for Esc. */
+  private openCard(): HTMLElement | null {
+    for (let i = this.spaceOpened.length - 1; i >= 0; i--) {
+      const k = this.spaceOpened[i];
+      if (!this.openGroups.has(k)) continue;
+      const a = this.list.querySelector<HTMLElement>(`.w-card.open[data-turn="${CSS.escape(k)}"]`);
+      if (a) return a;
+    }
+    return null;
   }
 
   /** A list item holding a lane or a review row inside a card's list. */
@@ -1492,16 +1516,16 @@ ${p.url}`;
         this.help.hidden = true;
       } else if (this.viewer.open && !inQ) {
         this.viewer.close();
-      } else if (!inQ && this.turnOn) {
+      } else if (!inQ && this.turnOn && !this.turnP.hidden) {
         this.turnOn = false;
         this.showTurn();
-      } else if (!inQ && this.spaceOpened.some((k) => this.openGroups.has(k))) {
-        // The latest card opened closes first.
-        let k = this.spaceOpened.pop();
-        while (k && !this.openGroups.has(k)) k = this.spaceOpened.pop();
-        const a = k ? this.list.querySelector<HTMLElement>(`.w-card[data-turn="${CSS.escape(k)}"]`) : null;
-        if (k) this.openGroups.delete(k);
-        a?.classList.remove("open");
+      } else if (!inQ && this.openCard()) {
+        // The latest card opened, and drawn, closes first.
+        const a = this.openCard()!;
+        const k = a.dataset.turn ?? "";
+        this.openGroups.delete(k);
+        this.spaceOpened = this.spaceOpened.filter((x) => x !== k);
+        a.classList.remove("open");
       } else if (this.q.value || inQ) {
         this.q.value = "";
         this.query = "";
@@ -1575,6 +1599,8 @@ ${p.url}`;
           // Shelves have no cards: the row's turn prompt shows under the list.
           this.turnOn = !this.turnOn;
           this.showTurn();
+          // The panel takes room from the list: the pick stays in sight.
+          this.list.querySelector<HTMLElement>(".sel[data-key]")?.scrollIntoView({ block: "nearest" });
         }
         break;
       case "K":

@@ -1507,9 +1507,12 @@ export class Sheet {
   /** The Dock's PR pill: the Wake (already shown for the workspace) on
    *  that group of its pull requests. */
   showPrs(group: string): void {
-    // Asked for, the Wake shows: a column folded beside the terminal opens,
-    // as ⌘E opens it, and stays open from now on.
-    if (this.active === WAKE && this.isFolded()) this.setWakeOpen(true);
+    // Asked for, the Wake shows: a column folded beside the terminal opens
+    // for now. Unlike ⌘E, a pill does not change the kept choice.
+    if (this.active === WAKE && this.isFolded()) {
+      this.wakeOpen = true;
+      this.fold();
+    }
     // For this workspace's directory: a Wake still on the last workspace
     // keeps the focus until it moves here.
     this.wakeView().showPrs(group, this.dir());
