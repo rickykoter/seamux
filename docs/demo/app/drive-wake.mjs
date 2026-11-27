@@ -51,7 +51,7 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     }
 
     const shelves = await wake.locator(".w-shelf").evaluateAll((els) => els.map((e) => e.getAttribute("data-shelf")));
-    say(shelves.join() === "needs,reviews,plans,prs,pictures,files,commits", "the shelves, in order", shelves.join());
+    say(shelves.join() === "needs,reviews,plans,charts,prs,pictures,files,commits", "the shelves, in order", shelves.join());
     const needs = await wake.locator(".w-need").evaluateAll((els) => els.map((e) => e.className.replace("w-need n-", "").replace(" sel", "")));
     say(needs.includes("review") && needs.includes("risk"), "Needs you holds the review to close and the files at risk", needs.join());
 
@@ -303,6 +303,16 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
       "a plan's card has its chips, the scenarios' last run on one", chips.join(" | "));
     say((await card.locator(".w-plan-dot").count()) === 3 && /increment 2 of 3 · 2 checks to go/.test(await card.locator(".w-plan-sub").textContent()),
       "a plan's card shows its increments and the open one's checks", await card.locator(".w-plan-sub").textContent());
+    // Who gives each go: a gate before a step that waits for a person, a
+    // line where it follows on; the policy line says the plan's go and reviews.
+    {
+      const goes = await card.locator(".w-plan-strip .w-plan-go").evaluateAll((xs) => xs.map((x) => x.className.replace("w-plan-go ", "")));
+      say(goes.join(",") === "person,auto,person", "a plan's strip draws a gate before steps a person starts and a line where it goes on alone", goes.join(","));
+      const pol = (await card.locator(".w-plan-pol").textContent()) || "";
+      say(/^go: auto, a draft PR between · 1 and 3 wait for you · policy: auto-go, supervised · reviews: 1 and 2 \+ delivery/.test(pol), "a plan's card says its go, its policy levels and its reviews", pol);
+      const tip = (await card.locator(".w-plan-dot").nth(2).getAttribute("title")) || "";
+      say(/a person's go: the coupon table's migration runs on prod data/.test(tip), "a step's tooltip says who gives its go and why", tip);
+    }
     const tabsBefore = await page.locator(".dockview .sheet [role=tab]").count();
     let asked = [];
     await page.exposeFunction("__askedOpen", (a) => asked.push(a)).catch(() => {});
@@ -330,6 +340,31 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     say(asked.some((a) => a.sub === "scenarios"), "s on a picked plan opens its scenarios", `${pk} ${JSON.stringify(asked)} (tabs ${tabsBefore})`);
     await backToWake();
     await page.waitForTimeout(300);
+    // A chartroom chart is a card on its own shelf, after Plans and asks.
+    {
+      await wake.locator(".w-ws").selectOption(treeOf(byKey.api));
+      await wake.locator('.w-shelf[data-shelf="charts"]').waitFor({ timeout: 8000 }).catch(() => {});
+      const shelvesOrder = await wake.locator(".w-shelf").evaluateAll((xs) => xs.map((x) => x.getAttribute("data-shelf")));
+      say(shelvesOrder.indexOf("charts") === shelvesOrder.indexOf("plans") + 1, "Charts sits right after Plans and asks", shelvesOrder.join(","));
+      const cards = wake.locator('.w-shelf[data-shelf="charts"] .w-chart');
+      await cards.first().waitFor({ timeout: 8000 }).catch(() => {});
+      say((await cards.count()) === 2, "each chart has its card", String(await cards.count()));
+      const picked = cards.filter({ hasText: "Coupon field layout" });
+      const txt = (await picked.textContent()) || "";
+      say(/ux · chosen/.test(txt) && /picked b · Inline under the total · v3 · every thread resolved/.test(txt), "a picked chart says its pick by name", txt);
+      const chips = await picked.locator(".w-chip").allTextContents();
+      say(chips.join("|") === "Studio|Published|Folder", "a published chart's chips: Studio, Published, Folder", chips.join("|"));
+      const open = cards.filter({ hasText: "Coupon lookup flow" });
+      say(/3 views · v1 · 2 open, 1 waits on Claude/.test((await open.textContent()) || "") && (await open.locator(".w-chip").count()) === 2,
+        "an open chart says its views and the threads waiting, with no Published chip", (await open.textContent()) || "");
+      asked = [];
+      await picked.locator(".w-chip", { hasText: "Studio" }).click();
+      await page.waitForTimeout(500);
+      const webTab = await page.locator(".dockview .sheet [role=tab]").allTextContents();
+      say(asked.some((a) => a.sub === "studio") && webTab.some((t) => /127\.0\.0\.1:7360/.test(t)), "the Studio chip opens the chart's studio in the Dock", `${JSON.stringify(asked)} ${webTab.join(" | ")}`);
+      await backToWake();
+      await page.waitForTimeout(300);
+    }
 
     // A recording saved in the worktree is marked "repo" (checkout-flow's mp4).
     await wake.locator(".w-ws").selectOption(treeOf(byKey.checkout));

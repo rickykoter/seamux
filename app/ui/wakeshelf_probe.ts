@@ -1,8 +1,8 @@
 // node app/ui/wakeshelf_probe.ts — the Wake's shelves and turn cards
 // (wakeshelf.ts), a pure module, which Node runs as TypeScript.
 import {
-  backgroundTask, incrementAt, laneStates, lanesOf, atRiskFirst, kept, needsOf, planState, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
-  type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
+  backgroundTask, chartSaid, incrementAt, laneStates, lanesOf, atRiskFirst, kept, needsOf, planPolicy, planState, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns, SHELVES,
+  type ChartCard, type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
 } from "./wakeshelf.ts";
 
 let pass = 0;
@@ -200,7 +200,33 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   ok("planState: a mark per increment", st.dots.map((d) => d.mark).join() === "done,done,now" && st.now === 3);
   ok("planState: says the open increment and its checks to go (not another increment's)", st.said === "increment 3 of 3 · 1 check to go", st.said);
   ok("planState: a finished plan says so", planState({ ...p, progress: { total: 3, done: 3 }, increments: p.increments!.map((i) => ({ ...i, status: "done" })) }).said === "every increment done");
-  ok("kept: reviews, plans, asks, pull requests and issues are never folded", ["review", "plan", "ask", "pr", "issue"].every((k) => kept({ kind: k })) && !kept({ kind: "temp" }) && !kept({ kind: "image" }));
+  ok("planState: no go marks from a deep-plan that predates them", st.dots.every((d) => d.go === null) && planPolicy(p).length === 0);
+  const auto: PlanRow = {
+    ...p,
+    go: { mode: "auto", between: "draft-pr" },
+    review: { increments: [2], delivery: true, reviewer: "agent", agentMayClose: true },
+    increments: [
+      { n: 1, title: "a", status: "done", level: "auto-go", go: { by: "person", why: "the first go comes after the alignment check, from a person" } },
+      { n: 2, title: "b", status: "done", level: "auto-go", go: { by: "auto", why: "follows on once increment 1's checks pass, after a draft PR" } },
+      { n: 3, title: "c", status: "working", level: "supervised", go: { by: "person", why: "the migration runs on prod data" } },
+    ],
+  };
+  const sa = planState(auto);
+  ok("planState: who gives the go before each step", sa.dots.map((d) => d.go).join() === "person,auto,person", sa.dots);
+  ok("planState: a step's tooltip says who gives its go and why", /a person's go: the migration runs on prod data/.test(sa.dots[2].title), sa.dots[2].title);
+  const pol = planPolicy(auto);
+  ok("planPolicy: the go, the stops that wait for you, the policy levels and the reviews",
+    pol.join(" | ") === "go: auto, a draft PR between · 1 and 3 wait for you | policy: auto-go, supervised | reviews: 2 + delivery · one reviewer · agent may close", pol);
+  ok("planPolicy: a person's plan, a family child's, and a plan with no reviews",
+    planPolicy({ ...p, go: { mode: "human" } })[0] === "go: yours, every increment" &&
+    planPolicy({ ...p, go: { mode: "parent" } })[0] === "go: the parent agent's" &&
+    planPolicy({ ...p, review: { increments: [], delivery: false, reviewer: "agent", agentMayClose: false } })[0] === "no reviews");
+  ok("kept: reviews, plans, asks, pull requests, issues and charts are never folded", ["review", "plan", "ask", "pr", "issue", "chart"].every((k) => kept({ kind: k })) && !kept({ kind: "temp" }) && !kept({ kind: "image" }));
+  const card: ChartCard = { path: "/r/.chartroom/c", room: "r1", id: "c", kind: "ux", title: "Checkout", purpose: "", status: "chosen", decision: "",
+    chosen: { version: 2, key: "b", label: "Two columns" }, versions: 3, panes: 2, role: "option", open: 2, waiting: 1, threads: 3, published: "" };
+  ok("chartSaid: the pick by its label, the version and the threads waiting on Claude", chartSaid(card) === "picked b · Two columns · v3 · 2 open, 1 waits on Claude", chartSaid(card));
+  ok("chartSaid: views and no comments yet", chartSaid({ ...card, chosen: null, role: "view", panes: 3, versions: 1, open: 0, waiting: 0, threads: 0 }) === "3 views · v1 · no comments yet");
+  ok("shelfOf: a chart has its own shelf, after Plans and asks", shelfOf("chart") === "charts" && SHELVES.indexOf("charts") === SHELVES.indexOf("plans") + 1);
 }
 
 console.log(`wakeshelf probe: ${pass} passed, ${fail} failed`);

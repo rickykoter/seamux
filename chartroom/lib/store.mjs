@@ -225,7 +225,11 @@ export function update(dir, id, fn) {
   });
 }
 
-export function create(dir, { kind, title, purpose = "", id = "" }) {
+// The Claude Code session a chart was made in, when there is one: the seamux
+// app's Wake shows the chart on that session's turn.
+export const sessionOf = (env = process.env) => env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || "";
+
+export function create(dir, { kind, title, purpose = "", id = "", session = sessionOf() }) {
   if (!KINDS.includes(kind)) throw new Error(`kind must be one of ${KINDS.join(", ")}, not ${JSON.stringify(kind)}`);
   if (!String(title || "").trim()) throw new Error("a chart needs a title");
   fs.mkdirSync(dir, { recursive: true });
@@ -241,7 +245,8 @@ export function create(dir, { kind, title, purpose = "", id = "" }) {
   }
   const at = new Date().toISOString();
   const chart = { v: STORE_VERSION, id: base, kind, title: String(title).trim(), purpose: String(purpose || "").trim(),
-    status: "exploring", decision: "", chosen: null, created: at, updated: at, versions: [], published: [] };
+    status: "exploring", decision: "", chosen: null, created: at, updated: at, versions: [], published: [],
+    ...(session ? { session: String(session) } : {}) };
   const p = chartPaths(dir, base);
   writeAtomic(p.json, JSON.stringify(chart, null, 2) + "\n");
   writeAtomic(p.threads, JSON.stringify({ v: STORE_VERSION, threads: [] }, null, 2) + "\n");

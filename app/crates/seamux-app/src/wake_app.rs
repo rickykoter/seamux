@@ -199,6 +199,8 @@ fn plans_rooted(rows: Vec<Value>, dir: &str) -> Vec<Value> {
 pub struct Opened {
     /// A path on the intent server to show in the sheet, when `here`.
     sheet: Option<String>,
+    /// A page on this machine for the sheet's web view (a chart's studio), when `here`.
+    web: Option<String>,
     detail: String,
 }
 
@@ -210,7 +212,12 @@ pub async fn wake_open(id: i64, sub: String, here: bool) -> Result<Opened, Strin
     blocking(move || {
         let t = wake::resolve_artifact(&id.to_string(), &sub).map_err(|(_, e)| e)?;
         if let (true, Target::Page(p)) = (here, &t) {
-            return Ok(Opened { sheet: Some(p.clone()), detail: String::new() });
+            return Ok(Opened { sheet: Some(p.clone()), web: None, detail: String::new() });
+        }
+        if let (true, Target::Browser(u)) = (here, &t) {
+            if u.starts_with("http://127.0.0.1:") {
+                return Ok(Opened { sheet: None, web: Some(u.clone()), detail: String::new() });
+            }
         }
         // A file the app draws (BPMN) opens in the editor there, with no page to serve.
         let needs_server = match &t {
@@ -226,11 +233,19 @@ pub async fn wake_open(id: i64, sub: String, here: bool) -> Result<Opened, Strin
         // cmux, the browser or VS Code comes forward and keeps the focus.
         crate::shell::allow_focus_away();
         match wake::open_target(&t, port) {
-            (true, detail) => Ok(Opened { sheet: None, detail }),
+            (true, detail) => Ok(Opened { sheet: None, web: None, detail }),
             (false, detail) => Err(detail),
         }
     })
     .await
+}
+
+/// The chart cards for the chart folders `paths` (the Wake's chart rows):
+/// each read live from chartroom's files, so a pick or a comment shows at the
+/// next refresh. A folder in no room chartroom lists is left out.
+#[tauri::command]
+pub async fn wake_charts(paths: Vec<String>) -> Result<Value, String> {
+    blocking(move || Ok(Value::Array(paths.iter().take(500).filter_map(|p| wake::chart_card(p)).collect()))).await
 }
 
 /// Keep one at-risk row's file (copy it into ~/.claude/crew/kept).

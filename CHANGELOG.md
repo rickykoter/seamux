@@ -6,6 +6,23 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Who gives each go, and the plan's policies.** A plan's working page
+  draws a line before each increment: a bar where it waits for a person's
+  go (or the family's parent agent's, dashed) with the reason, an arrow
+  where it follows on by itself. A new Policies block says the plan's go,
+  the repo policy's level for each increment's files, its lookout reviews
+  and its scenarios. The Wake's plan card draws the same bars and lines in
+  its increment strip, with a line for the go, the policy levels and the
+  reviews. `deep-plan status --json` gives each plan `go` and `review`, and
+  each increment its `go` ({by: person, auto or parent, why}).
+- **Charts in the Wake.** chartroom's charts get their own shelf, after
+  Plans and asks, and are never folded away. Each is a card with its kind,
+  status, purpose, the option picked (by name) or its panes, its version and
+  its open threads (saying how many wait on Claude), and chips for its
+  Studio (in the Dock), its published page and its folder. The store reads
+  them from the rooms chartroom has served (`~/.claude/chartroom/rooms.json`),
+  and a new chart keeps the session it was made in, so Timeline puts it on
+  that turn's card.
 - **The Wake at real scale.** Judged on a worktree of over a thousand rows,
   most of them temp files long gone. Gone files and pictures now wait
   behind a "▸ N gone" fold after what is at risk and what lasts, and a turn

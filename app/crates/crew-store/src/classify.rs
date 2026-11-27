@@ -323,6 +323,7 @@ mod tests {
             projects: format!("{home}/.claude/projects"),
             plans: format!("{home}/.claude/plans"),
             dp_state: format!("{home}/.claude/deep-plan/state"),
+            chartroom: format!("{home}/.claude/chartroom"),
             scratch_base: format!("{root}/tmp/claude-501"),
             temp_roots: vec![format!("{root}/tmp/")],
             home,

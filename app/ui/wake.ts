@@ -6,7 +6,7 @@ import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, thumbUrl, Viewer } from "./wakeview";
 import { age, badgeOf, byUrl, groupOf, type Group, type Pr } from "./prs";
 import { chipFor, readLandings, type Landing, type PrRow } from "./release";
-import { backgroundTask, dayOf, kept, lanesOf, needsOf, planState, reviewName, SHELF_SAID, shelves, stageSaid, stepKey, turns, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
+import { backgroundTask, chartSaid, dayOf, kept, lanesOf, needsOf, planPolicy, planState, reviewName, SHELF_SAID, shelves, stageSaid, stepKey, turns, type ChartCard, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -32,7 +32,7 @@ type Ws = { ws: string; n: number; last: string; name: string; here: boolean };
 type Data = { ws: string; rows: Row[]; limit: number; truncated: boolean; workspaces: Ws[] };
 
 
-export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "video", "file", "commit", "turn", "pr", "issue"];
+export const KINDS = ["plan", "review", "ask", "chart", "artifact", "doc", "temp", "image", "video", "file", "commit", "turn", "pr", "issue"];
 
 /** A pull request's or issue's URL: owner/repo, and its number. */
 function ghLink(r: Row): { repo: string; n: string } | null {
@@ -132,6 +132,26 @@ function tooSoon(b: HTMLElement): boolean {
   return Date.now() - Number(b.dataset.armedAt ?? 0) < CONFIRM_AFTER_MS;
 }
 
+/** Who gives the go before a plan step, as the plan page draws it: a gate
+ *  (a solid bar; dashed for the parent agent) or a short line. */
+function goMark(by: "person" | "auto" | "parent"): HTMLElement {
+  const NS = "http://www.w3.org/2000/svg";
+  const s = document.createElementNS(NS, "svg");
+  s.setAttribute("viewBox", by === "auto" ? "0 0 8 12" : "0 0 6 12");
+  s.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", by === "auto" ? "M0.5 6h7" : "M3 0.8v10.4");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", by === "auto" ? "1.3" : "2.6");
+  path.setAttribute("stroke-linecap", by === "auto" ? "round" : "butt");
+  if (by === "parent") path.setAttribute("stroke-dasharray", "2.2 1.3");
+  s.append(path);
+  const w = el("span", `w-plan-go ${by}`);
+  w.append(s);
+  return w;
+}
+
 export class Wake {
   private stats = el("span", "w-stats");
   private picker = el("select", "w-ws");
@@ -174,6 +194,8 @@ export class Wake {
   /** lookout's reviews of the worktree, and its plans. */
   private reviews: ReviewSum[] = [];
   private plans: PlanRow[] = [];
+  /** The chart rows' cards, read live from chartroom's files (wake_charts). */
+  private charts: ChartCard[] = [];
   private sideWs = "";
   private sideAt = 0;
   /** The past reviews' search. */
@@ -447,14 +469,17 @@ export class Wake {
     const ws = this.ws;
     this.sideAt = Date.now();
     if (!ws) return;
-    const [reviews, plans] = await Promise.all([
+    const paths = this.data.rows.filter((r) => r.kind === "chart" && r.state !== "gone" && r.path).map((r) => r.path);
+    const [reviews, plans, charts] = await Promise.all([
       invoke<ReviewSum[]>("wake_reviews", { dir: ws }).catch(() => [] as ReviewSum[]),
       invoke<PlanRow[]>("wake_plans", { dir: ws }).catch(() => [] as PlanRow[]),
+      paths.length ? invoke<ChartCard[]>("wake_charts", { paths }).catch(() => [] as ChartCard[]) : Promise.resolve([] as ChartCard[]),
     ]);
     if (ws !== this.ws) return;
-    const same = ws === this.sideWs && JSON.stringify([reviews, plans]) === JSON.stringify([this.reviews, this.plans]);
+    const same = ws === this.sideWs && JSON.stringify([reviews, plans, charts]) === JSON.stringify([this.reviews, this.plans, this.charts]);
     this.reviews = Array.isArray(reviews) ? reviews : [];
     this.plans = Array.isArray(plans) ? plans : [];
+    this.charts = Array.isArray(charts) ? charts : [];
     this.sideWs = ws;
     if (!same && this.data.workspaces.length) this.draw();
   }
@@ -617,6 +642,14 @@ export class Wake {
       for (const r of plans) ul.append(r.kind === "plan" ? this.li(this.planCard(r)) : this.row(r));
       shelf("plans", String(plans.length), ul);
       shownRows.push(...plans);
+    }
+    // Charts are never folded away either; each draws as its card.
+    const charts = s.charts;
+    if (charts.length) {
+      const ul = el("ul", "w-rows w-box w-plans w-charts");
+      for (const r of charts) ul.append(this.li(this.chartCard(r)));
+      shelf("charts", counted(charts), ul);
+      shownRows.push(...charts);
     }
     const planRows = shownRows.splice(0);
     const lanes = s.lanes.filter((l) => hit(`#${l.pr.n} ${l.pr.title}`));
@@ -906,7 +939,7 @@ export class Wake {
       const gone = sec.rows.filter((r) => r.state === "gone" && !kept(r));
       // A card shows a few of each; the rest wait behind "N more".
       const cap = sec.shelf === "pictures" ? 4 : 5;
-      const whole = this.query || this.moreOpen.has(gk) || ["reviews", "plans", "prs"].includes(sec.shelf);
+      const whole = this.query || this.moreOpen.has(gk) || ["reviews", "plans", "charts", "prs"].includes(sec.shelf);
       const liveShown = whole ? live : live.slice(0, cap);
       const rows = [...liveShown, ...(this.goneOpen.has(gk) ? gone : [])];
       this.cardRows.push(...rows);
@@ -1063,12 +1096,28 @@ export class Wake {
     d.append(el("div", "w-plan-sub", [r.locator, st ? st.said : ""].filter(Boolean).join(" · ")));
     if (st && st.dots.length) {
       const strip = el("div", "w-plan-strip");
+      const goes = st.dots.map((x) => x.go);
+      const said = { person: "waits for a person's go", parent: "waits for the parent agent's go", auto: "follows on by itself" };
       for (const x of st.dots) {
+        // Before each step: a gate where it waits for someone, a line where
+        // it follows on by itself (none from a deep-plan that predates it).
+        if (x.go) {
+          const g = goMark(x.go);
+          g.title = `before ${x.n}: ${said[x.go]}`;
+          strip.append(g);
+        }
         const dot = el("span", `w-plan-dot ${x.mark}`, x.mark === "done" ? "✓" : x.mark === "blocked" ? "✗" : x.mark === "now" ? "◐" : "○");
         dot.title = x.title;
         strip.append(dot);
       }
+      if (goes.some(Boolean)) strip.setAttribute("aria-label", st.dots.map((x) => `${x.n} ${x.mark}${x.go ? `, ${said[x.go]}` : ""}`).join("; "));
       d.append(strip);
+    }
+    const pol = p ? planPolicy(p) : [];
+    if (pol.length) {
+      const line = el("div", "w-plan-pol", pol.join(" · "));
+      line.title = [pol.join("\n"), p?.policy?.why ? `repo policy: ${p.policy.why}` : ""].filter(Boolean).join("\n");
+      d.append(line);
     }
     const acts = el("div", "w-plan-acts");
     const chip = (label: string, cls: string, title: string, sub: string) => {
@@ -1103,6 +1152,53 @@ export class Wake {
       void this.open(r, "", e);
     });
     this.acts.set(key, { row: r, open: (e) => void this.open(r, "", e), copy: r.path ? () => void this.copy(r.path, "the path") : undefined, scenarios: p?.scenarios ? () => void this.open(r, "scenarios") : undefined });
+    return d;
+  }
+
+  /** A chartroom chart on the Charts shelf: its title, kind and status, its
+   *  purpose, the pick or its panes with its threads, and one click to its
+   *  studio, its published page and its folder. */
+  private chartCard(r: Row): HTMLElement {
+    const key = `row:${r.id}`;
+    const c = this.charts.find((x) => x.path === r.path);
+    const d = el("div", `w-plan w-chart${key === this.selKey ? " sel" : ""}${r.state === "gone" ? " gone" : ""}`);
+    d.dataset.key = key;
+    const top = el("div", "w-plan-top");
+    const t = el("span", "w-plan-t");
+    t.append(marked(c?.title || r.title, this.query));
+    t.title = c?.title || r.title;
+    top.append(t);
+    if (c) top.append(el("span", `w-plan-ph ${c.status}`, [c.kind, c.status].filter(Boolean).join(" · ")));
+    else if (r.state === "gone") top.append(el("span", "w-plan-ph", "gone"));
+    d.append(top);
+    if (c?.purpose) d.append(el("div", "w-plan-sub", c.purpose));
+    if (c) {
+      const said = el("div", `w-plan-pol w-chart-said${c.waiting ? " waits" : ""}`, chartSaid(c));
+      if (c.decision) said.title = `decision: ${c.decision}`;
+      d.append(said);
+    }
+    if (r.state !== "gone") {
+      const acts = el("div", "w-plan-acts");
+      const chip = (label: string, title: string, sub: string) => {
+        const b = button(label, "w-chip");
+        b.title = title;
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.selectKey(key);
+          void this.open(r, sub, e);
+        });
+        acts.append(b);
+      };
+      chip("Studio", "the chart's studio, in the Dock: compare, comment, pick", "studio");
+      if (c?.published || r.url) chip("Published", "its latest page on claude.ai, in the browser", "published");
+      chip("Folder", "its folder, in Finder", "folder");
+      d.append(acts);
+    }
+    d.addEventListener("click", (e) => {
+      this.selectKey(key);
+      void this.open(r, "", e);
+    });
+    this.acts.set(key, { row: r, open: (e) => void this.open(r, "", e), copy: r.path ? () => void this.copy(r.path, "the path") : undefined });
     return d;
   }
 
@@ -1678,7 +1774,7 @@ ${p.url}`;
   /** Open row `r`. A picture, video or page previews in the pane, unless
    *  `elsewhere` (the pane's own "open in a tab") or ⌘ sends it on. */
   private async open(r: Row, sub: string, e?: MouseEvent | KeyboardEvent, elsewhere = false): Promise<void> {
-    const file = !!r.path && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind);
+    const file = !!r.path && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact", "chart"].includes(r.kind);
     // ⌘ and "open elsewhere", as a pane's link does: a file in VS Code; a page
     // beside the Dock's workspace (cmux, or the browser on tmux); anything
     // else (a commit, an artifact) the Wake's own way.
@@ -1702,7 +1798,7 @@ ${p.url}`;
         const shown = await invoke<Shown>("link_file", { path: r.path }).catch(() => null);
         if (shown) return this.host.show(shown, { kind: "file", path: r.path }, this.host.here());
       }
-      if (r.path && PREVIEW.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind)) {
+      if (r.path && PREVIEW.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact", "chart"].includes(r.kind)) {
         try {
           // A video streams from the app's wakefile: scheme, too big for a data: URL.
           const shown: Shown = mediaOf(r.path) === "video"
@@ -1714,8 +1810,10 @@ ${p.url}`;
           return await away();
         }
       }
-      const o = await invoke<{ sheet: string | null; detail: string }>("wake_open", { id: r.id, sub, here: true });
+      const o = await invoke<{ sheet: string | null; web?: string | null; detail: string }>("wake_open", { id: r.id, sub, here: true });
       if (o.sheet) await this.host.open({ path: o.sheet, title: r.title || r.locator, ...this.host.here() });
+      // A page on this machine (a chart's studio) opens in the Dock's web view.
+      else if (o.web) this.host.openWeb(o.web, this.host.here());
       else if (o.detail) this.toast(o.detail);
     } catch (err) {
       this.toast(String(err), true);

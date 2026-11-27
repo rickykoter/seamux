@@ -38,7 +38,7 @@ import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
-import { goPolicy, humanStop, goProblems, autoNext, policyProblems } from "./lib/autogo.mjs";
+import { goPolicy, humanStop, goProblems, autoNext, policyProblems, goOf, reviewedIncrements } from "./lib/autogo.mjs";
 import * as POL from "./lib/policy.mjs";
 import * as PACK from "./lib/pack.mjs";
 import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
@@ -1598,6 +1598,11 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:var(--fs-3) v
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:var(--fs-2);padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
 .dp-level{font-size:var(--fs-2);color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:0 6px;margin-left:6px}
+.dp-hand{display:flex;align-items:center;gap:6px;margin:-2px 0 -2px 14px;font-size:var(--fs-2);color:var(--dim)}
+.dp-hand .dp-mark{flex:none}
+.dp-hand[data-by="person"],.dp-hand[data-by="parent"]{color:var(--accent-t);font-weight:600}
+.dp-hand[data-by="person"] .dim,.dp-hand[data-by="parent"] .dim{font-weight:400}
+.dp-pol{list-style:none;padding-left:0;margin:8px 0}.dp-pol li{margin:4px 0}
 .st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--accent-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-checks-st{list-style:none;padding-left:0;margin-bottom:4px}
@@ -2792,6 +2797,51 @@ const PHASE_WORDS = { review: "waiting on the review", implementing: "building",
 // check passed, nothing is blocked and the plan matches what was approved,
 // the line says it is ready in the accent colour rather than a red "shut".
 const READY_GLYPH = glyphSvg(RING("var(--accent)") + `<path d="M5 3.9v4.2L8.2 6z" fill="var(--accent)"/>`);
+// Who gives an increment's go, drawn between the cards: a gate (a solid bar,
+// dashed for the family's parent) where the chain waits, a short arrow where
+// it follows on by itself. The Wake's plan card draws the same bar.
+const HAND_GLYPH = {
+  person: glyphSvg(`<path d="M6 0.6v10.8" fill="none" stroke="currentColor" stroke-width="2.8"/>`),
+  parent: glyphSvg(`<path d="M6 0.6v10.8" fill="none" stroke="currentColor" stroke-width="2.8" stroke-dasharray="2.2 1.3"/>`),
+  auto: glyphSvg(`<path d="M6 1.5v8M3.4 6.9L6 9.5l2.6-2.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>`),
+};
+const HAND_SAID = { person: "waits for a person's go", parent: "waits for the parent agent's go", auto: "follows on by itself" };
+function handoffHtml(go, n, humanPlan) {
+  // On a plan where a person gives every go, the reason is the same at every
+  // gate: it goes in the tooltip, not on each line.
+  const why = go.by === "auto" ? go.why.replace(/^follows on /, "") : humanPlan && go.by === "person" ? "" : go.why;
+  return `<div class="dp-hand" data-by="${go.by}" title="increment ${n}: ${esc(go.why)}">${HAND_GLYPH[go.by] || ""}` +
+    `<span>${HAND_SAID[go.by] || go.by}</span>${why ? `<span class="dim"> · ${esc(why)}</span>` : ""}</div>`;
+}
+// "1", "1 and 2", "1, 2 and 3"
+const andList = ns => ns.length < 2 ? ns.join("") : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`;
+// What the plan lets go alone and what it holds for a person: its go, the
+// repo policy's level for each increment's files, its reviews and scenarios.
+function policiesHtml(spec, st, gv) {
+  const incs = st.increments || [];
+  const stops = incs.filter(i => gv.incGo(i.n).by !== "auto").map(i => i.n);
+  const go = gv.go.mode === "parent" ? "the family's parent agent gives each increment its go, after reading its verdicts."
+    : gv.go.mode === "auto" ? `auto. Each increment follows on by itself once the one before passes its checks, ` +
+      `after ${gv.go.between === "draft-pr" ? "a draft PR" : "a commit"}. ${stops.length === 1 ? "Increment" : "Increments"} ${andList(stops)} wait for a person.`
+    : "a person gives every increment its go.";
+  const byLevel = new Map();
+  for (const i of incs) if (i.level) byLevel.set(i.level, [...(byLevel.get(i.level) || []), i.n]);
+  const level = !byLevel.size ? "" : byLevel.size === 1 ? `${esc([...byLevel.keys()][0])} for every increment's files`
+    : [...byLevel].map(([l, ns]) => `${esc(l)} for ${ns.length === 1 ? "increment" : "increments"} ${andList(ns)}`).join("; ");
+  const from = st.policy && st.policy.why ? ` <span class="dim">(${esc(st.policy.why)})</span>` : "";
+  const rv = gv.review, ri = rv.increments;
+  const reviews = [ri.length ? `a lookout review on ${ri.length === 1 ? "increment" : "increments"} ${andList(ri)}` : "",
+    rv.delivery ? "a delivery review of the whole change" : ""].filter(Boolean).join(", and ");
+  const scen = (spec.deliverables || []).map((d, i) => ((d.checks || []).some(c => c && c.kind === "scenarios") ? i + 1 : 0)).filter(Boolean);
+  const li = (k, v) => `<li><b>${k}</b> ${v}</li>`;
+  return `<ul class="dp-pol">` +
+    li("Go:", esc(go)) +
+    (level ? li("Repo policy:", level + from) : "") +
+    li("Reviews:", reviews ? `${esc(reviews)}, by ${rv.reviewer === "panel" ? "lookout's review panel" : "one reviewer"}; ` +
+      `${rv.agentMayClose ? "the agent may close findings" : "only a person closes findings"}.` : "none.") +
+    (scen.length ? li("Scenarios:", `sealed scenarios judged on ${scen.length === 1 ? "increment" : "increments"} ${andList(scen)}.`) : "") +
+    `</ul>`;
+}
 function gateLineHtml(st, g, next, nextAct, drift) {
   const p = progress(st);
   const ready = g.between && next && next.status === "pending" && nextAct === "go" && !drift &&
@@ -2854,6 +2904,8 @@ function workingHtml(spec, st, b64) {
   const curI = Math.max(0, next ? (st.increments || []).indexOf(next) : lists.length - 1);
   const cur = (st.increments || [])[curI];
   const sharedLine = sharedLineHtml((lists[curI] || []).filter(c => isShared(shared, c)), cur && cur.n);
+  const fams = familiesBySlug();
+  const gv = goView(st, spec, fams.has(st.slug) ? familyRow(fams.get(st.slug), st.slug) : null);
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
     const files = fileTreeHtml(planPaths(d));
@@ -2885,7 +2937,8 @@ function workingHtml(spec, st, b64) {
     // Edits the gate let through outside this increment's files (decide.mjs).
     const oos = (inc.outOfScope || []).length
       ? `<p class="dim">edited outside this increment's files: ${inc.outOfScope.map(f => `<code>${esc(f)}</code>`).join(", ")}</p>` : "";
-    return `<div class="inc" id="inc-${inc.n}" data-status="${esc(inc.status)}"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
+    return handoffHtml(gv.incGo(inc.n), inc.n, gv.go.mode === "human") +
+`<div class="inc" id="inc-${inc.n}" data-status="${esc(inc.status)}"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
 <b>${inc.n}. ${esc(inc.title)}</b>${inc.level ? ` <span class="dp-level" title="the repo policy's level for this increment's files (${esc(inc.levelBy || "")})">${esc(inc.level)}</span>` : ""}
 <p>${esc(d.body || "")}</p>
 ${files}
@@ -2907,6 +2960,7 @@ ${acts ? `<div class="dp-acts">${acts}</div>` : ""}</div>`;
       drift ? ' · <span class="dp-drift">changed since you approved it</span>' : ""}</p>\n` : "";
   const work = familyStripHtml(spec.slug) + "\n" + approved +
     `<h2>Gate</h2>${gateLineHtml(st, g, next, nextAct, drift)}
+<h2>Policies</h2>${policiesHtml(spec, st, gv)}
 <h2>Increments</h2>${sharedLine}${rows}
 `;
   const body = commonBody(spec, st.adrs || [], true,
@@ -6198,12 +6252,33 @@ function scenarioSummary(slug) {
   };
 }
 
+// What a plan's spec and family say about how far it goes alone: its go
+// (who gives each increment's, under "increments"), its reviews, and the
+// repo policy it rendered under. The plan page and the Wake's plan card
+// draw it; `fam` is the plan's familyRow, or null.
+function goView(st, spec, fam) {
+  const pol = goPolicy(spec);
+  const delegated = !!(fam && fam.members && (fam.members.find(m => m.slug === st.slug) || {}).go === "parent");
+  const rv = spec.review || {};
+  const reviewer = REVIEWERS.includes(rv.reviewer) ? rv.reviewer : (st.root ? repoReviewer(st.slug) : "agent");
+  return {
+    go: { mode: delegated ? "parent" : pol.auto ? "auto" : "human", ...(pol.auto ? { between: pol.between } : {}) },
+    review: { increments: reviewedIncrements(spec), delivery: rv.delivery !== false && !!spec.review,
+      reviewer, agentMayClose: !!rv.agentMayClose },
+    incGo: n => goOf(spec, n, delegated),
+  };
+}
+
 function statusRows() {
   const fams = familiesBySlug();
-  return allStates().filter(st => st.phase !== "closed").map(st => ({
+  return allStates().filter(st => st.phase !== "closed").map(st => {
+    const spec = planSpec(st.slug);
+    const fam = fams.has(st.slug) ? familyRow(fams.get(st.slug), st.slug) : null;
+    const gv = goView(st, spec, fam);
+    return {
     slug: st.slug, root: st.root || "", phase: st.phase,
     // The plan's title from its archived spec, "" when there is none.
-    title: planSpec(st.slug).title || "",
+    title: spec.title || "",
     // The root with symlinks resolved, as the gate compares it: a session in
     // /private/tmp/x is inside a plan rooted at /tmp/x on macOS.
     realRoot: st.root ? canon(st.root) : "",
@@ -6217,7 +6292,10 @@ function statusRows() {
     touchedAt: (st.owner && st.owner.at) || stateMtime(st.slug),
     // Who this plan is to its family, when it is in one; absent otherwise, so
     // a reader that predates families sees the row it always saw.
-    ...(fams.has(st.slug) ? { family: familyRow(fams.get(st.slug), st.slug) } : {}),
+    ...(fam ? { family: fam } : {}),
+    // Who gives each go and how the plan is reviewed (goView); every
+    // increment's own `go` is below.
+    go: gv.go, review: gv.review,
     // Checks still outstanding. Their increments cannot go `done` without
     // --force, so a plan that looks one step from finished may not be — the
     // board reads this from --json. A pass is taken as recorded here; whether
@@ -6241,8 +6319,11 @@ function statusRows() {
       // yet): a reader can match a turn to the increment whose window holds
       // it (the seamux app's Wake names its turn cards this way).
       authorizedAt: i.authorizedAt || 0, doneAt: i.doneAt || 0,
+      // Who gives its go ("person", "auto", "parent") and why (goOf).
+      go: gv.incGo(i.n),
       // The policy's level for the increment's files, from the last render.
       ...(i.level ? { level: i.level } : {}),
+      ...(i.levelBy ? { levelBy: i.levelBy } : {}),
       checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => {
         const status = shownStatus(v) || "pending";
         return {
@@ -6258,7 +6339,8 @@ function statusRows() {
         };
       }),
     })),
-  }));
+    };
+  });
 }
 
 // gateView, plus why a shut gate will stay shut: a family child waiting on

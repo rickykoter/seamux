@@ -11,7 +11,7 @@ import type { Row } from "./wake";
 /** The files the pane shows (wake_app.rs show_kind). */
 export const PREVIEW = /\.(png|jpe?g|gif|webp|svg|html?|pdf|mp4|m4v|mov|webm|bpmn|bpmn20\.xml)$/i;
 /** Kinds that open their own way (a page, a review, a browser), whatever the path says. */
-const OWN_WAY = ["plan", "review", "ask", "commit", "artifact"];
+const OWN_WAY = ["plan", "review", "ask", "commit", "artifact", "chart"];
 
 export type Media = "image" | "video" | "html" | "pdf" | "bpmn";
 

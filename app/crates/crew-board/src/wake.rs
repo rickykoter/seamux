@@ -24,7 +24,7 @@ pub const WAKE_LIMIT: usize = 2000; // rows per answer; the page says when it is
 /// Kinds the Wake never loses to WAKE_LIMIT: few, and what the person
 /// navigates by. A worktree whose temp files fill the read still shows every
 /// review, plan, ask, pull request and issue.
-pub const WAKE_KEEP: [&str; 5] = ["review", "plan", "ask", "pr", "issue"];
+pub const WAKE_KEEP: [&str; 6] = ["review", "plan", "ask", "pr", "issue", "chart"];
 const WAKE_KEEP_LIMIT: usize = 10_000;
 const VIEW_IN_WAKE: [&str; 13] = [
     ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".mp4", ".m4v", ".mov", ".webm",
@@ -305,6 +305,9 @@ fn wake_row(r: &crew_store::Row) -> Value {
         if present { "kept" } else { "gone" }
     } else if r.kind == "commit" || r.kind == "artifact" {
         "ok"
+    } else if r.kind == "chart" {
+        // A chart is a folder: there or gone, never a file to keep.
+        if present { "ok" } else { "gone" }
     } else if !r.path.is_empty() && !present {
         "gone"
     } else if present && crew_store::is_temp(&r.path) {
@@ -325,7 +328,7 @@ fn wake_row(r: &crew_store::Row) -> Value {
     m.insert("branch".into(), json!(r.branch));
     m.insert("prompt".into(), json!(r.prompt));
     m.insert("source".into(), json!(r.source));
-    m.insert("locator".into(), json!(if ["plan", "review", "ask"].contains(&r.kind.as_str()) { r.locator.clone() } else { String::new() }));
+    m.insert("locator".into(), json!(if ["plan", "review", "ask", "chart"].contains(&r.kind.as_str()) { r.locator.clone() } else { String::new() }));
     m.insert("state".into(), json!(state));
     m.insert("published".into(), json!(r.url.starts_with("https://claude.ai/")));
     m.insert("publishable".into(), json!(state != "gone" && publishable(r)));
@@ -398,6 +401,8 @@ pub enum Target {
     File(String),
     Browser(String),
     Editor(String),
+    /// A folder to show in Finder (a chart's).
+    Folder(String),
 }
 
 /// Where a row leads, by kind, without opening anything. `sub` picks a
@@ -462,6 +467,19 @@ pub fn resolve_row(r: &crew_store::Row, sub: &str) -> Result<Target, String> {
             Err("the turn's snapshots are gone".into())
         }
         "artifact" => Ok(Target::Browser(r.url.clone())),
+        // A chartroom chart: its studio (`chartroom open`), its latest
+        // publish, or its folder.
+        "chart" => {
+            if r.path.is_empty() || !Path::new(&r.path).is_dir() {
+                return Err("the chart's folder is gone".into());
+            }
+            match sub {
+                "folder" => Ok(Target::Folder(r.path.clone())),
+                "published" if r.url.starts_with("https://claude.ai/") => Ok(Target::Browser(r.url.clone())),
+                "published" => Err("this chart has not been published".into()),
+                _ => studio_url(loc).map(Target::Browser),
+            }
+        }
         _ => {
             if !r.path.is_empty() && Path::new(&r.path).is_file() {
                 if VIEW_IN_WAKE.contains(&ext(&r.path).as_str()) || app_draws(&r.path) {
@@ -495,6 +513,103 @@ pub fn open_target(t: &Target, port: u16) -> (bool, String) {
         Target::File(f) => wake_tab(WAKE_VIEW, &format!("file://{}", quote(f, "/")), ""),
         Target::Browser(u) => browser(u),
         Target::Editor(f) => open_in_editor(f),
+        Target::Folder(d) => {
+            if !d.starts_with('/') || d.chars().any(|c| c.is_control()) || !Path::new(d).is_dir() {
+                return (false, format!("not a folder to open: {d:?}"));
+            }
+            if run_ok("open", &[d], None) { (true, format!("opened {d}")) } else { (false, format!("could not open {d}")) }
+        }
+    }
+}
+
+/// A chart card's facts, from the chart folder `folder` (its chart.json and
+/// threads.json): kind, title, purpose, status, the option picked, how many
+/// versions and panes, open threads, and its latest publish. None unless the
+/// folder is a chart in a room chartroom lists, so a page cannot name any
+/// folder it likes.
+pub fn chart_card(folder: &str) -> Option<Value> {
+    let home = crew_store::paths::Paths::from_env().chartroom;
+    chart_card_in(&home, folder)
+}
+
+pub fn chart_card_in(home: &str, folder: &str) -> Option<Value> {
+    let dir = Path::new(folder).parent()?.to_string_lossy().into_owned();
+    let id = Path::new(folder).file_name()?.to_string_lossy().into_owned();
+    let room = crew_store::stores::chart_rooms(home).into_iter().find(|(_, d, _)| d.trim_end_matches('/') == dir)?;
+    let read = |n: &str| std::fs::read(Path::new(folder).join(n)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let c = read("chart.json").filter(Value::is_object)?;
+    let t = read("threads.json").unwrap_or(Value::Null);
+    let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let versions = c.get("versions").and_then(Value::as_array).cloned().unwrap_or_default();
+    let latest = versions.last().cloned().unwrap_or(Value::Null);
+    let panes = latest.get("panes").and_then(Value::as_array).cloned().unwrap_or_default();
+    // The option picked, with its label from the version it was picked on.
+    let chosen = c.get("chosen").filter(|v| v.is_object()).map(|ch| {
+        let n = ch.get("version").and_then(Value::as_i64).unwrap_or(0);
+        let key = str_of(ch, "pane");
+        let label = versions.iter().find(|v| v.get("n").and_then(Value::as_i64) == Some(n))
+            .and_then(|v| v.get("panes").and_then(Value::as_array))
+            .and_then(|ps| ps.iter().find(|p| p.get("key").and_then(Value::as_str) == Some(key.as_str())))
+            .map(|p| str_of(p, "label")).unwrap_or_default();
+        json!({ "version": n, "key": key, "label": label })
+    });
+    let threads = t.get("threads").and_then(Value::as_array).cloned().unwrap_or_default();
+    let open: Vec<&Value> = threads.iter().filter(|x| x.get("resolved").and_then(Value::as_bool) != Some(true)).collect();
+    // An open thread whose last word is the person's waits on the session.
+    let waiting = open.iter().filter(|x| {
+        x.get("messages").and_then(Value::as_array).and_then(|m| m.iter().rev().find(|m| str_of(m, "kind") != "status"))
+            .map(|m| str_of(m, "by") == "human").unwrap_or(false)
+    }).count();
+    let published = c.get("published").and_then(Value::as_array)
+        .and_then(|a| a.iter().rev().find_map(|p| p.get("url").and_then(Value::as_str)))
+        .filter(|u| u.starts_with("https://claude.ai/")).unwrap_or("");
+    Some(json!({
+        "path": folder, "room": room.0, "id": id,
+        "kind": str_of(&c, "kind"), "title": str_of(&c, "title"), "purpose": str_of(&c, "purpose"),
+        "status": str_of(&c, "status"), "decision": str_of(&c, "decision"), "chosen": chosen,
+        "versions": versions.len(), "panes": panes.len(),
+        "role": panes.first().map(|p| str_of(p, "role")).unwrap_or_default(),
+        "open": open.len(), "waiting": waiting, "threads": threads.len(),
+        "published": published,
+    }))
+}
+
+/// chartroom's CLI: $CHARTROOM_CLI, else beside the deep-plan engine (both
+/// plugins run from the same seamux checkout).
+fn chartroom_cli() -> Option<std::path::PathBuf> {
+    let from_env = std::env::var_os("CHARTROOM_CLI").filter(|s| !s.is_empty()).map(std::path::PathBuf::from);
+    let beside = crew_core::dp_engine::root().parent().map(|p| p.join("chartroom").join("chartroom.mjs"));
+    [from_env, beside].into_iter().flatten().find(|p| p.is_file())
+}
+
+/// The studio's URL for chart `loc` (<room>/<id>): `chartroom open <id>
+/// --no-open --json` run in the worktree the room was opened from, which
+/// starts the studio's server when it is not running.
+fn studio_url(loc: &str) -> Result<String, String> {
+    let (room, id) = loc.split_once('/').ok_or("not a chart")?;
+    let ok = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !ok(room, 64) || !ok(id, 64) || id.starts_with('-') {
+        return Err("not a chart".into());
+    }
+    let home = crew_store::paths::Paths::from_env().chartroom;
+    let top = crew_store::stores::chart_rooms(&home).into_iter().find(|(r, _, _)| r == room).map(|(_, _, t)| t)
+        .ok_or("chartroom no longer lists this chart's room")?;
+    if !Path::new(&top).is_dir() {
+        return Err("the chart's worktree is gone".into());
+    }
+    let cli = chartroom_cli().ok_or("chartroom is not installed beside deep-plan")?;
+    let node = crate::act::node().unwrap_or_else(|| "node".into());
+    let mut cmd = std::process::Command::new(node);
+    cmd.arg(&cli).args(["open", id, "--no-open", "--json"]).current_dir(&top);
+    let (code, out, err) = spawn_wait(cmd, Duration::from_secs(20)).ok_or("chartroom open did not run")?;
+    if code != 0 {
+        return Err(format!("chartroom open: {}", err.trim().lines().last().unwrap_or("failed")));
+    }
+    let url = serde_json::from_str::<Value>(&out).ok().and_then(|v| v.get("url").and_then(Value::as_str).map(String::from)).unwrap_or_default();
+    if url.starts_with("http://127.0.0.1:") && !url.chars().any(|c| c.is_control() || c == ' ') {
+        Ok(url)
+    } else {
+        Err("chartroom gave no studio here (a remote host has none)".into())
     }
 }
 
@@ -702,6 +817,38 @@ mod tests {
 
     /// A read cut at its limit takes back the kept kinds it lacked, once
     /// each, in the read's order.
+    /// A chart card reads only a folder in a room chartroom lists, and says
+    /// the pick by its label, the open threads and those waiting on Claude.
+    #[test]
+    fn a_chart_card_says_its_pick_and_its_open_threads() {
+        let root = std::env::temp_dir().join(format!("wake-chart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, dir) = (root.join("home"), root.join("repo/.chartroom"));
+        let folder = dir.join("checkout");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("rooms.json"), json!({ "r1": { "dir": dir, "top": root.join("repo") } }).to_string()).unwrap();
+        std::fs::write(folder.join("chart.json"), json!({
+            "kind": "ux", "title": "Checkout layout", "purpose": "Pick the payment page", "status": "chosen",
+            "chosen": { "version": 1, "pane": "b" },
+            "versions": [
+                { "n": 1, "panes": [{ "key": "a", "label": "Single column", "role": "option" }, { "key": "b", "label": "Two columns", "role": "option" }] },
+                { "n": 2, "panes": [{ "key": "a", "label": "Single column", "role": "option" }] }],
+            "published": [{ "url": "https://claude.ai/artifact/x" }],
+        }).to_string()).unwrap();
+        std::fs::write(folder.join("threads.json"), json!({ "threads": [
+            { "id": "t1", "resolved": false, "messages": [{ "by": "human", "text": "bigger" }] },
+            { "id": "t2", "resolved": false, "messages": [{ "by": "human", "text": "?" }, { "by": "agent", "text": "done" }] },
+            { "id": "t3", "resolved": true, "messages": [{ "by": "human", "text": "ok" }] }] }).to_string()).unwrap();
+        let h = home.to_string_lossy();
+        let c = chart_card_in(&h, &folder.to_string_lossy()).expect("a card");
+        assert_eq!(c["chosen"], json!({ "version": 1, "key": "b", "label": "Two columns" }));
+        assert_eq!((c["versions"].as_u64(), c["panes"].as_u64(), c["open"].as_u64(), c["waiting"].as_u64()), (Some(2), Some(1), Some(2), Some(1)));
+        assert_eq!((c["room"].as_str(), c["published"].as_str(), c["role"].as_str()), (Some("r1"), Some("https://claude.ai/artifact/x"), Some("option")));
+        assert!(chart_card_in(&h, &root.join("elsewhere/checkout").to_string_lossy()).is_none(), "a folder in no room");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_cut_read_takes_back_the_kept_kinds() {
         let at = |id: i64, kind: &str, when: &str| crew_store::Row { id, created_at: when.into(), ..row(kind, "", "", "") };

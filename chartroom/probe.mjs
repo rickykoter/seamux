@@ -57,8 +57,10 @@ if (want("store: where the charts live")) {
   let l = S.resolve(d);
   ok("dir: a git repo with nothing set keeps charts hidden in .chartroom", l.mode === "hidden" && l.dir === path.join(d, ".chartroom"), JSON.stringify(l));
   ok("dir: nothing is written by resolve", !fs.existsSync(path.join(d, ".chartroom")) && !S.excluded(l.git));
-  const r = cli(d, "new", "ux", "Checkout", "--json");
+  const r = spawnSync("node", [path.join(HERE, "chartroom.mjs"), "new", "ux", "Checkout", "--json"],
+    { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_SESSION_ID: "sess-1234" }, cwd: d });
   ok("new: exit 0 and the chart as JSON", r.status === 0 && json(r)?.chart?.id === "checkout", r.stderr);
+  ok("new: the chart keeps the session it was made in (the Wake's turn card)", json(r)?.chart?.session === "sess-1234", r.stdout);
   ok("hidden: the first write adds /.chartroom/ to .git/info/exclude", S.excluded(l.git));
   ok("hidden: git status stays clean", status(d) === "", status(d));
   ok("hidden: the exclude line goes in once", fs.readFileSync(l.git.exclude, "utf8").split("\n").filter(x => x === "/.chartroom/").length === 1);

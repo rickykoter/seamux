@@ -435,7 +435,16 @@
 .w-plan-ph { flex: none; font-size: var(--fs-1); color: var(--muted); }
 .w-plan-ph.done { color: var(--good-t); }
 .w-plan-sub { font-size: var(--fs-2); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.w-plan-strip { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--fs-2); }
+.w-plan-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: var(--fs-2); }
+/* Before a step: a gate where it waits for someone, a line where it follows on. */
+.w-plan-go { display: inline-flex; align-items: center; color: var(--muted); }
+.w-plan-go svg { width: 0.45em; height: 1.15em; }
+.w-plan-go.auto svg { width: 0.6em; }
+.w-plan-go.person, .w-plan-go.parent { color: var(--ask-t); }
+.w-plan-ph.chosen { color: var(--good-t); }
+.w-chart-said.waits { color: var(--ask-t); }
+.w-chart.gone .w-plan-t { color: var(--muted); text-decoration: line-through; }
+.w-plan-pol { font-size: var(--fs-1); color: var(--muted); overflow-wrap: anywhere; }
 .w-plan-dot { width: 1.4em; text-align: center; color: var(--muted); }
 .w-plan-dot.done { color: var(--good-t); }
 .w-plan-dot.now { color: var(--ask-t); }
