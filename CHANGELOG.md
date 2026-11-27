@@ -6,6 +6,25 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **The Wake, on shelves.** The Wake now opens on shelves in a fixed order:
+  Needs you, Reviews, Plans and asks, Pull requests and landings, Pictures
+  and recordings, Files, and Commits. Reviews shows each lookout review in
+  the workspace with its stage (finding, a round of a re-review, fixing, or
+  waiting for you to close it), its open findings by severity, and a search
+  over past reviews. It reads `lookout list --json --root`, which now gives
+  a summary of each review. Needs you gathers what waits on a person: an
+  open ask, a review to close, a landing step to approve, files at risk.
+  A shelf with nothing on it is not drawn. `t` switches to Timeline, where
+  each turn is a card split into the same sections and named after its
+  plan increment; `deep-plan status --json` now gives each plan's title and
+  when each increment was authorized and done. In either mode `j` and `k`
+  walk every item in the order the page shows it, and the pick carries
+  across. The kind chips and the separate PR block are gone.
+- **Videos show a frame in the Wake.** A video on Pictures and recordings
+  shows a muted frame of itself as its poster, and its length when the file
+  states it, read only once it scrolls into view. One saved in the
+  worktree's folder is marked `repo`. A video that will not load keeps its
+  play tile after one retry.
 - **Videos in the Wake.** A recording is now a `video` row, wherever it is
   saved: the repo, `/tmp`, or the session's scratchpad. Before, one in the
   workspace was dropped and one in `/tmp` was filed as `temp`. Since ffmpeg,
