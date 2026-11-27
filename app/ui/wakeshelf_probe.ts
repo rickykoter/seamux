@@ -176,6 +176,12 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   const alone = turns({ ...empty, rows: [row("temp", "x.log", note, at(9, 0), { session_id: "s9" })] });
   ok("turns: a background task with no prompt before it is its own card, with no prompt", alone.length === 1 && alone[0].prompt === "" && alone[0].background.length === 1);
 
+  const late = turns({ ...empty, rows: [row("temp", "morning.log", note, at(8, 0, 27)), row("temp", "evening.log", "go 3", at(22, 0, 26))] });
+  ok("turns: a background task the next morning takes no prompt from the day before", late.length === 2 && late[0].prompt === "" && late[1].prompt === "go 3", late.map((c) => c.prompt));
+  const older = row("temp", "one.log", "go 4", at(15, 0));
+  const k1 = turns({ ...empty, rows: [older] })[0].key;
+  const k2 = turns({ ...empty, rows: [row("temp", "two.log", "go 4", at(15, 5)), older] })[0].key;
+  ok("turns: a card keeps its key when a new row joins the turn", k1 === k2 && k1 === `turn:${older.id}`, [k1, k2]);
   ok("reviewName: plan and increment when lookout knows them", reviewName(review("x", { plan: "wake-shelves", inc: 6, title: "dev/wake-shelves vs 1c0ee2e4" })) === "wake-shelves · increment 6");
   ok("reviewName: a delivery review", reviewName(review("x", { plan: "p", inc: "all" })) === "p · delivery");
   ok("reviewName: its own title otherwise", reviewName(review("x", { title: "main vs spike" })) === "main vs spike");

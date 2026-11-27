@@ -543,7 +543,7 @@ export class Wake {
     if (risk) bits.push(" · ", el("span", "risk", `${n(risk)} at risk`));
     if (kept) bits.push(" · ", el("span", "kept", `${n(kept)} kept`));
     if (gone) bits.push(" · ", el("span", "w-gone-n", `${n(gone)} gone`));
-    if (this.data.truncated) bits.push(el("span", "w-trunc", `newest ${n(this.data.limit)} of ${n(total)} read; search to reach older`));
+    if (this.data.truncated) bits.push(el("span", "w-trunc", `newest ${n(this.data.limit)} of ${n(total)} read, with every review, plan, ask and pull request; search to reach older`));
     this.stats.replaceChildren(...bits);
     for (const m of ["shelves", "timeline"] as const) this.modeBtns[m].setAttribute("aria-pressed", String(this.mode === m));
     this.acts.clear();
@@ -1087,7 +1087,7 @@ export class Wake {
     if (sc) {
       const last = sc.last;
       const label = !last ? `Scenarios ${sc.count} · not judged`
-        : `Scenarios ${last.met}/${last.total}${last.failing.length ? ` ✗ ${last.failing.map((f) => f.id).join(" ")}` : " ✓"}`;
+        : `Scenarios ${last.met}/${last.total}${last.failing.length ? ` ✗ ${last.failing.map((f) => f.id).join(" ")}` : last.pass ? " ✓" : ""}`;
       const cls = sc.waiting ? "needs" : !last ? "" : last.pass ? "good" : "bad";
       const b = chip(sc.waiting ? `${label} · ${sc.waiting} to answer` : label, cls,
         [last ? `last judged ${age(last.at)} ago${last.full ? "" : " (some carried from earlier runs)"}` : "not judged yet",
@@ -1476,9 +1476,10 @@ ${p.url}`;
   }
 
   private selectKey(key: string | null, scroll = false): void {
-    // A card's prompt holding the focus lets go: Space then acts on the pick.
+    // A card's prompt or a clicked chip or button holding the focus lets go:
+    // Enter and Space then act on the pick.
     const f = document.activeElement;
-    if (f instanceof HTMLElement && f.classList.contains("w-prompt") && this.list.contains(f)) f.blur();
+    if (f instanceof HTMLElement && (f.classList.contains("w-prompt") || f instanceof HTMLButtonElement) && this.list.contains(f)) f.blur();
     this.list.querySelectorAll(".sel[data-key]").forEach((x) => {
       x.classList.remove("sel");
       x.removeAttribute("aria-selected");
@@ -1507,7 +1508,12 @@ ${p.url}`;
   /** After a redraw, the pick stays when its item still shows. */
   private restoreSel(): void {
     if (this.selKey && !this.keysShown().includes(this.selKey)) this.selKey = null;
-    if (this.selKey) this.list.querySelector(`[data-key="${CSS.escape(this.selKey)}"]`)?.classList.add("sel");
+    this.list.querySelectorAll("[aria-selected]").forEach((x) => x.removeAttribute("aria-selected"));
+    if (this.selKey) {
+      const at = this.list.querySelector(`[data-key="${CSS.escape(this.selKey)}"]`);
+      at?.classList.add("sel");
+      at?.setAttribute("aria-selected", "true");
+    }
     if (this.viewer.open) this.viewer.setRows(this.vis.filter(previewable));
     this.showTurn();
   }
@@ -1570,9 +1576,13 @@ ${p.url}`;
     if (w) t.title += `\n${w}`;
     if (w) {
       // Cut by whole folders, the full path on hover; a search shows it whole.
-      const p = el("span", `w-p${this.query && w.toLowerCase().includes(this.query.toLowerCase()) ? " hit" : ""}`);
+      const q = this.query.toLowerCase();
+      const short = shortPath(w);
+      // A search shows the path short, or whole when the match is in the part cut out.
+      const shown = q && w.toLowerCase().includes(q) && !short.toLowerCase().includes(q) ? w : short;
+      const p = el("span", `w-p${q && shown.toLowerCase().includes(q) ? " hit" : ""}`);
       p.title = w;
-      p.append(marked(shortPath(w), this.query));
+      p.append(marked(shown, this.query));
       li.append(p);
     }
     if (r.was_path) {
@@ -1903,6 +1913,7 @@ ${p.url}`;
         break;
       case "K":
         if (!act) this.toast("pick something first: j");
+        else if (this.selKey === "risk") this.riskKeep.click();
         else if (r?.state === "risk") void this.keep(r);
         else this.toast(r?.state === "kept" ? "already kept" : "only a file at risk can be kept");
         break;
@@ -1915,7 +1926,8 @@ ${p.url}`;
         break;
       case "s":
         if (act?.scenarios) act.scenarios();
-        else this.toast(act ? "only a plan with scenarios has them" : "pick something first: j");
+        else if (act && r?.kind === "plan" && this.plans.find((p) => p.slug === r.locator)?.scenarios) void this.open(r, "scenarios");
+        else this.toast(act ? (r?.kind === "plan" ? "this plan has no scenarios" : "only a plan has scenarios") : "pick something first: j");
         break;
       case "r":
         if (r?.session_id) void this.copy(resumeCmd(r), "the resume command");

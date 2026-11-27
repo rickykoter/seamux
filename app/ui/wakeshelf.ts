@@ -344,11 +344,14 @@ export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
   for (let i = inp.rows.length - 1; i >= 0; i--) {
     const r = inp.rows[i];
     const bg = backgroundTask(r.prompt);
+    // By session and day: a task finishing the next morning does not take
+    // the prompt typed the day before.
+    const sd = `${r.session_id}|${dayOf(t(r.created_at))}`;
     if (bg === null) {
       said.set(r, r.prompt);
-      if (r.prompt) lastHuman.set(r.session_id, r.prompt);
+      if (r.prompt) lastHuman.set(sd, r.prompt);
     } else {
-      said.set(r, lastHuman.get(r.session_id) ?? "");
+      said.set(r, lastHuman.get(sd) ?? "");
       task.set(r, bg);
     }
   }
@@ -363,6 +366,8 @@ export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
       rows: shelf === "files" ? filesOf(rows) : shelf === "pictures" ? atRiskFirst(rows.filter((r) => shelfOf(r.kind) === shelf)) : rows.filter((r) => shelfOf(r.kind) === shelf),
     })).filter((s) => s.rows.length);
     cur.t.background = [...new Set(rows.map((r) => task.get(r)).filter((x): x is string => !!x))];
+    // Keyed by its oldest row: a new row joining the turn keeps its folds.
+    cur.t.key = `turn:${rows[rows.length - 1].id}`;
     cur.t.name = incrementAt(inp.plans, cur.t.start);
     out.push(cur.t);
     cur = null;

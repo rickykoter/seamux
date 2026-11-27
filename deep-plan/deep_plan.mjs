@@ -6182,10 +6182,13 @@ function shownStatus(v, status = v.status) {
 function scenarioSummary(slug) {
   const t = SCN.titles(slug);
   if (!t) return null;
-  const v = SCN.lastVerdict(slug);
+  // The last run that scored anything, as the scenarios page shows it: a
+  // harness that broke or a judge that did not answer leaves the one before.
+  const newest = SCN.lastVerdict(slug);
+  const v = newest && (newest.scores || []).length ? newest : SCN.priorVerdict(slug);
   const r = SCN.revisionState(slug);
   const scores = v ? v.scores || [] : [];
-  const th = v ? v.threshold : 0;
+  const th = v && Number.isFinite(Number(v.threshold)) ? Number(v.threshold) : SCN.DEFAULT_THRESHOLD;
   return {
     count: t.count,
     last: v ? { at: v.at, pass: !!v.pass, full: !!v.full, threshold: th, met: scores.filter(s => s.score >= th).length, total: scores.length,

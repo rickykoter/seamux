@@ -9626,6 +9626,17 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios revise: while proposals wait, neither the judge nor revise runs a model again",
     r.status === 3 && /wait for the person/.test(r2.stdout) && calls().length === nCalls &&
     /stale: 2 proposed revision\(s\) after an amend wait for the person/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout + r2.stdout);
+  {
+    // A verdict saved with no threshold is read at the default (0.8), not 0.
+    const vf = path.join(SEALED, "scn-a", "verdicts.json");
+    const keep = fs.readFileSync(vf, "utf8");
+    const all = JSON.parse(keep);
+    if (all.last) delete all.last.threshold;
+    fs.writeFileSync(vf, JSON.stringify(all));
+    const s = (JSON.parse(sc("status", "--json").stdout).find(x => x.slug === "scn-a") || {}).scenarios || {};
+    fs.writeFileSync(vf, keep);
+    ok("status --json: a verdict with no threshold of its own is read at the default", !s.last || (s.last.threshold === 0.8 && s.last.met + s.last.failing.length === s.last.total), JSON.stringify(s));
+  }
   ok("status --json: revisions waiting on the person show in the plan's scenarios summary",
     ((JSON.parse(sc("status", "--json").stdout).find(x => x.slug === "scn-a") || {}).scenarios || {}).waiting === 2);
   g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
