@@ -1,7 +1,7 @@
 // node app/ui/wakeshelf_probe.ts — the Wake's shelves and turn cards
 // (wakeshelf.ts), a pure module, which Node runs as TypeScript.
 import {
-  incrementAt, laneStates, lanesOf, needsOf, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
+  backgroundTask, incrementAt, laneStates, lanesOf, liveFirst, needsOf, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
   type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
 } from "./wakeshelf.ts";
 
@@ -149,6 +149,36 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
     stageSaid(review("r", { stage: "finding", reviewer: "panel" })) === "panel · finding" &&
     stageSaid(review("r", { stage: "close", needsPerson: true })) === "you close it" &&
     stageSaid(review("r", { stage: "claims", claims: { unchecked: 3, broken: 0 } })) === "3 claims unchecked");
+}
+
+// ------------------------------------------------------------ gone last, background tasks, review names
+{
+  const rs = [row("temp", "a", "go", at(13, 3), { state: "gone" }), row("temp", "b", "go", at(13, 2)), row("temp", "c", "go", at(13, 1), { state: "risk" })];
+  ok("liveFirst: at risk, then what still exists, then gone", liveFirst(rs).map((r) => r.title).join() === "c,b,a");
+  const s2 = shelves({ ...empty, rows: [row("image", "dead.png", "go", at(13, 5), { state: "gone" }), row("image", "live.png", "go", at(13, 4))] });
+  ok("shelves: a gone picture sorts after a live one", s2.pictures.map((r) => r.title).join() === "live.png,dead.png");
+
+  const note = 'ba8u2crv3 toolu_01CWm2gazdggKGnc85nzSxaL /private/tmp/claude-501/x/tasks/ba8u2crv3.output completed Background command "Run the full Rust suite" completed (exit code 0)';
+  ok("backgroundTask: a notification's command description", backgroundTask(note) === "Run the full Rust suite");
+  ok("backgroundTask: the person's own prompt is not one", backgroundTask("go 3") === null && backgroundTask("toolu_ is a word here") === null);
+  // Oldest last: the person says "go 3", files land, a background task
+  // finishes and leaves more: one card, the person's prompt, one task.
+  const rows = [
+    row("temp", "after-task.log", note, at(14, 20)),
+    row("temp", "first.log", "go 3", at(14, 10)),
+    row("commit", "c1", "go 3", at(14, 5)),
+  ];
+  const cards = turns({ ...empty, rows });
+  ok("turns: a background task's rows join the person's prompt before it", cards.length === 1 && cards[0].prompt === "go 3", cards.map((c) => c.prompt));
+  ok("turns: the card counts the background task it took in", cards[0].background.join() === "Run the full Rust suite");
+  const alone = turns({ ...empty, rows: [row("temp", "x.log", note, at(9, 0), { session_id: "s9" })] });
+  ok("turns: a background task with no prompt before it is its own card, with no prompt", alone.length === 1 && alone[0].prompt === "" && alone[0].background.length === 1);
+
+  ok("reviewName: plan and increment when lookout knows them", reviewName(review("x", { plan: "wake-shelves", inc: 6, title: "dev/wake-shelves vs 1c0ee2e4" })) === "wake-shelves · increment 6");
+  ok("reviewName: a delivery review", reviewName(review("x", { plan: "p", inc: "all" })) === "p · delivery");
+  ok("reviewName: its own title otherwise", reviewName(review("x", { title: "main vs spike" })) === "main vs spike");
+  const tile = needsOf({ ...empty, reviews: [review("r", { stage: "ask", needsPerson: true, addressed: 2, plan: "p", inc: 2, round: { sealed: 2, pending: 2, max: 2, n: 2 } })] })[0];
+  ok("needs: a review's tile says its stage in the Reviews shelf's words", tile?.kind === "review" && tile.why === "2 rounds done: your call" && tile.title === "p · increment 2", tile);
 }
 
 console.log(`wakeshelf probe: ${pass} passed, ${fail} failed`);

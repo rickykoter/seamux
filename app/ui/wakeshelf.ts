@@ -154,8 +154,8 @@ export function needsOf<R extends ShelfRow>(inp: Input<R>): Need[] {
     // Two ways a review waits on the person: findings only they may close,
     // or fixes waiting after the re-review rounds are used up (their call).
     if (r.needsPerson)
-      out.push({ key: `needreview:${r.id}`, kind: "review", title: r.title, id: r.id,
-        findings: r.stage === "ask" ? r.addressed : r.closeIds.length, why: r.stage === "ask" ? "rounds used up: your call" : "close its finding" });
+      out.push({ key: `needreview:${r.id}`, kind: "review", title: reviewName(r), id: r.id,
+        findings: r.stage === "ask" ? r.addressed : r.closeIds.length, why: stageSaid(r) });
   }
   const risk = inp.rows.filter((r) => r.state === "risk");
   if (risk.length)
@@ -200,10 +200,29 @@ export function lanesOf(prs: ShelfPr[]): Lane[] {
   });
 }
 
-/** Files at risk first, then newest first. */
+/** At risk first, then what still exists, then what is gone; newest first
+ *  within each. The page folds the gone ones away. */
+export function liveFirst<R extends ShelfRow>(rows: R[]): R[] {
+  return [...rows.filter((r) => r.state === "risk"), ...rows.filter((r) => r.state !== "risk" && r.state !== "gone"), ...rows.filter((r) => r.state === "gone")];
+}
 function filesOf<R extends ShelfRow>(rows: R[]): R[] {
-  const f = rows.filter((r) => shelfOf(r.kind) === "files");
-  return [...f.filter((r) => r.state === "risk"), ...f.filter((r) => r.state !== "risk")];
+  return liveFirst(rows.filter((r) => shelfOf(r.kind) === "files"));
+}
+
+/** A review by what it reviewed: "<plan> · increment N" (or "· delivery")
+ *  when lookout knows, else its own title. */
+export function reviewName(r: ReviewSum): string {
+  if (!r.plan || r.inc === null || r.inc === undefined) return r.title;
+  return `${r.plan} · ${r.inc === "all" ? "delivery" : `increment ${r.inc}`}`;
+}
+
+/** A prompt Claude Code made from a background task's notification, not one
+ *  the person typed: its ids, output path and the command's description. */
+export function backgroundTask(prompt: string): string | null {
+  const p = prompt.trim();
+  if (!/^(<task-notification>|[a-z0-9]{6,12}\s+toolu_[A-Za-z0-9]+\s)/.test(p)) return null;
+  const m = /Background command "([^"]+)"/.exec(p) ?? /<summary>([^<]+)<\/summary>/.exec(p);
+  return m ? m[1] : "a background task";
 }
 
 export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
@@ -212,7 +231,7 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
   const past = inp.reviews.filter((r) => r.past).sort((a, b) => (b.closedAt || "").localeCompare(a.closedAt || ""));
   const plans = inp.rows.filter((r) => shelfOf(r.kind) === "plans");
   const lanes = lanesOf(inp.prs);
-  const pictures = inp.rows.filter((r) => shelfOf(r.kind) === "pictures");
+  const pictures = liveFirst(inp.rows.filter((r) => shelfOf(r.kind) === "pictures"));
   const files = filesOf(inp.rows);
   const commits = inp.rows.filter((r) => shelfOf(r.kind) === "commits");
   const order = [
@@ -233,7 +252,10 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
 export type Section<R extends ShelfRow = ShelfRow> = { shelf: Exclude<ShelfId, "needs">; rows: R[] };
 export type Turn<R extends ShelfRow = ShelfRow> = {
   key: string;
+  /** The person's prompt; a turn only background tasks made has none. */
   prompt: string;
+  /** Background tasks whose rows joined this turn, by their description. */
+  background: string[];
   /** "Increment 2 of <plan title>" when the turn falls in an increment's window. */
   name: string | null;
   session: string;
@@ -274,19 +296,39 @@ export function incrementAt(plans: PlanRow[], at: number): string | null {
 const SECTION_ORDER: Section["shelf"][] = ["reviews", "plans", "prs", "pictures", "files", "commits"];
 
 /** One card per turn: a run of rows with the same session and prompt on the
- *  same day (the same prompt later in the day is a new card). Newest first. */
+ *  same day (the same prompt later in the day is a new card). Newest first.
+ *  A background task's notification is a prompt Claude Code makes, not the
+ *  person: its rows join the person's prompt before it in that session. */
 export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
   const out: Turn<R>[] = [];
   let cur: { t: Turn<R>; rows: R[] } | null = null;
-  const keyOf = (r: R) => `${dayOf(t(r.created_at))}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
+  // Each row's own prompt, or for a background task's row the person's
+  // prompt it came after (rows are newest first: walk them oldest first).
+  const said = new Map<R, string>();
+  const task = new Map<R, string>();
+  const lastHuman = new Map<string, string>();
+  for (let i = inp.rows.length - 1; i >= 0; i--) {
+    const r = inp.rows[i];
+    const bg = backgroundTask(r.prompt);
+    if (bg === null) {
+      said.set(r, r.prompt);
+      if (r.prompt) lastHuman.set(r.session_id, r.prompt);
+    } else {
+      said.set(r, lastHuman.get(r.session_id) ?? "");
+      task.set(r, bg);
+    }
+  }
+  const promptOf = (r: R) => said.get(r) ?? r.prompt;
+  const keyOf = (r: R) => `${dayOf(t(r.created_at))}|${r.session_id}|${promptOf(r)}|${promptOf(r) || task.has(r) ? "" : r.kind}`;
   let last = "";
   const close = () => {
     if (!cur) return;
     const rows = cur.rows;
     cur.t.sections = SECTION_ORDER.map((shelf) => ({
       shelf,
-      rows: shelf === "files" ? filesOf(rows) : rows.filter((r) => shelfOf(r.kind) === shelf),
+      rows: shelf === "files" ? filesOf(rows) : shelf === "pictures" ? liveFirst(rows.filter((r) => shelfOf(r.kind) === shelf)) : rows.filter((r) => shelfOf(r.kind) === shelf),
     })).filter((s) => s.rows.length);
+    cur.t.background = [...new Set(rows.map((r) => task.get(r)).filter((x): x is string => !!x))];
     cur.t.name = incrementAt(inp.plans, cur.t.start);
     out.push(cur.t);
     cur = null;
@@ -296,7 +338,7 @@ export function turns<R extends ShelfRow>(inp: Input<R>): Turn<R>[] {
     const at = t(r.created_at);
     if (!cur || k !== last) {
       close();
-      cur = { t: { key: `turn:${r.id}`, prompt: r.prompt, name: null, session: r.session_id, start: at, end: at, day: dayOf(at), sections: [] }, rows: [] };
+      cur = { t: { key: `turn:${r.id}`, prompt: promptOf(r), background: [], name: null, session: r.session_id, start: at, end: at, day: dayOf(at), sections: [] }, rows: [] };
       last = k;
     }
     cur.rows.push(r);

@@ -363,3 +363,25 @@
 /* Timeline: an opened card shows its whole prompt under its heading. */
 .w-card-p { margin: 0 12px; padding: 6px 0 8px; border-bottom: 1px dashed var(--line); font-size: var(--fs-2); }
 .w-card-p[hidden] { display: none; }
+
+/* UX sweep, round 1. */
+/* The pick: a bar at its left edge as well as the tint, so it reads in bad light. */
+.w-row.sel, :is(.w-need, .w-rv, .w-past, .w-lane).sel { box-shadow: inset 3px 0 0 var(--accent); }
+.w-thumb.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* What is gone is a muted count; a read cut at its limit says so on its own line. */
+.w-sub .w-gone-n { opacity: .8; }
+.w-trunc { display: block; font-size: var(--fs-1); opacity: .85; }
+/* Nothing waits on the person, but a pull request fails below: no check mark. */
+.w-calm.warn .w-calm-ok { color: var(--bad-t); }
+/* A short prompt ("go 3") yields the card's heading to the increment it ran. */
+.w-card.named .w-card-hd .w-card-m { order: -1; flex: 1 1 100%; }
+.w-card.named .w-card-n { font-weight: 700; color: var(--fg); }
+.w-card.named .w-card-hd .w-prompt { flex: 0 1 auto; font-weight: 400; color: var(--muted); }
+.w-card-bg { color: var(--muted); }
+/* Resume waits for the card in use, as on the rows. */
+.w-card:not(:hover):not(:focus-within):not(:has(.sel)) .w-card-hd .w-sess { visibility: hidden; }
+/* Narrow: lanes keep room for their titles; each dot names its stage on hover. */
+@container (max-width: 520px) {
+  .w-lane-hd { display: none; }
+  .w-lane { grid-template-columns: minmax(0, 1fr) repeat(4, 22px); }
+}
