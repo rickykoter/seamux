@@ -242,6 +242,18 @@ for r in "$ghrepo" "$otherrepo"; do
 done
 git -C "$ghrepo" remote add origin https://github.com/o/r.git
 git -C "$otherrepo" remote add origin git@github.com:x/y.git
+# A fork's checkout: origin is the fork, and gh resolves to upstream, or to
+# the remote gh repo set-default marked.
+forkrepo="$(mktemp -d "${TMPDIR:-/tmp}/guard-fork.XXXXXX")"
+git -C "$forkrepo" init -q -b feat/y 2>/dev/null || { git -C "$forkrepo" init -q && git -C "$forkrepo" checkout -q -b feat/y; }
+git -C "$forkrepo" remote add origin https://github.com/me/r.git
+git -C "$forkrepo" remote add upstream https://github.com/o/r.git
+setrepo="$(mktemp -d "${TMPDIR:-/tmp}/guard-set.XXXXXX")"
+git -C "$setrepo" init -q -b feat/y 2>/dev/null || { git -C "$setrepo" init -q && git -C "$setrepo" checkout -q -b feat/y; }
+git -C "$setrepo" remote add origin https://github.com/me/r.git
+git -C "$setrepo" remote add upstream https://github.com/o/r.git
+git -C "$setrepo" remote add mine https://github.com/z/r.git
+git -C "$setrepo" config remote.mine.gh-resolved base
 for mode in $modes; do
   # A git block: runnable, with the session and the folder.
   fresh
@@ -351,6 +363,13 @@ assert d["pane"]=="P-1" and d["workspace"]=="W-1" and isinstance(d["at"], int), 
     tmux_hook "$mode" "$bh" "${c//\"/\\\"}" s1 "$ghrepo"
     held_is "$bh" "[$mode] $c" 'assert d["pr"] is None, d'
   done
+  # In a fork's checkout the PR is the repo gh resolves to (delivery f3).
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 "$forkrepo"
+  held_is "$bh" "[$mode] merge in a fork" 'assert d["pr"]=="o/r#12", d'
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 "$setrepo"
+  held_is "$bh" "[$mode] merge with gh's default set" 'assert d["pr"]=="z/r#12", d'
   # A number with no GitHub origin in the cwd names no PR.
   fresh
   tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 /tmp

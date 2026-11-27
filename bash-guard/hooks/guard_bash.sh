@@ -636,10 +636,17 @@ gh_pr="(^|[^[:alnum:]_.-])gh[[:space:]]+(${word}[[:space:]]+)*pr[[:space:]]+"
 gh_api_literal_re="gh[[:space:]]+api([[:space:]]+(-X|--method|-H|--header)([[:space:]]+|=)(${sqs}|${dqs}|[^[:space:]]+))*[[:space:]]+[\"${q}]?/?repos/[^[:space:]\"${q}\$\`]+[\"${q}]?([[:space:]]|\$)"
 # `gh pr merge [<pr>] --disable-auto` and nothing else.
 disable_auto_re="^[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge([[:space:]]+[^-[:space:]][^[:space:]]*)?[[:space:]]+--disable-auto([[:space:]]+[^-[:space:]][^[:space:]]*)?[[:space:]]*\$"
-# The owner/repo of origin in the payload's cwd, from a GitHub remote URL.
+# The owner/repo gh resolves a bare PR to in the payload's cwd, from a GitHub
+# remote URL: the remote `gh repo set-default` marked (gh-resolved = base),
+# else upstream, else origin, as gh picks one in a fork's checkout.
 repo_of() {
-  local u
-  u="$(git -C "${pcwd:-.}" remote get-url origin 2>/dev/null)" || return 1
+  local u remote
+  remote="$(git -C "${pcwd:-.}" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null | while read -r k v; do
+    [ "$v" = base ] && { k="${k#remote.}"; printf '%s' "${k%.gh-resolved}"; break; }; done)"
+  if [ -z "$remote" ]; then
+    if git -C "${pcwd:-.}" remote get-url upstream >/dev/null 2>&1; then remote=upstream; else remote=origin; fi
+  fi
+  u="$(git -C "${pcwd:-.}" remote get-url "$remote" 2>/dev/null)" || return 1
   u="${u%.git}"
   [[ "$u" =~ ^(https://|ssh://git@|git@)[A-Za-z0-9.-]+[:/]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/?$ ]] || return 1
   printf '%s' "${BASH_REMATCH[2]}"
