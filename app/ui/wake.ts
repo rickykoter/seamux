@@ -317,7 +317,12 @@ export class Wake {
       const at = document.activeElement;
       if (at instanceof HTMLElement && at !== document.body && !root.contains(at)) at.blur();
     });
-    document.addEventListener("keydown", (e) => this.key(e));
+    // Escape in the capture phase: the app's own listener (main.ts) hides
+    // the window on any Escape not taken before it, and it is registered
+    // first. Taken here, Esc closes the Wake's topmost open thing; with
+    // nothing open it goes on, and the window hides. Other keys bubble.
+    document.addEventListener("keydown", (e) => e.key === "Escape" && this.key(e), true);
+    document.addEventListener("keydown", (e) => e.key !== "Escape" && this.key(e));
   }
 
   async start(): Promise<void> {

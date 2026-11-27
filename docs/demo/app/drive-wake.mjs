@@ -28,6 +28,18 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
   const { browser, page, errors } = await launch({ dark, width });
   try {
     await openApp(page, "wake", { url: srv.url });
+    // The demo's hide_overlay does nothing, so a window hidden too early would
+    // not show: each call is counted (the app's own Esc listener sends it).
+    await page.evaluate(() => {
+      const T = window.__TAURI_INTERNALS__;
+      const was = T.invoke.bind(T);
+      window.__hides = 0;
+      T.invoke = (cmd, ...a) => {
+        if (cmd === "hide_overlay") window.__hides++;
+        return was(cmd, ...a);
+      };
+    });
+    const hides = () => page.evaluate(() => window.__hides);
     const wake = page.locator(".dockview .sheet .sheet-wake");
     await wake.locator(".w-ws").selectOption(treeOf(byKey.api));
     await wake.locator('.w-shelf[data-shelf="pictures"]').waitFor();
@@ -67,9 +79,10 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     await wake.locator(".w-thumb").first().click();
     await page.waitForTimeout(500);
     say(await page.locator(".wv-img, .wv video").first().isVisible().catch(() => false), "a click on a picture opens its preview", pic);
+    const h0 = await hides();
     await page.keyboard.press("Escape");
     await page.waitForTimeout(300);
-    say(!(await page.locator(".wv-img").first().isVisible().catch(() => false)), "Esc closes the preview");
+    say(!(await page.locator(".wv-img").first().isVisible().catch(() => false)) && (await hides()) === h0, "Esc closes the preview, and the window stays", `hides ${h0} → ${await hides()}`);
 
     // A video: a muted frame for its poster and its length, once in view.
     const vid = wake.locator(".w-thumb", { hasText: "checkout-walkthrough.webm" });
@@ -137,22 +150,42 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     }, k);
     const shownWhole = await openWhole(rk);
     say(!!shownWhole, "Space opens the card's whole prompt, shown under its heading", shownWhole.slice(0, 40));
+    const h1 = await hides();
     await page.keyboard.press("Escape");
     await page.waitForTimeout(200);
-    say(!(await openWhole(rk)) && (await wake.isVisible()), "Esc closes the card's prompt, and the Wake stays");
+    say(!(await openWhole(rk)) && (await hides()) === h1, "Esc closes the card's prompt, and the window stays", `hides ${h1} → ${await hides()}`);
     // Two cards opened: Esc closes the latest first, then the other, then nothing is left open.
     const cardKeys = await wake.locator(".w-card").evaluateAll((els) => els.slice(0, 2).map((c) => c.getAttribute("data-turn")));
     for (const k of cardKeys) await wake.locator(`.w-card[data-turn="${k}"] .w-card-hd .w-prompt`).click();
     const openNow = () => wake.locator(".w-card.open").evaluateAll((els) => els.map((c) => c.getAttribute("data-turn")));
     const both = await openNow();
+    const h2 = await hides();
     await page.keyboard.press("Escape");
     await page.waitForTimeout(150);
     const one = await openNow();
     await page.keyboard.press("Escape");
     await page.waitForTimeout(150);
     const none = await openNow();
-    say(both.length === 2 && one.length === 1 && one[0] === cardKeys[0] && none.length === 0 && (await wake.isVisible()),
+    say(both.length === 2 && one.length === 1 && one[0] === cardKeys[0] && none.length === 0 && (await hides()) === h2,
       "Esc closes opened cards latest first, one at a time", JSON.stringify({ both, one, none }));
+    // A card's prompt and the keys open: Esc closes the keys, then the prompt,
+    // and only then does it reach the app and hide the window.
+    // Picked with j, as a person would (a moved pick lets go of a clicked prompt's focus).
+    for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
+    for (let i = 0; i < 60 && (await sel(page)) !== rk; i++) await page.keyboard.press("j");
+    await page.keyboard.press(" ");
+    await page.keyboard.press("?");
+    await page.waitForTimeout(150);
+    const helpUp = await wake.locator(".w-help").isVisible();
+    const g0 = await hides();
+    const seenEsc = [];
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(150);
+      seenEsc.push({ help: await wake.locator(".w-help").isVisible(), prompt: !!(await openWhole(rk)), hides: (await hides()) - g0 });
+    }
+    say(helpUp && JSON.stringify(seenEsc) === JSON.stringify([{ help: false, prompt: true, hides: 0 }, { help: false, prompt: false, hides: 0 }, { help: false, prompt: false, hides: 1 }]),
+      "Esc closes the keys, then the card's prompt, then hides the window", JSON.stringify(seenEsc));
     // Space on a pick outside any card (a Needs you tile) opens the card of the turn it came from.
     const needKey = await wake.locator(".w-need").first().getAttribute("data-key");
     for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
@@ -185,13 +218,19 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     await page.evaluate((k) => document.querySelector(`.sheet-wake [data-key="${k}"]`)?.dispatchEvent(new MouseEvent("click", { bubbles: true })), pickedPic);
     await page.waitForTimeout(400);
     const viewerUp = await page.locator(".sheet-wake .wv").first().isVisible().catch(() => false);
+    const h3 = await hides();
     await page.keyboard.press("Escape");
     await page.waitForTimeout(250);
     const afterOne = { viewer: await page.locator(".sheet-wake .wv-img, .sheet-wake .wv video").first().isVisible().catch(() => false), prompt: await turnp.isVisible() };
     await page.keyboard.press("Escape");
     await page.waitForTimeout(200);
-    say(viewerUp && !afterOne.viewer && afterOne.prompt && !(await turnp.isVisible()) && (await wake.isVisible()),
-      "Esc closes the preview first, then the prompt, and the Wake stays", JSON.stringify({ viewerUp, ...afterOne }));
+    say(viewerUp && !afterOne.viewer && afterOne.prompt && !(await turnp.isVisible()) && (await hides()) === h3,
+      "Esc closes the preview first, then the prompt, and the window stays", JSON.stringify({ viewerUp, ...afterOne, hides: (await hides()) - h3 }));
+    // With nothing of the Wake's open, Esc goes on to the app: the window hides.
+    const h4 = await hides();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+    say((await hides()) === h4 + 1, "with nothing open, Esc hides the window", `hides ${h4} → ${await hides()}`);
     // Space on a pull request's lane shows the prompt of the turn that opened it.
     const laneKey = await wake.locator(".w-shelf.prs .w-lane").first().getAttribute("data-key");
     for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
@@ -201,9 +240,10 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     const laneP = (await turnp.isVisible()) ? await turnp.locator(".w-turnp-b").textContent() : "";
     // coupons-api's #44 came from crew-sync's list, not a turn: the panel says so.
     say((await sel(page)) === laneKey && /no turn in this Wake made it/.test(laneP ?? ""), "Space on a PR lane no turn made says there is no prompt", `${laneKey}: ${laneP}`);
+    const h5 = await hides();
     await page.keyboard.press("Escape");
     await page.waitForTimeout(150);
-    say(!(await turnp.isVisible()) && (await wake.isVisible()), "Esc closes it, and the Wake stays");
+    say(!(await turnp.isVisible()) && (await hides()) === h5, "Esc closes it, and the window stays");
     // Space with nothing picked picks the first item and shows its prompt, whatever was on before.
     for (const before of ["on", "off"]) {
       if (before === "on") {
