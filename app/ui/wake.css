@@ -425,3 +425,24 @@
 /* Folds and day headings are easier to hit. */
 .w-daymore { padding: 4px 2px; }
 .w-need-tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* A plan on Plans and asks: a card, its increments and its pages one click away. */
+.w-plans .w-li + .w-li, .w-plans .w-li + .w-row, .w-plans .w-row + .w-li { border-top: 1px solid var(--line); }
+.w-plan { display: grid; gap: 4px; padding: 9px 12px; cursor: pointer; }
+.w-plan:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.w-plan-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.w-plan-t { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-plan-ph { flex: none; font-size: var(--fs-1); color: var(--muted); }
+.w-plan-ph.done { color: var(--good-t); }
+.w-plan-sub { font-size: var(--fs-2); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-plan-strip { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--fs-2); }
+.w-plan-dot { width: 1.4em; text-align: center; color: var(--muted); }
+.w-plan-dot.done { color: var(--good-t); }
+.w-plan-dot.now { color: var(--ask-t); }
+.w-plan-dot.blocked { color: var(--bad-t); }
+.w-plan-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.w-chip { font: inherit; font-size: var(--fs-2); padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+.w-chip:hover { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.w-chip.good { color: var(--good-t); border-color: color-mix(in srgb, var(--good-t) 45%, transparent); }
+.w-chip.bad { color: var(--bad-t); border-color: color-mix(in srgb, var(--bad-t) 45%, transparent); }
+.w-chip.needs { color: var(--ask-t); border-color: color-mix(in srgb, var(--ask-t) 55%, transparent); }

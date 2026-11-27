@@ -563,11 +563,15 @@ you, Reviews (each lookout review's stage and open findings, and past
 reviews to search), Plans and asks, Pull requests and landings, Pictures and
 recordings, Files, and Commits. A shelf with nothing on it is not drawn, and
 when nothing waits on you the page says so in one line (a search hides it).
-A video shows a frame of itself once it scrolls into view. `t` switches to
-Timeline: one card per turn, split into the same sections, and named after
-the plan increment it worked on. `j` and `k` walk the items drawn on the
-page in the order it shows them, Enter opens the picked one, Space opens its
-turn's whole prompt, and `?` lists the rest.
+Reviews, plans, asks and pull requests are never folded away; files and
+pictures that are gone wait behind a "▸ N gone" fold. Each plan is a card
+with its increments and one click to its plan, scenarios (with how the last
+run went), review and markdown pages. A video shows a frame of itself once
+it scrolls into view. `t` switches to Timeline: one card per turn, split
+into the same sections, and named after the plan increment it worked on.
+`j` and `k` walk the items drawn on the page in the order it shows them,
+folds included, Enter opens the picked one, Space opens its turn's whole
+prompt, `s` a picked plan's scenarios, and `?` lists the rest.
 
 On its own tmux, the app also does what cmux did for it. It posts a
 notification when a Claude waits on you, finishes a turn, or is blocked by

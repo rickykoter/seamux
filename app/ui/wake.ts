@@ -6,7 +6,7 @@ import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 import { fileUrl, mediaOf, PREVIEW, previewable, thumbUrl, Viewer } from "./wakeview";
 import { age, badgeOf, byUrl, groupOf, type Group, type Pr } from "./prs";
 import { chipFor, readLandings, type Landing, type PrRow } from "./release";
-import { backgroundTask, dayOf, lanesOf, needsOf, reviewName, SHELF_SAID, shelves, stageSaid, stepKey, turns, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
+import { backgroundTask, dayOf, kept, lanesOf, needsOf, planState, reviewName, SHELF_SAID, shelves, stageSaid, stepKey, turns, type Lane, type Need, type PlanRow, type ReviewSum, type ShelfId, type ShelfPr, type Turn } from "./wakeshelf";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -161,7 +161,7 @@ export class Wake {
    *  the order it shows them. */
   private selKey: string | null = null;
   /** What Enter, c and the rest do to each key drawn. */
-  private acts = new Map<string, { row?: Row; open: (e?: MouseEvent | KeyboardEvent) => void; copy?: () => void }>();
+  private acts = new Map<string, { row?: Row; open: (e?: MouseEvent | KeyboardEvent) => void; copy?: () => void; scenarios?: () => void }>();
   /** Shelves (the default) or Timeline, kept across launches. */
   private mode: "shelves" | "timeline" = (() => {
     try {
@@ -176,10 +176,8 @@ export class Wake {
   private plans: PlanRow[] = [];
   private sideWs = "";
   private sideAt = 0;
-  /** The past reviews' search, and whether older ones and older lanes show. */
+  /** The past reviews' search. */
   private pastQ = "";
-  private pastAll = false;
-  private lanesAll = false;
   /** Shelves opened past their first page ("show N more"). */
   private shelfAll = new Set<ShelfId>();
   /** Gone rows the person unfolded: a shelf's id, or a card's "<turn>:<shelf>". */
@@ -263,6 +261,7 @@ export class Wake {
         ["Enter", "preview a picture, video or page; open the rest (⌘ opens it outside the Wake)"],
         ["Space", "the whole prompt of its turn; again to hide it"],
         ["⇧K", "keep a file at risk"],
+        ["s", "a plan's scenarios"],
         ["c", "copy the path (a pull request's link)"],
         ["r", "copy the resume command"],
       ]],
@@ -406,8 +405,6 @@ export class Wake {
     const g: Group = group === "people" ? "people" : group === "draft" ? "draft" : group === "done" ? "done" : "open";
     this.prsFocus = g === "open" ? "you" : g;
     this.prsAsk = g;
-    // Finished pull requests past the newest fold behind "older": asked for, they show.
-    if (g === "done") this.lanesAll = true;
     // The lanes are on Shelves: shown there this once, the person's own
     // choice of layout left as it was.
     this.mode = "shelves";
@@ -606,20 +603,26 @@ export class Wake {
       const body: HTMLElement[] = [];
       if (live.length) body.push(this.box("Live", null, live.map((r) => this.reviewRow(r))));
       if (s.reviews.past.length) {
-        const shown = this.pastAll || pq ? past : past.slice(0, 2);
-        const items = shown.map((r) => this.pastRow(r));
-        if (past.length > shown.length) items.push(this.fold(`${past.length - shown.length} older review${past.length - shown.length === 1 ? "" : "s"}`, () => (this.pastAll = true), false, "fold:past"));
+        // Reviews are never folded away: every past one shows, newest first.
+        const items = past.map((r) => this.pastRow(r));
         if (!items.length) items.push(el("div", "w-none", `no past review matches “${this.pastQ || this.query}”`));
         body.push(this.box("Past", this.pastQEl, items));
       }
       shelf("reviews", `${live.length} live · ${q || pq ? past.length : s.reviews.past.length} past`, ...body);
     }
     const plans = s.plans;
-    if (plans.length) shelf("plans", String(plans.length), ...list("plans", plans));
+    // Plans and asks are never folded away; a plan draws as its card.
+    if (plans.length) {
+      const ul = el("ul", "w-rows w-box w-plans");
+      for (const r of plans) ul.append(r.kind === "plan" ? this.li(this.planCard(r)) : this.row(r));
+      shelf("plans", String(plans.length), ul);
+      shownRows.push(...plans);
+    }
     const planRows = shownRows.splice(0);
     const lanes = s.lanes.filter((l) => hit(`#${l.pr.n} ${l.pr.title}`));
     if (lanes.length) {
-      const shown = lanes.filter((l) => this.lanesAll || !l.fold || q);
+      // Pull requests are never folded away, finished ones included.
+      const shown = lanes;
       const t = el("div", "w-lanes w-box");
       const hd = el("div", "w-lane-hd");
       // Narrow, each stage keeps its first letter (wake.css).
@@ -629,8 +632,7 @@ export class Wake {
         return c;
       }));
       t.append(hd, ...shown.map((l) => this.laneRow(l)));
-      const extra = lanes.length - shown.length;
-      shelf("prs", String(lanes.length), t, ...(extra ? [this.fold(`${extra} older pull request${extra === 1 ? "" : "s"}`, () => (this.lanesAll = true), false, "fold:lanes")] : []));
+      shelf("prs", String(lanes.length), t);
     }
     const picSplit = split(s.pictures);
     const pics = [...page("pictures", picSplit.here, 12), ...(this.goneOpen.has("pictures") ? picSplit.gone : [])];
@@ -887,7 +889,7 @@ export class Wake {
     a.dataset.rows = c.sections.flatMap((s) => s.rows.map((r) => r.id)).join(",");
     a.append(hd, whole);
     // A turn that left only what is gone is its heading and one fold.
-    const here = c.sections.reduce((n, sec) => n + sec.rows.filter((r) => r.state !== "gone").length, 0);
+    const here = c.sections.reduce((n, sec) => n + sec.rows.filter((r) => r.state !== "gone" || kept(r)).length, 0);
     const keys = c.sections.map((sec) => `${c.key}:${sec.shelf}`);
     if (!here && !keys.some((k) => this.goneOpen.has(k))) {
       a.classList.add("stub");
@@ -899,11 +901,13 @@ export class Wake {
       const box = el("div", `w-sect ${sec.shelf}`);
       const h = el("h3", "w-sect-h");
       const gk = `${c.key}:${sec.shelf}`;
-      const live = sec.rows.filter((r) => r.state !== "gone");
-      const gone = sec.rows.filter((r) => r.state === "gone");
+      // Reviews, plans, asks and pull requests show whole; the rest fold their gone.
+      const live = sec.rows.filter((r) => r.state !== "gone" || kept(r));
+      const gone = sec.rows.filter((r) => r.state === "gone" && !kept(r));
       // A card shows a few of each; the rest wait behind "N more".
       const cap = sec.shelf === "pictures" ? 4 : 5;
-      const liveShown = this.query || this.moreOpen.has(gk) ? live : live.slice(0, cap);
+      const whole = this.query || this.moreOpen.has(gk) || ["reviews", "plans", "prs"].includes(sec.shelf);
+      const liveShown = whole ? live : live.slice(0, cap);
       const rows = [...liveShown, ...(this.goneOpen.has(gk) ? gone : [])];
       this.cardRows.push(...rows);
       h.append(document.createTextNode(`${SHELF_SAID[sec.shelf]} `), el("span", "w-n", String(live.length)));
@@ -926,7 +930,7 @@ export class Wake {
           const rv = sec.shelf === "reviews" ? reviews.get(r.locator) : undefined;
           const lane = pr ? lanes.get(pr.n) : undefined;
           if (lane) {
-            ul.append(this.li(this.laneRow({ ...lane, fold: false }, c.key)));
+            ul.append(this.li(this.laneRow(lane, c.key)));
             continue;
           }
           if (rv) {
@@ -1038,6 +1042,68 @@ export class Wake {
       if (a) return a;
     }
     return null;
+  }
+
+  /** A plan on Plans and asks: its title and phase, the increment it is on,
+   *  a strip of its increments, and one click to the plan, its scenarios
+   *  (with how the last run went), its review page and its markdown. */
+  private planCard(r: Row): HTMLElement {
+    const key = `row:${r.id}`;
+    const p = this.plans.find((x) => x.slug === r.locator);
+    const d = el("div", `w-plan${key === this.selKey ? " sel" : ""}`);
+    d.dataset.key = key;
+    const top = el("div", "w-plan-top");
+    const t = el("span", "w-plan-t");
+    t.append(marked(p?.title || r.title, this.query));
+    t.title = p?.title || r.title;
+    top.append(t);
+    if (p?.phase) top.append(el("span", `w-plan-ph ${p.phase}`, p.phase === "implementing" ? "working" : p.phase));
+    d.append(top);
+    const st = p ? planState(p) : null;
+    d.append(el("div", "w-plan-sub", [r.locator, st ? st.said : ""].filter(Boolean).join(" · ")));
+    if (st && st.dots.length) {
+      const strip = el("div", "w-plan-strip");
+      for (const x of st.dots) {
+        const dot = el("span", `w-plan-dot ${x.mark}`, x.mark === "done" ? "✓" : x.mark === "blocked" ? "✗" : x.mark === "now" ? "◐" : "○");
+        dot.title = x.title;
+        strip.append(dot);
+      }
+      d.append(strip);
+    }
+    const acts = el("div", "w-plan-acts");
+    const chip = (label: string, cls: string, title: string, sub: string) => {
+      const b = button(label, `w-chip ${cls}`);
+      b.title = title;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.selectKey(key);
+        void this.open(r, sub, e);
+      });
+      acts.append(b);
+      return b;
+    };
+    chip("Plan", "", "the plan's working page, in the sheet; ⌘-click in cmux", "working");
+    const sc = p?.scenarios;
+    if (sc) {
+      const last = sc.last;
+      const label = !last ? `Scenarios ${sc.count} · not judged`
+        : `Scenarios ${last.met}/${last.total}${last.failing.length ? ` ✗ ${last.failing.map((f) => f.id).join(" ")}` : " ✓"}`;
+      const cls = sc.waiting ? "needs" : !last ? "" : last.pass ? "good" : "bad";
+      const b = chip(sc.waiting ? `${label} · ${sc.waiting} to answer` : label, cls,
+        [last ? `last judged ${age(last.at)} ago${last.full ? "" : " (some carried from earlier runs)"}` : "not judged yet",
+          ...(last?.failing ?? []).map((f) => `${f.id} ${f.title}: ${f.score.toFixed(2)}`),
+          sc.waiting ? `${sc.waiting} revision(s) wait for you on the scenarios page` : ""].filter(Boolean).join("\n"), "scenarios");
+      b.setAttribute("aria-label", `scenarios: ${b.title.replace(/\n/g, "; ")}`);
+    }
+    chip("Review", "", "the plan's review page and quiz", "review");
+    chip("Markdown", "", "the plan as markdown", "md");
+    d.append(acts);
+    d.addEventListener("click", (e) => {
+      this.selectKey(key);
+      void this.open(r, "", e);
+    });
+    this.acts.set(key, { row: r, open: (e) => void this.open(r, "", e), copy: r.path ? () => void this.copy(r.path, "the path") : undefined, scenarios: p?.scenarios ? () => void this.open(r, "scenarios") : undefined });
+    return d;
   }
 
   /** A list item holding a lane or a review row inside a card's list. */
@@ -1846,6 +1912,10 @@ ${p.url}`;
         break;
       case "t":
         this.setMode(this.mode === "shelves" ? "timeline" : "shelves");
+        break;
+      case "s":
+        if (act?.scenarios) act.scenarios();
+        else this.toast(act ? "only a plan with scenarios has them" : "pick something first: j");
         break;
       case "r":
         if (r?.session_id) void this.copy(resumeCmd(r), "the resume command");

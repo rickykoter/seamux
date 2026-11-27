@@ -293,6 +293,44 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
       await pastq.fill("");
       await page.waitForTimeout(300);
     }
+    // A plan is a card on Plans and asks: its increments, and one click to its
+    // pages; the Scenarios chip says how the last run went.
+    await wake.locator(".w-ws").selectOption(treeOf(byKey.api));
+    const card = wake.locator('.w-shelf[data-shelf="plans"] .w-plan').first();
+    await card.waitFor({ timeout: 8000 }).catch(() => {});
+    const chips = await card.locator(".w-chip").allTextContents();
+    say(chips.length === 4 && chips[0] === "Plan" && /^Scenarios 5\/6 ✗ s4$/.test(chips[1]) && chips[2] === "Review" && chips[3] === "Markdown",
+      "a plan's card has its chips, the scenarios' last run on one", chips.join(" | "));
+    say((await card.locator(".w-plan-dot").count()) === 3 && /increment 2 of 3 · 2 checks to go/.test(await card.locator(".w-plan-sub").textContent()),
+      "a plan's card shows its increments and the open one's checks", await card.locator(".w-plan-sub").textContent());
+    const tabsBefore = await page.locator(".dockview .sheet [role=tab]").count();
+    let asked = [];
+    await page.exposeFunction("__askedOpen", (a) => asked.push(a)).catch(() => {});
+    await page.evaluate(() => {
+      const T = window.__TAURI_INTERNALS__;
+      if (T.__openSpy) return;
+      T.__openSpy = true;
+      const was = T.invoke.bind(T);
+      T.invoke = (cmd, a, o) => { if (cmd === "wake_open") window.__askedOpen(a); return was(cmd, a, o); };
+    });
+    await card.locator(".w-chip", { hasText: "Scenarios" }).click();
+    await page.waitForTimeout(500);
+    say(asked.some((a) => a.sub === "scenarios"), "the Scenarios chip opens the plan's scenarios page", JSON.stringify(asked));
+    asked = [];
+    // The page took the sheet: back to the Wake's tab.
+    const backToWake = () => page.locator(".dockview .sheet [role=tab]", { hasText: "Wake" }).first().click();
+    await backToWake();
+    await page.waitForTimeout(300);
+    await wake.locator(".w-head").click({ position: { x: 4, y: 4 } });
+    const pk = await card.getAttribute("data-key");
+    for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
+    for (let i = 0; i < 60 && (await sel(page)) !== pk; i++) await page.keyboard.press("j");
+    await page.keyboard.press("s");
+    await page.waitForTimeout(400);
+    say(asked.some((a) => a.sub === "scenarios"), "s on a picked plan opens its scenarios", `${pk} ${JSON.stringify(asked)} (tabs ${tabsBefore})`);
+    await backToWake();
+    await page.waitForTimeout(300);
+
     // A recording saved in the worktree is marked "repo" (checkout-flow's mp4).
     await wake.locator(".w-ws").selectOption(treeOf(byKey.checkout));
     const mp4 = wake.locator(".w-thumb", { hasText: "coupon-error-flow.mp4" });

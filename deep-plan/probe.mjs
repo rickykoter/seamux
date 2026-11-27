@@ -9401,6 +9401,14 @@ console.log(JSON.stringify([logSlugs(["scn-a"], "b"), logSlugs(["scn-a", "scn-z"
     r.status !== 0 && chk("scn-a").status === "fail" && chk("scn-a").fails === 1 &&
     /1 of 2 met the threshold 0\.7/.test(r.stdout) && /0\.30 {2}s2 {2}A dead letter is kept/.test(r.stdout) &&
     !/REASON|SECRET|dead-letter path/.test(r.stdout + JSON.stringify(chk("scn-a"))), r.stdout);
+  {
+    const row = JSON.parse(sc("status", "--json").stdout).find(x => x.slug === "scn-a") || {};
+    const s = row.scenarios || {};
+    ok("status --json: a plan's scenarios summary, titles and scores only (the Wake's plan card)",
+      s.count === 2 && s.last && s.last.pass === false && s.last.met === 1 && s.last.total === 2 &&
+      s.last.failing.length === 1 && s.last.failing[0].id === "s2" && s.last.failing[0].title === "A dead letter is kept" && s.waiting === 0 &&
+      !/REASON|SECRET|dead-letter path/.test(JSON.stringify(s)), JSON.stringify(s));
+  }
   ok("scenarios judge: the schema and prompt ask for a cause below 1, and say what product, harness and scenario mean",
     j.args.some(a => /"cause":\{"type":"string","enum":\["product","harness","scenario"\]\}/.test(a)) &&
     /harness: you could not run what the scenario needs/.test(j.prompt) && /scenario: the scenario asks for something/.test(j.prompt), j.args.join(" ").slice(0, 400));
@@ -9618,6 +9626,8 @@ d.scenarios.find(s => s.id === "s2").hintApproved = true; fs.writeFileSync(f, JS
   ok("scenarios revise: while proposals wait, neither the judge nor revise runs a model again",
     r.status === 3 && /wait for the person/.test(r2.stdout) && calls().length === nCalls &&
     /stale: 2 proposed revision\(s\) after an amend wait for the person/.test(sc("scenarios", "list", "scn-a").stdout), r.stdout + r2.stdout);
+  ok("status --json: revisions waiting on the person show in the plan's scenarios summary",
+    ((JSON.parse(sc("status", "--json").stdout).find(x => x.slug === "scn-a") || {}).scenarios || {}).waiting === 2);
   g = await fetch(`${B}/scenarios/scn-a?k=${KEY}`);
   const rhtml = await g.text();
   ok("scenarios page: it shows the amendments and each proposal beside what it changes, with the writer's why",

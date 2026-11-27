@@ -1,7 +1,7 @@
 // node app/ui/wakeshelf_probe.ts — the Wake's shelves and turn cards
 // (wakeshelf.ts), a pure module, which Node runs as TypeScript.
 import {
-  backgroundTask, incrementAt, laneStates, lanesOf, atRiskFirst, needsOf, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
+  backgroundTask, incrementAt, laneStates, lanesOf, atRiskFirst, kept, needsOf, planState, reviewName, shelfOf, shelves, stageSaid, stepKey, timelineOrder, turns,
   type Input, type PlanRow, type ReviewSum, type ShelfPr, type ShelfRow,
 } from "./wakeshelf.ts";
 
@@ -79,7 +79,7 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
     pr(47, "open", "you"),
   ]);
   ok("lanes: needs you, then landings, people, open, draft, done", lanes.map((l) => l.pr.n).join() === "47,39,41,46,45,42,38,36", lanes.map((l) => l.pr.n));
-  ok("lanes: only the newest finished PR shows; older ones fold", lanes.filter((l) => l.fold).map((l) => l.pr.n).join() === "36");
+  ok("lanes: every PR has a lane, finished ones included (none folds away)", lanes.length === 8);
 }
 
 // ------------------------------------------------------------ shelves
@@ -181,6 +181,20 @@ const empty: Input = { ws: WS, rows: [], prs: [], reviews: [], plans: [] };
   ok("reviewName: its own title otherwise", reviewName(review("x", { title: "main vs spike" })) === "main vs spike");
   const tile = needsOf({ ...empty, reviews: [review("r", { stage: "ask", needsPerson: true, addressed: 2, plan: "p", inc: 2, round: { sealed: 2, pending: 2, max: 2, n: 2 } })] })[0];
   ok("needs: a review's tile says its stage in the Reviews shelf's words", tile?.kind === "review" && tile.why === "2 rounds done: your call" && tile.title === "p · increment 2", tile);
+}
+
+// ------------------------------------------------------------ plan cards, kept kinds
+{
+  const p: PlanRow = {
+    slug: "p", title: "P", phase: "implementing", progress: { total: 3, done: 2 },
+    checksOutstanding: [{ n: 3, id: "t", kind: "test", status: "pending" }, { n: 1, id: "old", kind: "manual", status: "pending" }],
+    increments: [{ n: 1, title: "a", status: "done" }, { n: 2, title: "b", status: "done" }, { n: 3, title: "c", status: "working" }],
+  };
+  const st = planState(p);
+  ok("planState: a mark per increment", st.dots.map((d) => d.mark).join() === "done,done,now" && st.now === 3);
+  ok("planState: says the open increment and its checks to go (not another increment's)", st.said === "increment 3 of 3 · 1 check to go", st.said);
+  ok("planState: a finished plan says so", planState({ ...p, progress: { total: 3, done: 3 }, increments: p.increments!.map((i) => ({ ...i, status: "done" })) }).said === "every increment done");
+  ok("kept: reviews, plans, asks, pull requests and issues are never folded", ["review", "plan", "ask", "pr", "issue"].every((k) => kept({ kind: k })) && !kept({ kind: "temp" }) && !kept({ kind: "image" }));
 }
 
 console.log(`wakeshelf probe: ${pass} passed, ${fail} failed`);

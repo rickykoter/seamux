@@ -57,11 +57,43 @@ export type ReviewSum = {
 };
 
 /** A plan row from `deep-plan status --json` (wake_plans). */
+/** A plan's sealed scenarios as deep-plan status tells them: how many, the
+ *  last run (titles and scores only) and revisions waiting on the person. */
+export type ScenarioSum = {
+  count: number;
+  last: { at: string; pass: boolean; full: boolean; threshold: number; met: number; total: number; failing: { id: string; title: string; score: number }[] } | null;
+  waiting: number;
+};
+
 export type PlanRow = {
   slug: string;
   title?: string;
+  phase?: string;
+  progress?: { total: number; done: number };
+  checksOutstanding?: { n: number; id: string; kind: string; status: string }[];
+  scenarios?: ScenarioSum;
   increments?: { n: number; title: string; status: string; authorizedAt?: number; doneAt?: number }[];
 };
+
+/** Kinds the Wake never folds, caps or hides: few, and what the person
+ *  navigates by. The store's read keeps them too (crew-board WAKE_KEEP). */
+export const KEPT_KINDS = new Set(["review", "plan", "ask", "pr", "issue"]);
+export const kept = (r: { kind: string }) => KEPT_KINDS.has(r.kind);
+
+/** A plan card's increment strip and status line, from deep-plan status. */
+export function planState(p: PlanRow): { dots: { n: number; title: string; mark: string }[]; said: string; now: number | null } {
+  const inc = p.increments ?? [];
+  const mark = (s: string) => (s === "done" ? "done" : s === "blocked" ? "blocked" : s === "working" || s === "authorized" ? "now" : "todo");
+  const dots = inc.map((i) => ({ n: i.n, title: `${i.n}. ${i.title} · ${i.status}`, mark: mark(i.status) }));
+  const open = inc.find((i) => i.status === "working" || i.status === "authorized" || i.status === "blocked");
+  const total = p.progress?.total ?? inc.length;
+  const done = p.progress?.done ?? inc.filter((i) => i.status === "done").length;
+  const out = (p.checksOutstanding ?? []).filter((c) => !open || c.n === open.n);
+  const said = total && done === total ? "every increment done"
+    : open ? `increment ${open.n} of ${total}${out.length ? ` · ${out.length} check${out.length === 1 ? "" : "s"} to go` : " · checks passed"}`
+    : `${done} of ${total} done`;
+  return { dots, said, now: open ? open.n : null };
+}
 
 /** `R` is the caller's own row type: the rows come back as given. */
 export type Input<R extends ShelfRow = ShelfRow> = {
@@ -86,8 +118,6 @@ export type Lane = {
   pr: ShelfPr;
   /** review, checks, merged, landed */
   states: [LaneState, LaneState, LaneState, LaneState];
-  /** Shown only after "older": landed or closed, past the newest one. */
-  fold: boolean;
 };
 
 /** The shelves, in the order they show. Empty ones are left for the page to hide. */
@@ -195,14 +225,11 @@ function laneRank(p: ShelfPr): number {
   return 6;
 }
 
+/** Every pull request's lane, what needs the person first. None is folded
+ *  away: pull requests are one of the kinds the Wake always shows. */
 export function lanesOf(prs: ShelfPr[]): Lane[] {
   const sorted = prs.map((p, i) => ({ p, i })).sort((a, b) => laneRank(a.p) - laneRank(b.p) || a.i - b.i);
-  let shownDone = 0;
-  return sorted.map(({ p }) => {
-    const finished = laneRank(p) === 6;
-    const fold = finished && shownDone++ >= 1;
-    return { key: prKey(p), pr: p, states: laneStates(p), fold };
-  });
+  return sorted.map(({ p }) => ({ key: prKey(p), pr: p, states: laneStates(p) }));
 }
 
 /** At risk first, then what lasts, then what is gone; newest first within
@@ -245,7 +272,7 @@ export function shelves<R extends ShelfRow>(inp: Input<R>): Shelves<R> {
     ...live.map(reviewKey),
     ...past.map(reviewKey),
     ...plans.map(rowKey),
-    ...lanes.filter((l) => !l.fold).map((l) => l.key),
+    ...lanes.map((l) => l.key),
     ...pictures.map(rowKey),
     ...files.map(rowKey),
     ...commits.map(rowKey),

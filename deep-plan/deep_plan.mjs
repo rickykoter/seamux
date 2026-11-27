@@ -6175,6 +6175,25 @@ function shownStatus(v, status = v.status) {
   return status === "running" && runnerGone(v) ? "lost" : status;
 }
 
+// A plan's sealed scenarios as `scenarios list` tells them to anyone: how
+// many, the last run's verdict and what fell short (titles and scores only,
+// never a step or a reason), and revisions waiting on the person. null with
+// no scenarios. The seamux app's Wake draws it on the plan's card.
+function scenarioSummary(slug) {
+  const t = SCN.titles(slug);
+  if (!t) return null;
+  const v = SCN.lastVerdict(slug);
+  const r = SCN.revisionState(slug);
+  const scores = v ? v.scores || [] : [];
+  const th = v ? v.threshold : 0;
+  return {
+    count: t.count,
+    last: v ? { at: v.at, pass: !!v.pass, full: !!v.full, threshold: th, met: scores.filter(s => s.score >= th).length, total: scores.length,
+      failing: scores.filter(s => s.score < th).map(s => ({ id: s.id, title: s.title, score: s.score })) } : null,
+    waiting: r.stale ? r.waiting : 0,
+  };
+}
+
 function statusRows() {
   const fams = familiesBySlug();
   return allStates().filter(st => st.phase !== "closed").map(st => ({
@@ -6211,6 +6230,7 @@ function statusRows() {
     // checks folded to one word, for a pane built before checks.
     // Where the repo policy came from at the last render (lib/policy.mjs).
     ...(st.policy ? { policy: st.policy } : {}),
+    ...((sc => sc ? { scenarios: sc } : {})(scenarioSummary(st.slug))),
     increments: (st.increments || []).map(i => ({
       n: i.n, title: i.title, status: i.status, obs: checksAggregate(i), by: i.by || "",
       // When the increment's go came and when it was done (ms, 0 when not

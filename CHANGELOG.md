@@ -6,6 +6,30 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **The Wake at real scale.** Judged on a worktree of over a thousand rows,
+  most of them temp files long gone. Gone files and pictures now wait
+  behind a "▸ N gone" fold after what is at risk and what lasts, and a turn
+  that left only gone files is one line. A background task's notification
+  no longer titles a Timeline card: its rows join the prompt you typed
+  before it, as "+N background tasks". An increment has one name
+  everywhere ("wake-shelves · increment 7"). The header counts what is
+  left. The risk tile says how many files and pictures will be lost and a
+  click shows them; keeping them all is its button. A failing pull request
+  the board files elsewhere is named under Needs you. Folds and day
+  headings are stops on the j/k walk, keys that can't act say why, and the
+  keys help is grouped.
+- **Reviews, plans, asks and pull requests are never hidden.** The Wake
+  shows them all, unfolded, on Shelves and in Timeline cards, and the
+  store's read brings them back whole when a worktree's rows pass its limit
+  (`WAKE_KEEP` in crew-board).
+- **Plan cards.** Each plan on Plans and asks is a card: its phase, the
+  increment it is on and that increment's checks still to run, a strip of
+  its increments, and chips for its Plan, Scenarios, Review and Markdown
+  pages. The Scenarios chip says how the last run went ("12/13 ✗ s8", or
+  how many revisions wait for you). `s` opens a picked plan's scenarios.
+  `deep-plan status --json` gives each plan a `scenarios` summary for it:
+  the count, the last run's titles and scores, and revisions waiting.
+
 - **The Wake, on shelves.** The Wake now opens on shelves in a fixed order:
   Needs you, Reviews, Plans and asks, Pull requests and landings, Pictures
   and recordings, Files, and Commits. Reviews shows each lookout review in
