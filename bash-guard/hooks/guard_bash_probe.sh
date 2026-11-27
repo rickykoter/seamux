@@ -234,6 +234,26 @@ git init -q --bare "$rorigin"
 git -C "$repo" -c user.email=probe@example.invalid -c user.name=probe commit -q --allow-empty -m probe
 git -C "$repo" remote add origin "$rorigin"
 git -C "$repo" push -q -u origin feat/y 2>/dev/null
+# Repos whose origin is on GitHub, for a merge's PR: o/r on feat/y, and x/y.
+ghrepo="$(mktemp -d "${TMPDIR:-/tmp}/guard-ghrepo.XXXXXX")"
+otherrepo="$(mktemp -d "${TMPDIR:-/tmp}/guard-other.XXXXXX")"
+for r in "$ghrepo" "$otherrepo"; do
+  git -C "$r" init -q -b feat/y 2>/dev/null || { git -C "$r" init -q && git -C "$r" checkout -q -b feat/y; }
+done
+git -C "$ghrepo" remote add origin https://github.com/o/r.git
+git -C "$otherrepo" remote add origin git@github.com:x/y.git
+# A fork's checkout: origin is the fork, and gh resolves to upstream, or to
+# the remote gh repo set-default marked.
+forkrepo="$(mktemp -d "${TMPDIR:-/tmp}/guard-fork.XXXXXX")"
+git -C "$forkrepo" init -q -b feat/y 2>/dev/null || { git -C "$forkrepo" init -q && git -C "$forkrepo" checkout -q -b feat/y; }
+git -C "$forkrepo" remote add origin https://github.com/me/r.git
+git -C "$forkrepo" remote add upstream https://github.com/o/r.git
+setrepo="$(mktemp -d "${TMPDIR:-/tmp}/guard-set.XXXXXX")"
+git -C "$setrepo" init -q -b feat/y 2>/dev/null || { git -C "$setrepo" init -q && git -C "$setrepo" checkout -q -b feat/y; }
+git -C "$setrepo" remote add origin https://github.com/me/r.git
+git -C "$setrepo" remote add upstream https://github.com/o/r.git
+git -C "$setrepo" remote add mine https://github.com/z/r.git
+git -C "$setrepo" config remote.mine.gh-resolved base
 for mode in $modes; do
   # A git block: runnable, with the session and the folder.
   fresh
@@ -323,6 +343,85 @@ assert d["pane"]=="P-1" and d["workspace"]=="W-1" and isinstance(d["at"], int), 
   tmux_hook "$mode" "$bh" 'git push --force-with-lease origin session' s1
   [ "$rc" = 2 ] || fail "[$mode] branch named like a key: want block, exit $rc"
   runs=$((runs + 4))
+  # A held merge names its PR for the allow, with its repository: the URL's,
+  # or the cwd's origin for a number or the branch a bare merge resolves to.
+  # An approval is only ever copied.
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge 12 --squash --match-head-commit 0123456789abcdef0123456789abcdef01234567' s1 "$ghrepo"
+  [ "$rc" = 2 ] || fail "[$mode] held merge: want block, exit $rc"
+  held_is "$bh" "[$mode] merge" 'assert d["kind"]=="run" and d["reason"]=="gh pr merge" and d["pr"]=="o/r#12" and d["branch"] is None, d'
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge https://github.com/o/r/pull/12 --auto --merge' s1 /tmp
+  held_is "$bh" "[$mode] merge by URL" 'assert d["pr"]=="o/r#12", d'
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge --squash' s1 "$ghrepo"
+  held_is "$bh" "[$mode] bare merge" 'assert d["pr"]=="o/r:feat/y", d'
+  for c in 'gh pr merge 12 --admin' 'gh -R o/r pr merge 12' 'gh pr merge 12 --body "x"' 'gh pr merge 12 13' 'gh pr merge 12; gh pr merge 13' \
+    'gh pr merge 12 && git clean -fd' 'git switch main && gh pr merge --squash' 'gh api -X PUT repos/o/r/pulls/12/merge' \
+    'cd /x && gh pr merge 12'; do
+    fresh
+    tmux_hook "$mode" "$bh" "${c//\"/\\\"}" s1 "$ghrepo"
+    held_is "$bh" "[$mode] $c" 'assert d["pr"] is None, d'
+  done
+  # In a fork's checkout the PR is the repo gh resolves to (delivery f3).
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 "$forkrepo"
+  held_is "$bh" "[$mode] merge in a fork" 'assert d["pr"]=="o/r#12", d'
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 "$setrepo"
+  held_is "$bh" "[$mode] merge with gh's default set" 'assert d["pr"]=="z/r#12", d'
+  # A number with no GitHub origin in the cwd names no PR.
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 /tmp
+  held_is "$bh" "[$mode] merge outside a repo" 'assert d["pr"] is None, d'
+
+  fresh
+  tmux_hook "$mode" "$bh" 'gh pr review 12 --approve'
+  [ "$rc" = 2 ] || fail "[$mode] approval: want block, exit $rc"
+  held_is "$bh" "[$mode] approval" 'assert d["kind"]=="copy" and d["pr"] is None, d'
+  # The session allow's merge list: a listed PR's merge goes through for that
+  # session only; an approval never does, and a force push does not ride on it.
+  fresh
+  mkdir -p "$bh/.cache/cmux-crew/allow"
+  printf '{"session": "s1", "forcePush": [], "merge": ["o/r#12", "o/r#7", "o/r:feat/y"], "at": 1}\n' >"$bh/.cache/cmux-crew/allow/s1.json"
+  for c in "gh pr merge 12 --squash|s1|$ghrepo" "gh pr merge 12 --auto --squash --match-head-commit 0123456|s1|$ghrepo" \
+    'gh pr merge https://github.com/o/r/pull/7|s1|/tmp' 'gh pr merge https://github.com/o/r/pull/12|s1|/tmp' "gh pr merge --squash|s1|$ghrepo"; do
+    IFS='|' read -r cc cs cw <<<"$c"
+    tmux_hook "$mode" "$bh" "$cc" "$cs" "$cw"
+    [ "$rc" = 0 ] || fail "[$mode] allowed merge: want allow, exit $rc: $cc"
+    runs=$((runs + 1))
+  done
+  no_held "$bh" "[$mode] allowed merges"
+  for c in "gh pr merge 12 --squash|s2|$ghrepo" "gh pr merge 13 --squash|s1|$ghrepo" "gh pr merge 12 --admin|s1|$ghrepo" \
+    "gh -R x/y pr merge 12|s1|$ghrepo" 'gh pr merge https://github.com/x/y/pull/12|s1|/tmp' "gh pr review 12 --approve|s1|$ghrepo" \
+    "gh pr merge 12 && gh pr merge 13|s1|$ghrepo" "gh pr merge 12; git reset --hard|s1|$ghrepo" "git push --force-with-lease origin 12|s1|$ghrepo" \
+    "gh api -X PUT repos/o/r/pulls/12/merge|s1|$ghrepo" "gh pr merge 12|s1|$otherrepo" "gh pr merge 12|s1|/tmp" \
+    "cd $otherrepo && gh pr merge 12|s1|$ghrepo"; do
+    IFS='|' read -r cc cs cw <<<"$c"
+    tmux_hook "$mode" "$bh" "$cc" "$cs" "$cw"
+    [ "$rc" = 2 ] || fail "[$mode] merge not allowed ($cs): want block, exit $rc: $cc"
+    runs=$((runs + 1))
+  done
+  # An allow may list the PR as the command names it, as the plan says: a
+  # number, a URL, or a branch.
+  printf '{"session": "s1", "forcePush": [], "merge": ["12", "https://github.com/o/r/pull/7", "feat/y"], "at": 1}\n' >"$bh/.cache/cmux-crew/allow/s1.json"
+  for c in 'gh pr merge 12 --squash|s1|/tmp' 'gh pr merge https://github.com/o/r/pull/7|s1|/tmp' "gh pr merge --squash|s1|$ghrepo"; do
+    IFS='|' read -r cc cs cw <<<"$c"
+    tmux_hook "$mode" "$bh" "$cc" "$cs" "$cw"
+    [ "$rc" = 0 ] || fail "[$mode] merge allowed as named: want allow, exit $rc: $cc"
+    runs=$((runs + 1))
+  done
+  for c in 'gh pr merge 13|s1|/tmp' 'gh pr merge 12|s2|/tmp' 'gh pr merge https://github.com/o/r/pull/12|s1|/tmp' 'gh pr merge 12 --admin|s1|/tmp'; do
+    IFS='|' read -r cc cs cw <<<"$c"
+    tmux_hook "$mode" "$bh" "$cc" "$cs" "$cw"
+    [ "$rc" = 2 ] || fail "[$mode] merge not allowed as named: want block, exit $rc: $cc"
+    runs=$((runs + 1))
+  done
+  # Only the merge list counts: a PR named in forcePush is not a merge allow.
+  printf '{"session": "s1", "forcePush": ["12"], "at": 1}\n' >"$bh/.cache/cmux-crew/allow/s1.json"
+  tmux_hook "$mode" "$bh" 'gh pr merge 12' s1 "$ghrepo"
+  [ "$rc" = 2 ] || fail "[$mode] forcePush list as a merge allow: want block, exit $rc"
+  runs=$((runs + 1))
   # Two blocked pushes: no allow is offered for either.
   fresh
   tmux_hook "$mode" "$bh" 'git push --force-with-lease origin a; git push --force-with-lease origin b'

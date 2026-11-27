@@ -1463,6 +1463,7 @@ export function deepPlanCalls(cmd, depth = 0) {
 export function trustOverride(cmd) {
   const c = String(cmd || "").slice(0, CALL_SCAN_MAX);
   if (/\bDEEP_PLAN_FROM_SERVE\b/.test(c)) return "sets DEEP_PLAN_FROM_SERVE, the server's own mark";
+  if (/\bDEEP_PLAN_SHIP_WAIT\b/.test(c)) return "sets DEEP_PLAN_SHIP_WAIT, ship's own wait's mark";
   if (/\bCLAUDE(_CODE)?_SESSION_ID\s*=|-u\s*CLAUDE(_CODE)?_SESSION_ID\b|\bunset\b[^;&|\n]*\bCLAUDE(_CODE)?_SESSION_ID\b/.test(c)) return "changes the session id";
   if (/-u\s*CLAUDECODE\b|--unset[= ]CLAUDECODE\b|\bCLAUDECODE=(?!1\b)|\bunset\b[^;&|\n]*\bCLAUDECODE\b|\benv\s+(-\S+\s+)*-i\b|\benv\s+(-\S+\s+)*--ignore-environment\b/.test(c))
     return "unsets or empties CLAUDECODE";
@@ -1501,6 +1502,11 @@ export function onHumansWord(calls) {
     if (c.words.some((w, k) => (w === "--by" && c.words[k + 1] === "human") || w === "--by=human")) return "--by human";
     if (["go", "done", "check", "render", "deliver"].includes(c.verb) && c.words.includes("--force")) return `${c.verb} --force`;
     if (c.verb === "go" || c.verb === "close") return c.verb;
+    // The person's "ship it" (ship-and-land): a merge below auto-merge is
+    // theirs. A dry run only reads. `ship --wait --merge` merges too, so it is
+    // one; ship's own detached wait is no Bash call and the CLI does not count
+    // it (DEEP_PLAN_SHIP_WAIT).
+    if (c.verb === "ship" && c.words.includes("--merge") && !c.words.includes("--dry-run")) return "ship --merge";
   }
   return "";
 }

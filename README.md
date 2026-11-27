@@ -453,6 +453,23 @@ leak secrets or rewrite shared history, and tells Claude to ask you instead:
 `rm -rf` on a home or root folder, a force push, `git reset --hard`, `curl |
 sh`, `--no-verify`, destructive SQL and more.
 
+PR merges and approvals are yours too, in every Claude session. bash-guard
+holds:
+
+- `gh pr merge` with any flags, `--auto` included (`--disable-auto` alone
+  goes through: it only stops an auto-merge);
+- a merge through `gh api` or `curl` at GitHub's API: a PUT on a pull's
+  merge endpoint, or GraphQL's `mergePullRequest` or
+  `enablePullRequestAutoMerge`, with the PR, the endpoint or the query in a
+  variable or a file too;
+- an approval: `gh pr review --approve` (or `-a`), or an approving review
+  through the API.
+
+At auto-merge the merge is `deep-plan ship`'s, whose own `gh` calls are no
+Bash command, so no hook holds them; below it the merge is yours, on GitHub
+or with `deep-plan ship <slug> --merge`. A held merge can be allowed for its
+PR for the rest of the session (below); an approval only ever copies.
+
 In a pane of the seamux app's own tmux, a refused command doesn't stop
 there. A banner over Claude's prompt shows the whole command and why it was
 refused, and the workspace's Dock card moves to *needs you* with the same
@@ -465,6 +482,8 @@ choices:
   refused in, out of the conversation.
 - **Run and allow `<branch>` this session**, for a force push, also lets a
   leased push to that branch through for the rest of the Claude session.
+  For a held PR merge it is **Run and allow PR `#n` this session**, and a
+  merge of that PR in that repo goes through after. An approval is copy only.
 - **Copy** and **Dismiss**.
 
 Run is offered for one-line git commands only. Anything else, including a

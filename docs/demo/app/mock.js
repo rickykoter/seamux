@@ -210,7 +210,10 @@ pane(W.search.surface, {
     ...tool("Bash", "deep-plan done 3", "increment 3 done · plan search-index done (3/3)"),
     ...tool("Bash", "gh pr create --fill", `https://github.com/${GH}/pull/41`),
     ...you("merge it"),
-    ...tool("Bash", "gh pr merge 41 --squash", `${C.ok("✓")} Squashed and merged pull request #41`),
+    ...tool("Bash", "gh pr merge 41 --squash", "Blocked by bash-guard: gh pr merge", "A PR merge is yours: the banner above can run it."),
+    C.user("! gh pr merge 41 --squash "),
+    `  ${C.ok("✓")} Squashed and merged pull request #41`,
+    "",
     ...say(
       "Merged. PR #41 reindexes search when a product is renamed:",
       "",
@@ -224,21 +227,21 @@ pane(W.search.surface, {
 });
 const zsh = (dir, cmd) => `${C.ok("sam")}${C.dim("@demo")} ${C.cyan(dir)} ${C.dim("%")} ${cmd}`;
 pane(W.docs.surface, {
-  shell: true,
   body: () => [
-    zsh("docs-copy", "git log --oneline -4"),
-    `${C.yellow("c81e0f4")} docs: shorter checkout help text`,
-    `${C.yellow("5a9d2b7")} docs: coupon codes in the FAQ`,
-    `${C.yellow("e03b6c1")} docs: link the returns page`,
-    `${C.yellow("91f4a8e")} shop: cart, totals, checkout`,
-    zsh("docs-copy", "npm run lint"),
-    "",
-    "> shop@0.3.0 lint",
-    "> node scripts/lint.mjs",
-    "",
-    `${C.ok("✓")} 23 files, 0 problems`,
+    ...welcome(W.docs),
+    ...you("go 1"),
+    ...tool("Update", "docs/help/coupons.md", "Updated docs/help/coupons.md with 22 additions"),
+    ...tool("Bash", "npm run lint", `${C.ok("✓")} 23 files, 0 problems`),
+    ...tool("Bash", "deep-plan deliver docs-copy", "plan docs-copy delivered (1/1)"),
+    ...tool("Bash", "deep-plan ship docs-copy", "pushed sam/docs-copy; opened " + `https://github.com/${GH}/pull/45`, "at auto-pr, PR #45 is open for a person to merge"),
+    ...you("merge it"),
+    ...tool("Bash", "gh pr merge 45 --squash", "Blocked by bash-guard: gh pr merge", "A PR merge is yours: the banner above can run it."),
+    ...say(
+      "bash-guard held the merge for you. Run it from the banner (or allow PR #45 for this session),",
+      "or press Ship it at the PR's Merge stage in Lookout, which merges it through deep-plan ship.",
+    ),
   ],
-  prompt: () => zsh("docs-copy", ""),
+  mode: "? for shortcuts",
 });
 pane(W.api.shell.surface, {
   shell: true,
@@ -528,7 +531,9 @@ const OTHER_FINDINGS = {
 // The workspaces' PRs (land_watch.rs workspace_prs: crew-sync's lists with
 // their worktree), the landing of #41's merge (landing_get), and what ship
 // says of each open PR's worktree (ship_view). #41 and #44 are the PRs the
-// reviews above cover; #43 is one no review covers yet.
+// reviews above cover; #43 is one no review covers yet. #45 is a delivered
+// plan at auto-pr with green checks: the Merge stage offers Ship it there,
+// and the mock's ship_merge merges it.
 const MERGE_41 = "4f1c2ab9e07d3c5a81b6e2d94f0a7c3e5b8d1f26";
 const prUrl = (n) => `https://github.com/${GH}/pull/${n}`;
 const prRow = (w, o) => ({ cwd: treeOf(w), ws: w.id, ws_title: w.title, url: prUrl(o.n), review: "", conflict: false, failing: [], gating: [], ...o });
@@ -542,6 +547,7 @@ const PRS = [
     n: 43, title: "Clear errors for bad coupon codes", state: "draft", checks: { fail: 1, run: 0, pass: 5, gate: 0, unseen: 0 },
     failing: [{ name: "test / checkout", url: `https://github.com/${GH}/actions/runs/1187` }],
   }),
+  prRow(W.docs, { n: 45, title: "Coupon codes in the help pages", state: "open", review: "", checks: { fail: 0, run: 0, pass: 3, gate: 0, unseen: 0 } }),
 ];
 const landStage = (name, status, startMin, endMin) => ({ name, status, ...(startMin != null ? { start: ago(startMin) } : {}), ...(endMin != null ? { end: ago(endMin) } : {}) });
 const landing41 = {
@@ -581,10 +587,67 @@ const SHIP = {
   [treeOf(W.checkout)]: {
     plan: "checkout-errors", level: "auto-pr", levelBy: "default (auto-pr)",
     policy: { source: "origin/main", ref: "origin/main", why: "" },
-    gates: [{ gate: "delivered", ok: false, why: "increment 2 of 4 is waiting on you" }],
+    // Its token is a narrow one, without Checks or Commit statuses read: ship
+    // names what it lacks and still reads the checks, from the Actions runs.
+    gates: [
+      { gate: "delivered", ok: false, why: "increment 2 of 4 is waiting on you" },
+      { gate: "token", ok: true, warn: true, missing: ["checks=read", "statuses=read"],
+        why: "the token lacks checks=read, statuses=read (GitHub's X-Accepted-GitHub-Permissions header): ship reads the PR's checks from its Actions runs, where a check from another service is not seen; ship needs pull_requests=write, contents=write, checks=read, statuses=read, statuses=write" },
+      { gate: "ci", ok: true, warn: true, info: true,
+        why: "5 passed, 0 running, 1 failed; failed: test / checkout, read from the head's Actions runs (gh pr checks was refused: GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)); at auto-pr they hold nothing here: the person who merges reads them" },
+    ],
     action: "wait", waits: ["the plan is delivered"],
+    pr: { number: 43, url: prUrl(43), state: "OPEN", draft: true },
+  },
+  [treeOf(W.docs)]: {
+    plan: "docs-copy", level: "auto-pr", levelBy: "docs/help/coupons.md: docs/** (auto-pr)",
+    policy: { source: "base", ref: "origin/main", why: "origin/main:.seamux/policy.json" },
+    gates: [
+      { gate: "delivered", ok: true, why: "the plan is delivered" },
+      { gate: "kept checkout", ok: true, why: "the kept checkout is on main, clean for the landing" },
+      { gate: "pushed", ok: true, why: "the branch is pushed" },
+      { gate: "token", ok: true, why: "the token reads checks and commit statuses" },
+      { gate: "ci", ok: true, info: true, why: "3 passed, 0 running, 0 failed; at auto-pr they hold nothing here: the person who merges reads them" },
+    ],
+    action: "none", waits: [], say: "at auto-pr, PR #45 is open for a person to merge: ship --merge on their word",
+    pr: { number: 45, url: prUrl(45), state: "OPEN", draft: false },
+    observe: { level: "auto-merge", by: "docs/help/coupons.md: docs/**", action: "merge", would: "would merge", waits: [] },
+    status: { state: "success", description: "ship's gates passed at auto-pr; a person merges; observe auto-merge: would merge" },
   },
 };
+// The one held command in the demo: Claude's gh pr merge in the docs pane,
+// held by bash-guard (held_app.rs). "Run and allow" adds its PR to the
+// session's merge allow; an approval would be copy only, with no allow.
+let heldDocs = {
+  pane: W.docs.surface, workspace: W.docs.id, session: "demo-docs", cwd: treeOf(W.docs), reason: "gh pr merge", kind: "run",
+  command: "gh pr merge 45 --squash", truncated: false, branch: null, pr: `${GH}#45`, at: ago(1),
+  run: true, chat: true, allow: `${GH}#45`, allowKind: "merge", lines: 1, idle: true,
+};
+const mergeAllow = [];
+function heldAct(surface, at, act) {
+  if (surface !== W.docs.surface || !heldDocs) throw "nothing is held in this pane now";
+  if (at !== heldDocs.at) throw "a newer command was held since: look again";
+  if (!["ran", "dismiss", "allow"].includes(act)) throw `unknown answer: ${act}`;
+  if (act === "allow") mergeAllow.push(heldDocs.pr);
+  heldDocs = null;
+  return true;
+}
+
+/** ship_merge: deep-plan ship --merge's answer. A verdict that waits on
+ *  nothing merges at once (the PR turns merged, as GitHub would tell crew);
+ *  one that waits says on what, and merges nothing. */
+function shipMerge(cwd) {
+  const v = SHIP[cwd];
+  if (!v || !v.plan) throw "ship acts on a deep-plan plan; this worktree has none";
+  if (v.waits.length) return { ...v, lever: "ship --merge", action: "wait", result: { ok: true, note: "ship waits; run it again once those are met" } };
+  const pr = PRS.find((p) => p.cwd === cwd && p.state === "open");
+  if (!pr) throw "no open PR for this worktree";
+  pr.state = "merged";
+  pr.merge = { sha: "7b2e9d41c08a5f36e1d4b7c90a2f5e83d6c1b049", at: iso(ago(0)), base: "main" };
+  SHIP[cwd] = { ...v, pr: { ...v.pr, state: "MERGED" }, action: "none", say: `PR #${pr.n} is merged`, observe: undefined, status: null };
+  return { ...v, lever: "ship --merge", action: "merge", result: { ok: true, note: `merged PR #${pr.n} on your ship --merge; its landing runs from the app` } };
+}
+
 /** land_act: what the person did at the Land stage, as the watcher tells it. */
 function landAct(merge, recipe, act) {
   if (merge !== MERGE_41) throw "no landing for that merge";
@@ -1256,6 +1319,9 @@ const handlers = {
   ship_view: ({ cwd }) =>
     SHIP[cwd] ?? { plan: null, level: "auto-merge", levelBy: "src/** (auto-merge)", policy: { source: "origin/main", ref: "origin/main", why: "" }, gates: [], action: "none", waits: [] },
   land_act: ({ merge, recipe, act }) => landAct(merge, recipe, act),
+  // The person's Ship it (land_watch.rs ship_merge, deep-plan ship --merge):
+  // it merges a verdict with nothing to wait on, and says what a wait holds.
+  ship_merge: ({ cwd }) => shipMerge(cwd),
 
   radar_frame: radarFrame,
 
@@ -1284,10 +1350,8 @@ const handlers = {
   wake_prs: ({ dir }) => wakePrs(dir),
   bg_shells: ({ surface, tails }) => shellsOf(surface, tails),
   bg_stop: ({ surface, id }) => stopShell(surface, id),
-  pane_held: () => null,
-  held_act: () => {
-    throw "nothing is held in this pane";
-  },
+  pane_held: ({ surface }) => (surface === W.docs.surface ? heldDocs : null),
+  held_act: ({ surface, at, act }) => heldAct(surface, at, act),
   pane_stop: () => null,
   pane_stop_cancel: () => false,
   pty_shell_run: () => null,

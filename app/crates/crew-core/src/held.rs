@@ -6,15 +6,20 @@
 //!
 //! The allow lives at allow/<session>.json and lists branches under
 //! forcePush; guard_bash.sh lets a leased push to a listed branch through for
-//! that session. Only the app writes it, on the person's click.
+//! that session. It lists PRs under merge too (ship-and-land): a held `gh pr
+//! merge` names its PR with its repository (owner/repo#n or owner/repo:branch),
+//! and a merge of a listed PR then passes. Each write keeps the other list.
+//! Only the app writes it, on the person's click.
 
 use crate::status::Pane;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The one reason a session allow can follow: bash-guard's force-push block.
+/// The reasons a session allow can follow: bash-guard's force-push block,
+/// and its hold on a PR merge.
 pub const FORCE_PUSH: &str = "git push --force";
+pub const MERGE: &str = "gh pr merge";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Held {
@@ -31,6 +36,8 @@ pub struct Held {
     pub truncated: bool,
     /// A leased force push's destination, when bash-guard could name it.
     pub branch: Option<String>,
+    /// A held merge's PR with its repository, when bash-guard could name it.
+    pub pr: Option<String>,
     /// Seconds since the epoch, bash-guard's clock.
     pub at: u64,
 }
@@ -48,6 +55,7 @@ impl Held {
             command: s("command"),
             truncated: v.get("truncated").and_then(Value::as_bool).unwrap_or(false),
             branch: v.get("branch").and_then(Value::as_str).filter(|b| branch_ok(b)).map(str::to_string),
+            pr: v.get("pr").and_then(Value::as_str).filter(|p| pr_ok(p)).map(str::to_string),
             at: v.get("at").and_then(Value::as_u64).unwrap_or(0),
         };
         (!h.command.is_empty() && matches!(h.kind.as_str(), "run" | "copy")).then_some(h)
@@ -75,12 +83,25 @@ impl Held {
         self.branch.as_deref()
     }
 
-    /// What the banner and the Dock are told.
+    /// The PR a "Run and allow PR" click would allow: a merge alone, with its
+    /// PR named and a session to key the allow by.
+    pub fn merge_allowable(&self) -> Option<&str> {
+        (self.runnable() && self.reason == MERGE && session_ok(&self.session)).then_some(())?;
+        self.pr.as_deref()
+    }
+
+    /// What the banner and the Dock are told: `allow` names what a click
+    /// would allow (a branch, or a PR), and `allowKind` which list it joins.
     pub fn to_json(&self) -> Value {
+        let (allow, kind) = match (self.allowable(), self.merge_allowable()) {
+            (Some(b), _) => (Some(b), Some("push")),
+            (None, Some(p)) => (Some(p), Some("merge")),
+            _ => (None, None),
+        };
         json!({"pane": self.pane, "workspace": self.workspace, "session": self.session, "cwd": self.cwd,
                "reason": self.reason, "kind": self.kind, "command": self.command, "truncated": self.truncated,
-               "branch": self.branch, "at": self.at, "run": self.runnable(), "chat": self.chat(),
-               "allow": self.allowable(), "lines": self.command.lines().count().max(1)})
+               "branch": self.branch, "pr": self.pr, "at": self.at, "run": self.runnable(), "chat": self.chat(),
+               "allow": allow, "allowKind": kind, "lines": self.command.lines().count().max(1)})
     }
 }
 
@@ -91,6 +112,18 @@ pub fn branch_ok(b: &str) -> bool {
         && b.chars().all(|ch| ch.is_ascii_alphanumeric() || "._/-".contains(ch))
         && !b.contains("..")
         && b.len() <= 255
+}
+
+/// A PR as bash-guard names it: owner/repo#n, or owner/repo:branch.
+pub fn pr_ok(p: &str) -> bool {
+    let name = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
+    let repo = |s: &str| s.split_once('/').is_some_and(|(o, r)| name(o) && name(r));
+    p.len() <= 300
+        && match (p.split_once('#'), p.split_once(':')) {
+            (Some((r, n)), None) => repo(r) && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()),
+            (None, Some((r, b))) => repo(r) && branch_ok(b),
+            _ => false,
+        }
 }
 
 /// A session id as bash-guard keeps it.
@@ -179,38 +212,65 @@ pub fn allow_path(dir: &Path, session: &str) -> PathBuf {
     dir.join("allow").join(format!("{session}.json"))
 }
 
-/// The branches a session's allow lists.
-pub fn allowed(dir: &Path, session: &str) -> Vec<String> {
+/// One list of a session's allow: `forcePush` (branches) or `merge` (PRs),
+/// each item checked by `ok`.
+fn listed(dir: &Path, session: &str, key: &str, ok: fn(&str) -> bool) -> Vec<String> {
     if !session_ok(session) {
         return Vec::new();
     }
     fs::read_to_string(allow_path(dir, session))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v.get("forcePush").and_then(Value::as_array).cloned())
+        .and_then(|v| v.get(key).and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .iter()
-        .filter_map(|b| b.as_str().filter(|b| branch_ok(b)).map(str::to_string))
+        .filter_map(|b| b.as_str().filter(|b| ok(b)).map(str::to_string))
         .collect()
+}
+
+/// The branches a session's allow lists.
+pub fn allowed(dir: &Path, session: &str) -> Vec<String> {
+    listed(dir, session, "forcePush", branch_ok)
+}
+
+/// The PRs a session's allow lists for a merge.
+pub fn allowed_merges(dir: &Path, session: &str) -> Vec<String> {
+    listed(dir, session, "merge", pr_ok)
 }
 
 /// Add `branch` to the session's force-push allow, written whole.
 pub fn allow(dir: &Path, session: &str, branch: &str, now_ms: u64) -> Result<(), String> {
-    if !session_ok(session) {
-        return Err("no session to allow it for".into());
-    }
     if !branch_ok(branch) {
         return Err(format!("not a branch name: {branch}"));
     }
-    let mut list = allowed(dir, session);
-    if !list.iter().any(|b| b == branch) {
-        list.push(branch.to_string());
+    add(dir, session, "forcePush", branch, now_ms)
+}
+
+/// Add `pr` (owner/repo#n or owner/repo:branch) to the session's merge allow.
+pub fn allow_merge(dir: &Path, session: &str, pr: &str, now_ms: u64) -> Result<(), String> {
+    if !pr_ok(pr) {
+        return Err(format!("not a PR as bash-guard names one: {pr}"));
+    }
+    add(dir, session, "merge", pr, now_ms)
+}
+
+/// Add `item` to one list of the session's allow, keeping the other: the
+/// file is written whole, with both lists.
+fn add(dir: &Path, session: &str, key: &str, item: &str, now_ms: u64) -> Result<(), String> {
+    if !session_ok(session) {
+        return Err("no session to allow it for".into());
+    }
+    let mut push = allowed(dir, session);
+    let mut merge = allowed_merges(dir, session);
+    let list = if key == "merge" { &mut merge } else { &mut push };
+    if !list.iter().any(|b| b == item) {
+        list.push(item.to_string());
     }
     let p = allow_path(dir, session);
     let parent = p.parent().ok_or("no allow folder")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let tmp = p.with_extension(format!("tmp-{}", std::process::id()));
-    let text = format!("{}\n", json!({"session": session, "forcePush": list, "at": now_ms}));
+    let text = format!("{}\n", json!({"session": session, "forcePush": push, "merge": merge, "at": now_ms}));
     fs::write(&tmp, text).map_err(|e| e.to_string())?;
     fs::rename(&tmp, &p).map_err(|e| {
         let _ = fs::remove_file(&tmp);
@@ -328,5 +388,44 @@ mod tests {
         assert!(allow(&dir, "s1", "a..b", 1).is_err());
         assert!(allow(&dir, "", "dev/x", 1).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_merge_allow_keeps_the_push_allow_and_the_reverse() {
+        let dir = tmp();
+        allow(&dir, "s1", "dev/x", 1).unwrap();
+        allow_merge(&dir, "s1", "o/r#12", 2).unwrap();
+        allow_merge(&dir, "s1", "o/r#12", 3).unwrap();
+        allow_merge(&dir, "s1", "o/r:feat/y", 4).unwrap();
+        allow(&dir, "s1", "feat/z", 5).unwrap();
+        assert_eq!(allowed(&dir, "s1"), vec!["dev/x".to_string(), "feat/z".to_string()]);
+        assert_eq!(allowed_merges(&dir, "s1"), vec!["o/r#12".to_string(), "o/r:feat/y".to_string()]);
+        let text = fs::read_to_string(allow_path(&dir, "s1")).unwrap();
+        // The shape guard_bash.sh reads: quoted names in each array.
+        assert!(text.contains(r#""merge":["o/r#12","o/r:feat/y"]"#) && text.contains(r#""forcePush":["dev/x","feat/z"]"#), "{text}");
+        for bad in ["12", "o/r", "o/r#", "o/r#1x", "o/r:a..b", "../r#1", "o/r#1:b"] {
+            assert!(allow_merge(&dir, "s1", bad, 6).is_err(), "{bad}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_held_merge_offers_its_pr() {
+        let mut v = rec("run", MERGE, "gh pr merge 12 --squash", None);
+        v["pr"] = json!("o/r#12");
+        let h = Held::from_json(&v).unwrap();
+        assert_eq!((h.allowable(), h.merge_allowable()), (None, Some("o/r#12")));
+        let j = h.to_json();
+        assert_eq!((j["allow"].as_str(), j["allowKind"].as_str(), j["pr"].as_str()), (Some("o/r#12"), Some("merge"), Some("o/r#12")));
+        // Beside another reason, or with a PR bash-guard would not name: no allow.
+        let mut v2 = rec("run", "gh pr merge; git reset --hard", "x", None);
+        v2["pr"] = json!("o/r#12");
+        assert_eq!(Held::from_json(&v2).unwrap().merge_allowable(), None);
+        let mut v3 = rec("run", MERGE, "gh pr merge 12", None);
+        v3["pr"] = json!("12");
+        assert_eq!(Held::from_json(&v3).unwrap().pr, None);
+        // An approval is copy only: nothing to allow.
+        let h = Held::from_json(&rec("copy", "gh pr review --approve", "gh pr review 12 --approve", None)).unwrap();
+        assert!(h.to_json()["allow"].is_null());
     }
 }

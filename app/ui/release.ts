@@ -155,21 +155,41 @@ export type ShipView = {
   levelBy: string;
   capped?: string;
   policy: { source: string; ref: string; why: string };
-  gates: { gate: string; ok: boolean; why: string }[];
-  action: "none" | "wait" | "open" | "ready" | "merge" | "merge-when-green" | string;
+  gates: { gate: string; ok: boolean; why: string; warn?: boolean; info?: boolean; missing?: string[] }[];
+  action: "none" | "wait" | "push" | "open" | "ready" | "merge" | "merge-when-green" | string;
   waits: string[];
   say?: string;
+  /** The branch's PR as ship read it, at every level. */
+  pr?: { number: number; url: string; state: string; draft?: boolean } | null;
+  /** What ship would have done at the policy's observe level, acting on none of it. */
+  observe?: { level: string; by: string; action: string; would: string; waits: string[]; capped?: string } | null;
+  /** "ship --merge" on the person's merge through ship. */
+  lever?: string | null;
 };
+
+/** What `deep-plan ship --merge --json` answered the person's Ship it
+ *  (ship_merge in land_watch.rs): the verdict it acted on, and what it did. */
+export type ShipMerged = ShipView & { result?: { ok: boolean; note: string } };
 
 /** The Merge stage's two lines from ship's verdict: the level and where it
  *  came from, and who merges and what ship waits on. Pure, for the probe. */
-export function shipSummary(v: ShipView): { level: string; next: string } {
+export function shipSummary(v: ShipView): { level: string; next: string; observe?: string; reads?: string[] } {
   const from = v.policy.source === "none" ? "no repo policy, so as before" : v.policy.source === "unreadable" ? `the policy could not be read: ${v.policy.why}` : v.levelBy;
   const level = `Policy level: ${v.level} (${from}).`;
   if (!v.plan) return { level, next: "No deep-plan plan is at this worktree, so ship does not act on it: a person opens and merges the PR." };
+  // What ship read of the PR's checks below auto-merge, and a token that
+  // could not read them: lines that hold nothing.
+  const reads = v.gates.filter((g) => (g.gate === "ci" && g.info) || (g.gate === "token" && g.warn))
+    .map((g) => `${g.gate === "ci" ? "Checks" : "Token"}: ${g.why}.`);
+  const o = v.observe;
+  const observe = o ? `Observed at ${o.level} (${o.by}): ship ${o.would}${o.waits.length ? `, once these are met: ${o.waits.join("; ")}` : ""}.` : undefined;
   if (v.level !== "auto-merge" || v.capped) {
     const who = v.level === "auto-pr" ? "ship opens the PR; a person merges it" : "a person opens the PR and merges it";
-    return { level, next: v.capped ? `${v.capped[0].toUpperCase()}${v.capped.slice(1)}.` : `At this level ${who}.` };
+    // Ship's own gates hold a person's merge too (seamux/ship), so they show
+    // at every level (note ne6be8da8).
+    const waits = v.waits.length ? ` Ship's gates wait on: ${v.waits.join("; ")}.` : "";
+    return { level, next: (v.capped ? `${v.capped[0].toUpperCase()}${v.capped.slice(1)}.` : `At this level ${who}.`) + waits,
+      ...(observe ? { observe } : {}), ...(reads.length ? { reads } : {}) };
   }
   if (v.action === "merge") return { level, next: "Every gate has passed: deep-plan ship merges it." };
   if (v.action === "merge-when-green") return { level, next: "deep-plan ship merges it once its checks are green." };
@@ -178,10 +198,32 @@ export function shipSummary(v: ShipView): { level: string; next: string } {
   return { level, next: v.say ? `${v.say[0].toUpperCase()}${v.say.slice(1)}.` : "Nothing for ship to do." };
 }
 
-/** The Merge stage, read-only: merged when and into what, or what stands
- *  between the PR and a merge, and (with ship's verdict) the policy's level
- *  and what ship waits on. Merging is ship's at auto-merge, else GitHub's. */
-export function mergePanel(pr: PrRow, open: (url: string) => void, ship: ShipView | null = null): HTMLElement {
+/** Whether the Merge stage offers the person's Ship it, and if not why:
+ *  below auto-merge (or capped there), with ship's verdict on a plan and an
+ *  open PR. Ship's own gates must pass first; checks still running are
+ *  ship's to wait out. Pure, for the probe. */
+export function shipItOffer(v: ShipView | null): { show: boolean; ready: boolean; why: string } {
+  const none = { show: false, ready: false, why: "" };
+  if (!v || !v.plan || !v.pr || v.pr.state !== "OPEN") return none;
+  if (v.level === "auto-merge" && !v.capped) return none;
+  if (v.waits.length) return { show: true, ready: false, why: `Ship's gates wait on: ${v.waits.join("; ")}` };
+  return { show: true, ready: true, why: `Merge PR #${v.pr.number} through deep-plan ship: every gate still holds it, and it merges once the checks are green` };
+}
+
+/** What the Ship it answer says, in a line. Pure, for the probe. */
+export function shipItSaid(r: ShipMerged): string {
+  const note = r.result?.note ?? "";
+  if (r.action === "wait") return `Ship waits on: ${r.waits.join("; ") || note}.`;
+  if (r.result && !r.result.ok) return `Ship could not: ${note}`;
+  return note ? `${note[0].toUpperCase()}${note.slice(1)}.` : "Done.";
+}
+
+/** The Merge stage: merged when and into what, or what stands between the
+ *  PR and a merge, and (with ship's verdict) the policy's level, what ship
+ *  waits on, what an observed level would do, and the person's Ship it.
+ *  Merging is ship's at auto-merge, else the person's: on GitHub, or here. */
+export function mergePanel(pr: PrRow, open: (url: string) => void, ship: ShipView | null = null,
+  shipIt: (() => Promise<ShipMerged>) | null = null): HTMLElement {
   const box = el("div", "r-stage-panel");
   if (pr.state === "merged") {
     const m = pr.merge;
@@ -200,13 +242,45 @@ export function mergePanel(pr: PrRow, open: (url: string) => void, ship: ShipVie
     if (ship) {
       const s = shipSummary(ship);
       box.append(el("p", "r-detail", s.level), el("p", "r-detail", s.next));
+      for (const r of s.reads ?? []) box.append(el("p", "r-detail", r));
+      if (s.observe) box.append(el("p", "r-detail r-observe", s.observe));
     }
+    const offer = shipItOffer(ship);
+    if (offer.show && shipIt) box.append(shipItButton(ship!, offer, shipIt));
     box.append(el("p", "r-note", ship && ship.level === "auto-merge" && !ship.capped
       ? "Land approvals stay yours; seamux lands the merge once it is in."
+      : offer.show ? "Merge here with Ship it, or on GitHub; seamux lands the merge once it is in."
       : "Merging happens on GitHub; seamux lands the merge once it is in."));
   }
   box.append(button("Open on GitHub", "Open the pull request in the browser", () => open(pr.url)));
   return box;
+}
+
+/** Ship it, in two clicks: the first asks, the second merges. It takes no
+ *  focus when drawn (L12), and says what ship answered under it. */
+function shipItButton(v: ShipView, offer: { ready: boolean; why: string }, go: () => Promise<ShipMerged>): HTMLElement {
+  const wrap = el("div", "r-shipit");
+  const said = el("p", "r-detail");
+  const n = v.pr?.number;
+  const b = button("Ship it", offer.why, () => {
+    if (b.dataset.ask !== "1") {
+      b.dataset.ask = "1";
+      b.textContent = `Merge PR #${n} now`;
+      b.title = "Click again to merge it through deep-plan ship";
+      return;
+    }
+    b.disabled = true;
+    b.textContent = "Shipping…";
+    void go().then(
+      (r) => {
+        const merged = r.action === "merge" && r.result?.ok !== false;
+        said.textContent = shipItSaid(r); b.textContent = merged ? "Merged" : "Ship it"; b.disabled = merged; delete b.dataset.ask;
+      },
+      (e) => { said.textContent = `Ship could not: ${e}`; b.textContent = "Ship it"; b.disabled = false; delete b.dataset.ask; });
+  }, "r-btn primary");
+  if (!offer.ready) b.disabled = true;
+  wrap.append(b, said);
+  return wrap;
 }
 
 export type LandActs = {

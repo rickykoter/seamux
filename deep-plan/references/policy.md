@@ -7,6 +7,7 @@
 - [Where it is read from](#where-it-is-read-from)
 - [What render does with it](#what-render-does-with-it)
 - [Ship](#ship)
+- [Observe](#observe)
 - [The Merge stage](#the-merge-stage)
 
 ## The levels
@@ -50,6 +51,8 @@ default. A change's level is the lowest of its files'.
   require level does. Use it where the judge can run one part of the repo
   (pages against a mock) and not another (a backend).
 - `merge.method`: `merge`, `squash` (the default) or `rebase`.
+- `observe`, on the policy or on an entry: a level above its `default` or
+  `level`, to watch before raising it (see [Observe](#observe)).
 
 `deep-plan policy check` validates the worktree's copy.
 
@@ -96,8 +99,8 @@ changes against its base. A file moved out of a path counts its old path
 too. It then checks each gate and takes one step:
 
 - supervised or auto-go: nothing; it says a person opens and merges the PR.
-- auto-pr: once the plan is delivered and the branch is pushed, it opens
-  the PR against the policy's base, or marks the draft ready.
+- auto-pr: once the plan is delivered, it pushes the branch and opens the
+  PR against the policy's base, or marks the draft ready.
 - auto-merge: the same, and then it merges once every scenarios check
   passed and the newest full judge run passed at HEAD (a retry's carried
   passes do not count; see scenarios.md), the PR targets the policy's base, its head is HEAD, it has no
@@ -106,6 +109,56 @@ too. It then checks each gate and takes one step:
   it, the base requires checks, and every check on the PR is a required
   one; otherwise it starts a detached wait of its own, which looks again
   every minute and stops if HEAD moves or any gate breaks.
+
+Ship pushes the branch itself (`git push -u origin <branch>`) whenever
+HEAD is ahead of origin, and only as a fast-forward. When origin has
+commits HEAD lacks, git refuses the push and ship stops, saying how to
+bring them in; it never forces. The PR body it writes comes from the
+plan: the title, the context's first paragraph, each increment with its
+checks' verdicts, the level and who merges, and where the approved plan
+is.
+
+It reads GitHub the way a fine-grained token allows. Whether the repo
+allows auto-merge comes from GraphQL, and the base's required checks from
+its rulesets before classic branch protection (which needs administration
+read). When `gh pr checks` is refused, the checks come from the head
+commit's Actions runs, where a check from another service is not seen. A
+`token` gate names any permission a read was refused for, from GitHub's
+`X-Accepted-GitHub-Permissions` header, at every level once the PR's head
+is HEAD, and lists what ship needs:
+pull requests write, contents write, checks read, and commit statuses
+read and write. It warns and does not hold. Any other read GitHub refuses on the way is named
+there too: `gh pr checks` refused is checks read, and classic branch
+protection refused is administration read, when the base's rulesets
+require nothing. With checks still running, a dry run reads what a real
+run would (the repo's auto-merge setting and the base's required checks)
+and says whether GitHub's auto-merge or ship's own wait would merge it. A failed check that is also
+red on the base's tip says "also failing on main at <sha>", and still
+holds the merge. Below auto-merge, where ship does not wait on them, the
+PR's checks are still read (from the Actions runs when `gh pr checks` is
+refused) and shown as a `ci` line that holds nothing, for the person who
+merges.
+
+Each run that is not `--dry-run`, and each look of ship's own wait, posts
+a `seamux/ship` commit status on HEAD once origin has it, at every level:
+pending while any of ship's own gates waits (delivered, scenarios,
+stacked, the PR's base), success once they all pass. CI's checks are
+GitHub's to gate, not this status's. A branch with no plan gets success,
+"a person's call". Requiring `seamux/ship` in the base's ruleset makes
+GitHub's merge button wait on ship's gates too, whoever presses it.
+Require it from any source: ship posts it with the person's token, so an
+entry pinned to an app's integration is never met. A merge refused while
+the status could not be posted says why.
+
+A `kept checkout` gate looks at the repo's main worktree, the one a
+landing pulls into: it must be on the base branch with no uncommitted
+tracked changes. At auto-merge a dirty or switched one is a wait that names
+the files; below it, a warning. It is skipped when the plan's root is the
+main worktree.
+
+A PR merged by anyone but ship is recorded in the ship record and the
+plan log: as GitHub's when ship had asked for its auto-merge, otherwise as
+the person's. Ship's wait stops there and says so.
 
 On a family child whose branch still carries its parent's commits, a
 `stacked` gate comes first, at every level: the child waits while the
@@ -121,6 +174,54 @@ means ship waits on something, and the output says what. Its record is
 
 Never run `gh pr merge` yourself, and never approve a land write: at
 auto-merge the merge is ship's, and below it the merge is a person's.
+
+### Ship it
+
+`deep-plan ship <slug> --merge` is the person's merge through ship, at any
+level. It waives the policy level and the `.seamux/` cap, and no other
+gate: ship acts as at auto-merge, so the kept checkout gate waits, a red
+check holds the merge and is named, and green checks merge at once, pinned
+to HEAD. It pushes, opens the PR and marks a draft ready on the way. With
+checks still running, it asks for GitHub's auto-merge when GitHub can wait
+for them, or starts ship's own wait, which keeps the person's word. The
+ship record and the plan log record the merge as the person's, through
+ship.
+
+The scenarios a policy requires still follow its level, not auto-merge:
+they prove a change before a merge nobody watches, and this one is the
+person's. A plan's own scenarios check holds the merge at every level.
+
+It is a lever, like a `go`: an agent runs it only on the person's words,
+the gate lets one through per human turn, and not in a turn where the gate
+refused an edit. Its `--dry-run` is a read and takes no turn. The app's
+Merge stage has a Ship it button for the person's own click.
+
+## Observe
+
+`"observe": "<level>"` on the policy, or on a paths entry, names a level
+above the one ship acts at. Ship goes on acting at `level`. It also works
+out what it would have done at the observed level, with that level's own
+gates (its scenarios requirement, the kept checkout as a wait at
+auto-merge), and acts on none of it. Taking `observe` out is the whole undo.
+
+A file's observed level is the lowest of its entries' observe-or-level, and
+a change's is the lowest of its files'. The policy's own `observe` is the
+default's: it applies to files no paths entry matches, and an entry that
+matches watches only at its own `observe`. Where that is above the change's
+level, the verdict carries `observe` (its level, the entry, the action and
+its waits). Each ship run that is not `--dry-run` adds one entry per head
+and action to the ship record's `observed` list. The `seamux/ship`
+description opens with it (`observe auto-merge: would merge`), and the
+app's Merge stage shows it. `--merge` computes no observe: that merge is
+the person's either way.
+
+```
+deep-plan policy observed [--json]
+```
+
+sums every plan's records by the entry that observed, so the person can
+see what raising a level would have done before raising it. `policy show`
+lists each entry's observe, and each file's observed level.
 
 ## The Merge stage
 

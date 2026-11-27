@@ -1,7 +1,7 @@
 // node app/ui/release_probe.ts — the Lookout tab's rail from review to
 // release (release.ts): each stage's state, where a change opens, and a
 // list row's chip, with no DOM. Node runs this file as TypeScript.
-import { chipFor, shipSummary, stageFor, stagesOf, took, type Landing, type PrRow, type ShipView } from "./release.ts";
+import { chipFor, shipItOffer, shipItSaid, shipSummary, stageFor, stagesOf, took, type Landing, type PrRow, type ShipView } from "./release.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
@@ -60,6 +60,29 @@ ok("open: a merged PR with no landing opens at Merge", stageFor(true, merged(), 
     shipSummary(v({ level: "auto-pr", capped: "the branch changes .seamux/policy.json, so a person merges it" })).next === "The branch changes .seamux/policy.json, so a person merges it.");
   ok("ship: a worktree with no plan promises no ship merge", /ship does not act on it/.test(shipSummary(v({ plan: null, action: "wait" })).next));
   ok("ship: no policy reads as before", /no repo policy, so as before/.test(shipSummary(v({ level: "auto-go", policy: { source: "none", ref: "", why: "" } })).level));
+  ok("ship: ship's waits show below auto-merge too (ne6be8da8)",
+    shipSummary(v({ level: "auto-pr", action: "wait", waits: ["this branch is stacked on parent-plan, which lands first"] })).next ===
+    "At this level ship opens the PR; a person merges it. Ship's gates wait on: this branch is stacked on parent-plan, which lands first.");
+  ok("ship: an observed level says what ship would have done",
+    shipSummary(v({ level: "auto-pr", action: "none", observe: { level: "auto-merge", by: "docs/a.md: docs/**", action: "merge", would: "would merge", waits: [] } })).observe ===
+    "Observed at auto-merge (docs/a.md: docs/**): ship would merge." && shipSummary(v()).observe === undefined);
+  ok("ship: below auto-merge the checks ship read and a token's gap show as lines",
+    JSON.stringify(shipSummary(v({ level: "auto-go", action: "none", gates: [
+      { gate: "token", ok: true, warn: true, why: "the token lacks checks=read" },
+      { gate: "ci", ok: true, info: true, why: "3 passed, 0 running, 0 failed, read from the head's Actions runs" }] })).reads) ===
+    JSON.stringify(["Token: the token lacks checks=read.", "Checks: 3 passed, 0 running, 0 failed, read from the head's Actions runs."]));
+  const open = { number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN" };
+  ok("ship it: offered below auto-merge with an open PR, ready when ship's gates pass",
+    shipItOffer(v({ level: "auto-pr", action: "none", pr: open })).show && shipItOffer(v({ level: "auto-pr", action: "none", pr: open })).ready);
+  ok("ship it: waiting gates show it disabled, saying why",
+    (() => { const o = shipItOffer(v({ level: "auto-go", action: "none", waits: ["the plan is implementing"], pr: open })); return o.show && !o.ready && /the plan is implementing/.test(o.why); })());
+  ok("ship it: not at auto-merge, not without a plan, not without an open PR",
+    !shipItOffer(v({ pr: open })).show && !shipItOffer(v({ level: "auto-pr", plan: null, pr: open })).show &&
+    !shipItOffer(v({ level: "auto-pr" })).show && !shipItOffer(v({ level: "auto-pr", pr: { ...open, state: "MERGED" } })).show &&
+    shipItOffer(v({ capped: "the branch changes .seamux/policy.json", pr: open })).show);
+  ok("ship it: the answer says what ship did or waits on",
+    shipItSaid({ ...v({ action: "merge" }), result: { ok: true, note: "merged PR #7 on your ship --merge; its landing runs from the app" } }) === "Merged PR #7 on your ship --merge; its landing runs from the app." &&
+    shipItSaid({ ...v({ action: "wait", waits: ["1 PR check(s) failed: CI / probes"] }), result: { ok: true, note: "" } }) === "Ship waits on: 1 PR check(s) failed: CI / probes.");
 }
 
 // ---- a stage's time -------------------------------------------------------------

@@ -151,7 +151,29 @@ export function readLessons(top) {
   return { ...parseLessons(text), exists: true };
 }
 
+// Why a retro may not write lessons.md here, or "". A branch that does not
+// track the file, in a repo whose main checkout does, would write into the
+// main checkout's tracked copy (resolveSeamux's fallback) and leave it dirty
+// for the landing's pull, as #255's did. ADR 0068's fallback stays for a repo
+// where main does not track it either: an untracked copy blocks no pull.
+export function lessonsWriteRefusal(top) {
+  const rel = path.join(".seamux", "lessons.md");
+  const r = resolveSeamux(top, rel, { warn: false });
+  if (r.from !== "main") return "";
+  const c = spawnSync("git", ["-C", top, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" });
+  const main = c.status === 0 ? path.dirname(c.stdout.trim()) : "";
+  if (!main) return "";
+  const inMain = path.relative(main, r.path);
+  const tracked = spawnSync("git", ["-C", main, "ls-files", "--error-unmatch", "--", inMain], { encoding: "utf8" }).status === 0;
+  if (!tracked) return "";
+  const mb = (spawnSync("git", ["-C", main, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).stdout || "").trim() || "main";
+  return `this branch does not track ${inMain}, and the main checkout's ${mb} does: writing there would leave the kept checkout dirty ` +
+    `for the landing's pull (#255). Merge the base into this branch first (git merge origin/${mb}), then run the retro again`;
+}
+
 export function writeLessons(top, doc) {
+  const no = lessonsWriteRefusal(top);
+  if (no) throw new Error(no);
   const f = lessonsFile(top);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   const tmp = f + ".tmp." + process.pid;

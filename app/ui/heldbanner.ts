@@ -2,8 +2,9 @@
 // refused there (held_app.rs, ADRs 0094-0097): the command, why, and what you
 // can do. A one-line git block can run in the chat (typed as `!cmd`, so its
 // output joins the conversation) or in the ⌘J shell, in the folder it was
-// refused in; a force push can also be allowed for its branch for the rest
-// of the session. Every other block, and any command of more than one line
+// refused in; a force push can also be allowed for its branch, and a PR merge
+// for its PR, for the rest of the session. An approval is copy only. Every
+// other block, and any command of more than one line
 // or with a control character, is copy only. The command shown and run is
 // always the record's, read again from the app before anything is typed.
 import { invoke } from "@tauri-apps/api/core";
@@ -20,7 +21,11 @@ export type Held = {
   at: number;
   run: boolean;
   chat: boolean;
+  /** What "Run and allow" would allow: a branch, or a PR (owner/repo#n or
+   *  owner/repo:branch); allowKind says which. */
   allow: string | null;
+  allowKind?: "push" | "merge" | null;
+  pr?: string | null;
   lines: number;
   idle: boolean;
 };
@@ -39,6 +44,15 @@ export type HeldActions = {
 /** "run" is the Dock's: in the chat when the command can go there, else
  *  in the ⌘J shell. */
 export type HeldAct = "run" | "chat" | "shell" | "copy" | "dismiss" | "allow";
+
+/** A held merge's PR as the banner names it: "#12" for owner/repo#12, the
+ *  branch for owner/repo:branch. */
+export function prLabel(pr: string): string {
+  const n = /#(\d+)$/.exec(pr);
+  if (n) return `#${n[1]}`;
+  const b = pr.indexOf(":");
+  return b >= 0 ? `on ${pr.slice(b + 1)}` : pr;
+}
 
 const POLL_MS = 2000;
 /** Lines shown before the command folds. */
@@ -260,7 +274,9 @@ export class HeldBanner {
       btns.push(this.button("Run in chat", "Type it into Claude's prompt as a ! command: it runs as you, and its output joins the conversation", "chat", { main: true, off: busy }));
     }
     if (h.allow) {
-      btns.push(this.button(`Run and allow ${h.allow} this session`, `Run it in the chat, and let a leased force push to ${h.allow} through for the rest of this Claude session`, "allow", { off: busy }));
+      btns.push(h.allowKind === "merge"
+        ? this.button(`Run and allow PR ${prLabel(h.allow)} this session`, `Run it in the chat, and let gh pr merge of ${h.allow} through for the rest of this Claude session`, "allow", { off: busy })
+        : this.button(`Run and allow ${h.allow} this session`, `Run it in the chat, and let a leased force push to ${h.allow} through for the rest of this Claude session`, "allow", { off: busy }));
     }
     if (h.run) {
       btns.push(this.button("Run in ⌘J", "Run it in the companion shell, in the folder above: its output stays out of the conversation", "shell"));

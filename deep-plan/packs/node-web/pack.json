@@ -1,6 +1,6 @@
 {
   "pack": "node-web",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "describes": "A Node web app with npm scripts: unit tests and a build on every change, Playwright e2e, a landing that waits for the production deployment GitHub reports for the merge, a scenarios harness that starts the dev server, and a policy draft.",
   "detect": [
     "package.json"
@@ -66,7 +66,11 @@
       "id": "deploy",
       "kind": "land",
       "name": "the merge, deployed to production and live",
-      "match": [],
+      "match": [
+        "src/**",
+        "public/**",
+        "package.json"
+      ],
       "timeout": 600,
       "steps": [
         {

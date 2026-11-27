@@ -7848,7 +7848,7 @@ if (want("the go is the human's; what a pass covers; and friends")) {
   // Two levers in one command, and two parallel calls, cannot both pass.
   said(S2);
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate next && deep-plan close b1-gate" }, TMP);
-  ok("b1: two levers in one command are refused", r.status === 2 && /one go, --force, --by human or close per command/.test(r.stderr), r.stderr);
+  ok("b1: two levers in one command are refused", r.status === 2 && /one go, --force, --by human, close or ship --merge per command/.test(r.stderr), r.stderr);
   ok("b1: a lever is claimed before it runs", hook(S2, "Bash", { command: "deep-plan go b1-gate next" }, TMP).status === 0);
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate 2" }, TMP);
   ok("b1: …so a parallel second one is refused while it runs", r.status === 2 && /already running in this turn/.test(r.stderr), r.stderr);
@@ -7989,7 +7989,7 @@ if (want("the go is the human's; what a pass covers; and friends")) {
   const WORD = [["deep-plan close b1-gate", "close"], ["deep-plan go b1-gate 2 --force", "go --force"],
     ["deep-plan done b1-gate 1 --force", "done --force"], ["deep-plan check pass b1-gate 1 look x --force", "check --force"],
     ["deep-plan render s.json --force", "render --force"], ["deep-plan family take-back x --by human", "--by human"],
-    [`deep-plan "close" b1-gate`, "close"]];
+    [`deep-plan "close" b1-gate`, "close"], ["deep-plan ship b1-gate --merge", "ship --merge"]];
   hook(S2, "Edit", { file_path: path.join(AR, "src", "a.ts") });   // the gate refuses: S2's turn now has a denial
   for (const [c, word] of WORD) {
     r = hook(S2, "Bash", { command: c }, TMP);
@@ -8013,10 +8013,13 @@ if (want("the go is the human's; what a pass covers; and friends")) {
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate 3" }, TMP);
   ok("b1: …a second one in the same turn is refused", r.status === 2 && /already ran go in this turn: ask the human/.test(r.stderr), r.stderr);
   ok("b1: …and so is a close after it", hook(S2, "Bash", { command: "deep-plan close b1-gate" }, TMP).status === 2);
+  r = hook(S2, "Bash", { command: "deep-plan ship b1-gate --merge" }, TMP);
+  ok("b1: …and a ship --merge after it", r.status === 2 && /already ran go in this turn: ask the human, and run ship --merge only after they answer/.test(r.stderr), r.stderr);
   said(S2);
   ok("b1: …until the human's next prompt", hook(S2, "Bash", { command: "deep-plan go b1-gate 3" }, TMP).status === 0);
   said(S2);
   for (const c of [`git commit -m "deep-plan close: say why"`, `rg "deep-plan open-gate" docs`, "deep-plan status", "deep-plan check run b1-gate 1",
+    "deep-plan ship b1-gate --merge --dry-run", "deep-plan ship b1-gate",
     "echo deep-plan open-gate b1-gate >> notes.md", "cat <<'EOF' > notes.md\nrun deep-plan open-gate b1-gate\ndeep-plan open-gate b1-gate\nEOF",
     "printf '%s\\n' x | tee notes.md; ls deep-plan open-gate"])
     ok(`b1: a mention is not a lever (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0);
@@ -8530,6 +8533,38 @@ if (want("lessons: candidates, retro and .seamux/lessons.md")) {
   const lmd = path.join(LA, ".seamux", "lessons.md");
   cli("render", tmpSpec({ ...spec, slug: "lessons-a" }), "--root", LA);
 
+  // #255: a branch cut before main tracked lessons.md. Its retro would
+  // write into the main checkout's tracked copy, dirtying the kept checkout.
+  {
+    const TM = path.join(TMP, "lessons-tracked"), TW = path.join(TMP, "lessons-tracked-wt");
+    fs.mkdirSync(TM, { recursive: true });
+    execSync(`git init -q -b main && ${G} commit -q --allow-empty -m init && git branch old`, { cwd: TM });
+    fs.mkdirSync(path.join(TM, ".seamux"), { recursive: true });
+    const mainText = "# Lessons\n\n## L1\napplies: **\nfrom: p\n\nmain's rule\n";
+    fs.writeFileSync(path.join(TM, ".seamux", "lessons.md"), mainText);
+    execSync(`git add -A && ${G} commit -q -m lessons && git worktree add -q ${JSON.stringify(TW)} old`, { cwd: TM });
+    cli("render", tmpSpec({ ...spec, slug: "lessons-old" }), "--root", TW);
+    const kk = key("lessons-old");
+    cli("grade", "lessons-old", ...Object.entries(kk).map(([q, a], i) => `${q}=${i === 0 ? (a.letter === "a" ? "b" : "a") : a.letter}`));
+    const cand = (JSON.parse(lcli(TW, "retro", "lessons-old", "--json").stdout || "{}").candidates || [])[0];
+    const rr = lcli(TW, "retro", "lessons-old", "keep", cand && cand.id, "A rule from an old branch.", "--applies", "**");
+    ok("lessons: on a branch that does not track lessons.md while main does, retro refuses and says to merge the base first (#255)",
+      rr.status !== 0 && /does not track \.seamux\/lessons\.md, and the main checkout's main does/.test(rr.stderr) && /git merge origin\/main/.test(rr.stderr) &&
+      fs.readFileSync(path.join(TM, ".seamux", "lessons.md"), "utf8") === mainText && !fs.existsSync(path.join(TW, ".seamux", "lessons.md")) &&
+      execSync("git status --porcelain", { cwd: TM, encoding: "utf8" }) === "", rr.stdout + rr.stderr);
+    ok("lessons: the refused keep leaves its candidate unsettled",
+      (JSON.parse(lcli(TW, "retro", "lessons-old", "--json").stdout || "{}").candidates || []).some(c => c.id === (cand && cand.id) && !c.settled));
+    const LL = await import("./lib/lessons.mjs");
+    let threw = "";
+    try { LL.writeLessons(TW, { head: "", lessons: [] }); } catch (e) { threw = e.message; }
+    ok("lessons: writeLessons itself refuses there too", /does not track/.test(threw), threw);
+    execSync(`${G} merge -q main`, { cwd: TW });
+    const after = lcli(TW, "retro", "lessons-old", "keep", cand && cand.id, "A rule from an old branch.", "--applies", "**");
+    ok("lessons: once the base is merged in, the retro writes the branch's own copy and main's stays as it was",
+      after.status === 0 && /A rule from an old branch/.test(fs.readFileSync(path.join(TW, ".seamux", "lessons.md"), "utf8")) &&
+      fs.readFileSync(path.join(TM, ".seamux", "lessons.md"), "utf8") === mainText, after.stdout + after.stderr);
+  }
+
   // A wrong grade is a miss the engine files; the same wrong grade again is
   // the same miss, not a second candidate.
   const k = key("lessons-a");
@@ -8890,6 +8925,59 @@ if (want("ci check: the PR's checks behind the gate")) {
   ok("ci: a failed check is named with its job's log tail, and counts toward the retry cap",
     r.status !== 0 && chk("ci-a").status === "fail" && chk("ci-a").fails === 1 && /1 of 2 check\(s\) failed: CI \/ probes/.test(r.stdout) &&
     /FAIL lessons: keep writes rule L1/.test(r.stdout), r.stdout);
+  // A fine-grained token without Checks read is refused gh pr checks (note
+  // n9ae07128): the head's Actions runs stand in.
+  const REFUSED = "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)";
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: REFUSED },
+    [`run list --commit ${head}`]: { stdout: [[{ databaseId: 7, workflowName: "probes", status: "completed", conclusion: "success" },
+      { databaseId: 5, workflowName: "probes", status: "completed", conclusion: "failure" }]] },
+    "run view 7 --json jobs": { stdout: { jobs: [{ name: "app", status: "completed", conclusion: "success", url: "" },
+      { name: "docs", status: "completed", conclusion: "skipped", url: "" }] } } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  const runLog = (/\(log: ([^)]+)\)/.exec(r.stdout) || [])[1];
+  const said = runLog && fs.existsSync(runLog) ? fs.readFileSync(runLog, "utf8") : "";
+  ok("ci: gh pr checks refused for the token, the head's newest Actions run per workflow gives the verdict, and the wait says so",
+    r.status === 0 && chk("ci-a").status === "pass" && /gh pr checks was refused \(GraphQL: Resource not accessible by personal access token/.test(said) &&
+    /reading the head's Actions runs instead/.test(said) && /all 2 check\(s\) passed/.test(said), r.stdout + said);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: REFUSED },
+    [`run list --commit ${head}`]: { stdout: [[{ databaseId: 7, workflowName: "probes", status: "in_progress", conclusion: "" }]] },
+    "run view 7 --json jobs": { stdout: [{ jobs: [{ name: "app", status: "in_progress", conclusion: "", url: "" }] },
+      { jobs: [{ name: "app", status: "completed", conclusion: "timed_out", url: "https://github.com/o/r/actions/runs/7/job/9" }] }] },
+    "run view 7 --job 9 --log-failed": { stdout: "app\tRun\t2026-11-01T10:00:00.0Z     timed out\n" } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: through the Actions runs a pending job is waited out and a timed-out one fails, with its log tail",
+    r.status !== 0 && chk("ci-a").fails === 1 && /1 of 1 check\(s\) failed: probes \/ app/.test(r.stdout) && /timed out/.test(r.stdout), r.stdout);
+  // ship's own seamux/ship status is no check to wait on (delivery f9).
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [
+      [{ name: "seamux/ship", workflow: "", bucket: "pass", link: "" }],
+      [{ name: "seamux/ship", workflow: "", bucket: "pass", link: "" }, { name: "probes", workflow: "CI", bucket: "pass", link: "" }]] } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  const f9log = (/\(log: ([^)]+)\)/.exec(r.stdout) || [])[1];
+  const f9said = f9log && fs.existsSync(f9log) ? fs.readFileSync(f9log, "utf8") : "";
+  ok("ci: ship's own seamux/ship status is not counted, so it alone never reads as all green (delivery f9)",
+    r.status === 0 && /all 1 check\(s\) passed/.test(f9said) && !/all 2 check/.test(f9said), r.stdout + f9said);
+  // A rate limit is not a permission the token lacks (delivery f1).
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: "HTTP 403: API rate limit exceeded for user ID 1. (https://api.github.com/graphql)" } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: a rate-limit 403 is an error to wait out, not a refused permission with an Actions fallback (delivery f1)",
+    r.status !== 0 && /gh pr checks: HTTP 403: API rate limit exceeded/.test(r.stdout) && !/reading the head's Actions runs/.test(r.stdout), r.stdout);
+  // A failed run with no jobs is a failure, not "no checks yet" (delivery f10).
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: REFUSED },
+    [`run list --commit ${head}`]: { stdout: [[{ databaseId: 11, workflowName: "CI", status: "completed", conclusion: "startup_failure" }]] },
+    "run view 11 --json jobs": { stdout: { jobs: [] } } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: through the Actions runs, a run that failed before any job is a failed check (delivery f10)",
+    r.status !== 0 && /1 of 1 check\(s\) failed: CI \/ CI/.test(r.stdout), r.stdout);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: "GraphQL: something else broke" } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: a gh pr checks failure that is not the token's refusal stays an error, with no Actions read",
+    r.status !== 0 && /gh pr checks: GraphQL: something else broke/.test(r.stdout) && !chk("ci-a").fails, r.stdout);
   arm("ci-t", { kind: "ci", timeout: 1 });
   gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] } });
   r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "check", "run", "ci-t", "1", "--inline"], { encoding: "utf8", env: { ...CENV, DEEP_PLAN_CI_INTERVAL_S: "1" }, cwd: CR });
@@ -9804,6 +9892,7 @@ if (want("policy and ship: levels from the base branch")) {
     return rr;
   };
   const head = () => execSync("git rev-parse HEAD", { cwd: PR_, encoding: "utf8" }).trim();
+  const shipRec0 = () => { try { return JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), "utf8")); } catch { return {}; } };
   shipPlan("pol-ship", [["docs/guide.md"], ["docs/guide.md"]]);
   fs.mkdirSync(path.join(PR_, "docs"), { recursive: true }); fs.writeFileSync(path.join(PR_, "docs", "guide.md"), "guide\n");
   execSync(`git add -A && ${G} commit -q -m docs`, { cwd: PR_ });
@@ -9811,11 +9900,28 @@ if (want("policy and ship: levels from the base branch")) {
   const PRV = "pr view --json number,url,headRefOid,isDraft,state,baseRefName,headRefName,mergeable";
   const pv = (o = {}) => ({ stdout: { number: 12, url: "https://github.com/o/r/pull/12", headRefOid: head(), isDraft: false, state: "OPEN", baseRefName: "main", headRefName: "dev/docs", mergeable: "MERGEABLE", ...o } });
   const CHK = "pr checks --json name,bucket,link,workflow";
+  const remoteOf = b => (execSync(`git ls-remote origin refs/heads/${b}`, { cwd: PR_, encoding: "utf8" }).split(/\s/)[0] || "");
+  const POSTED = "HTTP/2.0 201 Created\r\n\r\n{}";
+  const statusCalls = () => ghCalls().filter(c => /^api -i -X POST repos\/\{owner\}\/\{repo\}\/statuses\//.test(c));
   ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" } });
+  r = pc("ship", "pol-ship", "--dry-run");
+  ok("ship --dry-run: an unpushed branch says ship pushes it, and pushes nothing",
+    /auto-merge \(docs\/guide\.md: docs\/\*\*/.test(r.stdout) && /→ pushes dev\/docs to origin \(fast-forward only\)/.test(r.stdout) && !remoteOf("dev/docs") &&
+    !ghCalls().some(c => /^pr (create|merge|ready)/.test(c)) && !statusCalls().length, r.stdout + r.stderr);
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" }, "pr create": { stdout: "https://github.com/o/r/pull/12\n" },
+    "api -i -X POST": { stdout: POSTED } });
   r = pc("ship", "pol-ship");
-  ok("ship: an unpushed branch waits, saying to push, and acts on nothing",
-    r.status === 3 && /auto-merge \(docs\/guide\.md: docs\/\*\*/.test(r.stdout) && /push it/.test(r.stdout) && !ghCalls().some(c => /^pr (create|merge|ready)/.test(c)), r.stdout + r.stderr);
-  execSync("git push -q -u origin dev/docs", { cwd: PR_ });
+  const created = ghCalls().find(c => /^pr create/.test(c)) || "";
+  ok("ship: an unpushed branch is pushed by ship, fast-forward, and then the PR is opened",
+    r.status === 0 && remoteOf("dev/docs") === head() && /pushed dev\/docs to origin at [0-9a-f]{8} \(fast-forward\)/.test(r.stdout) &&
+    /^pr create --base main --head dev\/docs --title /.test(created), r.stdout + r.stderr);
+  ok("ship: the PR body comes from the plan: its context, each increment with its checks, the level and who merges, the approved plan",
+    /--body ## /.test(created) && /### Increments/.test(created) && /- \[x\] 1\. [^\n]*\(looked: pass\)/.test(created) &&
+    /- \[x\] 2\. [^\n]*scenarios: pass/.test(created) && /at the policy's auto-merge level \(docs\/guide\.md: docs\/\*\*\)\. Ship merges it once its checks are green/.test(created) &&
+    /~\/\.claude\/plans\/pol-ship\.approved\.md/.test(created) && !created.includes(os.homedir()), created);
+  ok("ship: once pushed it posts seamux/ship on HEAD: success when every gate of ship's own passed",
+    statusCalls().some(c => c.startsWith(`api -i -X POST repos/{owner}/{repo}/statuses/${head()} -f state=success -f context=seamux/ship -f description=ship's gates passed at auto-merge`)) &&
+    /seamux\/ship posted: success on [0-9a-f]{8}/.test(r.stdout), r.stdout + ghCalls().join("\n"));
   ghMap({ [PRV]: { status: 1, stderr: "no pull requests found for branch \"dev/docs\"" }, "pr create": { stdout: "https://github.com/o/r/pull/12\n" } });
   r = pc("ship", "pol-ship", "--dry-run", "--json");
   const dj = JSON.parse(r.stdout || "{}");
@@ -9826,6 +9932,18 @@ if (want("policy and ship: levels from the base branch")) {
   ghMap({ [PRV]: pv({ isDraft: true }), "pr ready 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: a draft PR is marked ready", r.status === 0 && ghCalls().includes("pr ready 12"), r.stdout);
+  // Someone else pushed to the branch: ship's push is refused, never forced.
+  const OTHER = path.join(TMP, "pol-other");
+  execSync(`git clone -q -b dev/docs ${ORIGIN} ${OTHER} && cd ${OTHER} && echo theirs > docs/theirs.md && git add -A && ${G} commit -q -m theirs && git push -q origin dev/docs`);
+  const theirs = remoteOf("dev/docs");
+  fs.writeFileSync(path.join(PR_, "docs", "mine.md"), "mine\n");
+  execSync(`git add -A && ${G} commit -q -m mine`, { cwd: PR_ });
+  ghMap({ [PRV]: pv({ headRefOid: theirs }), "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a push that is not a fast-forward is refused, ship stops with how to bring origin's commits in, and origin keeps them",
+    r.status === 1 && /git push was refused: origin\/dev\/docs has commits HEAD does not\. Bring them in \(git pull --rebase origin dev\/docs\)/.test(r.stdout) &&
+    remoteOf("dev/docs") === theirs && shipRec0().status === "stopped", r.stdout + r.stderr);
+  execSync(`${G} pull -q --rebase origin dev/docs && git push -q origin dev/docs`, { cwd: PR_ });
   ghMap({ [PRV]: pv({ baseRefName: "release" }), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge": { stdout: "" } });
   r = pc("ship", "pol-ship");
   ok("ship: a PR into another base than the policy's is never merged (f11)",
@@ -9838,18 +9956,24 @@ if (want("policy and ship: levels from the base branch")) {
   ok("ship: a red check waits and never merges", r.status === 3 && /1 PR check\(s\) failed: CI \/ probes/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
   ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
+  ok("ship: the status is posted before the merge, so a ruleset requiring seamux/ship lets ship's own merge through (inc2 f1)",
+    (() => { const c = ghCalls(); const st_ = c.findIndex(x => /^api -i -X POST .*statuses/.test(x)), mg = c.findIndex(x => /^pr merge 12/.test(x)); return st_ >= 0 && mg > st_; })(), ghCalls().join("\n"));
   ok("ship: green checks at auto-merge merge it, pinned to HEAD",
     r.status === 0 && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`) && /merged PR #12/.test(r.stdout), r.stdout + r.stderr);
   seedFull = false;
   fs.writeFileSync(path.join(PSEALED, "pol-ship", "verdicts.json"),
     JSON.stringify({ history: [{ head: "0".repeat(40), threshold: 0.8, pass: true, full: true, scores: [{ id: "s1", score: 1 }] }] }));
-  ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" } });
+  ghMap({ [PRV]: pv(), [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] }, "pr merge 12": { stdout: "" },
+    "api -i -X POST": { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: statuses=write\r\n\r\n{}", stderr: "gh: Resource not accessible by personal access token (HTTP 403)" } });
   r = pc("ship", "pol-ship");
   ok("ship: a full judge run that passed on another head than HEAD holds the merge, naming the command",
     r.status === 3 && /the last full judge run passed on 00000000, not HEAD[^\n]*deep-plan scenarios judge pol-ship/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  ok("ship: while one of its gates waits, seamux/ship is posted pending, the wait in its description, and the token's refusal is named",
+    statusCalls().some(c => c.startsWith(`api -i -X POST repos/{owner}/{repo}/statuses/${head()} -f state=pending -f context=seamux/ship -f description=waits on: every scenarios check passed, but`)) &&
+    /seamux\/ship not posted: the token lacks statuses=write/.test(r.stdout), r.stdout + ghCalls().join("\n"));
   seedFull = true;
   ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }], [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
-    "repo view --json autoMergeAllowed": { stdout: { autoMergeAllowed: false } }, "pr merge 12": { stdout: "" } });
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "pr merge 12": { stdout: "" } });
   r = pc("ship", "pol-ship");
   const shipRec = () => { try { return JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), "utf8")); } catch { return {}; } };
   let waited = false;
@@ -9857,11 +9981,302 @@ if (want("policy and ship: levels from the base branch")) {
   ok("ship: checks still running, with GitHub's auto-merge off, its own detached wait merges once they are green",
     /ship waits for PR #12's checks/.test(r.stdout) && waited && ghCalls().includes(`pr merge 12 --squash --match-head-commit ${head()}`), r.stdout + JSON.stringify(shipRec()));
   ghMap({ [PRV]: pv(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] },
-    "repo view --json autoMergeAllowed": { stdout: { autoMergeAllowed: true } },
-    "api repos/{owner}/{repo}/branches/main/protection/required_status_checks": { stdout: { contexts: ["probes"] } }, "pr merge 12 --auto": { stdout: "" } });
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: true } } } },
+    "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[{ type: "deletion" }, { type: "required_status_checks",
+      parameters: { required_status_checks: [{ context: "probes", integration_id: 1 }] } }]] },
+    "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: administration=read\r\n\r\n{}", stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+    "pr merge 12 --auto": { stdout: "" } });
   r = pc("ship", "pol-ship");
-  ok("ship: where the repo allows it and the base requires checks, GitHub's auto-merge is asked instead",
-    r.status === 0 && ghCalls().includes(`pr merge 12 --auto --squash --match-head-commit ${head()}`), r.stdout);
+  ok("ship: where GraphQL says the repo allows auto-merge and the base's ruleset requires the checks, GitHub's auto-merge is asked instead",
+    r.status === 0 && ghCalls().includes(`pr merge 12 --auto --squash --match-head-commit ${head()}`) &&
+    ghCalls().some(c => /^api graphql -F owner=\{owner\} -F name=\{repo\} -f query=.*autoMergeAllowed/.test(c)) &&
+    !ghCalls().some(c => /protection/.test(c)), r.stdout + ghCalls().join("\n"));
+  ghMap({ "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[]] },
+    "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { stdout: "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n" + JSON.stringify({ contexts: ["a"], checks: [{ context: "b" }, { context: "a" }] }) } });
+  const reqd = spawnSync("node", ["--input-type=module", "-e",
+    `import { requiredChecks } from ${JSON.stringify(path.join(HERE, "lib", "ci.mjs"))}; console.log(JSON.stringify(requiredChecks(${JSON.stringify(PR_)}, "main")))`],
+    { encoding: "utf8", env: PENV }).stdout.trim();
+  ok("ship: with no ruleset requiring checks, classic branch protection's are read", reqd === '["a","b"]', reqd);
+  // A merge ship did not make. GitHub's auto-merge, which ship asked for
+  // above, is recorded as GitHub's. GitHub deletes a merged branch: here the
+  // bare origin drops the ref itself.
+  execSync("git update-ref -d refs/heads/dev/docs", { cwd: ORIGIN });
+  ghMap({ [PRV]: pv({ state: "MERGED" }) });
+  r = pc("ship", "pol-ship");
+  ok("ship: a PR merged while ship's auto-merge request stood is recorded as GitHub's or the person's, with no push asked of a deleted branch (inc2 f3)",
+    r.status === 0 && /PR #12 was merged while ship's request for GitHub's auto-merge stood: by GitHub's auto-merge or by a person/.test(r.stdout) && !/push/.test(r.stdout) &&
+    shipRec0().status === "merged" && shipRec0().by === "github-or-person" && !remoteOf("dev/docs"), r.stdout);
+  // The person's merge (#251, #254).
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), JSON.stringify({ status: "opened", pr: 12 }));
+  r = pc("ship", "pol-ship");
+  ok("ship: a PR the person merged is recorded as theirs in ship.json and the plan log, not 'push it' (#251, #254)",
+    r.status === 0 && /PR #12 was merged by a person, not ship/.test(r.stdout) && !/push it/.test(r.stdout) &&
+    shipRec0().status === "merged" && shipRec0().by === "person" && JSON.stringify(stOf("pol-ship").log || []).includes("ship: PR #12 was merged by a person"), r.stdout);
+  r = pc("ship", "pol-ship");
+  ok("ship: the merge is recorded once; ship again says so", /PR #12 is merged \(by person\)/.test(r.stdout) &&
+    JSON.stringify(stOf("pol-ship").log || []).split("merged by a person").length === 2, r.stdout);
+  execSync("git push -q -u origin dev/docs", { cwd: PR_ });
+  // ship's own wait, when the person merges first.
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-ship.ship.json"), JSON.stringify({ status: "ready", pr: 12 }));
+  ghMap({ [PRV]: { stdout: [pv().stdout, pv().stdout, pv().stdout, pv().stdout, pv({ state: "MERGED" }).stdout] }, [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] },
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-ship");
+  let byPerson = false;
+  for (let i = 0; i < 100 && !byPerson; i++) { if (shipRec0().by === "person") byPerson = true; else await new Promise(res => setTimeout(res, 100)); }
+  ok("ship: its own wait stops on a merge it did not make, recording the person's, and never merges",
+    /ship waits for PR #12's checks/.test(r.stdout) && byPerson && shipRec0().status === "merged" && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout + JSON.stringify(shipRec0()));
+  ok("ship: its wait posts the status once while it does not change, not on every look (inc2 f2)",
+    statusCalls().length === 2, statusCalls().join("\n"));
+  // The kept checkout (#255): the repo's main worktree, which the landing pulls into.
+  const KM = path.join(TMP, "pol-kept"), KW = path.join(TMP, "pol-kept-docs"), KS = path.join(TMP, "pol-kept-src");
+  execSync(`git clone -q ${ORIGIN} ${KM} && cd ${KM} && git worktree add -q -b dev/kept-docs ${KW} && git worktree add -q -b dev/kept-src ${KS}`);
+  execSync(`mkdir -p docs && echo k > docs/k.md && git add -A && ${G} commit -q -m k`, { cwd: KW });
+  execSync(`mkdir -p src && echo k > src/k.js && git add -A && ${G} commit -q -m k`, { cwd: KS });
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found" } });
+  const keptOf = at => ((JSON.parse(pc("ship", "--at", at, "--dry-run", "--json").stdout || "{}").gates) || []).find(g => g.gate === "kept checkout");
+  let kg = keptOf(KW);
+  ok("ship: a clean kept checkout on the base passes the kept checkout gate", kg && kg.ok && !kg.warn && /is on main, clean for the landing/.test(kg.why), JSON.stringify(kg));
+  fs.appendFileSync(path.join(KM, "README.md"), "dirty\n");
+  kg = keptOf(KW);
+  ok("ship: at auto-merge, uncommitted tracked changes in the kept checkout are a wait that names the files",
+    kg && !kg.ok && /the kept checkout .*pol-kept has uncommitted changes to README\.md: the landing's pull there would fail/.test(kg.why), JSON.stringify(kg));
+  kg = keptOf(KS);
+  ok("ship: below auto-merge the same dirty kept checkout is a warning, not a wait",
+    kg && kg.ok && kg.warn && /uncommitted changes to README\.md/.test(kg.why), JSON.stringify(kg));
+  execSync("git checkout -q README.md && git checkout -q -b elsewhere", { cwd: KM });
+  kg = keptOf(KW);
+  ok("ship: a kept checkout on another branch than the base is named too", kg && !kg.ok && /is on elsewhere, not main/.test(kg.why), JSON.stringify(kg));
+  ok("ship: the gate is skipped when the plan's root is the main worktree itself",
+    !((JSON.parse(pc("ship", "pol-ship", "--dry-run", "--json").stdout || "{}").gates || []).some(g => g.gate === "kept checkout")));
+  // ship --merge: the person's merge. A plan at auto-go on the src worktree.
+  execSync("git checkout -q main", { cwd: KM });
+  {
+    const s = mk("pol-lever", [["src/lever.js"], ["src/lever.js"]]); s.go = "human";
+    const rr = pc("render", tmpSpec(s), "--root", KS);
+    if (rr.status !== 0) throw new Error("pol-lever render: " + rr.stderr);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "pol-lever.key.json"), "utf8"));
+    pc("grade", "pol-lever", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    for (const n of [1, 2]) { pc("go", "pol-lever", String(n)); passAll("pol-lever", n, pc); pc("done", "pol-lever", String(n)); }
+  }
+  const ksHead = () => execSync("git rev-parse HEAD", { cwd: KS, encoding: "utf8" }).trim();
+  const levRec = () => { try { return JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), "utf8")); } catch { return {}; } };
+  const pvK = (o = {}) => ({ stdout: { number: 31, url: "https://github.com/o/r/pull/31", headRefOid: ksHead(), isDraft: false, state: "OPEN",
+    baseRefName: "main", headRefName: "dev/kept-src", mergeable: "MERGEABLE", ...o } });
+  const green = { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] };
+  ghMap({ [PRV]: pvK(), [CHK]: green, "pr merge": { stdout: "" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-lever", "--dry-run");
+  ok("ship --merge: without it, a delivered plan at auto-go is a person's to open and merge, and ship says how", stOf("pol-lever").phase === "done" &&
+    /ship pol-lever: auto-go/.test(r.stdout) && /a person opens the PR and merges it/.test(r.stdout), r.stdout + r.stderr);
+  r = pc("ship", "--merge", "pol-lever", "--dry-run", "--json");
+  const lj = JSON.parse(r.stdout || "{}");
+  ok("ship --merge --dry-run: the level is waived (the verdict says so) and ship would push, then merge; a dry run acts on nothing",
+    lj.lever === "ship --merge" && lj.level === "auto-go" && lj.action === "push" && !ghCalls().some(c => /^pr merge/.test(c)) && !remoteOf("dev/kept-src"), r.stdout + r.stderr);
+  fs.appendFileSync(path.join(KM, "README.md"), "dirty\n");
+  r = pc("ship", "pol-lever", "--merge", "--dry-run", "--json");
+  const kd = (JSON.parse(r.stdout || "{}").gates || []).find(g => g.gate === "kept checkout");
+  ok("ship --merge: a dirty kept checkout is a wait, as at auto-merge", kd && !kd.ok && JSON.parse(r.stdout).action === "wait", r.stdout);
+  execSync("git checkout -q README.md", { cwd: KM });
+  r = pc("ship", "pol-lever", "--merge");
+  ok("ship --merge: it pushes the branch, then merges the PR with green checks at once, pinned to HEAD",
+    r.status === 0 && remoteOf("dev/kept-src") === ksHead() && ghCalls().includes(`pr merge 31 --squash --match-head-commit ${ksHead()}`) &&
+    /merged PR #31 on your ship --merge/.test(r.stdout), r.stdout + r.stderr);
+  ok("ship --merge: ship.json and the plan log record the merge as the person's, through ship",
+    levRec().status === "merged" && levRec().by === "person" && levRec().lever === "ship --merge" &&
+    JSON.stringify(stOf("pol-lever").log || []).includes("on the person's ship --merge at auto-go"), JSON.stringify(levRec()));
+  fs.rmSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), { force: true });
+  ghMap({ [PRV]: pvK(), [CHK]: { status: 1, stdout: [[{ name: "probes", workflow: "CI", bucket: "fail", link: "" }]] }, "pr merge": { stdout: "" } });
+  r = pc("ship", "pol-lever", "--merge");
+  ok("ship --merge: a red check waits, named, and nothing merges", r.status === 3 && /1 PR check\(s\) failed: CI \/ probes/.test(r.stdout) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
+  ghMap({ [PRV]: pvK(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }], [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] },
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "pr merge 31": { stdout: "" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-lever", "--merge");
+  let levMerged = false;
+  for (let i = 0; i < 100 && !levMerged; i++) { if (levRec().status === "merged") levMerged = true; else await new Promise(res => setTimeout(res, 100)); }
+  ok("ship --merge: with checks running and GitHub unable to wait, ship's own wait keeps the person's merge and merges once green",
+    /ship waits for PR #31's checks/.test(r.stdout) && levMerged && levRec().by === "person" && levRec().lever === "ship --merge" &&
+    ghCalls().includes(`pr merge 31 --squash --match-head-commit ${ksHead()}`), r.stdout + JSON.stringify(levRec()));
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), JSON.stringify({ status: "auto-merge", pr: 31, lever: "ship --merge" }));
+  ghMap({ [PRV]: pvK({ state: "MERGED" }) });
+  r = pc("ship", "pol-lever");
+  ok("ship --merge: a GitHub auto-merge the person asked for through ship is recorded as theirs",
+    /merged by GitHub's auto-merge, which the person asked for with ship --merge/.test(r.stdout) && levRec().by === "person", r.stdout);
+  {
+    const S_ = await import("./lib/state.mjs");
+    const call = (...w) => ({ verb: w[0], words: w.slice(1) });
+    ok("ship --merge is a lever of the person's word; its dry run and ship's own wait are not",
+      S_.onHumansWord([call("ship", "x", "--merge")]) === "ship --merge" && S_.onHumansWord([call("ship", "--merge", "--dry-run")]) === "" &&
+      S_.onHumansWord([call("ship", "x", "--wait", "--merge")]) === "ship --merge" && S_.onHumansWord([call("ship", "x")]) === "" &&
+      /DEEP_PLAN_SHIP_WAIT/.test(S_.trustOverride("DEEP_PLAN_SHIP_WAIT=1 deep-plan ship x --merge")) &&
+      S_.humansWordCount([call("ship", "x", "--merge"), call("go", "x", "next")]) === 2);
+  }
+  ok("land's --merge still takes the merge commit", /--merge needs the merge commit's sha/.test(pc("land", "plan", "--merge").stderr));
+
+  {
+    const tok = { [PRV]: pvK(), [CHK]: green,
+      [`api -i repos/{owner}/{repo}/commits/${ksHead()}/check-runs?per_page=1`]: { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: checks=read\r\n\r\n{}" },
+      [`api -i repos/{owner}/{repo}/commits/${ksHead()}/status`]: { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: statuses=read\r\n\r\n{}" } };
+    ghMap(tok);
+    const tg = ((JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}").gates) || []).find(g => g.gate === "token");
+    ok("ship: below auto-pr too, the token gate names what a narrow token lacks (djai is at auto-go)",
+      tg && tg.warn && tg.missing.join() === "checks=read,statuses=read", JSON.stringify(tg));
+    ghMap({ ...tok, [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${ksHead()}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "completed", conclusion: "failure" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "success", url: "" }, { name: "lint", status: "completed", conclusion: "failure", url: "" }] } } });
+    const nj = JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}");
+    const ci = (nj.gates || []).find(g => g.gate === "ci");
+    ok("ship: below auto-merge it still reads the PR's checks on a narrow token, from the Actions runs, as a line that holds nothing",
+      ci && ci.ok && ci.info && ci.warn && /1 passed, 0 running, 1 failed; failed: CI \/ lint, read from the head's Actions runs \(gh pr checks was refused/.test(ci.why) &&
+      nj.action === "none" && !nj.waits.length, JSON.stringify(ci));
+    ghMap({ [PRV]: pvK({ headRefOid: "f".repeat(40) }), [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${"f".repeat(40)}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "completed", conclusion: "success" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "success", url: "" }] } },
+      [`api -i repos/{owner}/{repo}/commits/${"f".repeat(40)}/check-runs?per_page=1`]: { status: 1, stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+      [`api -i repos/{owner}/{repo}/commits/${"f".repeat(40)}/status`]: { stdout: "HTTP/2.0 200 OK\r\n\r\n{}" } });
+    const hj = JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}");
+    const htok = (hj.gates || []).find(g => g.gate === "token"), hci = (hj.gates || []).find(g => g.gate === "ci");
+    ok("ship: a refusal with no headers still names checks=read, and the checks are read on the PR's own head, not local HEAD",
+      htok && htok.missing.join() === "checks=read" && /\(GitHub's refusals\)/.test(htok.why) &&
+      hci && /1 passed, 0 running, 0 failed, read from the head's Actions runs/.test(hci.why), JSON.stringify(hj.gates));
+    ghMap({ ...tok, [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${ksHead()}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "completed", conclusion: "failure" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "success", url: "" }, { name: "lint", status: "completed", conclusion: "failure", url: "" }] } } });
+    const nt = pc("ship", "pol-lever", "--dry-run").stdout;
+    // The person's narrow-token run (s7): at auto-merge, gh pr checks and classic
+    // protection refused, rules and Actions answering, the token probes unmapped.
+    ghMap({ [PRV]: pvK(), [CHK]: { status: 1, stderr: "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)" },
+      [`run list --commit ${ksHead()}`]: { stdout: [[{ databaseId: 9, workflowName: "CI", status: "in_progress", conclusion: "" }]] },
+      "run view 9 --json jobs": { stdout: { jobs: [{ name: "probes", status: "in_progress", conclusion: "", url: "" }] } },
+      "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[{ type: "deletion" }]] },
+      "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: administration=read\r\n\r\n{}", stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+      "api graphql": { stdout: { data: { repository: { autoMergeAllowed: true } } } }, "pr merge": { stdout: "" } });
+    const sr = pc("ship", "pol-lever", "--merge", "--dry-run", "--json");
+    const sj = JSON.parse(sr.stdout || "{}"), st7 = (sj.gates || []).find(g => g.gate === "token");
+    ok("ship: on a narrow token at auto-merge, a dry run names checks=read and administration=read from GitHub's refusals, reads the checks from Actions, and says how it would merge",
+      st7 && st7.warn && st7.missing.includes("checks=read") && st7.missing.includes("administration=read") &&
+      /required checks come from its rulesets, as classic branch protection is refused/.test(st7.why) &&
+      sj.action === "merge-when-green" && sj.autoMerge === false && ghCalls().some(c => /^api graphql/.test(c)) && ghCalls().some(c => /rules\/branches\/main/.test(c)) &&
+      !ghCalls().some(c => /^pr merge/.test(c)) && (sj.gates || []).some(g => g.gate === "ci" && /1 PR check\(s\) still running/.test(g.why)), sr.stdout + ghCalls().join("\n"));
+    ok("ship: …and the text says the merge would wait in ship's own wait", /by ship's own wait/.test(pc("ship", "pol-lever", "--merge", "--dry-run").stdout));
+    // A 404 on classic protection with no header is a branch with no
+    // protection, not a refusal (delivery f2).
+    ghMap({ [PRV]: pvK(), [CHK]: { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] },
+      "api repos/{owner}/{repo}/rules/branches/main": { stdout: [[]] },
+      "api -i repos/{owner}/{repo}/branches/main/protection/required_status_checks": { status: 1, stdout: "HTTP/2.0 404 Not Found\r\n\r\n{\"message\":\"Branch not protected\"}", stderr: "gh: Branch not protected (HTTP 404)" },
+      "api graphql": { stdout: { data: { repository: { autoMergeAllowed: true } } } } });
+    const nf = JSON.parse(pc("ship", "pol-lever", "--merge", "--dry-run", "--json").stdout || "{}");
+    const nft = (nf.gates || []).find(g => g.gate === "token");
+    ok("ship: a 404 on classic branch protection with no header names no administration=read (delivery f2)",
+      nf.action === "merge-when-green" && !(nft && (nft.missing || []).includes("administration=read")), JSON.stringify(nf.gates));
+    ok("ship: the text verdict shows both lines as warnings", /! token: the token lacks checks=read, statuses=read/.test(nt) && /! ci: 1 passed, 0 running, 1 failed/.test(nt), nt);
+  }
+  // Observe: ship acts at the level and records what it would have done at observe.
+  {
+    const PL = await import("./lib/policy.mjs");
+    const errsOf = p => PL.validatePolicy(p).join("; ");
+    ok("observe: validated above its level only, on the policy and on a paths entry",
+      errsOf({ default: "auto-go", observe: "auto-merge", paths: [{ match: "a/**", level: "auto-pr", observe: "auto-merge" }] }) === "" &&
+      /observe: a level above auto-go/.test(errsOf({ default: "auto-go", observe: "auto-go" })) &&
+      /paths\[0\]\.observe: a level above auto-pr/.test(errsOf({ default: "auto-go", paths: [{ match: "a/**", level: "auto-pr", observe: "supervised" }] })) &&
+      /observe: one of supervised/.test(errsOf({ default: "auto-go", observe: "auto-yolo" })));
+    const cl = PL.changeLevel({ source: "base", policy: { default: "auto-go", observe: "auto-merge", paths: [{ match: "a/**", level: "auto-go", observe: "auto-pr" }] } }, ["b/y", "a/x"]);
+    ok("observe: a change's observed level is the lowest of its files' observe-or-level, with the file that set it",
+      cl.level === "auto-go" && cl.observe === "auto-pr" && cl.observeFile === "a/x" && cl.observeBy === "a/**", JSON.stringify(cl));
+  }
+  setPolicy({ ...POLICY, observe: "auto-merge", paths: [...POLICY.paths.filter(e => e.match !== "vault/**"), { match: "vault/**", level: "supervised", observe: "auto-pr" }] }, "observe");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "pol-lever.ship.json"), { force: true });
+  ghMap({ [PRV]: pvK(), [CHK]: green, "pr merge": { stdout: "" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "pol-lever", "--dry-run", "--json");
+  const ow = (JSON.parse(r.stdout || "{}").observe) || {};
+  ok("observe: the observed verdict applies that level's own gates: a scenarios check the policy needs there is a wait",
+    ow.action === "wait" && ow.would === "would wait" && /needs a scenarios check at auto-pr and above/.test((ow.waits || []).join()), r.stdout);
+  setPolicy({ ...POLICY, scenarios: { require: false }, observe: "auto-merge", paths: [...POLICY.paths.filter(e => e.match !== "vault/**"), { match: "vault/**", level: "supervised", observe: "auto-pr" }] }, "observe, no scenarios");
+  r = pc("ship", "pol-lever", "--dry-run", "--json");
+  const oj = JSON.parse(r.stdout || "{}");
+  ok("observe: the verdict acts at the policy's level and carries what the observed level would do",
+    oj.level === "auto-go" && oj.action === "none" && oj.observe && oj.observe.level === "auto-merge" && oj.observe.action === "merge" &&
+    oj.observe.would === "would merge" && /default/.test(oj.observe.by) && !ghCalls().some(c => /^pr merge/.test(c)), r.stdout + r.stderr);
+  r = pc("ship", "pol-lever");
+  ok("observe: a ship run records it in ship.json, acts on nothing more, and the status says what observe would do",
+    r.status === 0 && (levRec().observed || []).length === 1 && levRec().observed[0].action === "merge" && levRec().observed[0].acted === "auto-go" &&
+    levRec().observed[0].head === ksHead() && !ghCalls().some(c => /^pr (merge|create|ready)/.test(c)) &&
+    statusCalls().some(c => /-f description=ship's gates passed at auto-go; a person merges; observe auto-merge: would merge/.test(c)) &&
+    /observe auto-merge \(src\/k\.js: default\): would merge/.test(r.stdout), r.stdout + JSON.stringify(levRec()));
+  pc("ship", "pol-lever");
+  ok("observe: one record per head and action", (levRec().observed || []).length === 1, JSON.stringify(levRec().observed));
+  r = pc("ship", "pol-lever", "--merge");
+  ok("observe: the person's merge through ship keeps the observed list in ship.json, and computes no observe of its own",
+    levRec().status === "merged" && (levRec().observed || []).length === 1 && ghCalls().some(c => /^pr merge 31/.test(c)), r.stdout + JSON.stringify(levRec()));
+  r = pc("policy", "observed", "--json");
+  const ob = JSON.parse(r.stdout || "{}");
+  const de = (ob.entries || []).find(e => e.entry === "default");
+  ok("policy observed --json sums the records by the entry that observed",
+    de && de.observe === "auto-merge" && de.records === 1 && de.actions.merge === 1 && de.plans.join() === "pol-lever" && de.acted.join() === "auto-go", r.stdout);
+  r = pc("policy", "observed");
+  ok("policy observed says it in a line per entry", /^default: observe auto-merge \(acts at auto-go\): 1 record\(s\) over 1 plan\(s\) — merge 1$/m.test(r.stdout), r.stdout);
+  r = pc("policy", "show", "src/z.js", "vault/k.txt");
+  ok("policy show lists each observe, and a file's observed level",
+    /default auto-go \(observe auto-merge\)/.test(r.stdout) && /vault\/\*\* {2}supervised \(observe auto-pr\)/.test(r.stdout) &&
+    /src\/z\.js: auto-go \(default\); observed at auto-merge \(default\)/.test(r.stdout) && /vault\/k\.txt: supervised \(vault\/\*\*\); observed at auto-pr \(vault\/\*\*\)/.test(r.stdout), r.stdout);
+  // A branch that changes .seamux/ is capped at auto-pr, at the observed level too.
+  {
+    fs.mkdirSync(path.join(KS, ".seamux"), { recursive: true }); fs.writeFileSync(path.join(KS, ".seamux", "note.txt"), "x\n");
+    execSync(`git add -A && ${G} commit -q -m seamux-note`, { cwd: KS });
+    ghMap({ [PRV]: pvK(), [CHK]: green });
+    const cj = JSON.parse(pc("ship", "pol-lever", "--dry-run", "--json").stdout || "{}");
+    ok("observe: the .seamux/ cap applies to the observed verdict, which names the level it ended at (inc6 f2)",
+      cj.observe && cj.observe.level === "auto-pr" && /asked auto-merge; the branch changes \.seamux\/note\.txt/.test(cj.observe.capped || ""), JSON.stringify(cj.observe));
+    execSync(`git rm -q .seamux/note.txt && ${G} commit -q -m seamux-note-out`, { cwd: KS });
+  }
+  setPolicy(POLICY, "observe off");
+  r = pc("ship", "pol-lever", "--dry-run", "--json");
+  ok("observe: taking it out is the whole undo", !JSON.parse(r.stdout || "{}").observe, r.stdout);
+  // A worktree with no plan: success, a person's call.
+  const LONE = path.join(TMP, "pol-lone");
+  execSync(`git clone -q ${ORIGIN} ${LONE} && cd ${LONE} && git checkout -q -b dev/lone && echo x > lone.md && git add -A && ${G} commit -q -m lone && git push -q -u origin dev/lone`);
+  ghMap({ [PRV]: { status: 1, stderr: "no pull requests found" }, "api -i -X POST": { stdout: POSTED } });
+  r = pc("ship", "--at", LONE);
+  ok("ship: a branch with no plan gets seamux/ship success, a person's call, and ship acts on nothing else",
+    r.status !== 0 && statusCalls().some(c => /-f state=success -f context=seamux\/ship -f description=no deep-plan plan at this branch: a person's call/.test(c)) &&
+    !ghCalls().some(c => /^pr (create|merge|ready)/.test(c)), r.stdout + r.stderr + ghCalls().join("\n"));
+  // A token without Checks read: the checks come from the Actions runs, and
+  // the token gate names the permission from GitHub's header.
+  const REFUSED = "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)";
+  const narrow = (jobs, extra = {}) => ({ [PRV]: pv(), [CHK]: { status: 1, stderr: REFUSED },
+    [`run list --commit ${head()}`]: { stdout: [[{ databaseId: 7, workflowName: "probes", status: "completed", conclusion: "success" }]] },
+    "run view 7 --json jobs": { stdout: { jobs } },
+    [`api -i repos/{owner}/{repo}/commits/${head()}/check-runs?per_page=1`]: { status: 1,
+      stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: checks=read\r\n\r\n{\"message\":\"Resource not accessible by personal access token\"}",
+      stderr: "gh: Resource not accessible by personal access token (HTTP 403)" },
+    [`api -i repos/{owner}/{repo}/commits/${head()}/status`]: { stdout: "HTTP/2.0 200 OK\r\nX-Accepted-Github-Permissions: statuses=read\r\n\r\n{}" },
+    "api graphql": { stdout: { data: { repository: { autoMergeAllowed: false } } } }, "pr merge 12": { stdout: "" }, ...extra });
+  ghMap(narrow([{ name: "probes", status: "completed", conclusion: "success", url: "" }]));
+  r = pc("ship", "pol-ship", "--dry-run", "--json");
+  const tj = JSON.parse(r.stdout || "{}"), tg = (tj.gates || []).find(g => g.gate === "token");
+  ok("ship: on a token without Checks read, the token gate names checks=read from GitHub's header, warns, and the Actions runs still give a merge",
+    tj.action === "merge" && tg && tg.ok && tg.warn && tg.missing.join() === "checks=read" &&
+    /lacks checks=read \(GitHub's X-Accepted-GitHub-Permissions header\): ship reads the PR's checks from its Actions runs/.test(tg.why) &&
+    /ship needs pull_requests=write, contents=write, checks=read, statuses=read, statuses=write/.test(tg.why), r.stdout + r.stderr);
+  r = pc("ship", "pol-ship", "--dry-run");
+  ok("ship: the text verdict marks the token gate as a warning", /\n {2}! token: the token lacks checks=read/.test(r.stdout), r.stdout);
+  // The token never shows: the probes ask gh for the header only.
+  ok("ship: the token gate reads headers through gh api -i, never through gh auth",
+    ghCalls().some(c => /^api -i repos\/\{owner\}\/\{repo\}\/commits\/[0-9a-f]{40}\/check-runs/.test(c)) && !ghCalls().some(c => /^auth/.test(c)), ghCalls().join("\n"));
+  ghMap({ ...narrow([]), [`api -i repos/{owner}/{repo}/commits/${head()}/check-runs?per_page=1`]: { stdout: "HTTP/2.0 200 OK\r\n\r\n{}" },
+    [CHK]: { stdout: [[{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] } });
+  r = pc("ship", "pol-ship", "--dry-run", "--json");
+  const tg2 = (JSON.parse(r.stdout || "{}").gates || []).find(g => g.gate === "token");
+  ok("ship: a token that reads both passes the token gate without a warning, still listing what ship needs",
+    tg2 && tg2.ok && !tg2.warn && /reads checks and commit statuses; ship needs/.test(tg2.why), r.stdout);
+  // A red check that is red on the base's tip too is labelled, and still holds the merge.
+  const tip = execSync("git rev-parse origin/main", { cwd: PR_, encoding: "utf8" }).trim();
+  ghMap({ [PRV]: pv(), [CHK]: { status: 1, stdout: [[{ name: "probes", workflow: "CI", bucket: "fail", link: "" }, { name: "lint", workflow: "CI", bucket: "fail", link: "" }]] },
+    [`run list --commit ${tip}`]: { stdout: [[{ databaseId: 3, workflowName: "CI", status: "completed", conclusion: "failure" }]] },
+    "run view 3 --json jobs": { stdout: { jobs: [{ name: "probes", status: "completed", conclusion: "failure", url: "" }, { name: "lint", status: "completed", conclusion: "success", url: "" }] } },
+    "pr merge": { stdout: "" } });
+  r = pc("ship", "pol-ship");
+  ok("ship: a failed check that also fails on the base's tip is labelled with the tip, the other is not, and ship still waits",
+    r.status === 3 && new RegExp(`CI / probes \\(also failing on main at ${tip.slice(0, 8)}\\), CI / lint(;|\\n|$)`).test(r.stdout) &&
+    !ghCalls().some(c => /^pr merge/.test(c)), r.stdout);
   // A branch that also changes the policy is never merged by ship, even
   // where the base puts the policy file itself at auto-merge.
   setPolicy({ ...POLICY, default: "auto-merge" });
@@ -9914,12 +10329,12 @@ if (want("packs: add, check, update, remove")) {
   const A = mkRepo("pk-a", { "package.json": "{}\n" });
   let r = pk(A, "list");
   ok("pack list: the three deep-plan ships, and the one this repo looks like",
-    /^node-web@1\.0\.0 {2}\(looks like this repo\)/m.test(r.stdout) && /^github-actions@/m.test(r.stdout) && /^seamux@/m.test(r.stdout), r.stdout);
+    /^node-web@1\.1\.0 {2}\(looks like this repo\)/m.test(r.stdout) && /^github-actions@/m.test(r.stdout) && /^seamux@/m.test(r.stdout), r.stdout);
   r = pk(A, "add", "node-web");
-  ok("pack add node-web: merged, and says what to review", r.status === 0 && /added node-web@1\.0\.0 from deep-plan:node-web/.test(r.stdout) && /review and commit/.test(r.stdout), r.stdout + r.stderr);
+  ok("pack add node-web: merged, and says what to review", r.status === 0 && /added node-web@1\.1\.0 from deep-plan:node-web/.test(r.stdout) && /review and commit/.test(r.stdout), r.stdout + r.stderr);
   const v = J(A, ".seamux/verify.json");
   ok("pack add: its recipes and land recipe are in verify.json, each marked with the pack",
-    ["unit", "build", "e2e", "deploy"].every(id => v.recipes.some(x => x.id === id && x.pack === "node-web@1.0.0")));
+    ["unit", "build", "e2e", "deploy"].every(id => v.recipes.some(x => x.id === id && x.pack === "node-web@1.1.0")));
   ok("pack add: the scenarios harness, the policy draft whole, the MCP server and the stamp",
     J(A, ".seamux/scenarios.json").harness.export.BASE_URL === "http://127.0.0.1:$PORT" && J(A, ".seamux/policy.json").default === "auto-go" &&
     J(A, ".mcp.json").mcpServers.playwright.command === "npx" && Object.keys(J(A, ".seamux/packs.json").packs["node-web"].items).length >= 8);
