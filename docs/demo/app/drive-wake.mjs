@@ -204,6 +204,19 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     await page.keyboard.press("Escape");
     await page.waitForTimeout(150);
     say(!(await turnp.isVisible()) && (await wake.isVisible()), "Esc closes it, and the Wake stays");
+    // Space with nothing picked picks the first item and shows its prompt, whatever was on before.
+    for (const before of ["on", "off"]) {
+      if (before === "on") {
+        await page.keyboard.press("j");
+        await page.keyboard.press(" ");
+      }
+      for (let i = 0; i < 60 && (await sel(page)) !== null; i++) await page.keyboard.press("k");
+      await page.keyboard.press(" ");
+      await page.waitForTimeout(150);
+      say((await sel(page)) !== null && (await turnp.isVisible()), `Space with nothing picked shows the first item's prompt (panel ${before} before)`, String(await sel(page)));
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(100);
+    }
 
     // A redraw (a search, then clearing it) keeps each thumbnail: the same element, not fetched again.
     const tk = await wake.locator(".w-thumb").first().getAttribute("data-key");

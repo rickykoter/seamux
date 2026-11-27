@@ -781,6 +781,14 @@ export class Wake {
     const open = this.openGroups.has(c.key);
     prompt.setAttribute("role", "button");
     prompt.setAttribute("aria-expanded", String(open));
+    // Reached by Tab too: Enter or Space on it opens or closes the card.
+    prompt.tabIndex = 0;
+    prompt.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleCard(c.key, a);
+    });
     const whole = el("div", "w-card-p");
     whole.hidden = !open;
     const wb = el("div", `w-turnp-b${c.prompt ? "" : " none"}`);
@@ -847,7 +855,9 @@ export class Wake {
     if (!key) return undefined;
     const direct = this.acts.get(key)?.row;
     if (direct) return direct;
-    const k = key.split("@")[0];
+    // A lane or review drawn inside a card carries "@turn:<id>"; an ask's
+    // key is its page path, which may hold an "@" of its own.
+    const k = key.replace(/@turn:[^@]*$/, "");
     const at = k.indexOf(":");
     const kind = at < 0 ? k : k.slice(0, at);
     const v = at < 0 ? "" : k.slice(at + 1);
@@ -862,7 +872,7 @@ export class Wake {
   /** Timeline: the card that holds the pick, or the card of the turn the
    *  pick came from; with nothing picked, the first card. */
   private cardFor(key: string | null): HTMLElement | null {
-    if (!key) return this.list.querySelector<HTMLElement>(".w-card");
+    if (!key) return this.list.querySelector<HTMLElement>(".w-day:not(.folded) .w-card");
     const at = this.list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.closest<HTMLElement>(".w-card");
     if (at) return at;
     const r = this.rowFor(key);
@@ -906,7 +916,7 @@ export class Wake {
     for (let i = this.spaceOpened.length - 1; i >= 0; i--) {
       const k = this.spaceOpened[i];
       if (!this.openGroups.has(k)) continue;
-      const a = this.list.querySelector<HTMLElement>(`.w-card.open[data-turn="${CSS.escape(k)}"]`);
+      const a = this.list.querySelector<HTMLElement>(`.w-day:not(.folded) .w-card.open[data-turn="${CSS.escape(k)}"]`);
       if (a) return a;
     }
     return null;
@@ -1249,6 +1259,9 @@ ${p.url}`;
   }
 
   private selectKey(key: string | null, scroll = false): void {
+    // A card's prompt holding the focus lets go: Space then acts on the pick.
+    const f = document.activeElement;
+    if (f instanceof HTMLElement && f.classList.contains("w-prompt") && this.list.contains(f)) f.blur();
     this.list.querySelectorAll(".sel[data-key]").forEach((x) => x.classList.remove("sel"));
     this.selKey = key;
     const at = key ? this.list.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`) : null;
@@ -1654,11 +1667,12 @@ ${p.url}`;
           if (card) this.toggleCard(card.dataset.turn ?? "", card);
           break;
         }
-        // Nothing picked: the first item is, and its prompt shows.
-        if (!this.selKey) this.step(1);
+        // Nothing picked: the first item is picked and its prompt shows.
+        const had = !!this.selKey;
+        if (!had) this.step(1);
         if (this.selKey) {
           // Shelves have no cards: the row's turn prompt shows under the list.
-          this.turnOn = !this.turnOn;
+          this.turnOn = had ? !this.turnOn : true;
           this.showTurn();
           // The panel takes room from the list: the pick stays in sight.
           this.list.querySelector<HTMLElement>(".sel[data-key]")?.scrollIntoView({ block: "nearest" });
