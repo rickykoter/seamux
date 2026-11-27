@@ -1021,7 +1021,16 @@ ${p.url}`;
         img.src = thumbUrl(r);
         img.addEventListener("error", () => img.replaceWith(tile()));
         pic.append(img);
-      } else pic.append(tile());
+      } else if (mediaOf(r.path) === "video" && r.state !== "gone") pic.append(this.videoPoster(r, tile()));
+      else pic.append(tile());
+      // A recording saved in the worktree's folder says so, apart from one in
+      // temp storage or a scratchpad. (Whether git tracks it is not known here.)
+      const ws = this.ws.replace(/\/+$/, "");
+      if (mediaOf(r.path) === "video" && ws && r.path.startsWith(ws + "/")) {
+        const m = el("span", "w-repo", "repo");
+        m.title = "saved in this worktree's folder";
+        pic.append(m);
+      }
       const cap = el("span", "w-thumb-cap", r.title);
       cap.title = r.path || r.title;
       t.append(pic, cap);
@@ -1040,6 +1049,60 @@ ${p.url}`;
     t.classList.toggle("gone", r.state === "gone");
     this.acts.set(key, { row: r, open: (e) => void this.open(r, "", e), copy: r.path ? () => void this.copy(r.path, "the path") : undefined });
     return t;
+  }
+
+  /** A video's poster: a muted frame of it, read only once its thumbnail
+   *  scrolls into view (each read is a ranged request for the file), with
+   *  its length when the file states it. A recording that does not (a
+   *  canvas's, or some browsers' own webm) shows its frame alone: learning
+   *  its length would mean reading the whole file. Until the frame is in,
+   *  and for a video that will not load (after one retry), the play tile
+   *  shows. */
+  private videoPoster(r: Row, tile: HTMLElement): HTMLElement {
+    const box = el("span", "w-thumb-vid");
+    const v = el("video");
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = "none";
+    v.tabIndex = -1;
+    v.setAttribute("aria-hidden", "true");
+    const dur = el("span", "w-dur");
+    dur.hidden = true;
+    box.append(tile, dur);
+    const length = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+    v.addEventListener("loadedmetadata", () => {
+      if (Number.isFinite(v.duration) && v.duration > 0) {
+        dur.textContent = length(v.duration);
+        dur.hidden = false;
+        v.currentTime = Math.min(1, v.duration / 10);
+      } else v.currentTime = 0.1;
+    });
+    // The first frame seeked to swaps in for the tile, once.
+    let swapped = false;
+    v.addEventListener("seeked", () => {
+      if (swapped) return;
+      swapped = true;
+      tile.replaceWith(v);
+      box.append(el("span", "w-thumb-play", "▶"));
+    });
+    // One retry a moment later: a file still being written, or a source not
+    // ready yet, often loads the second time.
+    let retried = false;
+    v.addEventListener("error", () => {
+      if (retried || swapped) return;
+      retried = true;
+      window.setTimeout(() => {
+        v.src = fileUrl(r);
+      }, 1500);
+    });
+    const io = new IntersectionObserver((seen) => {
+      if (!seen.some((e) => e.isIntersecting)) return;
+      io.disconnect();
+      v.preload = "metadata";
+      v.src = fileUrl(r);
+    });
+    io.observe(box);
+    return box;
   }
 
   // ------------------------------------------------------------ selection

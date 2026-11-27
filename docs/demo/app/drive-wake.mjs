@@ -71,6 +71,25 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
     await page.waitForTimeout(300);
     say(!(await page.locator(".wv-img").first().isVisible().catch(() => false)), "Esc closes the preview");
 
+    // A video: a muted frame for its poster and its length, once in view.
+    const vid = wake.locator(".w-thumb", { hasText: "checkout-walkthrough.webm" });
+    say((await vid.count()) === 1, "the webm is on Pictures and recordings, as a video");
+    await vid.scrollIntoViewIfNeeded();
+    await vid.locator("video").waitFor({ timeout: 8000 }).catch(() => {});
+    say(await vid.locator("video").isVisible().catch(() => false), "a video shows a frame of itself as its poster");
+    // The demo's clip is a canvas recording, which does not state its length:
+    // it shows its frame and no length, rather than reading the whole file.
+    const durShown = await vid.locator(".w-dur").isVisible();
+    const durText = durShown ? await vid.locator(".w-dur").textContent() : "";
+    say(!durShown || /^\d+:\d\d$/.test(durText ?? ""), "a length shows only when the file states it", durShown ? durText : "not stated: none shown");
+    say((await vid.locator(".w-thumb-play").count()) === 1, "one play mark on the poster");
+    say(await vid.evaluate((e) => e.classList.contains("risk")), "a video at risk says so");
+    await vid.click();
+    await page.waitForTimeout(500);
+    say(await page.locator(".sheet-wake .wv video").first().isVisible().catch(() => false), "a click on a video opens it in the preview");
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+
     // t switches to Timeline and back; the choice is kept.
     await wake.locator(".w-shelf-h").first().click();
     await page.keyboard.press("t");
@@ -136,7 +155,33 @@ async function run({ dark = true, width = 1440, tag = "" } = {}) {
       await pastq.fill("");
       await page.waitForTimeout(300);
     }
-    say(errors.length === 0, "no page errors", errors.join(" | "));
+    // A recording saved in the worktree is marked "repo" (checkout-flow's mp4).
+    await wake.locator(".w-ws").selectOption(treeOf(byKey.checkout));
+    const mp4 = wake.locator(".w-thumb", { hasText: "coupon-error-flow.mp4" });
+    await mp4.waitFor({ timeout: 8000 }).catch(() => {});
+    say(await mp4.locator(".w-repo").isVisible().catch(() => false), "a recording saved in the worktree is marked repo");
+    say(!(await wake.locator(".w-thumb", { hasText: "checkout-walkthrough.webm" }).count()), "another worktree's videos are not shown");
+    await page.screenshot({ path: join(out, "videos-repo.png") });
+
+    // A video that will not load keeps its play tile (the webm, row 20, made
+    // to point nowhere; coming back to coupons-api draws its poster afresh).
+    // Only the load failure that causes may follow in the errors.
+    const beforeBreak = errors.length;
+    await page.evaluate(() => {
+      const T = window.__TAURI_INTERNALS__;
+      const was = T.convertFileSrc;
+      T.convertFileSrc = (id, p) => (p === "wakefile" && String(id) === "20" ? "wakefile://localhost/no-such-video" : was(id, p));
+    });
+    await wake.locator(".w-ws").selectOption(treeOf(byKey.api));
+    const broken = wake.locator(".w-thumb", { hasText: "checkout-walkthrough.webm" });
+    await broken.waitFor();
+    await broken.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(1500);
+    say((await broken.locator(".w-thumb-tile").isVisible()) && !(await broken.locator("video").isVisible().catch(() => false)),
+      "a video that will not load keeps its play tile");
+
+    const real = errors.filter((e, i) => i < beforeBreak || !/Failed to load resource|no-such-video/.test(e));
+    say(real.length === 0, "no page errors", real.join(" | "));
     return errors;
   } finally {
     await browser.close();

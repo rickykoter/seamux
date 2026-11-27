@@ -343,3 +343,11 @@
 .w-sect .w-row { padding-left: 0; padding-right: 0; }
 .w-li { list-style: none; }
 .w-sect .w-lane, .w-sect .w-rv { border: 1px solid var(--line); border-radius: 8px; margin: 2px 0; }
+
+/* Videos on Pictures and recordings: a muted frame for a poster, its length,
+   and "repo" for one saved in the worktree. */
+.w-thumb-vid { position: absolute; inset: 0; display: grid; place-items: center; }
+.w-thumb-vid video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.w-thumb-play { position: absolute; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; padding-left: 2px; box-sizing: border-box; background: color-mix(in srgb, var(--ink, #000) 55%, transparent); color: #fff; }
+.w-dur { position: absolute; right: 4px; bottom: 4px; font: 600 var(--fs-1) ui-monospace, Menlo, monospace; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, #000 60%, transparent); color: #fff; }
+.w-repo { position: absolute; right: 4px; top: 4px; font-size: var(--fs-1); padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, #000 55%, transparent); color: #fff; }

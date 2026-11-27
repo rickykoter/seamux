@@ -1429,7 +1429,53 @@ const handlers = {
 const unknown = new Set();
 mockWindows("main");
 // The Wake's images stream from the app's wakefile: scheme by row id; here, drawn.
-window.__TAURI_INTERNALS__.convertFileSrc = (id, protocol) => (protocol === "wakefile" && WAKE.some(([i, , kind]) => String(i) === id && kind === "image") ? demoShot(id) : `${protocol}://localhost/${id}`);
+// The Wake's videos: the demo has no video files, so one short clip is drawn
+// on a canvas and recorded at load; every video row streams it. Without a
+// recorder, video rows keep their play tile.
+let demoClip = null;
+(async () => {
+  try {
+    const c = document.createElement("canvas");
+    c.width = 320;
+    c.height = 200;
+    const g = c.getContext("2d");
+    const rec = new MediaRecorder(c.captureStream(15), { mimeType: "video/webm" });
+    const parts = [];
+    rec.ondataavailable = (e) => parts.push(e.data);
+    const stopped = new Promise((r) => (rec.onstop = r));
+    rec.start();
+    const t0 = performance.now();
+    await new Promise((done) => {
+      const frame = () => {
+        const t = (performance.now() - t0) / 1000;
+        g.fillStyle = "hsl(200 30% 88%)";
+        g.fillRect(0, 0, 320, 200);
+        g.fillStyle = "hsl(200 35% 30%)";
+        g.fillRect(0, 0, 320, 22);
+        g.fillStyle = "#fff";
+        g.fillRect(90, 40, 140, 130);
+        g.fillStyle = "hsl(150 45% 40%)";
+        g.fillRect(105, 140, 110 * Math.min(1, t / 1.2), 14);
+        g.fillStyle = "#333";
+        g.font = "14px sans-serif";
+        g.fillText("Order summary", 105, 66);
+        if (t < 1.2) requestAnimationFrame(frame);
+        else done();
+      };
+      frame();
+    });
+    rec.stop();
+    await stopped;
+    demoClip = URL.createObjectURL(new Blob(parts, { type: "video/webm" }));
+  } catch {
+    /* no recorder here */
+  }
+})();
+const kindOfRow = (id) => WAKE.find(([i]) => String(i) === id)?.[2];
+window.__TAURI_INTERNALS__.convertFileSrc = (id, protocol) =>
+  protocol === "wakefile" && kindOfRow(id) === "image" ? demoShot(id)
+  : protocol === "wakefile" && kindOfRow(id) === "video" && demoClip ? demoClip
+  : `${protocol}://localhost/${id}`;
 mockIPC(
   async (cmd, args) => {
     const h = handlers[cmd];
