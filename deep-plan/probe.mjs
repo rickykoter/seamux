@@ -1547,6 +1547,13 @@ ok("a search for a quoted > allowed", bash('rg "=>" src').status === 0);
 ok("git status allowed", bash("git status").status === 0);
 ok("test run allowed", bash("npm test").status === 0);
 ok("sed -i denied", bash("sed -i '' s/a/b/ file.rb").status === 2);
+// Every in-place form is a write (n294ce59d): -ie used to read as a read.
+for (const c of ["sed -ie s/a/b/ file.rb", "sed -i.bak s/a/b/ file.rb", "sed -ni p file.rb", "sed -Ei s/a/b/ file.rb",
+  "sed -n -i p file.rb", "sed --in-place s/a/b/ file.rb", "sed --in-place=.bak s/a/b/ file.rb", "sed -e 's/a b/c/' -i file.rb"])
+  ok(`${c} denied`, bash(c).status === 2, bash(c).stderr);
+ok("sed without -i, or with -i only in its script, allowed",
+  bash("sed -n p file.rb").status === 0 && bash("sed -e 's/-i/x/' file.rb").status === 0 &&
+  bash("sed -E 's/a/b/' file.rb").status === 0 && bash("sed -es/-i/x/ file.rb").status === 0 && bash("sed --silent p file.rb").status === 0);
 ok("git commit denied", bash("git commit -m x").status === 2);
 ok("a heredoc write denied", bash("cat <<EOF > f.txt\nhi\nEOF").status === 2);
 ok("the plan's own tooling allowed", bash("deep-plan status").status === 0);
@@ -6734,6 +6741,12 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   ok("admin: between increments, .seamux files pass, nested projects too", e(".seamux/verify.json") === 0 && e("ops/.seamux/lessons.md") === 0);
   ok("admin: between increments, the plan's ADR folder passes", e(`${adr}/0001-x.md`) === 0, adr);
   ok("admin: between increments, product code stays gated", e("src/a.ts") === 2 && b("echo x > src/b.ts") === 2);
+  // A redirect's name is read where the redirect is, after a 2>&1 or a
+  // 2>/dev/null too: from outside the root, the write into it is still seen.
+  const out = c => gate("Bash", { command: c }, TMP).status;
+  ok("admin: from outside the root, a write after 2>&1 or 2>/dev/null into it stays gated",
+    out(`node x.mjs 2>&1 > ${AD}/src/b.ts`) === 2 && out(`node x.mjs 2>&1 >${AD}/src/b.ts`) === 2 &&
+    out(`grep x f 2>/dev/null > ${AD}/src/b.ts`) === 2);
   ok("admin: between increments, branch admin passes",
     b("git switch -c next") === 0 && b("git fetch origin && git rebase origin/main") === 0 && b("git push -u origin HEAD 2>&1 | tail -2") === 0 && b("git cherry-pick abc123") === 0);
   ok("admin: …but not a write chained beside it, nor a commit", b("git switch next && rm src/a.ts") === 2 && b("git commit -m x") === 2);
@@ -6757,12 +6770,55 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   r = gate("Bash", { command: "echo x > notes/todo.md" }, AD);
   ok("scope: a later one, by Bash too, is recorded without a word", r.status === 0 && !/outside increment/.test(ctx(r)) &&
     stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  // A sed script and a /dev/null redirect are not files (n30883b3d, nc49e03a2).
+  r = gate("Bash", { command: "sed -i '' -e 's/^function a(x) {/function b(x) {/' src/lib/x.ts" }, AD);
+  ok("scope: a sed -e script is not recorded as a file", r.status === 0 &&
+    stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  r = gate("Bash", { command: "grep -l x src/a.ts 2>/dev/null > src/lib/hits.txt" }, AD);
+  ok("scope: 2>/dev/null before a real redirect records nothing outside", r.status === 0 &&
+    stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  {
+    const T = c => JSON.stringify(lib.bashWriteTargets(c, "/w"));
+    ok("targets: sed's -e, -f, --expression and --file words are scripts, not files",
+      T("sed -i -e 's/a/b/' -e 's/c/d/' f1 f2") === '["/w/f1","/w/f2"]' && T("sed -i -n -e p f1") === '["/w/f1"]' &&
+      T("sed -i --expression=s/a/b/ f1") === '["/w/f1"]' && T("sed -i --file s.sed f1") === '["/w/f1"]' &&
+      T("sed -i -es/a/b/ f1") === '["/w/f1"]' && T("sed -i.bak -e s/a/b/ f1") === '["/w/f1"]' &&
+      T("sed -i -l 80 s/a/b/ f1") === '["/w/f1"]' && T("sed -i -nl 80 -e p f1 -") === '["/w/f1"]' &&
+      T("sed -i --line-length 80 s/a/b/ f1") === '["/w/f1"]' && T("sed -i --line-length=80 s/a/b/ f1") === '["/w/f1"]',
+      T("sed -i -e 's/a/b/' -e 's/c/d/' f1 f2"));
+    ok("targets: without -e the first word is still the script, and -i's '' suffix no path",
+      T("sed -i '' 's/a/b/' f1") === '["/w/f1"]' && T("sed -i s/a/b/ f1 f2") === '["/w/f1","/w/f2"]');
+    ok("targets: sed -ie, -ni and --in-place write their files",
+      T("sed -ie s/a/b/ f1") === '["/w/f1"]' && T("sed -ni p f1") === '["/w/f1"]' &&
+      T("sed --in-place s/a/b/ f1") === '["/w/f1"]' && T("sed --in-place=.bak -e s/a/b/ f1") === '["/w/f1"]',
+      T("sed -ie s/a/b/ f1") + T("sed --in-place s/a/b/ f1"));
+    // Each option word matches one way: 60 -e words took minutes when two could.
+    const t0 = Date.now();
+    ok("targets: a long run of sed -e words is read in linear time",
+      !lib.bashMutates("sed " + "-e ".repeat(60) + "x f") && !lib.bashMutates("sed " + "-e 'a' ".repeat(60) + "x f") && Date.now() - t0 < 500,
+      `${Date.now() - t0} ms`);
+    ok("targets: a redirect's name is read where it is, past 2>&1 and 2>/dev/null",
+      T("ls 2>/dev/null >out.txt") === '["/w/out.txt"]' && T("node x 2>&1 >/tmp/y") === '["/tmp/y"]' &&
+      T("cd /tmp; node x 2>&1 > /r/f") === '["/r/f"]' && T("grep x f 2>/dev/null > list.txt") === '["/w/list.txt"]',
+      T("cd /tmp; node x 2>&1 > /r/f"));
+    ok("targets: a redirect into /dev/null, quoted or not, is no target",
+      T('foo 2>"/dev/null"') === "[]" && T("foo 2>&1 >'/dev/null'") === "[]" && T("cat a > /dev/null") === "[]");
+  }
   ok("scope: the plan's log records it", stOf().log.some(l => /out of scope: increment 2 edited README\.md/.test(typeof l === "string" ? l : JSON.stringify(l))));
   cli("rehydrate", "admin-1");
   const wh = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "admin-1.working.html"), "utf8");
   ok("scope: the working page shows the paths", /edited outside this increment's files: <code>README\.md<\/code>, <code>notes\/todo\.md<\/code>/.test(wh));
+  // An amend that adds a recorded path to the increment takes it off the list
+  // (nee7e4fdd); the log keeps the line that recorded it.
+  const s2 = JSON.parse(JSON.stringify(s));
+  s2.deliverables[1].files = [...s2.deliverables[1].files, "README.md"];
+  r = cli("amend", "admin-1", tmpSpec(s2), "README.md belongs to increment 2");
+  ok("scope: an amend that adds a recorded path drops it from the list, and the log keeps it",
+    r.status === 0 && stOf().increments[1].outOfScope.join() === "notes/todo.md" &&
+    stOf().log.some(l => /out of scope: increment 2 edited README\.md/.test(typeof l === "string" ? l : JSON.stringify(l))),
+    r.stderr.slice(0, 300) + JSON.stringify(stOf().increments[1].outOfScope));
   r = cli("done", "admin-1", "2");
-  ok("scope: done names them", /edited outside increment 2's files: README\.md, notes\/todo\.md/.test(r.stdout), r.stdout + r.stderr);
+  ok("scope: done names only what the amended files leave outside", /edited outside increment 2's files: notes\/todo\.md —/.test(r.stdout), r.stdout + r.stderr);
   cli("close", "admin-1");
 }
 
@@ -8270,6 +8326,23 @@ if (want("notes: side findings beside a plan's state")) {
     input: JSON.stringify({ tool_name: "Bash", tool_input: { command: `deep-plan note "the login test is flaky"` }, cwd: NA, session_id: "notes-s1" }) });
   ok("notes: the gate passes a note inside a root with nothing authorized", g.status === 0, g.stderr);
 
+  // A bare --help or -h is the verb's usage, never a note or lesson's text.
+  {
+    const before = fs.existsSync(nfile("notes-a")) ? fs.readFileSync(nfile("notes-a"), "utf8") : "";
+    const h1 = ncli(NA, "note", "--help"), h2 = ncli(NA, "lesson", "-h"), h3 = ncli(NA, "note", "close", "-h");
+    const after = fs.existsSync(nfile("notes-a")) ? fs.readFileSync(nfile("notes-a"), "utf8") : "";
+    ok("notes: note --help, lesson -h and note close -h print usage and file nothing",
+      h1.status === 0 && /^  note "<text>"/m.test(h1.stdout) && h2.status === 0 && /^  lesson /m.test(h2.stdout) &&
+      h3.status === 0 && /^  note close/m.test(h3.stdout) && before === after && !/noted n[0-9a-f]{8}|\bc[0-9a-f]{8}\b/.test(h1.stdout + h2.stdout + h3.stdout),
+      h1.stdout + h1.stderr + h2.stdout + h2.stderr);
+    // Every verb the switch dispatches is a built-in, so --help reaches each
+    // and the listing never offers its name to an extension.
+    const src = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
+    const set = src.match(/const BUILTIN_VERBS = new Set\(\[([\s\S]*?)\]\)/)[1].match(/"([^"]+)"/g).map(x => x.slice(1, -1));
+    const cases = [...src.slice(src.indexOf("switch (cmd) {")).matchAll(/^  case "([^"]+)":/gm)].map(m => m[1]);
+    ok("notes: BUILTIN_VERBS holds every verb the switch handles", cases.length > 30 && cases.every(c => set.includes(c)),
+      cases.filter(c => !set.includes(c)).join(", "));
+  }
   let r = ncli(NA, "note", "found before any go");
   ok("notes: a note before any go is on the plan at the cwd, with no increment",
     r.status === 0 && /^noted n[0-9a-f]{8} on notes-a$/m.test(r.stdout), r.stdout + r.stderr);
