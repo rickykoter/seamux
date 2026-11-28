@@ -208,7 +208,7 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   ok("words: a hidden row's right column takes the short words, its tooltip the full ones",
     /const untilShort = [^;]*UNTIL_SHORT\[r\.level\]/.test(pal) && /row\.title = r\.level \? `Hidden \$\{untilOf\(r\)\}/.test(pal) && !/: "hidden"/.test(pal));
   ok("words: the ⇧⌘↵ hint says it shows the ones hidden until needed (tuck_unmute_all clears mutes alone)",
-    pal.includes("⇧⌘↵ show the ones hidden until needed") && !pal.includes("show all") && !/unhide/.test(pal));
+    pal.includes('["⇧⌘↵", "show the ones hidden until needed"]') && !pal.includes("show all") && !/unhide/.test(pal));
   // Every string a person reads in search and the Hide words: no "muted".
   const read = [...(pal + tk).matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2]).filter((t) => /\bmuted?\b/i.test(t) && /\s/.test(t));
   ok("words: no string a person reads says muted", read.length === 0, JSON.stringify(read));

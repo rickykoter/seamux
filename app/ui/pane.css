@@ -58,17 +58,19 @@
    heart when a long turn ends. Never takes the mouse. */
 .native-term { position: relative; }
 .pane-cat-box { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 3; }
-.pane-cat { position: absolute; right: 18px; bottom: -34px; line-height: 0; transition: bottom 0.35s ease; }
-.pane-cat[data-at="peek"] { bottom: -6px; }
-.pane-cat[data-at="up"] { bottom: 0; transition-duration: 0.12s; }
-.pane-cat[data-at="air"] { bottom: 6px; transition-duration: 0.12s; }
+/* It moves by transform on an ease-out curve; going down is shorter than coming
+   up. A pane just shown places it with no transition (panecat.ts settle). */
+.pane-cat { position: absolute; right: 18px; bottom: -34px; line-height: 0; transition: transform 0.16s cubic-bezier(0.23, 1, 0.32, 1); }
+.pane-cat[data-at="peek"] { transform: translateY(-28px); transition-duration: 0.22s; }
+.pane-cat[data-at="up"] { transform: translateY(-34px); transition-duration: 0.12s; }
+.pane-cat[data-at="air"] { transform: translateY(-40px); transition-duration: 0.12s; }
 .pane-cat-heart { position: absolute; right: 18px; bottom: 4px; line-height: 0; opacity: 0; }
 .pane-cat-heart.up { animation: pane-heart 1.5s ease-out forwards; }
 @keyframes pane-heart { 0% { opacity: 0; transform: translateY(0); } 15% { opacity: 1; } 100% { opacity: 0; transform: translateY(-36px); } }
 
 /* The cursor shows Claude's state: it breathes while Claude works and is a
    steady amber while Claude waits for you (data-agent, from the pane's tile). */
-@keyframes pane-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+@keyframes pane-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .native-term[data-agent="working"] .xterm-cursor { animation: pane-breathe 2.4s ease-in-out infinite !important; }
 .native-term[data-agent="needs_input"] .xterm-cursor { animation: none !important; }
 .native-term[data-agent="needs_input"] .xterm-cursor.xterm-cursor-block { background-color: #e69875 !important; color: #1e2326 !important; }
@@ -93,16 +95,16 @@
 .pb-cmd::before { content: "! "; color: var(--accent); }
 .pb-row { display: flex; gap: 6px; }
 .pb-btn {
-  font: inherit; padding: 3px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+  font: inherit; min-height: 24px; padding: 3px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap;
   background: var(--strip); color: var(--fg); border: 1px solid var(--line);
 }
-.pb-btn:hover, .pb-btn:focus-visible { border-color: var(--accent); outline: none; }
+.pb-btn:hover, .pb-btn:focus-visible { border-color: var(--accent); }
 .pb-btn:first-child { background: color-mix(in srgb, var(--accent) 16%, var(--strip)); }
 
 /* Claude's prompt in bash mode: run its command in the ⌘J shell instead. */
 .pane-bashchip {
-  position: absolute; z-index: 4; right: 14px; height: 18px; padding: 0 8px; border-radius: 9px; cursor: pointer;
-  font: var(--fs-1) -apple-system, system-ui, sans-serif;
+  position: absolute; z-index: 4; right: 14px; height: 24px; padding: 0 10px; border-radius: 12px; cursor: pointer;
+  font: var(--fs-2) -apple-system, system-ui, sans-serif;
   background: var(--card); color: var(--muted); border: 1px solid var(--line);
 }
 .pane-bashchip:hover { color: var(--fg); border-color: var(--accent); }
@@ -117,8 +119,8 @@
 .pane-bgstrip { flex: none; display: flex; margin-top: 4px; }
 .pane-bgstrip[hidden] { display: none; }
 .bg-summary {
-  display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 22px; padding: 0 10px; border-radius: 11px; cursor: pointer;
-  font: var(--fs-1) -apple-system, system-ui, sans-serif; color: var(--muted);
+  display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 24px; padding: 0 10px; border-radius: 12px; cursor: pointer;
+  font: var(--fs-2) -apple-system, system-ui, sans-serif; color: var(--muted);
   background: var(--strip); border: 1px solid var(--line);
 }
 .bg-summary:hover, .bg-summary[aria-expanded="true"] { color: var(--fg); border-color: var(--accent); }
@@ -127,12 +129,12 @@
 .bg-name { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .bg-bad { color: var(--bad-t); flex: none; }
 .bg-mark { flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.bg-mark.running { color: var(--accent); animation: bg-turn 1.2s linear infinite; }
+/* A background shell can run for hours (a dev server): its mark holds still, the
+   count says it runs, and a spinner would claim progress that isn't there. */
+.bg-mark.running { color: var(--accent); fill: currentColor; stroke: none; }
 .bg-mark.done { color: var(--good-t); }
 .bg-mark.failed { color: var(--bad-t); }
 .bg-mark.cancelled { color: var(--muted); }
-@keyframes bg-turn { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .bg-mark.running { animation: none; } }
 
 .pane-bglist {
   position: absolute; z-index: 6; left: var(--term-pad, 8px); bottom: 34px; width: min(560px, calc(100% - 24px)); max-height: 60%;
@@ -174,12 +176,12 @@
 .ps-when { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ps-btns { display: flex; gap: 6px; flex: none; }
 .ps-btn {
-  font: var(--fs-1) -apple-system, system-ui, sans-serif; padding: 3px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  font: var(--fs-2) -apple-system, system-ui, sans-serif; min-height: 24px; padding: 3px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
   background: var(--strip); color: var(--fg); border: 1px solid var(--line);
 }
-.ps-btn.main { background: color-mix(in srgb, var(--accent) 16%, var(--strip)); }
+.ps-btn.main { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
 .ps-btn:hover { border-color: var(--accent); }
-.ps-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.ps-close { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
 .ps-close:hover { color: var(--fg); background: var(--strip); }
 
 /* bash-guard held a command here (heldbanner.ts): over Claude's prompt, the
@@ -206,14 +208,15 @@
 .ph-more[hidden] { display: none; }
 .ph-btns { display: flex; flex-wrap: wrap; gap: 6px; }
 .ph-btn {
-  font: var(--fs-1) -apple-system, system-ui, sans-serif; padding: 3px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  font: var(--fs-2) -apple-system, system-ui, sans-serif; min-height: 24px; padding: 3px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
   background: var(--strip); color: var(--fg); border: 1px solid var(--line);
 }
-.ph-btn.main { background: color-mix(in srgb, var(--accent) 16%, var(--strip)); }
+/* The banner's one filled button, in the app's primary style: the rest stay ghosts. */
+.ph-btn.main { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
 .ph-btn:hover { border-color: var(--accent); }
 .ph-btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 .ph-btn[aria-disabled="true"]:hover { border-color: var(--line); }
-.ph-close { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.ph-close { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
 .ph-close:hover { color: var(--fg); background: var(--strip); }
 
 /* ⌥⌘L: the scroll lab (scrolllab.ts). How the pane draws and scrolls, and

@@ -577,7 +577,8 @@ const landing41 = {
       },
     },
   },
-  overall: { status: "landing", stage: "deploy", recipe: "deploy", live: false },
+  // As crew-core's landing.rs overall() reads it: a recipe waiting on a person comes first.
+  overall: { status: "awaiting", stage: "notebook", recipe: "notebook", live: false },
 };
 const LAND_LOG = {
   deploy: ["$ npm ci", "added 412 packages in 9s", "$ npm run build", "built dist/ in 3.1s", "$ scripts/deploy.sh", "uploading dist/ (2.4 MB)", "waiting on the rollout: 2 of 4 hosts"],

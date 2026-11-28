@@ -332,6 +332,13 @@ export class ReviewView {
   /** Per job: the run its ticks, findings and confirm belong to. */
   private runs = new Map<string, string>();
 
+  /** The form's Review is filled only with something to review: an empty
+   *  form's Review was the loudest control beside a change waiting on you.
+   *  Called on every input and wherever code sets the input's value. */
+  private fillGo(): void {
+    this.go.classList.toggle("primary", !!this.input.value.trim());
+  }
+
   constructor(private root: HTMLElement) {
     this.root.className = "review";
     try {
@@ -361,6 +368,9 @@ export class ReviewView {
     // Keep focus in the input while a pick is clicked.
     this.pickBox.addEventListener("mousedown", (e) => e.preventDefault());
     this.go.type = "submit";
+    this.input.addEventListener("input", () => this.fillGo());
+    this.input.addEventListener("change", () => this.fillGo());
+    this.fillGo();
     this.depth.setAttribute("aria-label", "Depth");
     this.model.setAttribute("aria-label", "Model");
     this.model.title = "Model (Default is Claude Code's own)";
@@ -721,6 +731,7 @@ export class ReviewView {
       const id = await invoke<string>("review_start", { input, depth, model, reviewer });
       this.forget(id);
       if (input === this.input.value.trim()) this.input.value = "";
+      this.fillGo();
       this.pickBox.hidden = true;
       this.pick(`job:${id}`);
     } catch (e) {
@@ -921,7 +932,7 @@ export class ReviewView {
         else if (other) this.drawOther(other);
         else if (prRow) this.drawPr(prRow);
         else this.drawEmpty();
-        this.drawRail(sel, !!(job || other), relPr, relLand);
+        this.drawRail(sel, !!(job || other), relPr, relLand, !!job && (RUNNING.has(job.status) || !!job.busy));
       };
       // From nothing folded, fold one more tool into ⋯ until the row fits.
       this.fold = 0;
@@ -952,7 +963,7 @@ export class ReviewView {
 
   /** The rail under the header, and the panel for its stage in place of
    *  the review page (release.ts). Nothing without a PR to follow. */
-  private drawRail(sel: string | null, hasReview: boolean, pr: PrRow | null, land: Landing | null): void {
+  private drawRail(sel: string | null, hasReview: boolean, pr: PrRow | null, land: Landing | null, reviewing = false): void {
     if (!sel || !pr) {
       this.stageBox.hidden = true;
       this.stageBox.replaceChildren();
@@ -961,8 +972,11 @@ export class ReviewView {
     }
     let stage = this.stageSel.get(sel) ?? stageFor(hasReview, pr, land);
     if (stage === "review" && !hasReview) stage = "pr";
+    // One filled button a view: past the Review stage the findings toggle is a
+    // ghost, so the stage's own next step (Approve, Ship it, Retry) is the one.
+    if (stage !== "review") this.root.querySelectorAll(".pickbtn.primary").forEach((b) => b.classList.remove("primary"));
     const can: Record<Stage, boolean> = { review: hasReview, pr: true, merge: true, land: true };
-    this.head.append(railEl(stagesOf(hasReview, pr, land), stage, (s) => {
+    this.head.append(railEl(stagesOf(hasReview, pr, land, reviewing), stage, (s) => {
       this.stageSel.set(sel, s);
       this.render(true);
     }, can));
@@ -1427,7 +1441,7 @@ export class ReviewView {
       ol.append(li);
     });
     const total = el("p", "r-detail");
-    total.append("Running for ", since(j.started), `. ${j.depth} depth reviews often take several minutes.`);
+    total.append("Running for ", since(j.started), `. ${j.depth.charAt(0).toUpperCase()}${j.depth.slice(1)} depth reviews often take several minutes.`);
     const now = el("p", "r-now", j.activity || j.detail);
     box.append(ol, now, total);
     return box;
@@ -1670,6 +1684,7 @@ export class ReviewView {
           b.append(top, sub);
           b.addEventListener("click", () => {
             this.input.value = p.input;
+            this.fillGo();
             this.pickBox.hidden = true;
             this.go.focus();
           });

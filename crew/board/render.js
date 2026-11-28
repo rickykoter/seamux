@@ -271,7 +271,7 @@ function __boardRender(d) {
       if (inCard && inCard in was.at && inCard in now) dy -= was.at[inCard] - now[inCard];
       if (Math.abs(dy) >= 2) {
         el.animate([{ transform: "translateY(" + dy + "px)" }, { transform: "none" }],
-                   { duration: 300, easing: "cubic-bezier(.2,.7,.3,1)" });
+                   { duration: 200, easing: "cubic-bezier(.65,0,.35,1)" });
       }
       var moved = wasRank[id] - nowRank[id];
       if (moved !== 0) el.classList.add(moved > 0 ? "up" : "down");

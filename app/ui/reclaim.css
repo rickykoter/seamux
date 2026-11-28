@@ -1,8 +1,8 @@
 /* The reclaim wizard (reclaim.ts): a centered card over the app, as the New
    workspace form is. */
 .reclaim {
-  position: fixed; inset: 0; z-index: 47; display: flex; justify-content: center; align-items: flex-start; padding-top: 10vh;
-  background: color-mix(in srgb, var(--bg) 35%, transparent); backdrop-filter: blur(2px);
+  position: fixed; inset: 0; z-index: 47; display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh;
+  background: color-mix(in srgb, var(--bg) 50%, transparent); backdrop-filter: blur(2px);
 }
 .reclaim[hidden] { display: none; }
 .reclaim-card {
@@ -43,7 +43,7 @@
 .rc-facts .rc-note { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-facts .rc-note::before { content: "· "; }
 /* What reclaim leaves, under "Would remove": one dim line, its own. */
-.rc-keeps { margin: -4px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 0; row-gap: 2px; font-size: var(--fs-2); color: var(--muted); }
+.rc-keeps { margin: 6px 0 0; padding-top: 6px; border-top: 1px dashed var(--line2); display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 0; row-gap: 2px; font-size: var(--fs-2); color: var(--muted); }
 .rc-keeps-k { flex: none; width: 78px; margin-right: 10px; }
 .rc-keeps-v { white-space: pre; }
 .mono { font: var(--fs-2) ui-monospace, Menlo, monospace; }
@@ -65,14 +65,14 @@
 .rc-verdict { margin: 0; font-size: var(--fs-3); font-weight: 600; }
 .rc-verdict.bad { color: var(--bad-t); }
 .rc-error { margin: 0; color: var(--bad-t); font-size: var(--fs-3); overflow-wrap: anywhere; }
-.rc-sub { margin: 4px 0 0; font-size: var(--fs-2); font-weight: 600; }
+.rc-sub { margin: 4px 0 0; font-size: var(--fs-3); font-weight: 600; }
 .rc-note { color: var(--muted); font-size: var(--fs-2); }
 
 /* The checks that passed, folded to one line; open, the same list as above. */
 .rc-passed { font-size: var(--fs-3); }
 .rc-passed > summary {
   display: inline-flex; align-items: center; gap: 8px; list-style: none; cursor: pointer;
-  padding: 2px 10px 2px 10px; border-radius: 6px; color: var(--muted);
+  min-height: 24px; padding: 2px 10px 2px 10px; border-radius: 6px; color: var(--muted);
 }
 .rc-passed > summary::-webkit-details-marker { display: none; }
 /* A drawn chevron: right when folded, down when open. */
@@ -81,7 +81,7 @@
   transform: rotate(-45deg); transition: transform 0.15s;
 }
 .rc-passed[open] > summary::after { transform: translateY(-2px) rotate(45deg); }
-.rc-passed > summary:hover, .rc-passed > summary:focus-visible { color: var(--fg); outline: none; background: var(--on); }
+.rc-passed > summary:hover, .rc-passed > summary:focus-visible { color: var(--fg); background: var(--on); }
 .rc-passed > summary .rc-mark { margin-top: 0; }
 .rc-passed > .rc-checks { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) { .rc-passed > summary::after { transition: none; } }
@@ -89,7 +89,7 @@
 /* Under a blocker: what is behind it, and its fixes (reclaim.ts mend). */
 .rc-items { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; color: var(--muted); }
 .rc-items li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc-more { align-self: flex-start; background: none; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
+.rc-more { align-self: flex-start; background: none; border: 0; min-height: 24px; padding: 0 4px; color: var(--accent); font: inherit; cursor: pointer; }
 .rc-more:hover { text-decoration: underline; }
 .rc-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .rc-fixes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }

@@ -81,14 +81,24 @@ export class PaneCat {
     this.since = since || Date.now();
     this.clear();
     if (move === "hop") this.hop(state === "needs_input");
+    else if (first) this.settle(() => this.place(move === "peek"));
     else this.place(move === "peek");
+  }
+
+  /** A pane just shown: the cat is already where its state puts it. Only a
+   *  change seen live moves it (the frequency test: a switch happens all day). */
+  private settle(f: () => void): void {
+    this.cat.style.transition = "none";
+    f();
+    void this.cat.offsetHeight;
+    this.cat.style.transition = "";
   }
 
   /** A different pane: forget the last one's state. */
   reset(): void {
     this.state = "";
     this.clear();
-    this.place(false);
+    this.settle(() => this.place(false));
   }
 
   private clear(): void {
@@ -113,11 +123,17 @@ export class PaneCat {
   private place(up: boolean): void {
     this.cat.dataset.at = up ? "peek" : "away";
     this.pose("sit");
-    // Peeking, it blinks now and then and looks up at you: ears up a moment.
+    // Peeking, it blinks and looks up at you a few times, then sits still: it
+    // is beside the question you are reading, on the pane you look at most.
     if (up && !still()) {
       let n = 0;
       this.blink = window.setInterval(() => {
         if (this.cat.dataset.at !== "peek") return;
+        if (n >= 3) {
+          clearInterval(this.blink);
+          this.blink = 0;
+          return;
+        }
         const f: Frame = ++n % 2 ? "sit-blink" : "perk";
         this.pose(f);
         this.later(f === "perk" ? 1200 : 180, () => this.cat.dataset.at === "peek" && this.pose("sit"));
@@ -132,7 +148,10 @@ export class PaneCat {
     this.heart.classList.add("up");
     if (still()) {
       this.pose("hop-air");
-      this.later(1600, () => this.place(thenPeek));
+      this.later(1600, () => {
+        this.heart.classList.remove("up");
+        this.place(thenPeek);
+      });
       return;
     }
     const steps: [Frame, string][] = [["hop-crouch", "up"], ["hop-air", "air"], ["hop-crouch", "up"], ["hop-air", "air"], ["hop-crouch", "up"]];

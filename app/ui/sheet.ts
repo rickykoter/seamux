@@ -1180,7 +1180,7 @@ export class Sheet {
     b.className = "sheet-tab" + (on ? " on" : "");
     b.setAttribute("role", "tab");
     b.setAttribute("aria-selected", String(on));
-    // A kind's key: its letter, with ⌘⇧ before it where the column has room.
+    // A kind's key, whole: ⌘⇧ and its letter, never a bare letter to type.
     const k = document.createElement("kbd");
     if (key.startsWith("⌘⇧")) {
       const mod = document.createElement("span");

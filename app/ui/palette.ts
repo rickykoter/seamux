@@ -269,7 +269,7 @@ export class Palette {
       empty.append(cat, el("p", "", this.rows.length ? "nobody by that name" : "no sessions open yet"));
       this.list.replaceChildren(empty);
       this.preview.replaceChildren();
-      this.drawFoot(undefined);
+      this.drawFoot(undefined, true);
       return;
     }
     const kids: Node[] = [];
@@ -388,15 +388,20 @@ export class Palette {
    *  while some row is hidden until needed. ⇧⌘↵ (tuck_unmute_all) brings
    *  back those alone, never a snoozed or tucked one, and its hint says just
    *  that, in the words the rows use (never "muted"). */
-  private drawFoot(sel: Row | undefined): void {
-    const keys = ["↵ jump"];
-    if (sel?.level) keys.push("⌘↵ show again");
+  private drawFoot(sel: Row | undefined, none = false): void {
+    // [key, what it does]: the key set as a keycap, so the line scans as a list.
+    const keys: [string, string][] = none ? [] : [["↵", "jump"]];
+    if (sel?.level) keys.push(["⌘↵", "show again"]);
     const muted = this.rows.filter((r) => r.level === "mute").length;
-    if (muted) keys.push("⇧⌘↵ show the ones hidden until needed");
+    if (muted) keys.push(["⇧⌘↵", "show the ones hidden until needed"]);
     const recent = Math.min(STRIP, (this.views.notes ?? []).length);
-    if (recent) keys.push(recent === 1 ? "⌥1 newest notification" : `⌥1-${recent} recent notifications`);
-    keys.push("esc");
-    this.foot.textContent = keys.join(" · ");
+    if (recent) keys.push([recent === 1 ? "⌥1" : `⌥1-${recent}`, recent === 1 ? "newest notification" : "recent notifications"]);
+    keys.push(["esc", "close"]);
+    this.foot.replaceChildren(...keys.map(([k, what]) => {
+      const item = el("span", "palette-key");
+      item.append(el("kbd", "", k), ` ${what}`);
+      return item;
+    }));
   }
 
   /** One line: the name, then (muted) what else is worth seeing (asideOf),
@@ -421,7 +426,9 @@ export class Palette {
     }
     const where = this.tilde(r.path);
     row.title = r.level ? `Hidden ${untilOf(r)}\n${where}` : where;
-    row.append(el("span", "palette-when", r.level ? untilShort(r) : ago(Date.now() - r.since)));
+    // A session that needs you says so in words, not only by its dot's hue.
+    const asks = !r.level && r.state === "needs_input";
+    row.append(el("span", `palette-when${asks ? " asks" : ""}`, r.level ? untilShort(r) : `${asks ? "needs you · " : ""}${ago(Date.now() - r.since)}`));
     row.addEventListener("mousemove", () => {
       if (this.sel !== i) { this.sel = i; this.selKey = r.key; this.draw(); }
     });

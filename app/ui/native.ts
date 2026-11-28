@@ -507,11 +507,14 @@ export class NativeTerm {
     if (!base) return;
     const waits = this.el.dataset.agent === "needs_input";
     const amber = waits && !!this.webgl;
-    const key = `${waits}|${amber}|${base.background}`;
+    // The GPU renderer blinks the caret from a timer no CSS can stop: reduced
+    // motion turns the blink off here (the hard bar: nothing animates).
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const key = `${waits}|${amber}|${still}|${base.background}`;
     if (key === this.cursorKey) return;
     this.cursorKey = key;
     this.term.options.theme = amber ? { ...base, cursor: "#e69875", cursorAccent: "#1e2326" } : base;
-    this.term.options.cursorBlink = !waits;
+    this.term.options.cursorBlink = !waits && !still;
   }
 
   /** Bytes to the pane, in order. A typed key after a wheel scroll first
@@ -1127,6 +1130,7 @@ export class TermSlot {
   show(surface: string): void {
     if (surface === this.surface) return;
     this.surface = surface;
+    this.agent = null;
     const g = ++this.gen;
     void isNative(surface).then((v) => g === this.gen && this.use(v ? "native" : "plain"));
   }
@@ -1146,8 +1150,13 @@ export class TermSlot {
     this.surface = "";
   }
 
-  /** The pane's Claude state, for the native terminal's cursor and cat. */
+  /** The pane's Claude state, for the native terminal's cursor and cat. Kept,
+   *  because show() learns asynchronously whether the pane is native and the
+   *  native terminal forgets its state when it is shown: without it the
+   *  cursor and cat stayed blank until the next tile push, up to 2s. */
+  private agent: { state: string; since: number } | null = null;
   agentState(state: string, since: number): void {
+    this.agent = { state, since };
     this.native.agentState(state, since);
   }
 
@@ -1169,6 +1178,7 @@ export class TermSlot {
     if (mode === "native") {
       if (this.mode !== "native") this.el.replaceChildren(this.native.el);
       this.native.show(this.surface);
+      if (this.agent) this.native.agentState(this.agent.state, this.agent.since);
       this.onTrouble(false);
     } else {
       this.native.stop();

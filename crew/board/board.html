@@ -536,15 +536,20 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .said .rsn{color:var(--fg);font-weight:600}
 .said code{font:var(--fs-2) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running-t)}
 
+/* A card that needs you keeps an amber hairline wherever you stand, so the
+   strongest stroke on the rail is never only "you are here". */
+.row.attend{box-shadow:0 0 0 1px var(--attend)}
 /* Where you are standing. A ring in the worktree's OWN colour, so the card, the
    VS Code title bar and the pane frame are all wearing the same hex. The card's
    ground does not change: a lighter ground was the one place text fell under
    4.5:1. Falls back to grey when a workspace has no colour set. */
 .row.here{box-shadow:0 0 0 2px var(--own,var(--grey))}
+/* Both: the amber hairline stays, just outside the worktree's ring. */
+.row.attend.here{box-shadow:0 0 0 2px var(--own,var(--grey)),0 0 0 3px var(--attend)}
 
 /* --- the button row ---------------------------------------------------- */
-/* Every target is at least 22px tall: small, since they are clicked rarely,
-   but still easy to hit while doing something else. The first chip is the one that resolves the row, and on the
+/* Every target is at least 24px tall (WCAG 2.5.8's floor): small, since they
+   are clicked rarely, but still easy to hit while doing something else. The first chip is the one that resolves the row, and on the
    tiers that ask something of you -- attend, wilt, done -- it is filled, in
    the app's one primary style (--pri), never the tier's colour: the tier is
    on the card's ring, badge and frame, and amber spent on a fifth thing
@@ -561,7 +566,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .held.open .hc{white-space:pre-wrap;word-break:break-all;max-height:40vh;overflow:auto}
 .held .hm{display:block;margin-top:2px;color:inherit;font:italic var(--fs-1)/1.3 system-ui}
 .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-.chip{display:inline-flex;align-items:center;min-height:22px;padding:0 8px;border-radius:6px;
+.chip{display:inline-flex;align-items:center;min-height:24px;padding:0 8px;border-radius:6px;
   border:1px solid var(--edge);background:transparent;color:var(--fg);
   font:500 var(--fs-2)/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
 .chip.pri{background:var(--pri);border-color:var(--pri);color:var(--ink);font-weight:600}
@@ -890,6 +895,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
   .row.up,.row.attend .chip.pri,.row.running>.top>.dial.pending .arc,.row.ripple,
   .row.famdone,.row.up.ripple,.row.up.famdone,.confetti i,#shelf[data-sky=night] .stars,
   .ag.new{animation:none}
+  .right{transition:none}
   #shelf .sky,#shelf .orb{transition:none}
 }
 

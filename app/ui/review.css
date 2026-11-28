@@ -14,8 +14,11 @@
 .r-title { font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--section); }
 .r-field { position: relative; }
 .r-input { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--fs-3); padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
-.r-opts { display: flex; gap: 6px; }
-.r-opts .r-select { flex: 1 1 0; min-width: 0; }
+/* Two to a row, Review in the last cell: four in one row of 270px cut every
+   label to a stub ("High (", "Defau"), and a wrap by content width changed
+   with the state. */
+.r-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.r-opts .r-select { min-width: 0; }
 .r-select { font: inherit; font-size: var(--fs-2); padding: 5px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
 .r-btn { font: inherit; font-size: var(--fs-3); padding: 5px 11px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg); white-space: nowrap; }
 .r-btn:hover:not(:disabled) { border-color: var(--accent); }
@@ -72,6 +75,9 @@
 .r-meta { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .r-grow { flex: 1; }
 .r-link { font-size: var(--fs-2); color: var(--accent-t); overflow-wrap: anywhere; }
+/* A link drawn on a button (a failing check that opens its log): no browser chrome. */
+button.r-link { font: inherit; font-size: var(--fs-2); padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+button.r-link:hover { text-decoration: underline; }
 /* The header's GitHub link is one quiet link: the framed page's PR strip carries the PR. */
 .r-mhead-row .r-link { color: var(--muted); text-decoration: none; white-space: nowrap; }
 .r-mhead-row .r-link:hover { color: var(--fg); text-decoration: underline; }
@@ -84,7 +90,7 @@
 
 /* The framed page's tools on this row (lookout/page/review.js postState):
    its gate pill, live state and view buttons, drawn the page's way. */
-.r-gate { font: 600 var(--fs-2) system-ui, sans-serif; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.r-gate { font: 600 var(--fs-2) system-ui, sans-serif; min-height: 24px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .r-gate:hover:not(:disabled) { background: var(--term); }
 .r-gate:disabled { cursor: default; }
 .r-gate.blocked { color: var(--bad-t); border-color: var(--bad-t); }
@@ -112,7 +118,7 @@
 .r-note { margin: 0; font-size: var(--fs-2); color: var(--fg); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; overflow-wrap: anywhere; }
 .r-note .r-link { text-decoration: none; }
 .r-code { font: var(--fs-2) ui-monospace, Menlo, monospace; padding: 1px 6px; border-radius: 6px; background: var(--term); user-select: all; }
-.r-copy { font-size: var(--fs-2); padding: 1px 8px; }
+.r-copy { font-size: var(--fs-2); min-height: 24px; padding: 1px 8px; }
 .r-now { margin: 0; font: var(--fs-2) ui-monospace, Menlo, monospace; color: var(--fg); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the ⋯ menu */
 .r-more { position: relative; }
@@ -142,7 +148,7 @@
 .r-btn.pickbtn.short { display: inline-flex; align-items: center; gap: 4px; padding-left: 8px; padding-right: 8px; }
 .r-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 .r-confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 10px; font-size: var(--fs-3); }
-.r-empty { margin: 18vh auto 0; color: var(--muted); font: var(--fs-3)/1.4 ui-monospace, Menlo, monospace; text-align: center; max-width: 42ch; }
+.r-empty { margin: 18vh auto 0; color: var(--muted); font: var(--fs-3)/1.4 -apple-system, system-ui, sans-serif; text-align: center; max-width: 42ch; }
 
 /* The findings panel: the picker on top, the actions on the picks below. */
 .r-menu.r-find-panel { width: 440px; max-width: calc(100vw - 32px); }
@@ -157,7 +163,7 @@
 .r-findings .r-find-text .r-sev { display: inline-block; line-height: 1.5; vertical-align: 1px; }
 .r-findings .r-find-text .r-loc { margin-right: 2px; }
 .r-findings input { flex: none; align-self: flex-start; margin-top: 3px; }
-.r-sev { font-size: var(--fs-1); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); flex: none; }
+.r-sev { font-size: var(--fs-2); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); flex: none; }
 /* The page's severity colours (lookout/page/review.css --sev-*): a pale tint, the word in its text shade. */
 .r-sev.blocker { color: var(--ef-text-red); background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); }
 .r-sev.major { color: var(--ef-text-orange); background: color-mix(in srgb, var(--ef-text-orange) 16%, transparent); }
@@ -180,13 +186,14 @@
 .r-clock { font: var(--fs-2) ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 400; }
 @media (prefers-reduced-motion: reduce) {
   .r-steps li.now .r-mark, .r-dot.running { animation: none; }
+  .r-steps li.now .r-mark { border-top-color: var(--accent); }
 }
 
 .r-log-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-2); color: var(--muted); }
 .r-log pre { margin: 4px 0 0; max-height: 180px; overflow: auto; font: var(--fs-1)/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; color: var(--muted); }
 
 .r-frame { flex: 1; min-height: 0; border-top: 1px solid var(--line); }
-.r-frame[hidden] { display: none; }
+.r-frame[hidden], .r-frame:empty { display: none; }
 .r-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
 .r-frame > .r-detail { padding: 18px; }
 
@@ -202,7 +209,7 @@
 .r-rail { display: flex; align-items: center; gap: 6px; padding: 6px 12px 8px; flex-wrap: wrap; }
 .r-rail-sep { color: var(--line); letter-spacing: -2px; }
 .r-rail-stage {
-  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
   font: var(--fs-2) -apple-system, system-ui, sans-serif; color: var(--fg); background: transparent; border: 1px solid var(--line);
 }
 .r-rail-stage:disabled { cursor: default; color: var(--muted); }
@@ -223,18 +230,18 @@
 .r-land.failed { border-color: var(--bad); }
 .r-land-head { display: flex; align-items: baseline; gap: 8px; }
 .r-land-name { font-weight: 600; }
-.r-land-status { font-size: var(--fs-1); color: var(--muted); }
+.r-land-status { font-size: var(--fs-2); color: var(--muted); }
 .r-land-status.done { color: var(--good-t); }
 .r-land-status.failed { color: var(--bad-t); }
 .r-land-status.awaiting { color: var(--role-attend-t); }
-.r-land-stages { display: flex; flex-wrap: wrap; gap: 6px; font: var(--fs-1)/1.4 ui-monospace, Menlo, monospace; }
+.r-land-stages { display: flex; flex-wrap: wrap; gap: 6px; font: var(--fs-2)/1.4 ui-monospace, Menlo, monospace; }
 .r-land-sep { color: var(--line); }
 .r-land-stage.pending, .r-land-stage.skipped { color: var(--muted); }
 .r-land-stage.done { color: var(--fg); }
 .r-land-stage.running { color: var(--accent-t); }
 .r-land-stage.failed { color: var(--bad-t); }
 .r-land-stage.awaiting { color: var(--role-attend-t); }
-.r-land-version { margin: 0; font: var(--fs-1) ui-monospace, Menlo, monospace; }
+.r-land-version { margin: 0; font: var(--fs-2) ui-monospace, Menlo, monospace; }
 .r-land-version.match { color: var(--good-t); }
 .r-land-version.differs { color: var(--muted); }
 .r-land-tools { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -244,7 +251,7 @@
   background: var(--term); color: var(--fg); font: var(--fs-1)/1.45 ui-monospace, Menlo, monospace;
 }
 .r-land-log[hidden] { display: none; }
-.r-stage-chip { margin-left: auto; font-size: var(--fs-1); padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.r-stage-chip { margin-left: auto; font-size: var(--fs-2); padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .r-stage-chip.done { color: var(--good-t); }
 .r-stage-chip.now { color: var(--accent-t); }
 .r-stage-chip.needs { color: var(--role-attend-t); border-color: var(--role-attend); }
