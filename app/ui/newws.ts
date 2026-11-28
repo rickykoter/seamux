@@ -62,6 +62,7 @@ function icon(cls: string, d: string): SVGSVGElement {
 /** A branch name out of a sentence: "Fix the login bug!" -> "fix-the-login-bug". */
 export function slug(text: string): string {
   return text
+    .replace(/['’]/g, "")
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")

@@ -14,11 +14,11 @@
 .r-title { font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--section); }
 .r-field { position: relative; }
 .r-input { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--fs-3); padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
-/* Each choice at its own width, wrapping, and Review fills what is left: four
-   equal shares of 270px cut every label to a stub ("High (", "Defau"). */
-.r-opts { display: flex; flex-wrap: wrap; gap: 6px; }
-.r-opts .r-select { flex: 1 1 auto; min-width: 0; }
-.r-opts .r-btn { flex: 1 0 auto; }
+/* Two to a row, Review in the last cell: four in one row of 270px cut every
+   label to a stub ("High (", "Defau"), and a wrap by content width changed
+   with the state. */
+.r-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.r-opts .r-select { min-width: 0; }
 .r-select { font: inherit; font-size: var(--fs-2); padding: 5px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
 .r-btn { font: inherit; font-size: var(--fs-3); padding: 5px 11px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg); white-space: nowrap; }
 .r-btn:hover:not(:disabled) { border-color: var(--accent); }
@@ -163,7 +163,7 @@ button.r-link:hover { text-decoration: underline; }
 .r-findings .r-find-text .r-sev { display: inline-block; line-height: 1.5; vertical-align: 1px; }
 .r-findings .r-find-text .r-loc { margin-right: 2px; }
 .r-findings input { flex: none; align-self: flex-start; margin-top: 3px; }
-.r-sev { font-size: var(--fs-1); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); flex: none; }
+.r-sev { font-size: var(--fs-2); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); flex: none; }
 /* The page's severity colours (lookout/page/review.css --sev-*): a pale tint, the word in its text shade. */
 .r-sev.blocker { color: var(--ef-text-red); background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); }
 .r-sev.major { color: var(--ef-text-orange); background: color-mix(in srgb, var(--ef-text-orange) 16%, transparent); }
@@ -186,6 +186,7 @@ button.r-link:hover { text-decoration: underline; }
 .r-clock { font: var(--fs-2) ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 400; }
 @media (prefers-reduced-motion: reduce) {
   .r-steps li.now .r-mark, .r-dot.running { animation: none; }
+  .r-steps li.now .r-mark { border-top-color: var(--accent); }
 }
 
 .r-log-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-2); color: var(--muted); }
@@ -229,18 +230,18 @@ button.r-link:hover { text-decoration: underline; }
 .r-land.failed { border-color: var(--bad); }
 .r-land-head { display: flex; align-items: baseline; gap: 8px; }
 .r-land-name { font-weight: 600; }
-.r-land-status { font-size: var(--fs-1); color: var(--muted); }
+.r-land-status { font-size: var(--fs-2); color: var(--muted); }
 .r-land-status.done { color: var(--good-t); }
 .r-land-status.failed { color: var(--bad-t); }
 .r-land-status.awaiting { color: var(--role-attend-t); }
-.r-land-stages { display: flex; flex-wrap: wrap; gap: 6px; font: var(--fs-1)/1.4 ui-monospace, Menlo, monospace; }
+.r-land-stages { display: flex; flex-wrap: wrap; gap: 6px; font: var(--fs-2)/1.4 ui-monospace, Menlo, monospace; }
 .r-land-sep { color: var(--line); }
 .r-land-stage.pending, .r-land-stage.skipped { color: var(--muted); }
 .r-land-stage.done { color: var(--fg); }
 .r-land-stage.running { color: var(--accent-t); }
 .r-land-stage.failed { color: var(--bad-t); }
 .r-land-stage.awaiting { color: var(--role-attend-t); }
-.r-land-version { margin: 0; font: var(--fs-1) ui-monospace, Menlo, monospace; }
+.r-land-version { margin: 0; font: var(--fs-2) ui-monospace, Menlo, monospace; }
 .r-land-version.match { color: var(--good-t); }
 .r-land-version.differs { color: var(--muted); }
 .r-land-tools { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -250,7 +251,7 @@ button.r-link:hover { text-decoration: underline; }
   background: var(--term); color: var(--fg); font: var(--fs-1)/1.45 ui-monospace, Menlo, monospace;
 }
 .r-land-log[hidden] { display: none; }
-.r-stage-chip { margin-left: auto; font-size: var(--fs-1); padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.r-stage-chip { margin-left: auto; font-size: var(--fs-2); padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .r-stage-chip.done { color: var(--good-t); }
 .r-stage-chip.now { color: var(--accent-t); }
 .r-stage-chip.needs { color: var(--role-attend-t); border-color: var(--role-attend); }

@@ -507,11 +507,14 @@ export class NativeTerm {
     if (!base) return;
     const waits = this.el.dataset.agent === "needs_input";
     const amber = waits && !!this.webgl;
-    const key = `${waits}|${amber}|${base.background}`;
+    // The GPU renderer blinks the caret from a timer no CSS can stop: reduced
+    // motion turns the blink off here (the hard bar: nothing animates).
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const key = `${waits}|${amber}|${still}|${base.background}`;
     if (key === this.cursorKey) return;
     this.cursorKey = key;
     this.term.options.theme = amber ? { ...base, cursor: "#e69875", cursorAccent: "#1e2326" } : base;
-    this.term.options.cursorBlink = !waits;
+    this.term.options.cursorBlink = !waits && !still;
   }
 
   /** Bytes to the pane, in order. A typed key after a wheel scroll first

@@ -536,6 +536,9 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .said .rsn{color:var(--fg);font-weight:600}
 .said code{font:var(--fs-2) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running-t)}
 
+/* A card that needs you keeps an amber hairline wherever you stand, so the
+   strongest stroke on the rail is never only "you are here". */
+.row.attend{box-shadow:0 0 0 1px var(--attend)}
 /* Where you are standing. A ring in the worktree's OWN colour, so the card, the
    VS Code title bar and the pane frame are all wearing the same hex. The card's
    ground does not change: a lighter ground was the one place text fell under

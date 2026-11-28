@@ -71,6 +71,8 @@
 .palette-level.tuck { color: var(--fg); }
 .palette-when { font-size: var(--fs-2); color: var(--muted); }
 .palette-when.asks { color: var(--ask-t); font-weight: 600; }
+/* Placeholders in the quiet text role (ADR 0044), never the browser's grey. */
+.palette-q::placeholder, .newws-card input::placeholder, .newws-card textarea::placeholder, .r-input::placeholder { color: var(--muted); opacity: 1; }
 .palette-back { font: inherit; font-size: var(--fs-2); padding: 3px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg); cursor: pointer; }
 .palette-empty { margin: 14px; color: var(--muted); text-align: center; }
 .palette-foot { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 7px 14px; border-top: 1px solid var(--line); font-size: var(--fs-2); color: var(--muted); }
@@ -123,8 +125,8 @@
 .search-p-k { color: var(--muted); }
 .search-p-v { min-width: 0; overflow-wrap: anywhere; }
 .search-p-ask {
-  margin: 4px 0; padding: 7px 10px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0;
-  background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: var(--fs-3);
+  margin: 4px 0; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--ask) 55%, transparent); border-radius: 6px;
+  background: color-mix(in srgb, var(--ask) 10%, transparent); font-size: var(--fs-3);
 }
 .search-p-lines {
   margin: 4px 0 0; padding: 8px 10px; border-radius: 7px; background: var(--term); color: var(--term-fg);

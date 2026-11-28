@@ -361,6 +361,12 @@ export class ReviewView {
     // Keep focus in the input while a pick is clicked.
     this.pickBox.addEventListener("mousedown", (e) => e.preventDefault());
     this.go.type = "submit";
+    // Filled only with something to review: an empty form's Review was the
+    // loudest control beside a change waiting on you.
+    const fill = () => this.go.classList.toggle("primary", !!this.input.value.trim());
+    this.input.addEventListener("input", fill);
+    this.input.addEventListener("change", fill);
+    fill();
     this.depth.setAttribute("aria-label", "Depth");
     this.model.setAttribute("aria-label", "Model");
     this.model.title = "Model (Default is Claude Code's own)";
