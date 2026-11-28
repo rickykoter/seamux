@@ -179,8 +179,7 @@
         .sheet-grp.on:not(.wake) { min-width: min(5rem, 26%); }
       }
       /* The modifiers small and tight, so a whole key fits and still reads as one (not a bare letter to type). */
-      .sheet-tab kbd .mod { display: none; font-size: 0.85em; letter-spacing: -0.06em; margin-right: 1px; }
-      @container (min-width: 640px) { .sheet-tab kbd .mod { display: inline; } }
+      .sheet-tab kbd .mod { font-size: 0.85em; letter-spacing: -0.06em; margin-right: 1px; }
       /* The chip shown keeps its name before its state when room is short. */
       @container (max-width: 640px) { .sheet-grp.on .sheet-tab-state, .sheet-grp.on:not(.wake) .sheet-tab kbd { display: none; } }
       .sheet-tab-kind { font-weight: 600; }
@@ -241,7 +240,9 @@
       .sheet-chat-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-2); }
       /* One tab per live pane: they scroll sideways when they do not fit, and
          the edge they run past fades. + and History stay put at the end. */
-      .sheet-chat-tabs { flex: 1 1 0; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+      /* The tabs hold the state that needs you, so they keep room for at least one
+         whole tab; the tools wrap under them before the tabs give way. */
+      .sheet-chat-tabs { flex: 1 1 0; min-width: min(15rem, 100%); display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
       .sheet-chat-tabs::-webkit-scrollbar { display: none; }
       .sheet-chat-tabs.clip-r { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
       .sheet-chat-tabs.clip-l { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }

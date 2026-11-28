@@ -58,10 +58,12 @@
    heart when a long turn ends. Never takes the mouse. */
 .native-term { position: relative; }
 .pane-cat-box { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 3; }
-.pane-cat { position: absolute; right: 18px; bottom: -34px; line-height: 0; transition: bottom 0.35s ease; }
-.pane-cat[data-at="peek"] { bottom: -6px; }
-.pane-cat[data-at="up"] { bottom: 0; transition-duration: 0.12s; }
-.pane-cat[data-at="air"] { bottom: 6px; transition-duration: 0.12s; }
+/* It moves by transform on an ease-out curve; going down is shorter than coming
+   up. A pane just shown places it with no transition (panecat.ts settle). */
+.pane-cat { position: absolute; right: 18px; bottom: -34px; line-height: 0; transition: transform 0.16s cubic-bezier(0.23, 1, 0.32, 1); }
+.pane-cat[data-at="peek"] { transform: translateY(-28px); transition-duration: 0.22s; }
+.pane-cat[data-at="up"] { transform: translateY(-34px); transition-duration: 0.12s; }
+.pane-cat[data-at="air"] { transform: translateY(-40px); transition-duration: 0.12s; }
 .pane-cat-heart { position: absolute; right: 18px; bottom: 4px; line-height: 0; opacity: 0; }
 .pane-cat-heart.up { animation: pane-heart 1.5s ease-out forwards; }
 @keyframes pane-heart { 0% { opacity: 0; transform: translateY(0); } 15% { opacity: 1; } 100% { opacity: 0; transform: translateY(-36px); } }

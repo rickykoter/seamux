@@ -81,14 +81,24 @@ export class PaneCat {
     this.since = since || Date.now();
     this.clear();
     if (move === "hop") this.hop(state === "needs_input");
+    else if (first) this.settle(() => this.place(move === "peek"));
     else this.place(move === "peek");
+  }
+
+  /** A pane just shown: the cat is already where its state puts it. Only a
+   *  change seen live moves it (the frequency test: a switch happens all day). */
+  private settle(f: () => void): void {
+    this.cat.style.transition = "none";
+    f();
+    void this.cat.offsetHeight;
+    this.cat.style.transition = "";
   }
 
   /** A different pane: forget the last one's state. */
   reset(): void {
     this.state = "";
     this.clear();
-    this.place(false);
+    this.settle(() => this.place(false));
   }
 
   private clear(): void {

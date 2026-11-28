@@ -102,7 +102,8 @@ function __boardIntent(cfg) {
       // inert and is still a card.
       ".row.inert{cursor:default}" +
       // Framed by the seamux app: the workspace the app shows beside the board.
-      ".row.appsel{outline:2px solid var(--sel);outline-offset:-2px;background:var(--bg-hover)}" +
+      // A neutral ring: in --sel's yellow it read as a second card that needs you.
+      ".row.appsel{outline:2px solid var(--fg2);outline-offset:-2px;background:var(--bg-hover)}" +
       // Why a click failed, for a few seconds: the red flash alone said nothing.
       "#intent-toast{position:fixed;left:12px;right:12px;bottom:12px;z-index:50;padding:8px 12px;" +
       "border-radius:6px;background:var(--toast-bg);border:1px solid var(--wilt);color:var(--toast-tx);font:12px/1.4 system-ui,sans-serif;" +

@@ -1127,6 +1127,7 @@ export class TermSlot {
   show(surface: string): void {
     if (surface === this.surface) return;
     this.surface = surface;
+    this.agent = null;
     const g = ++this.gen;
     void isNative(surface).then((v) => g === this.gen && this.use(v ? "native" : "plain"));
   }
@@ -1146,8 +1147,13 @@ export class TermSlot {
     this.surface = "";
   }
 
-  /** The pane's Claude state, for the native terminal's cursor and cat. */
+  /** The pane's Claude state, for the native terminal's cursor and cat. Kept,
+   *  because show() learns asynchronously whether the pane is native and the
+   *  native terminal forgets its state when it is shown: without it the
+   *  cursor and cat stayed blank until the next tile push, up to 2s. */
+  private agent: { state: string; since: number } | null = null;
   agentState(state: string, since: number): void {
+    this.agent = { state, since };
     this.native.agentState(state, since);
   }
 
@@ -1169,6 +1175,7 @@ export class TermSlot {
     if (mode === "native") {
       if (this.mode !== "native") this.el.replaceChildren(this.native.el);
       this.native.show(this.surface);
+      if (this.agent) this.native.agentState(this.agent.state, this.agent.since);
       this.onTrouble(false);
     } else {
       this.native.stop();

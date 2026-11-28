@@ -69,10 +69,12 @@
 .palette-meta { font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .palette-level { font-size: var(--fs-1); padding: 1px 7px; border-radius: 9px; background: var(--term); color: var(--muted); }
 .palette-level.tuck { color: var(--fg); }
-.palette-when { font-size: var(--fs-1); color: var(--muted); }
+.palette-when { font-size: var(--fs-2); color: var(--muted); }
+.palette-when.asks { color: var(--ask-t); font-weight: 600; }
 .palette-back { font: inherit; font-size: var(--fs-2); padding: 3px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg); cursor: pointer; }
 .palette-empty { margin: 14px; color: var(--muted); text-align: center; }
-.palette-foot { padding: 7px 14px; border-top: 1px solid var(--line); font-size: var(--fs-2); color: var(--muted); }
+.palette-foot { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 7px 14px; border-top: 1px solid var(--line); font-size: var(--fs-2); color: var(--muted); }
+.palette-foot kbd { font: inherit; color: var(--fg); padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; }
 
 /* ---- session search (palette.ts): list beside a preview ---- */
 .palette-card.search { width: min(860px, calc(100vw - 32px)); height: min(520px, 70vh); max-height: none; }
