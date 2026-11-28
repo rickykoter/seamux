@@ -13,7 +13,7 @@
 
 .newws {
   position: fixed; inset: 0; z-index: 46; display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh;
-  background: color-mix(in srgb, var(--bg) 35%, transparent); backdrop-filter: blur(2px);
+  background: color-mix(in srgb, var(--bg) 50%, transparent); backdrop-filter: blur(2px);
 }
 .newws[hidden] { display: none; }
 .newws-card {
@@ -98,6 +98,7 @@
 .newws-say.bad { color: var(--bad-t); }
 .newws-say[hidden] { display: none; }
 .newws-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.newws-key { margin-left: 6px; font: var(--fs-1) -apple-system, system-ui, sans-serif; opacity: 0.75; }
 .newws .newws-go { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
 .newws .newws-go:hover:not(:disabled) { border-color: var(--primary); }
 .newws .sheet-btn:disabled { opacity: 0.55; cursor: default; }

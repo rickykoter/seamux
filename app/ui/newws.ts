@@ -94,6 +94,11 @@ function remember(repo: string): void {
   }
 }
 
+/** A button's words, then its key as a keycap. */
+function keyed(b: HTMLButtonElement, words: string, key: string): void {
+  b.replaceChildren(words, el("kbd", "newws-key", key));
+}
+
 export class NewWorkspace {
   /** Called with the new workspace's UUID once it is open. */
   onMade: (ws: string) => void = () => {};
@@ -199,7 +204,9 @@ export class NewWorkspace {
     );
     this.sandboxRow.append(el("span", "newws-label", "Sandbox"), this.sandbox);
 
-    // The keys live in the buttons' tooltips: a hint line would only repeat them.
+    // Each button wears its key (no hint line to repeat them), as search's footer does.
+    keyed(this.cancel, "Cancel", "esc");
+    keyed(this.create, "Create", "⌘↵");
     this.cancel.type = "button";
     this.cancel.title = "esc";
     this.cancel.addEventListener("click", () => this.close());
@@ -299,6 +306,9 @@ export class NewWorkspace {
     this.repo.replaceChildren(loading);
     this.repo.disabled = true;
     this.create.disabled = true;
+    // Focus lands now, not after git answers: ⌘N then typing at once used to
+    // lose its first keys to the capture listener above.
+    this.branch.focus();
     let opts: Options;
     try {
       opts = await invoke<Options>("new_ws_options");
@@ -323,7 +333,8 @@ export class NewWorkspace {
     this.base.value = "";
     this.drawBranch();
     this.drawMore();
-    this.branch.focus();
+    // Still on Branch unless the person has moved on while the list loaded.
+    if (!this.card.contains(document.activeElement)) this.branch.focus();
   }
 
   close(): void {
@@ -374,7 +385,8 @@ export class NewWorkspace {
   private setBusy(on: boolean): void {
     this.busy = on;
     for (const f of [this.repo, this.branch, this.base, this.sandbox, this.cancel, this.create]) f.disabled = on;
-    this.create.textContent = on ? "Creating…" : "Create";
+    if (on) this.create.textContent = "Creating…";
+    else keyed(this.create, "Create", "⌘↵");
     this.drawMore();
   }
 

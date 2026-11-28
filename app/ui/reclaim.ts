@@ -319,7 +319,7 @@ export class ReclaimWizard {
     list.append(...r.checks.filter((c) => c.kind === "info").map(row));
     const kept = el("p", "rc-keeps");
     if (keeps.length) {
-      kept.append(el("span", "rc-keeps-k", "Keeps"));
+      kept.append(el("span", "rc-keeps-k", "keeps"));
       keeps.forEach((x, i) => {
         const s = el("span", "rc-keeps-v", `${i ? " · " : ""}${x.k} ${x.v}`);
         s.title = x.full;
