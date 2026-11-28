@@ -81,7 +81,7 @@
   transform: rotate(-45deg); transition: transform 0.15s;
 }
 .rc-passed[open] > summary::after { transform: translateY(-2px) rotate(45deg); }
-.rc-passed > summary:hover, .rc-passed > summary:focus-visible { color: var(--fg); outline: none; background: var(--on); }
+.rc-passed > summary:hover, .rc-passed > summary:focus-visible { color: var(--fg); background: var(--on); }
 .rc-passed > summary .rc-mark { margin-top: 0; }
 .rc-passed > .rc-checks { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) { .rc-passed > summary::after { transition: none; } }

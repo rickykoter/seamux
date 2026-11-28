@@ -27,7 +27,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: s
   return e;
 }
 
-/** A state's mark: a turning arc while it runs, a tick, a cross, a dash. */
+/** A state's mark: a steady dot while it runs, a tick, a cross, a dash. */
 function mark(state: string): SVGSVGElement {
   const s = document.createElementNS(SVG, "svg");
   s.setAttribute("viewBox", "0 0 12 12");
@@ -40,7 +40,7 @@ function mark(state: string): SVGSVGElement {
     p.setAttribute("d", d);
     s.append(p);
   };
-  if (state === "running") path("M6 1.5a4.5 4.5 0 1 1-4.5 4.5");
+  if (state === "running") path("M6 3.2a2.8 2.8 0 1 1 0 5.6a2.8 2.8 0 1 1 0-5.6z");
   else if (state === "done") path("M2.5 6.2l2.3 2.3 4.7-5");
   else if (state === "failed") path("M3 3l6 6M9 3l-6 6");
   else path("M3 6h6");

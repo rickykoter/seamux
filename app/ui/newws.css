@@ -7,7 +7,7 @@
 }
 .dock-new span { flex: 1; }
 .dock-new kbd { font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); opacity: 0; transition: opacity 0.12s; }
-.dock-new:hover, .dock-new:focus-visible { color: var(--fg); background: var(--on); outline: none; }
+.dock-new:hover, .dock-new:focus-visible { color: var(--fg); background: var(--on); }
 .dock-new:hover kbd, .dock-new:focus-visible kbd { opacity: 1; }
 .dock-new svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 
@@ -56,10 +56,10 @@
 .newws-source-text b { font-size: var(--fs-3); font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .newws-source-text span { font-size: var(--fs-1); color: var(--muted); }
 .newws-source-x {
-  flex: none; display: grid; place-items: center; width: 20px; height: 20px; padding: 0;
+  flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
   color: var(--muted); background: none; border: 0; border-radius: 5px; cursor: pointer;
 }
-.newws-source-x:hover, .newws-source-x:focus-visible { color: var(--fg); background: var(--card); outline: none; }
+.newws-source-x:hover, .newws-source-x:focus-visible { color: var(--fg); background: var(--card); }
 .newws-source-x:disabled { opacity: 0.55; cursor: default; }
 .newws-source-x svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 .newws-more { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 8px; }
