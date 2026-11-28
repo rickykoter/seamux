@@ -47,12 +47,13 @@ export type Landing = {
  *  needs (the person), failed, or none (not reached). */
 export type StageState = "done" | "now" | "needs" | "failed" | "none";
 
-export function stagesOf(hasReview: boolean, pr: PrRow | null, land: Landing | null): Record<Stage, StageState> {
+export function stagesOf(hasReview: boolean, pr: PrRow | null, land: Landing | null, reviewing = false): Record<Stage, StageState> {
   const merged = pr?.state === "merged";
   const red = (pr?.checks?.fail ?? 0) > 0 || !!pr?.conflict;
   const o = land?.overall.status ?? "";
   return {
-    review: hasReview ? "done" : "none",
+    // A review still running is where the change is, not a stage it has passed.
+    review: reviewing ? "now" : hasReview ? "done" : "none",
     pr: !pr ? "none" : merged || pr.state === "closed" ? "done" : red ? "failed" : "now",
     merge: merged ? "done" : "none",
     land: !merged ? "none" : o === "done" ? "done" : o === "awaiting" ? "needs" : o === "failed" || o === "stopped" ? "failed" : o === "landing" ? "now" : "none",

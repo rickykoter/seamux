@@ -921,7 +921,7 @@ export class ReviewView {
         else if (other) this.drawOther(other);
         else if (prRow) this.drawPr(prRow);
         else this.drawEmpty();
-        this.drawRail(sel, !!(job || other), relPr, relLand);
+        this.drawRail(sel, !!(job || other), relPr, relLand, !!job && (RUNNING.has(job.status) || !!job.busy));
       };
       // From nothing folded, fold one more tool into ⋯ until the row fits.
       this.fold = 0;
@@ -952,7 +952,7 @@ export class ReviewView {
 
   /** The rail under the header, and the panel for its stage in place of
    *  the review page (release.ts). Nothing without a PR to follow. */
-  private drawRail(sel: string | null, hasReview: boolean, pr: PrRow | null, land: Landing | null): void {
+  private drawRail(sel: string | null, hasReview: boolean, pr: PrRow | null, land: Landing | null, reviewing = false): void {
     if (!sel || !pr) {
       this.stageBox.hidden = true;
       this.stageBox.replaceChildren();
@@ -961,8 +961,11 @@ export class ReviewView {
     }
     let stage = this.stageSel.get(sel) ?? stageFor(hasReview, pr, land);
     if (stage === "review" && !hasReview) stage = "pr";
+    // One filled button a view: past the Review stage the findings toggle is a
+    // ghost, so the stage's own next step (Approve, Ship it, Retry) is the one.
+    if (stage !== "review") this.root.querySelectorAll(".pickbtn.primary").forEach((b) => b.classList.remove("primary"));
     const can: Record<Stage, boolean> = { review: hasReview, pr: true, merge: true, land: true };
-    this.head.append(railEl(stagesOf(hasReview, pr, land), stage, (s) => {
+    this.head.append(railEl(stagesOf(hasReview, pr, land, reviewing), stage, (s) => {
       this.stageSel.set(sel, s);
       this.render(true);
     }, can));
@@ -1427,7 +1430,7 @@ export class ReviewView {
       ol.append(li);
     });
     const total = el("p", "r-detail");
-    total.append("Running for ", since(j.started), `. ${j.depth} depth reviews often take several minutes.`);
+    total.append("Running for ", since(j.started), `. ${j.depth.charAt(0).toUpperCase()}${j.depth.slice(1)} depth reviews often take several minutes.`);
     const now = el("p", "r-now", j.activity || j.detail);
     box.append(ol, now, total);
     return box;

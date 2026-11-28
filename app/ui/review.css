@@ -14,8 +14,11 @@
 .r-title { font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--section); }
 .r-field { position: relative; }
 .r-input { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--fs-3); padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
-.r-opts { display: flex; gap: 6px; }
+/* The three choices share a row and Review takes its own, full width under
+   them: four in 270px cut every label to a stub ("High (", "Defau"). */
+.r-opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .r-opts .r-select { flex: 1 1 0; min-width: 0; }
+.r-opts .r-btn { flex: 1 0 100%; }
 .r-select { font: inherit; font-size: var(--fs-2); padding: 5px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
 .r-btn { font: inherit; font-size: var(--fs-3); padding: 5px 11px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg); white-space: nowrap; }
 .r-btn:hover:not(:disabled) { border-color: var(--accent); }
@@ -72,6 +75,9 @@
 .r-meta { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .r-grow { flex: 1; }
 .r-link { font-size: var(--fs-2); color: var(--accent-t); overflow-wrap: anywhere; }
+/* A link drawn on a button (a failing check that opens its log): no browser chrome. */
+button.r-link { font: inherit; font-size: var(--fs-2); padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+button.r-link:hover { text-decoration: underline; }
 /* The header's GitHub link is one quiet link: the framed page's PR strip carries the PR. */
 .r-mhead-row .r-link { color: var(--muted); text-decoration: none; white-space: nowrap; }
 .r-mhead-row .r-link:hover { color: var(--fg); text-decoration: underline; }
@@ -142,7 +148,7 @@
 .r-btn.pickbtn.short { display: inline-flex; align-items: center; gap: 4px; padding-left: 8px; padding-right: 8px; }
 .r-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 .r-confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 10px; font-size: var(--fs-3); }
-.r-empty { margin: 18vh auto 0; color: var(--muted); font: var(--fs-3)/1.4 ui-monospace, Menlo, monospace; text-align: center; max-width: 42ch; }
+.r-empty { margin: 18vh auto 0; color: var(--muted); font: var(--fs-3)/1.4 -apple-system, system-ui, sans-serif; text-align: center; max-width: 42ch; }
 
 /* The findings panel: the picker on top, the actions on the picks below. */
 .r-menu.r-find-panel { width: 440px; max-width: calc(100vw - 32px); }
