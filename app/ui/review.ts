@@ -332,6 +332,13 @@ export class ReviewView {
   /** Per job: the run its ticks, findings and confirm belong to. */
   private runs = new Map<string, string>();
 
+  /** The form's Review is filled only with something to review: an empty
+   *  form's Review was the loudest control beside a change waiting on you.
+   *  Called on every input and wherever code sets the input's value. */
+  private fillGo(): void {
+    this.go.classList.toggle("primary", !!this.input.value.trim());
+  }
+
   constructor(private root: HTMLElement) {
     this.root.className = "review";
     try {
@@ -361,12 +368,9 @@ export class ReviewView {
     // Keep focus in the input while a pick is clicked.
     this.pickBox.addEventListener("mousedown", (e) => e.preventDefault());
     this.go.type = "submit";
-    // Filled only with something to review: an empty form's Review was the
-    // loudest control beside a change waiting on you.
-    const fill = () => this.go.classList.toggle("primary", !!this.input.value.trim());
-    this.input.addEventListener("input", fill);
-    this.input.addEventListener("change", fill);
-    fill();
+    this.input.addEventListener("input", () => this.fillGo());
+    this.input.addEventListener("change", () => this.fillGo());
+    this.fillGo();
     this.depth.setAttribute("aria-label", "Depth");
     this.model.setAttribute("aria-label", "Model");
     this.model.title = "Model (Default is Claude Code's own)";
@@ -727,6 +731,7 @@ export class ReviewView {
       const id = await invoke<string>("review_start", { input, depth, model, reviewer });
       this.forget(id);
       if (input === this.input.value.trim()) this.input.value = "";
+      this.fillGo();
       this.pickBox.hidden = true;
       this.pick(`job:${id}`);
     } catch (e) {
@@ -1679,6 +1684,7 @@ export class ReviewView {
           b.append(top, sub);
           b.addEventListener("click", () => {
             this.input.value = p.input;
+            this.fillGo();
             this.pickBox.hidden = true;
             this.go.focus();
           });

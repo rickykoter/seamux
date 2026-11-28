@@ -544,6 +544,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    ground does not change: a lighter ground was the one place text fell under
    4.5:1. Falls back to grey when a workspace has no colour set. */
 .row.here{box-shadow:0 0 0 2px var(--own,var(--grey))}
+/* Both: the amber hairline stays, just outside the worktree's ring. */
+.row.attend.here{box-shadow:0 0 0 2px var(--own,var(--grey)),0 0 0 3px var(--attend)}
 
 /* --- the button row ---------------------------------------------------- */
 /* Every target is at least 24px tall (WCAG 2.5.8's floor): small, since they
