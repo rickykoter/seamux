@@ -14,11 +14,11 @@
 .r-title { font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--section); }
 .r-field { position: relative; }
 .r-input { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--fs-3); padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
-/* The three choices share a row and Review takes its own, full width under
-   them: four in 270px cut every label to a stub ("High (", "Defau"). */
+/* Each choice at its own width, wrapping, and Review fills what is left: four
+   equal shares of 270px cut every label to a stub ("High (", "Defau"). */
 .r-opts { display: flex; flex-wrap: wrap; gap: 6px; }
-.r-opts .r-select { flex: 1 1 0; min-width: 0; }
-.r-opts .r-btn { flex: 1 0 100%; }
+.r-opts .r-select { flex: 1 1 auto; min-width: 0; }
+.r-opts .r-btn { flex: 1 0 auto; }
 .r-select { font: inherit; font-size: var(--fs-2); padding: 5px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
 .r-btn { font: inherit; font-size: var(--fs-3); padding: 5px 11px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg); white-space: nowrap; }
 .r-btn:hover:not(:disabled) { border-color: var(--accent); }
@@ -192,7 +192,7 @@ button.r-link:hover { text-decoration: underline; }
 .r-log pre { margin: 4px 0 0; max-height: 180px; overflow: auto; font: var(--fs-1)/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; color: var(--muted); }
 
 .r-frame { flex: 1; min-height: 0; border-top: 1px solid var(--line); }
-.r-frame[hidden] { display: none; }
+.r-frame[hidden], .r-frame:empty { display: none; }
 .r-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
 .r-frame > .r-detail { padding: 18px; }
 
